@@ -7,6 +7,13 @@ import { setupWsServer } from './ws';
 import type { SessionToken } from '@shared/types';
 import type { NcmProcessManager } from '@main/ncm/spawn';
 import { createNcmStatusHandler } from './routes/ncm';
+import type { NcmAuthService } from '@main/ncm/auth';
+import {
+  createNcmLogoutHandler,
+  createNcmQrHandler,
+  createNcmQrStatusHandler,
+  createNcmSessionHandler
+} from './routes/ncm-login';
 
 export type LocalServer = {
   port: number;
@@ -18,6 +25,7 @@ export type LocalServer = {
 
 type StartLocalServerOptions = {
   ncm: NcmProcessManager;
+  ncmAuth: NcmAuthService;
 };
 
 export async function startLocalServer(options: StartLocalServerOptions): Promise<LocalServer> {
@@ -27,6 +35,15 @@ export async function startLocalServer(options: StartLocalServerOptions): Promis
 
   app.get('/api/health', getHealthHandler);
   app.get('/api/ncm/status', createNcmStatusHandler(options.ncm));
+  app.get('/api/ncm/login/qr', createNcmQrHandler(options.ncmAuth));
+  app.get('/api/ncm/login/status', createNcmQrStatusHandler(options.ncmAuth));
+  app.get('/api/ncm/login/session', createNcmSessionHandler(options.ncmAuth));
+  app.post('/api/ncm/login/logout', createNcmLogoutHandler(options.ncmAuth));
+
+  app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+    const message = error instanceof Error ? error.message : 'unknown error';
+    res.status(500).json({ ok: false, error: message });
+  });
 
   const server = createServer(app);
   const sessionToken = randomBytes(24).toString('hex');

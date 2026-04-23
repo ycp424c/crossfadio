@@ -5,10 +5,14 @@ import { initDb } from './store/db';
 import { getLogger } from './logger';
 import { ensureUserCorpus } from './user-corpus/bootstrap';
 import { NcmProcessManager } from './ncm/spawn';
+import { NcmClient } from './ncm/client';
+import { NcmAuthService } from './ncm/auth';
+import { SecretStore } from './security';
 
 let mainWindow: BrowserWindow | null = null;
 let localServer: LocalServer | null = null;
 let ncm: NcmProcessManager | null = null;
+let ncmAuth: NcmAuthService | null = null;
 
 const gotSingleInstanceLock = app.requestSingleInstanceLock();
 if (!gotSingleInstanceLock) {
@@ -32,9 +36,18 @@ app.whenReady().then(async () => {
   try {
     ensureUserCorpus();
     initDb();
+
+    const secrets = new SecretStore();
     ncm = new NcmProcessManager();
     await ncm.start();
-    localServer = await startLocalServer({ ncm });
+    let authRef: NcmAuthService | null = null;
+    const ncmClient = new NcmClient(ncm.getStatus().baseUrl, {
+      getCookie: () => authRef?.getCookie() ?? null
+    });
+    authRef = new NcmAuthService(ncmClient, secrets);
+    ncmAuth = authRef;
+
+    localServer = await startLocalServer({ ncm, ncmAuth: authRef });
 
     createMainWindow(localServer);
 
@@ -67,6 +80,8 @@ app.on('before-quit', async () => {
       logger.warn({ err: error }, 'Failed to stop NCM process cleanly');
     }
   }
+
+  ncmAuth = null;
 
   if (localServer) {
     try {

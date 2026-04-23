@@ -72,7 +72,7 @@
 | ID | 任务 | 依赖 | 主要产出 | 验收标准 | 估时 | 优先级 | 状态 |
 |---|---|---|---|---|---:|---|---|
 | M1-01 | NCM 子进程管理与健康探测 | M0-03 | `ncm/spawn.ts` | 子进程崩溃可重启，状态可感知 | 0.5 | P0 | DOING |
-| M1-02 | NCM 扫码登录接口（qr/status/logout） | M1-01 | `/api/ncm/login/*` | 扫码成功能拿 cookie 并持久化 | 0.7 | P0 | TODO |
+| M1-02 | NCM 扫码登录接口（qr/status/logout） | M1-01 | `/api/ncm/login/*` | 扫码成功能拿 cookie 并持久化 | 0.7 | P0 | DOING |
 | M1-03 | NCM 客户端封装（歌单/搜索/歌曲 URL/歌词） | M1-01 | `ncm/client.ts` | 单测可 mock 返回标准 DTO | 0.6 | P0 | DOING |
 | M1-04 | Web Audio 双 deck 播放引擎基础能力 | M0-02 | `renderer/audio/engine.ts` | A/B deck 可切换、可停止/恢复 | 0.7 | P0 | TODO |
 | M1-05 | 等能量 crossfade + filter sweep | M1-04 | `crossfade.ts` | 切歌时无明显音量塌陷 | 0.5 | P0 | TODO |
@@ -133,7 +133,28 @@
 ### 4.7 DOING 阻塞说明
 
 1. `M1-01`：待接入真实 NeteaseCloudMusicApi 启动命令与 cookie 持久化策略，当前仅完成通用子进程管理骨架。
-2. `M1-03`：待补齐 DTO schema、错误码映射与单测 mock（目前完成最小查询/URL/歌词/歌单接口封装）。
+2. `M1-02`：待完成真实扫码闭环验收（含 800/801/802/803 状态码映射提示）与异常码标准化。
+3. `M1-03`：待补齐 DTO schema、错误码映射与单测 mock（目前完成最小查询/URL/歌词/歌单接口封装）。
+
+### 4.8 M1-07 前置 UI 任务与依赖（已确认）
+
+目标：在开始 `M1-07 Player 视图` 前，先把视觉基线、组件映射和窄窗约束固化，避免返工。
+
+1. 设计前置任务（必须完成）：
+`UI-04` 组件级细化稿（按钮/卡片/输入框/队列项）
+`UI-07` Design -> Component 映射清单
+2. 设计前置任务（建议完成）：
+`UI-05` 响应式适配稿（桌面窄窗/常规宽窗）
+3. 代码前置依赖（必须完成）：
+`M1-04` Web Audio 双 deck 基础能力（为 Player 控件提供真实状态）
+`M1-06` `api/now` / `api/next` + prefetch 时序（为队列与下一首信息提供数据）
+4. 明确依赖链：
+`UI-04 -> UI-07 -> M1-07`
+`UI-05 -> M1-07(窄窗布局约束)`
+`M1-04 + M1-06 -> M1-07(可交互与可播数据)`
+5. 开始门槛（Definition of Ready）：
+组件映射表可直接落到 `views/Player` + `components/*`；
+`api/now` 与 `api/next` 返回 DTO 已冻结（至少 1 个版本迭代内不破坏字段）。
 
 ---
 
@@ -176,3 +197,4 @@
 | 2026-04-23 | justynchen / codex | 新增并行 UI 设计轨道（Image 2），并落盘首批设计资产 |
 | 2026-04-23 | justynchen / codex | 完成 M0 工程骨架（M0-01~M0-07），并通过 `pnpm check` / `pnpm build` |
 | 2026-04-23 | justynchen / codex | 启动 M1：新增 NCM 子进程管理、NCM 客户端与 `/api/ncm/status`（M1-01/M1-03 进入 DOING） |
+| 2026-04-23 | justynchen / codex | 确认 M1-07 前置 UI 任务与依赖（新增 §4.8）；推进 M1-02 至 DOING（扫码登录接口与 cookie 持久化骨架） |
