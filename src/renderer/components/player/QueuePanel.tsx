@@ -1,3 +1,5 @@
+import { ListMusic } from 'lucide-react';
+
 type QueuePanelProps = {
   queueIds: string[];
   currentIndex: number;
@@ -9,7 +11,10 @@ export function QueuePanel(props: QueuePanelProps): JSX.Element {
   return (
     <section className="rounded-2xl border border-zinc-800/80 bg-zinc-950/60 p-4">
       <div className="mb-3 flex items-center justify-between">
-        <h3 className="text-lg font-semibold text-zinc-100">播放队列</h3>
+        <h3 className="inline-flex items-center gap-2 text-lg font-semibold text-zinc-100">
+          <ListMusic className="h-5 w-5 text-cyan-300" />
+          播放队列
+        </h3>
         <span className="rounded-full bg-zinc-800 px-2.5 py-0.5 text-xs text-zinc-300">
           {props.queueIds.length} 首
         </span>

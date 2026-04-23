@@ -1,5 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  CalendarDays,
+  LogOut,
+  QrCode,
+  Radio,
+  ScanSearch,
+  Settings2,
+  Sparkles
+} from 'lucide-react';
+import {
   checkNcmQr,
   createNcmQr,
   getNcmSession,
@@ -12,6 +21,8 @@ import { NowPlayingHero } from '@renderer/components/player/NowPlayingHero';
 import { QueuePanel } from '@renderer/components/player/QueuePanel';
 import { TransportControls } from '@renderer/components/player/TransportControls';
 import type { NextTrackResponse, NowPlayingResponse } from '@shared/schema';
+import appMark from '@renderer/assets/image2/crossfadio-mark.svg';
+import playerDesignRef from '@renderer/assets/image2/2026-04-23-player-v1.png';
 
 const DEFAULT_QUEUE = '347230, 447925558, 186016';
 
@@ -201,12 +212,24 @@ export function PlayerView(): JSX.Element {
     <main className="min-h-screen bg-[radial-gradient(circle_at_top_left,#1f2b5e_0%,#080b14_35%,#070a12_100%)] p-6 text-zinc-100">
       <div className="mx-auto grid max-w-[1480px] grid-cols-12 gap-4">
         <aside className="col-span-2 rounded-2xl border border-zinc-800/80 bg-zinc-950/60 p-4">
-          <h1 className="text-3xl font-semibold tracking-tight text-violet-200">Crossfadio</h1>
+          <h1 className="inline-flex items-center gap-2 text-3xl font-semibold tracking-tight text-violet-200">
+            <img alt="Crossfadio 应用图标" className="h-8 w-8 rounded-lg" src={appMark} />
+            Crossfadio
+          </h1>
           <p className="mt-1 text-xs text-zinc-400">M1-07 Player MVP</p>
           <nav className="mt-6 space-y-2 text-sm">
-            <div className="rounded-xl border border-violet-500/30 bg-violet-500/15 px-3 py-2 text-violet-100">正在播放</div>
-            <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 px-3 py-2 text-zinc-300">今日计划</div>
-            <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 px-3 py-2 text-zinc-300">设置</div>
+            <div className="inline-flex w-full items-center gap-2 rounded-xl border border-violet-500/30 bg-violet-500/15 px-3 py-2 text-violet-100">
+              <Radio className="h-4 w-4" />
+              正在播放
+            </div>
+            <div className="inline-flex w-full items-center gap-2 rounded-xl border border-zinc-800 bg-zinc-900/60 px-3 py-2 text-zinc-300">
+              <CalendarDays className="h-4 w-4" />
+              今日计划
+            </div>
+            <div className="inline-flex w-full items-center gap-2 rounded-xl border border-zinc-800 bg-zinc-900/60 px-3 py-2 text-zinc-300">
+              <Settings2 className="h-4 w-4" />
+              设置
+            </div>
           </nav>
 
           <section className="mt-6 rounded-xl border border-zinc-800 bg-zinc-900/60 p-3 text-xs text-zinc-300">
@@ -214,7 +237,7 @@ export function PlayerView(): JSX.Element {
             <p className="mt-1">{session.hasCookie ? '已登录' : '未登录'}</p>
             <div className="mt-3 flex gap-2">
               <button
-                className="rounded border border-zinc-700 bg-zinc-950 px-2 py-1 hover:border-zinc-500"
+                className="inline-flex items-center gap-1 rounded border border-zinc-700 bg-zinc-950 px-2 py-1 hover:border-zinc-500"
                 onClick={async () => {
                   try {
                     const qr = await createNcmQr();
@@ -226,10 +249,11 @@ export function PlayerView(): JSX.Element {
                 }}
                 type="button"
               >
+                <QrCode className="h-3.5 w-3.5" />
                 二维码
               </button>
               <button
-                className="rounded border border-zinc-700 bg-zinc-950 px-2 py-1 hover:border-zinc-500"
+                className="inline-flex items-center gap-1 rounded border border-zinc-700 bg-zinc-950 px-2 py-1 hover:border-zinc-500"
                 onClick={async () => {
                   if (!qrPayload?.key) {
                     return;
@@ -244,10 +268,11 @@ export function PlayerView(): JSX.Element {
                 }}
                 type="button"
               >
+                <ScanSearch className="h-3.5 w-3.5" />
                 状态
               </button>
               <button
-                className="rounded border border-zinc-700 bg-zinc-950 px-2 py-1 hover:border-zinc-500"
+                className="inline-flex items-center gap-1 rounded border border-zinc-700 bg-zinc-950 px-2 py-1 hover:border-zinc-500"
                 onClick={async () => {
                   try {
                     await logoutNcm();
@@ -259,6 +284,7 @@ export function PlayerView(): JSX.Element {
                 }}
                 type="button"
               >
+                <LogOut className="h-3.5 w-3.5" />
                 登出
               </button>
             </div>
@@ -345,6 +371,14 @@ export function PlayerView(): JSX.Element {
             onSelectIndex={setCurrentIndex}
             queueIds={queueIds}
           />
+          <section className="rounded-2xl border border-zinc-800/80 bg-zinc-950/60 p-4 text-sm text-zinc-300">
+            <h3 className="inline-flex items-center gap-2 text-lg font-semibold text-zinc-100">
+              <Sparkles className="h-5 w-5 text-violet-300" />
+              Image2 视觉稿
+            </h3>
+            <p className="mt-2 text-xs text-zinc-400">当前实现对齐 2026-04-23-player-v1 设计方向。</p>
+            <img alt="Image2 Player 视觉稿" className="mt-3 rounded-xl border border-zinc-800" src={playerDesignRef} />
+          </section>
           <section className="rounded-2xl border border-zinc-800/80 bg-zinc-950/60 p-4 text-sm text-zinc-300">
             <h3 className="text-lg font-semibold text-zinc-100">预取状态</h3>
             <p className="mt-2">下一首: {nextTrack?.track.id ?? '未就绪'}</p>

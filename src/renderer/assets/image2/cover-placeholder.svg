@@ -1,0 +1,19 @@
+<svg width="720" height="720" viewBox="0 0 720 720" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <radialGradient id="g1" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(162 132) rotate(48.8) scale(634 548)">
+      <stop stop-color="#7C3AED"/>
+      <stop offset="0.35" stop-color="#4338CA"/>
+      <stop offset="1" stop-color="#0B1120"/>
+    </radialGradient>
+    <linearGradient id="g2" x1="208" y1="216" x2="522" y2="536" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FDE68A"/>
+      <stop offset="1" stop-color="#F97316"/>
+    </linearGradient>
+  </defs>
+  <rect width="720" height="720" rx="96" fill="url(#g1)"/>
+  <rect x="58" y="58" width="604" height="604" rx="72" stroke="#6366F1" stroke-opacity="0.45" stroke-width="2"/>
+  <circle cx="360" cy="360" r="170" fill="#0F172A" fill-opacity="0.88"/>
+  <circle cx="360" cy="360" r="132" stroke="url(#g2)" stroke-width="24"/>
+  <circle cx="360" cy="360" r="28" fill="#E2E8F0"/>
+  <path d="M505.5 195.5V388.5C505.5 424.675 476.175 454 440 454C403.825 454 374.5 424.675 374.5 388.5C374.5 352.325 403.825 323 440 323C453.973 323 466.925 327.377 477.557 334.839V232.5L279.5 274V451.5C279.5 487.675 250.175 517 214 517C177.825 517 148.5 487.675 148.5 451.5C148.5 415.325 177.825 386 214 386C227.973 386 240.925 390.377 251.557 397.839V226.5C251.557 215.443 259.277 205.886 270.085 203.563L487.085 156.563C497.357 154.336 507.117 162.165 507.117 172.675V195.5H505.5Z" fill="#E0E7FF" fill-opacity="0.88"/>
+</svg>
