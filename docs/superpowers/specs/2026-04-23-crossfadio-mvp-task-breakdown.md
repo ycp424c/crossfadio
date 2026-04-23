@@ -198,3 +198,4 @@
 | 2026-04-23 | justynchen / codex | 完成 M0 工程骨架（M0-01~M0-07），并通过 `pnpm check` / `pnpm build` |
 | 2026-04-23 | justynchen / codex | 启动 M1：新增 NCM 子进程管理、NCM 客户端与 `/api/ncm/status`（M1-01/M1-03 进入 DOING） |
 | 2026-04-23 | justynchen / codex | 确认 M1-07 前置 UI 任务与依赖（新增 §4.8）；推进 M1-02 至 DOING（扫码登录接口与 cookie 持久化骨架） |
+| 2026-04-23 | justynchen / codex | 新增 NCM 认证单测（cookie 写入/清理），`pnpm test` 通过 |

@@ -1,5 +1,5 @@
-import { NcmClient } from './client';
-import { SecretStore } from '@main/security';
+import type { NcmClient } from './client';
+import type { SecretStore } from '@main/security';
 
 const NCM_COOKIE_KEY = 'ncm.cookie';
 
