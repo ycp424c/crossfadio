@@ -6,6 +6,8 @@
 - **状态**:设计稿(MVP 前)
 - **决策人**:justynchen
 - **适用范围**:MVP(含 V1.1 标注)
+- **实施任务拆分**:`docs/superpowers/specs/2026-04-23-crossfadio-mvp-task-breakdown.md`
+- **UI 设计资产(Image 2)**:`docs/superpowers/design/ui-image2/README.md`
 
 ---
 
