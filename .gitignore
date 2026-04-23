@@ -8,3 +8,6 @@ playwright-report
 
 # Electron user data local debug artifacts
 .user-data
+
+# Local agent settings
+.claude/
