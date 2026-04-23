@@ -16,3 +16,183 @@ export const wsAuthSchema = z.object({
 });
 
 export type WsAuthMessage = z.infer<typeof wsAuthSchema>;
+
+export const NCM_QR_CODE = {
+  EXPIRED: 800,
+  WAITING: 801,
+  SCANNED: 802,
+  AUTHORIZED: 803
+} as const;
+
+export type NcmQrCode = (typeof NCM_QR_CODE)[keyof typeof NCM_QR_CODE];
+
+export const NCM_QR_HINT = {
+  [NCM_QR_CODE.EXPIRED]: 'expired',
+  [NCM_QR_CODE.WAITING]: 'waiting',
+  [NCM_QR_CODE.SCANNED]: 'scanned',
+  [NCM_QR_CODE.AUTHORIZED]: 'authorized'
+} as const satisfies Record<NcmQrCode, string>;
+
+export type NcmQrHint = (typeof NCM_QR_HINT)[NcmQrCode];
+
+export const ncmQrStatusSchema = z.object({
+  code: z.union([
+    z.literal(NCM_QR_CODE.EXPIRED),
+    z.literal(NCM_QR_CODE.WAITING),
+    z.literal(NCM_QR_CODE.SCANNED),
+    z.literal(NCM_QR_CODE.AUTHORIZED)
+  ]),
+  hint: z.enum(['expired', 'waiting', 'scanned', 'authorized']),
+  message: z.string(),
+  hasCookie: z.boolean()
+});
+
+export type NcmQrStatus = z.infer<typeof ncmQrStatusSchema>;
+
+export const NCM_ERROR_CODE = {
+  UNAVAILABLE: 'NCM_E_UNAVAILABLE',
+  TIMEOUT: 'NCM_E_TIMEOUT',
+  BAD_RESPONSE: 'NCM_E_BAD_RESPONSE',
+  UNAUTHORIZED: 'NCM_E_UNAUTHORIZED',
+  COOKIE_EXPIRED: 'NCM_E_COOKIE_EXPIRED',
+  RATE_LIMITED: 'NCM_E_RATE_LIMITED',
+  UNKNOWN: 'NCM_E_UNKNOWN'
+} as const;
+
+export type NcmErrorCode = (typeof NCM_ERROR_CODE)[keyof typeof NCM_ERROR_CODE];
+
+export const ncmErrorResponseSchema = z.object({
+  ok: z.literal(false),
+  error: z.enum([
+    NCM_ERROR_CODE.UNAVAILABLE,
+    NCM_ERROR_CODE.TIMEOUT,
+    NCM_ERROR_CODE.BAD_RESPONSE,
+    NCM_ERROR_CODE.UNAUTHORIZED,
+    NCM_ERROR_CODE.COOKIE_EXPIRED,
+    NCM_ERROR_CODE.RATE_LIMITED,
+    NCM_ERROR_CODE.UNKNOWN
+  ]),
+  message: z.string()
+});
+
+export type NcmErrorResponse = z.infer<typeof ncmErrorResponseSchema>;
+
+export const ncmSongSchema = z.object({
+  id: z.number().int().positive(),
+  name: z.string(),
+  artists: z.array(z.string()).default([])
+});
+
+export type NcmSong = z.infer<typeof ncmSongSchema>;
+
+export const ncmSearchResponseSchema = z
+  .object({
+    result: z
+      .object({
+        songs: z
+          .array(
+            z.object({
+              id: z.number().int().positive(),
+              name: z.string(),
+              ar: z
+                .array(z.object({ name: z.string().optional() }).passthrough())
+                .optional()
+            })
+          )
+          .optional()
+      })
+      .optional()
+  })
+  .passthrough();
+
+export const ncmSongUrlSchema = z.object({
+  id: z.number().int().positive(),
+  url: z.string().url().nullable(),
+  br: z.number().int().nonnegative().nullable().optional(),
+  size: z.number().int().nonnegative().nullable().optional(),
+  type: z.string().nullable().optional(),
+  expireAt: z.number().int().nullable().optional()
+});
+
+export type NcmSongUrl = z.infer<typeof ncmSongUrlSchema>;
+
+export const ncmSongUrlResponseSchema = z
+  .object({
+    data: z
+      .array(
+        z
+          .object({
+            id: z.number().int().positive(),
+            url: z.string().nullable(),
+            br: z.number().nullable().optional(),
+            size: z.number().nullable().optional(),
+            type: z.string().nullable().optional(),
+            expi: z.number().nullable().optional()
+          })
+          .passthrough()
+      )
+      .optional()
+  })
+  .passthrough();
+
+export const ncmLyricSchema = z.object({
+  id: z.string(),
+  lyric: z.string(),
+  translation: z.string().nullable()
+});
+
+export type NcmLyric = z.infer<typeof ncmLyricSchema>;
+
+export const ncmLyricResponseSchema = z
+  .object({
+    lrc: z.object({ lyric: z.string().optional() }).passthrough().optional(),
+    tlyric: z.object({ lyric: z.string().optional() }).passthrough().optional()
+  })
+  .passthrough();
+
+export const ncmPlaylistTrackSchema = z.object({
+  id: z.number().int().positive(),
+  name: z.string(),
+  artists: z.array(z.string()).default([]),
+  durationMs: z.number().int().nonnegative()
+});
+
+export type NcmPlaylistTrack = z.infer<typeof ncmPlaylistTrackSchema>;
+
+export const ncmPlaylistDetailSchema = z.object({
+  id: z.number().int().positive(),
+  name: z.string(),
+  coverImgUrl: z.string().nullable(),
+  trackCount: z.number().int().nonnegative(),
+  tracks: z.array(ncmPlaylistTrackSchema)
+});
+
+export type NcmPlaylistDetail = z.infer<typeof ncmPlaylistDetailSchema>;
+
+export const ncmPlaylistDetailResponseSchema = z
+  .object({
+    playlist: z
+      .object({
+        id: z.number().int().positive(),
+        name: z.string(),
+        coverImgUrl: z.string().nullable().optional(),
+        trackCount: z.number().int().nonnegative().optional(),
+        tracks: z
+          .array(
+            z
+              .object({
+                id: z.number().int().positive(),
+                name: z.string(),
+                dt: z.number().int().nonnegative().optional(),
+                ar: z
+                  .array(z.object({ name: z.string().optional() }).passthrough())
+                  .optional()
+              })
+              .passthrough()
+          )
+          .default([])
+      })
+      .passthrough()
+      .optional()
+  })
+  .passthrough();

@@ -1,11 +1,26 @@
 import type { NcmClient } from './client';
 import type { SecretStore } from '@main/security';
+import { NCM_QR_CODE, NCM_QR_HINT, type NcmQrCode, type NcmQrHint } from '@shared/schema';
 
 const NCM_COOKIE_KEY = 'ncm.cookie';
+
+const QR_MESSAGE: Record<NcmQrCode, string> = {
+  [NCM_QR_CODE.EXPIRED]: '二维码已过期，请刷新重试',
+  [NCM_QR_CODE.WAITING]: '等待扫码',
+  [NCM_QR_CODE.SCANNED]: '已扫码，请在网易云 App 确认登录',
+  [NCM_QR_CODE.AUTHORIZED]: '登录成功'
+};
 
 export type NcmSession = {
   hasCookie: boolean;
   profile: unknown | null;
+};
+
+export type NcmQrStatusResult = {
+  code: NcmQrCode;
+  hint: NcmQrHint;
+  message: string;
+  hasCookie: boolean;
 };
 
 export class NcmAuthService {
@@ -26,17 +41,19 @@ export class NcmAuthService {
     return this.client.createLoginQr();
   }
 
-  async checkQr(key: string): Promise<{ code: number; message: string; hasCookie: boolean }> {
+  async checkQr(key: string): Promise<NcmQrStatusResult> {
     const result = await this.client.checkLoginQr(key);
+    const code = normalizeQrCode(result.code);
 
-    if (result.code === 803 && result.cookie) {
+    if (code === NCM_QR_CODE.AUTHORIZED && result.cookie) {
       this.cookie = result.cookie;
       this.secrets.set(NCM_COOKIE_KEY, result.cookie);
     }
 
     return {
-      code: result.code,
-      message: result.message,
+      code,
+      hint: NCM_QR_HINT[code],
+      message: result.message || QR_MESSAGE[code],
       hasCookie: Boolean(this.cookie)
     };
   }
@@ -68,5 +85,17 @@ export class NcmAuthService {
       this.cookie = null;
       this.secrets.remove(NCM_COOKIE_KEY);
     }
+  }
+}
+
+function normalizeQrCode(raw: number): NcmQrCode {
+  switch (raw) {
+    case NCM_QR_CODE.EXPIRED:
+    case NCM_QR_CODE.WAITING:
+    case NCM_QR_CODE.SCANNED:
+    case NCM_QR_CODE.AUTHORIZED:
+      return raw;
+    default:
+      return NCM_QR_CODE.EXPIRED;
   }
 }
