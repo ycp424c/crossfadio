@@ -59,21 +59,21 @@
 
 | ID | 任务 | 依赖 | 主要产出 | 验收标准 | 估时 | 优先级 | 状态 |
 |---|---|---|---|---|---:|---|---|
-| M0-01 | 初始化 Electron + Vite + TS + React + Tailwind + shadcn | 无 | 可运行工程骨架、基础脚本 | `pnpm dev` 能打开窗口且 HMR 正常 | 0.5 | P0 | TODO |
-| M0-02 | 建立主/预加载/渲染三层目录与 shared schema 目录 | M0-01 | `src/main` `src/preload` `src/renderer` `src/shared` | 目录与入口能被构建识别 | 0.3 | P0 | TODO |
-| M0-03 | 主进程启动流程与窗口管理（含单实例约束） | M0-01 | `main/index.ts` 启动与生命周期管理 | 二次启动不重复开实例 | 0.4 | P0 | TODO |
-| M0-04 | 内嵌 HTTP + WS 服务骨架（含 session token 鉴权） | M0-02 | `server/routes` + `ws.ts` | `GET /api/health` + WS 连接鉴权可用 | 0.6 | P0 | TODO |
-| M0-05 | SQLite 初始化与迁移框架（messages/plays/plan/prefs/tts_cache） | M0-02 | `store/db.ts` + `migrations.ts` | 首次启动自动建表，不重复建表报错 | 0.5 | P0 | TODO |
-| M0-06 | user-template 首次复制到 userData/user | M0-03 | 语料模板拷贝逻辑 | 空目录首次启动能落盘模板文件 | 0.3 | P1 | TODO |
-| M0-07 | pino 日志落盘与日志分级约定 | M0-03 | `logger.ts` + 文件日志 | 日志按天写入 `userData/logs` | 0.4 | P1 | TODO |
+| M0-01 | 初始化 Electron + Vite + TS + React + Tailwind + shadcn | 无 | 可运行工程骨架、基础脚本 | `pnpm dev` 能打开窗口且 HMR 正常 | 0.5 | P0 | DONE |
+| M0-02 | 建立主/预加载/渲染三层目录与 shared schema 目录 | M0-01 | `src/main` `src/preload` `src/renderer` `src/shared` | 目录与入口能被构建识别 | 0.3 | P0 | DONE |
+| M0-03 | 主进程启动流程与窗口管理（含单实例约束） | M0-01 | `main/index.ts` 启动与生命周期管理 | 二次启动不重复开实例 | 0.4 | P0 | DONE |
+| M0-04 | 内嵌 HTTP + WS 服务骨架（含 session token 鉴权） | M0-02 | `server/routes` + `ws.ts` | `GET /api/health` + WS 连接鉴权可用 | 0.6 | P0 | DONE |
+| M0-05 | SQLite 初始化与迁移框架（messages/plays/plan/prefs/tts_cache） | M0-02 | `store/db.ts` + `migrations.ts` | 首次启动自动建表，不重复建表报错 | 0.5 | P0 | DONE |
+| M0-06 | user-template 首次复制到 userData/user | M0-03 | 语料模板拷贝逻辑 | 空目录首次启动能落盘模板文件 | 0.3 | P1 | DONE |
+| M0-07 | pino 日志落盘与日志分级约定 | M0-03 | `logger.ts` + 文件日志 | 日志按天写入 `userData/logs` | 0.4 | P1 | DONE |
 
 ### 4.2 M1 播放 MVP（4d）
 
 | ID | 任务 | 依赖 | 主要产出 | 验收标准 | 估时 | 优先级 | 状态 |
 |---|---|---|---|---|---:|---|---|
-| M1-01 | NCM 子进程管理与健康探测 | M0-03 | `ncm/spawn.ts` | 子进程崩溃可重启，状态可感知 | 0.5 | P0 | TODO |
+| M1-01 | NCM 子进程管理与健康探测 | M0-03 | `ncm/spawn.ts` | 子进程崩溃可重启，状态可感知 | 0.5 | P0 | DOING |
 | M1-02 | NCM 扫码登录接口（qr/status/logout） | M1-01 | `/api/ncm/login/*` | 扫码成功能拿 cookie 并持久化 | 0.7 | P0 | TODO |
-| M1-03 | NCM 客户端封装（歌单/搜索/歌曲 URL/歌词） | M1-01 | `ncm/client.ts` | 单测可 mock 返回标准 DTO | 0.6 | P0 | TODO |
+| M1-03 | NCM 客户端封装（歌单/搜索/歌曲 URL/歌词） | M1-01 | `ncm/client.ts` | 单测可 mock 返回标准 DTO | 0.6 | P0 | DOING |
 | M1-04 | Web Audio 双 deck 播放引擎基础能力 | M0-02 | `renderer/audio/engine.ts` | A/B deck 可切换、可停止/恢复 | 0.7 | P0 | TODO |
 | M1-05 | 等能量 crossfade + filter sweep | M1-04 | `crossfade.ts` | 切歌时无明显音量塌陷 | 0.5 | P0 | TODO |
 | M1-06 | `api/now` `api/next` + prefetch 时序 | M1-03 M1-04 | `routes/now,next.ts` + `prefetch.ts` | d-10s 预取，B deck 可按时就绪 | 0.5 | P0 | TODO |
@@ -130,6 +130,11 @@
 | M5-05 | README 与运维文档（配置、故障、隐私） | 全量 | 文档更新 | 新人可按文档 30 分钟起服务 | 0.4 | P1 | TODO |
 | M5-06 | 发布前检查清单（构建、打包、回滚） | 全量 | release checklist | 可执行一次本地打包与回滚演练 | 0.4 | P1 | TODO |
 
+### 4.7 DOING 阻塞说明
+
+1. `M1-01`：待接入真实 NeteaseCloudMusicApi 启动命令与 cookie 持久化策略，当前仅完成通用子进程管理骨架。
+2. `M1-03`：待补齐 DTO schema、错误码映射与单测 mock（目前完成最小查询/URL/歌词/歌单接口封装）。
+
 ---
 
 ## 5. 关键路径（建议顺序）
@@ -155,10 +160,10 @@
 
 | 批次 | 任务 ID | 目标 |
 |---|---|---|
-| Batch-1 | M0-01 M0-02 M0-03 M0-05 | 先搭出主框架和数据库底座 |
+| Batch-1 | M0-01 M0-02 M0-03 M0-05 | 已完成（主框架和数据库底座已落地） |
 | Batch-UI-A（并行） | UI-04 UI-07 | 与 Batch-1 并行，沉淀组件设计与映射清单 |
-| Batch-2 | M0-04 M0-06 M0-07 | 补齐服务与安全最小骨架 |
-| Batch-3 | M1-01 M1-02 M1-03 | 打通 NCM 登录与取歌基础能力 |
+| Batch-2 | M0-04 M0-06 M0-07 | 已完成（服务最小骨架与 user-template 已落地） |
+| Batch-3 | M1-01 M1-02 M1-03 | 下一批：打通 NCM 登录与取歌基础能力 |
 | Batch-4 | M1-04 M1-05 M1-06 M1-07 | 形成可听的播放主链路 |
 
 ---
@@ -169,3 +174,5 @@
 |---|---|---|
 | 2026-04-23 | justynchen / codex | 首版任务拆分文档创建，覆盖 M0-M5 与持续维护规则 |
 | 2026-04-23 | justynchen / codex | 新增并行 UI 设计轨道（Image 2），并落盘首批设计资产 |
+| 2026-04-23 | justynchen / codex | 完成 M0 工程骨架（M0-01~M0-07），并通过 `pnpm check` / `pnpm build` |
+| 2026-04-23 | justynchen / codex | 启动 M1：新增 NCM 子进程管理、NCM 客户端与 `/api/ncm/status`（M1-01/M1-03 进入 DOING） |

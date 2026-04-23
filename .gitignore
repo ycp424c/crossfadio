@@ -1,0 +1,10 @@
+node_modules
+out
+dist
+.DS_Store
+*.log
+coverage
+playwright-report
+
+# Electron user data local debug artifacts
+.user-data

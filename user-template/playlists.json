@@ -1,0 +1,11 @@
+[
+  {
+    "id": "daily-focus",
+    "name": "Daily Focus",
+    "provider": "netease",
+    "segments": ["morning", "afternoon"],
+    "tags": ["focus", "calm"],
+    "energyRange": [0.35, 0.65],
+    "priority": 80
+  }
+]

@@ -1,0 +1,20 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+html,
+body,
+#root {
+  width: 100%;
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif;
+  background: radial-gradient(circle at 20% 10%, #1f2937 0%, #09090b 45%);
+}
