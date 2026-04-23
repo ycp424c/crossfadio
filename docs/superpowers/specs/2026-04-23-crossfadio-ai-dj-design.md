@@ -135,7 +135,7 @@
 ### 4.1 关键数据流
 
 - **启动 → 起播**:renderer `GET /api/plan/today` → main scheduler(若无今日计划,触发 plan mode)→ 返回计划 → renderer 取首段首曲 → `GET /api/now` 拿直链 → Web Audio 起播
-- **换歌 crossfade**:renderer 预取下一首到 `<audio#deckB>` → 到达 crossfade 起点 → `POST /api/segue/trigger` → main 调 segue mode + tts → WS 推 `tts-ready` → renderer 启动 §7.3 的底铺式插入
+- **换歌 crossfade**:renderer 在 `d-12s` 触发 `POST /api/segue/trigger`(体验优先,尽量保证有口播)→ main 调 segue mode + tts → WS 推 `segue.tts-ready` → 到达 crossfade 起点执行 §9.3 的底铺式插入
 - **聊天**:renderer WS 送 `{type:"chat",text}` → router → agent(chat mode)→ 流式回 `{delta.say, done{say,actions}}` → renderer 展示 + 执行 actions → WS 推 `queue-updated`
 
 ---
@@ -203,7 +203,7 @@ crossfadio/
 ${app.getPath('userData')}/
 ├─ user/                     用户可手编的语料(MVP 也提供 UI 编辑器)
 │  ├─ taste.md  routines.md  mood-rules.md
-│  ├─ playlists.json         [{id, name, provider:"ncm"}]
+│  ├─ playlists.json         [{id,name,provider,segments,tags,energyRange,priority}]
 │  └─ dj-persona.md          DJ 人格 system prompt
 ├─ state.db                  better-sqlite3
 ├─ cache/tts/<sha>.mp3       tts 音频缓存
@@ -443,10 +443,33 @@ Indie Pop / Dream Pop / Post-Rock / Ambient / 冷门 Rap
 
 ```json
 [
-  { "id": "24381616", "name": "深夜低频", "provider": "ncm" },
-  { "id": "2829883790", "name": "工作专注", "provider": "ncm" }
+  {
+    "id": "24381616",
+    "name": "深夜低频",
+    "provider": "ncm",
+    "segments": ["late-night", "evening"],
+    "tags": ["ambient", "sleep", "instrumental"],
+    "energyRange": [20, 45],
+    "priority": 2
+  },
+  {
+    "id": "2829883790",
+    "name": "工作专注",
+    "provider": "ncm",
+    "segments": ["work"],
+    "tags": ["focus", "instrumental", "lofi"],
+    "energyRange": [35, 60],
+    "priority": 1
+  }
 ]
 ```
+
+字段约定:
+
+- `segments`:该歌单适配的时段 id(`morning/work/evening/late-night`),用于 plan fallback 和 `gap-fill`。
+- `tags`:语义标签,用于按 `mood` / 用户 chat 意图做相似匹配。
+- `energyRange`:`[min,max]` 能量区间,用于兜底时与当前段能量目标做打分。
+- `priority`:同分时的稳定排序(数字越小优先级越高)。
 
 ### 7.2 `state.db` 表结构
 
@@ -473,6 +496,7 @@ CREATE TABLE plays (
   duration_ms INTEGER,
   played_ms   INTEGER,
   skipped     INTEGER DEFAULT 0,
+  reason      TEXT,
   liked       INTEGER DEFAULT 0,
   mood        TEXT,
   segment_id  TEXT
@@ -501,10 +525,13 @@ CREATE TABLE prefs (
 
 -- TTS 缓存索引
 CREATE TABLE tts_cache (
-  hash       TEXT PRIMARY KEY,       -- sha256(voice+speed+text)
+  hash       TEXT PRIMARY KEY,       -- sha256(endpoint+model+voice+speed+format+text)
   text       TEXT NOT NULL,
+  endpoint   TEXT NOT NULL,
+  model      TEXT NOT NULL,
   voice      TEXT NOT NULL,
   speed      REAL NOT NULL,
+  format     TEXT NOT NULL DEFAULT 'mp3',
   bytes_len  INTEGER NOT NULL,
   created_at INTEGER NOT NULL
 );
@@ -535,7 +562,8 @@ CREATE TABLE tts_cache (
 
 ### 8.1 总原则
 
-- 本地 HTTP server 监听 `127.0.0.1` 随机端口,仅接受带 `X-Session` header 的请求
+- 本地 HTTP server 监听 `127.0.0.1` 随机端口
+- HTTP 请求必须带 `X-Session` header;WS 连接必须带 `?session=<sessionToken>`
 - **请求-响应**走 HTTP;**流式 / 推送**走单条 WS(`/stream`)
 - 所有 body 用 JSON;错误统一 `{ error: { code, message } }`
 
@@ -563,6 +591,12 @@ CREATE TABLE tts_cache (
 
 ### 8.3 WebSocket `/stream` 事件
 
+连接格式:
+
+`ws://127.0.0.1:{port}/stream?session=<sessionToken>`
+
+鉴权失败时服务端立即关闭连接(`4401 Unauthorized`)。
+
 **Client → Server**
 
 ```ts
@@ -586,8 +620,8 @@ CREATE TABLE tts_cache (
 
 ### 8.4 失败时的降级
 
-- `/api/segue/trigger` 超时 3s → 取消本次串场,renderer 走纯 crossfade
-- `/api/plan/today` LLM 失败 → 返回降级计划(来自 `playlists.json` 的时段匹配),header `X-Plan-Source: fallback`
+- `/api/segue/trigger` 超时 3s → 保留本次换歌,按 §9.4 的"晚到插入/模板口播/纯 crossfade"三级降级处理
+- `/api/plan/today` LLM 失败 → 返回降级计划(来自 `playlists.json` 的 `segments/tags/energyRange` 打分),header `X-Plan-Source: fallback`
 
 ---
 
@@ -654,16 +688,20 @@ async function performSegue(t0, ttsBuf, startOffset = 1.0, D = 8) {
 ### 9.4 Prefetch 与 segue 时序
 
 ```
+progress=d-12s      renderer 触发 `/api/segue/trigger`(体验优先:提前拿口播)
 progress=d-10s      renderer 预取下一首直链 → deck.load()
-progress=d-8s       WS segue.trigger → main 启动 segue agent + tts
-progress=d-6s       tts.ready WS 到,deck#tts.src = url
+progress=d-9s       目标:收到 `segue.tts-ready`,deck#tts.src = url
 progress=d-D(=d-8)  crossfade 开始
-progress=d-7        gainB duck 到 -8dB,TTS 起声
+progress=d-7s       gainB duck 到 -8dB,TTS 起声(标准路径)
 progress=d-(7-T)    TTS 结束,gainB 回 0dB
 progress=d          A 静音,B 全量
 ```
 
-若 `d-7` 前 tts 未就绪 → 本次跳过 tts,走纯 crossfade。
+晚到口播策略(体验优先):
+
+- 若 `d-7s` 未就绪但 `d-5s` 前就绪:立即进入"晚到插入",缩短 ducking(最多 3s),仍保留一句口播。
+- 若 `d-5s` 仍未就绪:优先使用本地模板口播缓存(`cache/tts/fallback/<voice>/<templateHash>.mp3`)。
+- 模板口播也不可用时,才降级为纯 crossfade。
 
 ### 9.5 控制指令
 
@@ -724,7 +762,7 @@ for each track in plan.segments[*].tracks:
 
 ### 10.5 降级
 
-- LLM 超时/失败:从 `playlists.json` 按时段 label 匹配歌单取前 N 首,UI 角标"本地兜底计划"
+- LLM 超时/失败:从 `playlists.json` 按 `segments + tags + energyRange + priority` 打分选歌单取前 N 首,UI 角标"本地兜底计划"
 - NCM 离线:用上一次成功的 plan(`plan` 表 date 倒序找第一条能全部兑现的)
 
 ### 10.6 `scheduler.autoPlanning` 开关
@@ -749,7 +787,8 @@ for each track in plan.segments[*].tracks:
 ### 11.3 本地 HTTP 防护
 
 - 监听 `127.0.0.1` 随机端口
-- 每次启动生成 `sessionToken` 写 renderer `sessionStorage`,所有请求带 `X-Session`
+- 每次启动生成 `sessionToken` 写 renderer `sessionStorage`;HTTP 走 `X-Session`,WS 走 `?session=`
+- `sessionToken` 仅本次 app 生命周期有效,进程退出即失效
 
 ### 11.4 隐私承诺(UI + README 明示)
 
@@ -769,8 +808,8 @@ for each track in plan.segments[*].tracks:
 
 | 失败域 | 默认行为 | 用户可见 |
 |---|---|---|
-| LLM 超时 / schema 非法 | segue → 纯 crossfade;plan → 本地兜底;chat → "(DJ 走神了)" | toast.warn |
-| TTS 失败 | segue 静默 crossfade;preview 报错 | toast.warn |
+| LLM 超时 / schema 非法 | segue → 模板口播优先,失败再纯 crossfade;plan → 本地兜底;chat → "(DJ 走神了)" | toast.warn |
+| TTS 失败 | segue → 晚到插入/模板口播优先,失败再纯 crossfade;preview 报错 | toast.warn |
 | NCM 直链 404 | 跳过本曲,`plays.skipped=1,reason="url_404"` | 播放器淡显 |
 | NCM 子进程崩溃 | 主进程 3s 重启,60s 内重试 3 次 | toast.err |
 | 网络断开 | 缓存 tts + 已预取曲继续播完,之后离线模式 | 顶栏离线角标 |
@@ -835,6 +874,8 @@ for each track in plan.segments[*].tracks:
 
 ## §15 开放问题 / 后续决定项
 
+- **已决(2026-04-23)**:串场策略采用"体验优先"。实现顺序 = 标准口播 > 晚到插入 > 模板口播 > 纯 crossfade。
+- **已决(2026-04-23)**:`playlists.json` 采用结构化元数据(`segments/tags/energyRange/priority`),用于 fallback 与 gap-fill 打分。
 - **V1.1**:Timeline 拖拽编辑、日历 hook
 - **V1.2 候选**:多音源(QQ 音乐 / Spotify)、移动 PWA 版(因架构已按 BFF 分层,成本可控)
 - **运营**:是否开放给他人 = 暂不。定位"个人 DJ"。
