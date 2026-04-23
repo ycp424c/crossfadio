@@ -33,7 +33,23 @@ type StartLocalServerOptions = {
 
 export async function startLocalServer(options: StartLocalServerOptions): Promise<LocalServer> {
   const app = express();
-  app.use(cors({ origin: 'http://localhost' }));
+  app.use(
+    cors({
+      origin(origin, callback) {
+        if (!origin || origin === 'null') {
+          callback(null, true);
+          return;
+        }
+
+        if (/^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(origin)) {
+          callback(null, true);
+          return;
+        }
+
+        callback(new Error(`CORS blocked origin: ${origin}`));
+      }
+    })
+  );
   app.use(express.json({ limit: '1mb' }));
 
   app.get('/api/health', getHealthHandler);

@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { app, BrowserWindow } from 'electron';
+import { app, BrowserWindow, ipcMain } from 'electron';
 import { startLocalServer, type LocalServer } from './server';
 import { initDb } from './store/db';
 import { getLogger } from './logger';
@@ -18,6 +18,53 @@ const gotSingleInstanceLock = app.requestSingleInstanceLock();
 if (!gotSingleInstanceLock) {
   app.quit();
 }
+
+ipcMain.on('crossfadio:get-runtime-config', (event) => {
+  event.returnValue = localServer
+    ? {
+        baseUrl: localServer.baseUrl,
+        wsUrl: localServer.wsUrl,
+        sessionToken: localServer.sessionToken
+      }
+    : {
+        baseUrl: '',
+        wsUrl: '',
+        sessionToken: ''
+      };
+});
+
+ipcMain.handle(
+  'crossfadio:local-api',
+  async (
+    _event,
+    payload: {
+      path: string;
+      method?: string;
+    }
+  ) => {
+    if (!localServer) {
+      throw new Error('Local server is not ready.');
+    }
+
+    if (typeof payload?.path !== 'string' || !payload.path.startsWith('/api/')) {
+      throw new Error('Invalid local api path.');
+    }
+
+    const response = await fetch(new URL(payload.path, localServer.baseUrl), {
+      method: payload.method ?? 'GET',
+      headers: {
+        Accept: 'application/json'
+      }
+    });
+
+    return {
+      ok: response.ok,
+      status: response.status,
+      contentType: response.headers.get('content-type') ?? '',
+      text: await response.text()
+    };
+  }
+);
 
 app.on('second-instance', () => {
   if (!mainWindow) {
@@ -94,6 +141,16 @@ app.on('before-quit', async () => {
 });
 
 function createMainWindow(server: LocalServer): void {
+  process.env.CROSSFADIO_BASE_URL = server.baseUrl;
+  process.env.CROSSFADIO_WS_URL = server.wsUrl;
+  process.env.CROSSFADIO_SESSION_TOKEN = server.sessionToken;
+
+  const runtimeQuery = {
+    CROSSFADIO_BASE_URL: server.baseUrl,
+    CROSSFADIO_WS_URL: server.wsUrl,
+    CROSSFADIO_SESSION_TOKEN: server.sessionToken
+  };
+
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 840,
@@ -113,8 +170,14 @@ function createMainWindow(server: LocalServer): void {
   });
 
   if (process.env.ELECTRON_RENDERER_URL) {
-    mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL);
+    const rendererUrl = new URL(process.env.ELECTRON_RENDERER_URL);
+    rendererUrl.searchParams.set('CROSSFADIO_BASE_URL', server.baseUrl);
+    rendererUrl.searchParams.set('CROSSFADIO_WS_URL', server.wsUrl);
+    rendererUrl.searchParams.set('CROSSFADIO_SESSION_TOKEN', server.sessionToken);
+    mainWindow.loadURL(rendererUrl.toString());
   } else {
-    mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'));
+    mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'), {
+      query: runtimeQuery
+    });
   }
 }
