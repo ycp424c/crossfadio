@@ -18,6 +18,12 @@
 4. `2026-04-23-settings-profile-v1.png`
 - 用途: 设置与画像编辑界面（LLM/TTS/NCM/语料）
 
+5. `2026-04-23-ui04-component-breakdown.md`
+- 用途: UI-04 组件级细化稿（按钮/卡片/输入框/队列项）
+
+6. `2026-04-23-ui07-design-to-component-mapping.md`
+- 用途: UI-07 设计到代码映射清单（Design -> Component）
+
 ## 维护规则
 
 1. 新增版本只追加，不覆盖历史图片。

@@ -50,10 +50,10 @@
 | UI-01 | 建立 Image 2 设计规范（主题/栅格/关键组件） | 无 | UI 生成提示词基线与页面清单 | 能稳定生成 Player/Plan/Settings 三类页面 | 0.3 | P0 | DONE |
 | UI-02 | 生成首批桌面高保真设计稿（Image 2） | UI-01 | 设计图 4 张（board/player/plan/settings） | 设计图已落盘到仓库设计目录 | 0.5 | P0 | DONE |
 | UI-03 | 建立设计资产索引与版本规则 | UI-02 | `docs/superpowers/design/ui-image2/README.md` | 每张图可追溯用途、日期、版本 | 0.2 | P1 | DONE |
-| UI-04 | 组件级细化稿（按钮/卡片/输入框/队列项） | UI-01 | 组件拆解设计图 | 覆盖 shadcn 二次样式改造所需最小组件集 | 0.6 | P1 | TODO |
+| UI-04 | 组件级细化稿（按钮/卡片/输入框/队列项） | UI-01 | 组件拆解设计图 | 覆盖 shadcn 二次样式改造所需最小组件集 | 0.6 | P1 | DONE |
 | UI-05 | 响应式适配稿（桌面窄窗/常规宽窗） | UI-02 | 两档断点设计图 | Player/Plan/Settings 在窄窗不破版 | 0.5 | P1 | TODO |
 | UI-06 | 动效稿（crossfade 时间轴/口播状态） | UI-02 | 关键状态帧（至少 6 帧） | 能指导 M4 Timeline 可视化实现 | 0.5 | P2 | TODO |
-| UI-07 | 设计到代码映射清单（Design -> Component） | UI-04 | 组件映射表（设计图区域 -> 代码组件） | 每个核心模块有明确实现归属 | 0.3 | P0 | TODO |
+| UI-07 | 设计到代码映射清单（Design -> Component） | UI-04 | 组件映射表（设计图区域 -> 代码组件） | 每个核心模块有明确实现归属 | 0.3 | P0 | DONE |
 
 ### 4.1 M0 工程骨架（3d）
 
@@ -77,7 +77,7 @@
 | M1-04 | Web Audio 双 deck 播放引擎基础能力 | M0-02 | `renderer/audio/engine.ts` | A/B deck 可切换、可停止/恢复 | 0.7 | P0 | DONE |
 | M1-05 | 等能量 crossfade + filter sweep | M1-04 | `crossfade.ts` | 切歌时无明显音量塌陷 | 0.5 | P0 | DONE |
 | M1-06 | `api/now` `api/next` + prefetch 时序 | M1-03 M1-04 | `routes/now,next.ts` + `prefetch.ts` | d-10s 预取，B deck 可按时就绪 | 0.5 | P0 | DONE |
-| M1-07 | Player 视图（播放信息/队列/控制） | M1-04 | `views/Player` + 组件 | 可播放、暂停、skip、prev、like | 0.6 | P1 | TODO |
+| M1-07 | Player 视图（播放信息/队列/控制） | M1-04 | `views/Player` + 组件 | 可播放、暂停、skip、prev、like | 0.6 | P1 | DONE |
 | M1-08 | 播放历史落库（plays）与基础错误码处理 | M0-05 M1-06 | `plays.ts` | 播放开始/结束、skip 原因可记录 | 0.4 | P1 | TODO |
 
 ### 4.3 M2 AI 底座（3d）
@@ -138,12 +138,13 @@
 4. `M1-04`：已完成（DONE）。新增 `src/renderer/audio/engine.ts` 双 deck 引擎（A/B 切换、stop、suspend/resume、snapshot），并补充 `tests/unit/audio-engine.spec.ts` 覆盖核心状态流转（累计 26 用例通过）。
 5. `M1-05`：已完成（DONE）。新增 `src/renderer/audio/crossfade.ts`，实现等能量曲线调度（`cos/sin`）与 `from` deck lowpass sweep（20kHz → 2kHz）；补充 `tests/unit/crossfade.spec.ts` 校验曲线边界、恒功率特性、参数调度与 dB/gain 转换（累计 32 用例通过）。
 6. `M1-06`：已完成（DONE）。新增 `src/main/server/routes/now-next.ts`（`/api/now` + `/api/next`）与 `src/renderer/audio/prefetch.ts`（d-12/d-10/d-8 触发时序计算）；补充 `now-next/prefetch` 单测覆盖队列选取、时长估算和触发窗口（累计 43 用例通过）。
+7. `M1-07`：已完成（DONE）。落地 `src/renderer/views/Player/PlayerView.tsx` 与 Player 组件拆分（NowPlayingHero/QueuePanel/TransportControls），接入 `/api/now` `/api/next` + 本地音频控制，支持 `play/pause/skip/prev/like` 最小闭环。
 
 ### 4.8 M1-07 前置 UI 任务与依赖（已确认）
 
 目标：在开始 `M1-07 Player 视图` 前，先把视觉基线、组件映射和窄窗约束固化，避免返工。
 
-1. 设计前置任务（必须完成）：
+1. 设计前置任务（必须完成，已完成）：
 `UI-04` 组件级细化稿（按钮/卡片/输入框/队列项）
 `UI-07` Design -> Component 映射清单
 2. 设计前置任务（建议完成）：
@@ -208,3 +209,5 @@
 | 2026-04-23 | justynchen / codex | M1-05 → DONE：新增 `renderer/audio/crossfade.ts`（等能量 crossfade + filter sweep）与 `crossfade` 单测，覆盖恒功率曲线与参数调度（累计 32 用例通过） |
 | 2026-04-23 | justynchen / codex | M1-06 → DONE：新增 `/api/now` 与 `/api/next` 路由、prefetch 时序工具 `audio/prefetch.ts`，并补充 `now-next/prefetch` 单测（累计 43 用例通过） |
 | 2026-04-23 | justynchen / codex | M1-01/M1-02 → DONE：NCM 子进程接入真实 `NeteaseCloudMusicApi` 默认启动策略、健康探测与崩溃重启限流；新增真实 smoke `ncm-real-smoke.spec.ts` 并实测 `qr key/create/check` 返回 801 等待扫码 |
+| 2026-04-23 | justynchen / codex | UI-04/UI-07 → DONE：补充 `ui04-component-breakdown.md` 与 `ui07-design-to-component-mapping.md`，完成 `M1-07` 的设计前置依赖固化（`UI-05` 仍为建议项） |
+| 2026-04-23 | justynchen / codex | M1-07 → DONE：新增 `PlayerView` 与核心 Player 组件，接入 `/api/now` `/api/next` 数据流与 HTMLAudio 控制，完成 `play/pause/skip/prev/like` 闭环 |
