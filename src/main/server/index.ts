@@ -39,9 +39,11 @@ export async function startLocalServer(options: StartLocalServerOptions): Promis
   app.get('/api/health', getHealthHandler);
   app.get('/api/ncm/status', createNcmStatusHandler(options.ncm));
   app.get('/api/ncm/login/qr', createNcmQrHandler(options.ncmAuth));
+  app.post('/api/ncm/login/qr', createNcmQrHandler(options.ncmAuth));
   app.get('/api/ncm/login/status', createNcmQrStatusHandler(options.ncmAuth));
   app.get('/api/ncm/login/session', createNcmSessionHandler(options.ncmAuth));
   app.post('/api/ncm/login/logout', createNcmLogoutHandler(options.ncmAuth));
+  app.post('/api/ncm/logout', createNcmLogoutHandler(options.ncmAuth));
   app.get('/api/now', createNowHandler(options.ncmClient));
   app.get('/api/next', createNextHandler(options.ncmClient));
 

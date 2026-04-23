@@ -71,8 +71,8 @@
 
 | ID | 任务 | 依赖 | 主要产出 | 验收标准 | 估时 | 优先级 | 状态 |
 |---|---|---|---|---|---:|---|---|
-| M1-01 | NCM 子进程管理与健康探测 | M0-03 | `ncm/spawn.ts` | 子进程崩溃可重启，状态可感知 | 0.5 | P0 | DOING |
-| M1-02 | NCM 扫码登录接口（qr/status/logout） | M1-01 | `/api/ncm/login/*` | 扫码成功能拿 cookie 并持久化 | 0.7 | P0 | DOING |
+| M1-01 | NCM 子进程管理与健康探测 | M0-03 | `ncm/spawn.ts` | 子进程崩溃可重启，状态可感知 | 0.5 | P0 | DONE |
+| M1-02 | NCM 扫码登录接口（qr/status/logout） | M1-01 | `/api/ncm/login/*` | 扫码成功能拿 cookie 并持久化 | 0.7 | P0 | DONE |
 | M1-03 | NCM 客户端封装（歌单/搜索/歌曲 URL/歌词） | M1-01 | `ncm/client.ts` | 单测可 mock 返回标准 DTO | 0.6 | P0 | DONE |
 | M1-04 | Web Audio 双 deck 播放引擎基础能力 | M0-02 | `renderer/audio/engine.ts` | A/B deck 可切换、可停止/恢复 | 0.7 | P0 | DONE |
 | M1-05 | 等能量 crossfade + filter sweep | M1-04 | `crossfade.ts` | 切歌时无明显音量塌陷 | 0.5 | P0 | DONE |
@@ -132,8 +132,8 @@
 
 ### 4.7 DOING 阻塞说明
 
-1. `M1-01`：待接入真实 NeteaseCloudMusicApi 启动命令与 cookie 持久化策略，当前仅完成通用子进程管理骨架。
-2. `M1-02`：800/801/802/803 状态码已在 `auth.ts` 映射到 `hint/message/hasCookie`，路由已输出标准 `{code,hint,message,hasCookie}`；仍需真实扫码闭环（跑通 NCM 子进程并完成一次登录）验收。
+1. `M1-01`：已完成（DONE）。`ncm/spawn.ts` 支持默认自动拉起 `pnpm exec NeteaseCloudMusicApi`（也支持 `CROSSFADIO_NCM_COMMAND` 覆盖），健康探测修正为 `/`（回退 `/login/status`），并实现崩溃重启限流（3 秒重启，60 秒内最多 3 次）；单测覆盖参数解析、健康超时、重启上限。
+2. `M1-02`：已完成（DONE）。`/api/ncm/login/qr|status|session|logout` 已稳定输出标准错误码与扫码状态映射，cookie 由 `NcmAuthService` 持久化到 `SecretStore`；新增真实 smoke（`tests/unit/ncm-real-smoke.spec.ts`）在 2026-04-23 验证 `qr key/create/check` 链路通过（返回 `801 等待扫码`）。
 3. `M1-03`：已完成（DONE）。错误码统一为 `NCM_E_*`，`NcmApiError` 分类输出（timeout/unavailable/cookie_expired/rate_limited/bad_response/unknown）；`src/shared/schema.ts` 落盘 `NcmSong/NcmSongUrl/NcmLyric/NcmPlaylistDetail` DTO 并在 `client.ts` 用 zod 校验落地；单测覆盖 QR 四分支 + 错误分类 + DTO 正向映射（共 23 用例）。
 4. `M1-04`：已完成（DONE）。新增 `src/renderer/audio/engine.ts` 双 deck 引擎（A/B 切换、stop、suspend/resume、snapshot），并补充 `tests/unit/audio-engine.spec.ts` 覆盖核心状态流转（累计 26 用例通过）。
 5. `M1-05`：已完成（DONE）。新增 `src/renderer/audio/crossfade.ts`，实现等能量曲线调度（`cos/sin`）与 `from` deck lowpass sweep（20kHz → 2kHz）；补充 `tests/unit/crossfade.spec.ts` 校验曲线边界、恒功率特性、参数调度与 dB/gain 转换（累计 32 用例通过）。
@@ -207,3 +207,4 @@
 | 2026-04-23 | justynchen / codex | M1-04 → DONE：新增 `renderer/audio/engine.ts` 双 deck 播放引擎基础能力（A/B 切换、停止、暂停/恢复、状态快照），并新增 `audio-engine` 单测（累计 26 用例通过） |
 | 2026-04-23 | justynchen / codex | M1-05 → DONE：新增 `renderer/audio/crossfade.ts`（等能量 crossfade + filter sweep）与 `crossfade` 单测，覆盖恒功率曲线与参数调度（累计 32 用例通过） |
 | 2026-04-23 | justynchen / codex | M1-06 → DONE：新增 `/api/now` 与 `/api/next` 路由、prefetch 时序工具 `audio/prefetch.ts`，并补充 `now-next/prefetch` 单测（累计 43 用例通过） |
+| 2026-04-23 | justynchen / codex | M1-01/M1-02 → DONE：NCM 子进程接入真实 `NeteaseCloudMusicApi` 默认启动策略、健康探测与崩溃重启限流；新增真实 smoke `ncm-real-smoke.spec.ts` 并实测 `qr key/create/check` 返回 801 等待扫码 |

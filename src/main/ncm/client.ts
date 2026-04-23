@@ -51,7 +51,7 @@ export class NcmClient {
 
   async health(): Promise<boolean> {
     try {
-      const response = await this.rawFetch('/health', {});
+      const response = await this.rawFetch('/', {});
       return response.ok;
     } catch {
       return false;

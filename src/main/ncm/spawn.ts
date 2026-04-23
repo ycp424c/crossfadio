@@ -1,4 +1,5 @@
-import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { spawn, type ChildProcessWithoutNullStreams, type SpawnOptionsWithoutStdio } from 'node:child_process';
+import { createRequire } from 'node:module';
 import { app } from 'electron';
 
 export type NcmStatus = {
@@ -8,30 +9,91 @@ export type NcmStatus = {
   pid: number | null;
   lastError: string | null;
   startedAt: string | null;
+  restartCount: number;
+  command: string;
+  args: string[];
+};
+
+type NcmLaunchConfig = {
+  command: string;
+  args: string[];
+  enabled: boolean;
+  reason: string | null;
+};
+
+type NcmProcessManagerOptions = {
+  env?: NodeJS.ProcessEnv;
+  spawnImpl?: (
+    command: string,
+    args?: ReadonlyArray<string>,
+    options?: SpawnOptionsWithoutStdio
+  ) => ChildProcessWithoutNullStreams;
+  fetchImpl?: typeof fetch;
+  getAppPath?: () => string;
+  getUserDataPath?: () => string;
+  restartDelayMs?: number;
+  restartWindowMs?: number;
+  restartMaxAttempts?: number;
+  healthTimeoutMs?: number;
+  healthIntervalMs?: number;
 };
 
 export class NcmProcessManager {
+  private readonly env: NodeJS.ProcessEnv;
+  private readonly spawnImpl: (
+    command: string,
+    args?: ReadonlyArray<string>,
+    options?: SpawnOptionsWithoutStdio
+  ) => ChildProcessWithoutNullStreams;
+  private readonly fetchImpl: typeof fetch;
+  private readonly getAppPath: () => string;
+  private readonly getUserDataPath: () => string;
   private readonly command: string;
   private readonly args: string[];
+  private readonly cwd: string;
   private readonly baseUrl: string;
+  private readonly healthPath: string;
+  private readonly restartDelayMs: number;
+  private readonly restartWindowMs: number;
+  private readonly restartMaxAttempts: number;
+  private readonly healthTimeoutMs: number;
+  private readonly healthIntervalMs: number;
   private process: ChildProcessWithoutNullStreams | null = null;
   private status: NcmStatus;
   private shouldStop = false;
   private restartTimer: NodeJS.Timeout | null = null;
+  private restartTimestamps: number[] = [];
 
-  constructor() {
-    this.command = process.env.CROSSFADIO_NCM_COMMAND ?? '';
-    this.args = splitArgs(process.env.CROSSFADIO_NCM_ARGS ?? '');
-    const port = Number(process.env.CROSSFADIO_NCM_PORT ?? '3000');
+  constructor(options: NcmProcessManagerOptions = {}) {
+    this.env = options.env ?? process.env;
+    this.spawnImpl = options.spawnImpl ?? spawn;
+    this.fetchImpl = options.fetchImpl ?? fetch;
+    this.getAppPath = options.getAppPath ?? (() => app.getAppPath());
+    this.getUserDataPath = options.getUserDataPath ?? (() => app.getPath('userData'));
+    this.restartDelayMs = options.restartDelayMs ?? 3_000;
+    this.restartWindowMs = options.restartWindowMs ?? 60_000;
+    this.restartMaxAttempts = options.restartMaxAttempts ?? 3;
+    this.healthTimeoutMs = options.healthTimeoutMs ?? 8_000;
+    this.healthIntervalMs = options.healthIntervalMs ?? 300;
+
+    const launch = resolveNcmLaunchConfig(this.env);
+    this.command = launch.command;
+    this.args = launch.args;
+    this.cwd = this.env.CROSSFADIO_NCM_CWD || this.getAppPath() || this.getUserDataPath();
+    const port = normalizePort(this.env.CROSSFADIO_NCM_PORT);
     this.baseUrl = `http://127.0.0.1:${port}`;
+    this.healthPath = normalizeHealthPath(this.env.CROSSFADIO_NCM_HEALTH_PATH ?? '/');
 
     this.status = {
-      enabled: Boolean(this.command),
+      enabled: launch.enabled,
       running: false,
       baseUrl: this.baseUrl,
       pid: null,
-      lastError: this.command ? null : 'CROSSFADIO_NCM_COMMAND is not configured',
-      startedAt: null
+      lastError: launch.reason,
+      startedAt: null,
+      restartCount: 0,
+      command: this.command,
+      args: [...this.args]
     };
   }
 
@@ -41,13 +103,12 @@ export class NcmProcessManager {
     }
     this.shouldStop = false;
 
-    const userData = app.getPath('userData');
-
-    this.process = spawn(this.command, this.args, {
-      cwd: userData,
+    this.process = this.spawnImpl(this.command, this.args, {
+      cwd: this.cwd,
       env: {
-        ...process.env,
-        PORT: this.baseUrl.split(':').pop() ?? '3000'
+        ...this.env,
+        PORT: this.baseUrl.split(':').pop() ?? '3000',
+        HOST: '127.0.0.1'
       },
       stdio: 'pipe'
     });
@@ -78,7 +139,13 @@ export class NcmProcessManager {
       }
     });
 
-    await this.waitForHealth();
+    try {
+      await this.waitForHealth();
+    } catch (error) {
+      this.status.lastError = error instanceof Error ? error.message : 'NCM health check timeout';
+      await this.stopProcessOnly();
+      throw error;
+    }
   }
 
   async stop(): Promise<void> {
@@ -88,6 +155,67 @@ export class NcmProcessManager {
       this.restartTimer = null;
     }
 
+    if (!this.process) {
+      return;
+    }
+
+    await this.stopProcessOnly();
+
+    this.status.running = false;
+    this.status.pid = null;
+  }
+
+  getStatus(): NcmStatus {
+    return { ...this.status };
+  }
+
+  private async waitForHealth(): Promise<void> {
+    const startAt = Date.now();
+    const probePaths = uniquePaths([this.healthPath, '/login/status', '/']);
+
+    while (Date.now() - startAt < this.healthTimeoutMs) {
+      for (const path of probePaths) {
+        try {
+          const response = await this.fetchImpl(`${this.baseUrl}${path}`, { method: 'GET' });
+          if (response.ok) {
+            return;
+          }
+        } catch {
+          // retry until timeout
+        }
+      }
+
+      await sleep(this.healthIntervalMs);
+    }
+
+    throw new Error('NCM health check timeout');
+  }
+
+  private scheduleRestart(): void {
+    if (this.restartTimer) {
+      return;
+    }
+
+    const now = Date.now();
+    this.restartTimestamps = this.restartTimestamps.filter(
+      (timestamp) => now - timestamp <= this.restartWindowMs
+    );
+
+    if (this.restartTimestamps.length >= this.restartMaxAttempts) {
+      this.status.lastError = `NCM exited too frequently, retries exceeded (${this.restartMaxAttempts}/${this.restartWindowMs}ms)`;
+      return;
+    }
+
+    this.restartTimestamps.push(now);
+    this.status.restartCount = this.restartTimestamps.length;
+
+    this.restartTimer = setTimeout(() => {
+      this.restartTimer = null;
+      void this.start();
+    }, this.restartDelayMs);
+  }
+
+  private async stopProcessOnly(): Promise<void> {
     if (!this.process) {
       return;
     }
@@ -106,56 +234,122 @@ export class NcmProcessManager {
         resolve();
       }, 1500);
     });
-
-    this.status.running = false;
-    this.status.pid = null;
-  }
-
-  getStatus(): NcmStatus {
-    return { ...this.status };
-  }
-
-  private async waitForHealth(): Promise<void> {
-    const startAt = Date.now();
-    const timeoutMs = 8_000;
-
-    while (Date.now() - startAt < timeoutMs) {
-      try {
-        const response = await fetch(`${this.baseUrl}/health`, { method: 'GET' });
-        if (response.ok) {
-          return;
-        }
-      } catch {
-        // retry until timeout
-      }
-
-      await sleep(300);
-    }
-
-    this.status.lastError = 'NCM health check timeout';
-  }
-
-  private scheduleRestart(): void {
-    if (this.restartTimer) {
-      return;
-    }
-
-    this.restartTimer = setTimeout(() => {
-      this.restartTimer = null;
-      void this.start();
-    }, 1_000);
   }
 }
 
-function splitArgs(args: string): string[] {
-  if (!args.trim()) {
+export function resolveNcmLaunchConfig(env: NodeJS.ProcessEnv): NcmLaunchConfig {
+  const command = (env.CROSSFADIO_NCM_COMMAND ?? '').trim();
+  const args = parseCommandArgs(env.CROSSFADIO_NCM_ARGS ?? '');
+
+  if (command) {
+    return {
+      command,
+      args,
+      enabled: true,
+      reason: null
+    };
+  }
+
+  const autoEnabled = env.CROSSFADIO_NCM_DISABLE_AUTO !== '1';
+  if (autoEnabled && hasInstalledNcmApi()) {
+    return {
+      command: 'pnpm',
+      args: ['exec', 'NeteaseCloudMusicApi'],
+      enabled: true,
+      reason: null
+    };
+  }
+
+  return {
+    command: '',
+    args: [],
+    enabled: false,
+    reason: 'NCM launch is not configured (set CROSSFADIO_NCM_COMMAND or install NeteaseCloudMusicApi)'
+  };
+}
+
+export function parseCommandArgs(args: string): string[] {
+  const source = args.trim();
+  if (!source) {
     return [];
   }
 
-  return args
-    .split(' ')
-    .map((item) => item.trim())
-    .filter(Boolean);
+  const result: string[] = [];
+  let current = '';
+  let quote: '"' | "'" | null = null;
+  let escaped = false;
+
+  for (const char of source) {
+    if (escaped) {
+      current += char;
+      escaped = false;
+      continue;
+    }
+
+    if (char === '\\') {
+      escaped = true;
+      continue;
+    }
+
+    if (quote) {
+      if (char === quote) {
+        quote = null;
+      } else {
+        current += char;
+      }
+      continue;
+    }
+
+    if (char === '"' || char === "'") {
+      quote = char;
+      continue;
+    }
+
+    if (/\s/.test(char)) {
+      if (current.length > 0) {
+        result.push(current);
+        current = '';
+      }
+      continue;
+    }
+
+    current += char;
+  }
+
+  if (current.length > 0) {
+    result.push(current);
+  }
+
+  return result;
+}
+
+function hasInstalledNcmApi(): boolean {
+  try {
+    const require = createRequire(import.meta.url);
+    require.resolve('NeteaseCloudMusicApi/package.json');
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function normalizePort(rawPort: string | undefined): number {
+  const parsed = Number(rawPort ?? '3000');
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > 65535) {
+    return 3000;
+  }
+  return parsed;
+}
+
+function normalizeHealthPath(path: string): string {
+  if (!path.trim()) {
+    return '/';
+  }
+  return path.startsWith('/') ? path : `/${path}`;
+}
+
+function uniquePaths(paths: string[]): string[] {
+  return [...new Set(paths)];
 }
 
 function sleep(ms: number): Promise<void> {
