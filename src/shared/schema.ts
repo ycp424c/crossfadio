@@ -196,3 +196,35 @@ export const ncmPlaylistDetailResponseSchema = z
       .optional()
   })
   .passthrough();
+
+export const playbackTimingSchema = z.object({
+  prefetchLeadSec: z.number().positive(),
+  crossfadeSec: z.number().positive(),
+  segueLeadSec: z.number().positive()
+});
+
+export type PlaybackTiming = z.infer<typeof playbackTimingSchema>;
+
+export const nowPlayingResponseSchema = z.object({
+  ok: z.literal(true),
+  ncmId: z.string().min(1),
+  url: z.string().url(),
+  durationMs: z.number().int().positive().nullable(),
+  lyric: z.string().nullable(),
+  translation: z.string().nullable(),
+  timing: playbackTimingSchema
+});
+
+export type NowPlayingResponse = z.infer<typeof nowPlayingResponseSchema>;
+
+export const nextTrackResponseSchema = z.object({
+  ok: z.literal(true),
+  track: z.object({
+    id: z.string().min(1)
+  }),
+  url: z.string().url(),
+  durationMs: z.number().int().positive().nullable(),
+  timing: playbackTimingSchema
+});
+
+export type NextTrackResponse = z.infer<typeof nextTrackResponseSchema>;

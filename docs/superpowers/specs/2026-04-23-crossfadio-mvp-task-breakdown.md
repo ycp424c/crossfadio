@@ -75,8 +75,8 @@
 | M1-02 | NCM 扫码登录接口（qr/status/logout） | M1-01 | `/api/ncm/login/*` | 扫码成功能拿 cookie 并持久化 | 0.7 | P0 | DOING |
 | M1-03 | NCM 客户端封装（歌单/搜索/歌曲 URL/歌词） | M1-01 | `ncm/client.ts` | 单测可 mock 返回标准 DTO | 0.6 | P0 | DONE |
 | M1-04 | Web Audio 双 deck 播放引擎基础能力 | M0-02 | `renderer/audio/engine.ts` | A/B deck 可切换、可停止/恢复 | 0.7 | P0 | DONE |
-| M1-05 | 等能量 crossfade + filter sweep | M1-04 | `crossfade.ts` | 切歌时无明显音量塌陷 | 0.5 | P0 | TODO |
-| M1-06 | `api/now` `api/next` + prefetch 时序 | M1-03 M1-04 | `routes/now,next.ts` + `prefetch.ts` | d-10s 预取，B deck 可按时就绪 | 0.5 | P0 | TODO |
+| M1-05 | 等能量 crossfade + filter sweep | M1-04 | `crossfade.ts` | 切歌时无明显音量塌陷 | 0.5 | P0 | DONE |
+| M1-06 | `api/now` `api/next` + prefetch 时序 | M1-03 M1-04 | `routes/now,next.ts` + `prefetch.ts` | d-10s 预取，B deck 可按时就绪 | 0.5 | P0 | DONE |
 | M1-07 | Player 视图（播放信息/队列/控制） | M1-04 | `views/Player` + 组件 | 可播放、暂停、skip、prev、like | 0.6 | P1 | TODO |
 | M1-08 | 播放历史落库（plays）与基础错误码处理 | M0-05 M1-06 | `plays.ts` | 播放开始/结束、skip 原因可记录 | 0.4 | P1 | TODO |
 
@@ -136,6 +136,8 @@
 2. `M1-02`：800/801/802/803 状态码已在 `auth.ts` 映射到 `hint/message/hasCookie`，路由已输出标准 `{code,hint,message,hasCookie}`；仍需真实扫码闭环（跑通 NCM 子进程并完成一次登录）验收。
 3. `M1-03`：已完成（DONE）。错误码统一为 `NCM_E_*`，`NcmApiError` 分类输出（timeout/unavailable/cookie_expired/rate_limited/bad_response/unknown）；`src/shared/schema.ts` 落盘 `NcmSong/NcmSongUrl/NcmLyric/NcmPlaylistDetail` DTO 并在 `client.ts` 用 zod 校验落地；单测覆盖 QR 四分支 + 错误分类 + DTO 正向映射（共 23 用例）。
 4. `M1-04`：已完成（DONE）。新增 `src/renderer/audio/engine.ts` 双 deck 引擎（A/B 切换、stop、suspend/resume、snapshot），并补充 `tests/unit/audio-engine.spec.ts` 覆盖核心状态流转（累计 26 用例通过）。
+5. `M1-05`：已完成（DONE）。新增 `src/renderer/audio/crossfade.ts`，实现等能量曲线调度（`cos/sin`）与 `from` deck lowpass sweep（20kHz → 2kHz）；补充 `tests/unit/crossfade.spec.ts` 校验曲线边界、恒功率特性、参数调度与 dB/gain 转换（累计 32 用例通过）。
+6. `M1-06`：已完成（DONE）。新增 `src/main/server/routes/now-next.ts`（`/api/now` + `/api/next`）与 `src/renderer/audio/prefetch.ts`（d-12/d-10/d-8 触发时序计算）；补充 `now-next/prefetch` 单测覆盖队列选取、时长估算和触发窗口（累计 43 用例通过）。
 
 ### 4.8 M1-07 前置 UI 任务与依赖（已确认）
 
@@ -203,3 +205,5 @@
 | 2026-04-23 | justynchen / codex | M1-02/M1-03 推进：新增 `NCM_QR_CODE`/`NCM_ERROR_CODE` 共享 schema、`NcmApiError` 错误分类与路由 HTTP 状态映射；单测扩展到 QR 四分支 + 客户端错误分类（16 用例通过） |
 | 2026-04-23 | justynchen / codex | M1-03 → DONE：补齐 `NcmSong/NcmSongUrl/NcmLyric/NcmPlaylistDetail` DTO schema，`client.ts` 改为返回强类型 DTO 并做 zod 校验；单测覆盖 DTO 正向映射与 schema 拒绝畸形 payload（累计 23 用例通过） |
 | 2026-04-23 | justynchen / codex | M1-04 → DONE：新增 `renderer/audio/engine.ts` 双 deck 播放引擎基础能力（A/B 切换、停止、暂停/恢复、状态快照），并新增 `audio-engine` 单测（累计 26 用例通过） |
+| 2026-04-23 | justynchen / codex | M1-05 → DONE：新增 `renderer/audio/crossfade.ts`（等能量 crossfade + filter sweep）与 `crossfade` 单测，覆盖恒功率曲线与参数调度（累计 32 用例通过） |
+| 2026-04-23 | justynchen / codex | M1-06 → DONE：新增 `/api/now` 与 `/api/next` 路由、prefetch 时序工具 `audio/prefetch.ts`，并补充 `now-next/prefetch` 单测（累计 43 用例通过） |

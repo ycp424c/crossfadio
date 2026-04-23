@@ -8,12 +8,14 @@ import type { SessionToken } from '@shared/types';
 import type { NcmProcessManager } from '@main/ncm/spawn';
 import { createNcmStatusHandler } from './routes/ncm';
 import type { NcmAuthService } from '@main/ncm/auth';
+import type { NcmClient } from '@main/ncm/client';
 import {
   createNcmLogoutHandler,
   createNcmQrHandler,
   createNcmQrStatusHandler,
   createNcmSessionHandler
 } from './routes/ncm-login';
+import { createNextHandler, createNowHandler } from './routes/now-next';
 
 export type LocalServer = {
   port: number;
@@ -26,6 +28,7 @@ export type LocalServer = {
 type StartLocalServerOptions = {
   ncm: NcmProcessManager;
   ncmAuth: NcmAuthService;
+  ncmClient: NcmClient;
 };
 
 export async function startLocalServer(options: StartLocalServerOptions): Promise<LocalServer> {
@@ -39,6 +42,8 @@ export async function startLocalServer(options: StartLocalServerOptions): Promis
   app.get('/api/ncm/login/status', createNcmQrStatusHandler(options.ncmAuth));
   app.get('/api/ncm/login/session', createNcmSessionHandler(options.ncmAuth));
   app.post('/api/ncm/login/logout', createNcmLogoutHandler(options.ncmAuth));
+  app.get('/api/now', createNowHandler(options.ncmClient));
+  app.get('/api/next', createNextHandler(options.ncmClient));
 
   app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
     const message = error instanceof Error ? error.message : 'unknown error';

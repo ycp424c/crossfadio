@@ -47,7 +47,7 @@ app.whenReady().then(async () => {
     authRef = new NcmAuthService(ncmClient, secrets);
     ncmAuth = authRef;
 
-    localServer = await startLocalServer({ ncm, ncmAuth: authRef });
+    localServer = await startLocalServer({ ncm, ncmAuth: authRef, ncmClient });
 
     createMainWindow(localServer);
 
