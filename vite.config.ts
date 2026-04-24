@@ -2,6 +2,11 @@ import path from 'node:path';
 import react from '@vitejs/plugin-react';
 import { defineConfig } from 'vite';
 
+export const localBackendProxyPatterns = {
+  api: '^/api(?:/|$)',
+  ws: '^/ws(?:/|$)'
+} as const;
+
 export default defineConfig({
   root: path.resolve(__dirname, 'src/renderer'),
   plugins: [react()],
@@ -14,11 +19,11 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      '/api': {
+      [localBackendProxyPatterns.api]: {
         target: 'http://127.0.0.1:4318',
         changeOrigin: false
       },
-      '/ws': {
+      [localBackendProxyPatterns.ws]: {
         target: 'ws://127.0.0.1:4318',
         ws: true,
         changeOrigin: false
