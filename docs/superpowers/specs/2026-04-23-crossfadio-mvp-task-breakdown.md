@@ -89,8 +89,8 @@
 | M2-02 | OpenAI-compatible TTS client 与缓存索引 | M0-05 | `tts/client.ts` `tts/cache.ts` | hash 维度含 endpoint/model/voice/speed/format/text | 0.5 | P0 | DONE |
 | M2-03 | `secrets.json` 凭证封装与降级策略 | M0-03 | `src/server/security.ts` | key/cookie 统一经服务端封装读写 | 0.5 | P0 | DONE |
 | M2-04 | Settings 视图（LLM/TTS/声音试听） | M2-01 M2-02 M2-03 | `views/Settings` | 可保存配置、可试听、可错误提示 | 0.6 | P1 | TODO |
-| M2-05 | Agent `compute(fragments)` 骨架与 schema 校验 | M0-02 M2-01 | `agent/compute.ts` `schema.ts` | 非法输出可重试/降级 | 0.5 | P0 | TODO |
-| M2-06 | fragments 组装与 mode 模板（plan/segue/chat） | M2-05 | `fragments.ts` `modes.ts` | 输入 6 片完整拼装并可测试 | 0.4 | P0 | TODO |
+| M2-05 | Agent `compute(fragments)` 骨架与 schema 校验 | M0-02 M2-01 | `agent/compute.ts` `schema.ts` | 非法输出可重试/降级 | 0.5 | P0 | DONE |
+| M2-06 | fragments 组装与 mode 模板（plan/segue/chat） | M2-05 | `fragments.ts` `modes.ts` | 输入 6 片完整拼装并可测试 | 0.4 | P0 | DONE |
 | M2-07 | FakeLLM/FakeTTS 测试替身与基础集成测试 | M2-01 M2-02 M2-05 | `tests/unit` `tests/integration` | chat/segue 最小链路通过 | 0.4 | P1 | TODO |
 
 ### 4.4 M3 规划能力（3d）
@@ -144,6 +144,8 @@
 9. `M1-08`：已完成（DONE）。新增 `src/server/store/plays.ts`（`startPlay/endPlay/getRecentPlays`），`POST /api/plays` 与 `PATCH /api/plays/:id` 路由注册；单测覆盖 CRUD 操作、幂等性与排序（80 用例通过）。
 10. `M2-01`：已完成（DONE）。新增 `src/server/llm/client.ts`，实现 `LlmClient.complete()`（非流式）与 `LlmClient.stream()`（SSE 流式），覆盖 Authorization header、AbortSignal、malformed SSE 跳过；单测 10 用例通过。
 11. `M2-02`：已完成（DONE）。新增 `src/server/tts/cache.ts`（SHA-256 hash 含 endpoint/model/voice/speed/format/text）与 `src/server/tts/client.ts`（cache-first 合成、文件持久化到 `cache/tts/<hash>.mp3`）；单测 9 用例通过（含缓存命中/未命中、hash 差异、请求 body 校验）。
+12. `M2-05`：已完成（DONE）。新增 `src/server/agent/schema.ts`（Fragments 6 片 + AgentOutput 联合类型 + Action 8 种 + AgentEvent），`src/server/agent/compute.ts`（`computeSync` 非流式含 1 次重试，`computeStream` 流式含非流式 fallback 重试），`AgentError` 兜底；单测 9 用例。
+13. `M2-06`：已完成（DONE）。新增 `src/server/agent/fragments.ts`（4 条 LlmMessage 拼装，corpus/env/memory/input+trace 分块，XML 包裹）与 `src/server/agent/modes.ts`（plan/segue/chat 三套 JSON 输出契约 prompt 模板）；单测 20 + 10 = 30 用例，累计 119 用例通过。
 
 ### 4.8 M1-07 前置 UI 任务与依赖（已确认）
 
@@ -220,3 +222,4 @@
 | 2026-04-24 | justynchen / codex | M1-08 → DONE：新增 plays 存储（`startPlay/endPlay/getRecentPlays`）与 `POST /api/plays`、`PATCH /api/plays/:id` 路由；单测 6 用例（含幂等性与排序） |
 | 2026-04-24 | justynchen / codex | M2-01 → DONE：新增 `src/server/llm/client.ts`（`LlmClient`），支持非流式 `complete()` 与 SSE 流式 `stream()`，单测 10 用例通过 |
 | 2026-04-24 | justynchen / codex | M2-02 → DONE：新增 `src/server/tts/cache.ts`（SHA-256 cache key）与 `src/server/tts/client.ts`（cache-first TTS 合成），单测 9 用例通过；累计 80 用例通过 |
+| 2026-04-24 | justynchen / codex | M2-05/06 → DONE：新增 agent schema、compute（同步/流式各含重试）、fragments 组装器、modes 三套 prompt 模板；单测 39 用例，累计 119 通过 |
