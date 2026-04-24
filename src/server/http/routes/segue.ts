@@ -17,6 +17,7 @@ import { fetchWeather } from '../../weather.js';
 import { TtsClient } from '../../tts/client.js';
 import { resolveTtsConfig } from '../../tts/config.js';
 import { getTtsCacheDir } from '../../tts/cache.js';
+import { estimateTtsDurationSec } from '../../tts/duration.js';
 import {
   buildFallbackTemplateText,
   ensureFallbackTtsCached,
@@ -114,6 +115,7 @@ async function runSegueJob(
       filterSweep: boolean;
       emotionTag: string;
     };
+    const textDerivedSpeechDurationSec = estimateTtsDurationSec(segueOutput.say);
 
     // Synthesize TTS
     const ttsConfig = resolveTtsConfig(opts.secrets);
@@ -122,11 +124,13 @@ async function runSegueJob(
         type: 'segue.tts-ready',
         requestId,
         audioUrl: null,
+        speechDurationSec: textDerivedSpeechDurationSec,
         segue: segueOutput
       });
       return;
     }
 
+    const speechDurationSec = estimateTtsDurationSec(segueOutput.say, ttsConfig.speed);
     const ttsClient = new TtsClient(ttsConfig);
     const fallbackText = buildFallbackTemplateText(to);
     const ttsResult = await synthesizeTtsWithFallback(
@@ -146,6 +150,7 @@ async function runSegueJob(
       type: 'segue.tts-ready',
       requestId,
       audioUrl: buildSegueAudioUrl(ttsResult.filePath),
+      speechDurationSec,
       fallbackTts: ttsResult.fallback,
       segue: segueOutput
     });

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   CalendarDays,
   LogOut,
@@ -39,6 +39,18 @@ type PlayerViewProps = {
   onNavigate?: (tab: 'plan' | 'settings') => void;
 };
 
+const DEFAULT_DUCKING_HINT_SEC = 8;
+const TRACK_DEFAULT_VOLUME = 1;
+const TRACK_DUCKING_VOLUME = 0.45;
+const SEGUE_START_TOLERANCE_SEC = 0.25;
+
+type PendingSegueAudio = {
+  audio: HTMLAudioElement;
+  estimatedDurationSec: number;
+  actualDurationSec: number | null;
+  started: boolean;
+};
+
 export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
   const [queue, setQueue] = useState<QueueTrackDto[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
@@ -51,13 +63,15 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
   const [statusText, setStatusText] = useState('准备就绪');
   const [error, setError] = useState('');
   const [segueStatus, setSegueStatus] = useState<'idle' | 'generating' | 'ready' | 'degraded'>('idle');
-  const [duckingHintSec, setDuckingHintSec] = useState(8);
+  const [duckingHintSec, setDuckingHintSec] = useState(DEFAULT_DUCKING_HINT_SEC);
 
   const [session, setSession] = useState<NcmSessionState>({ hasCookie: false, profile: null });
   const [qrPayload, setQrPayload] = useState<{ key: string; qrimg: string } | null>(null);
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const segueAudioRef = useRef<HTMLAudioElement | null>(null);
+  const pendingSegueRef = useRef<PendingSegueAudio | null>(null);
+  const shouldAutoplayNextRef = useRef(false);
   const prefetchTriggeredRef = useRef(false);
   const segueTriggeredRef = useRef(false);
   const applyingRemoteQueueRef = useRef(false);
@@ -65,6 +79,69 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
   const queueIds = useMemo(() => queue.map((track) => track.id), [queue]);
   const currentTrack = queue[currentIndex] ?? null;
   const currentTrackId = currentTrack?.id ?? null;
+
+  const restoreTrackVolume = useCallback(() => {
+    if (audioRef.current) {
+      audioRef.current.volume = TRACK_DEFAULT_VOLUME;
+    }
+  }, []);
+
+  const disposeSegueAudio = useCallback(
+    (force = false) => {
+      const pending = pendingSegueRef.current;
+      if (!pending) return;
+      if (pending.started && !force) return;
+
+      pending.audio.pause();
+      pending.audio.removeAttribute('src');
+      pending.audio.load();
+      pendingSegueRef.current = null;
+      segueAudioRef.current = null;
+      restoreTrackVolume();
+    },
+    [restoreTrackVolume]
+  );
+
+  const resolveSegueDurationSec = useCallback((pending: PendingSegueAudio): number => {
+    if (Number.isFinite(pending.actualDurationSec) && (pending.actualDurationSec ?? 0) > 0) {
+      return pending.actualDurationSec as number;
+    }
+    return pending.estimatedDurationSec;
+  }, []);
+
+  const maybeStartSegueAudio = useCallback(() => {
+    const trackAudio = audioRef.current;
+    const pending = pendingSegueRef.current;
+
+    if (!trackAudio || trackAudio.paused || !pending || pending.started) {
+      return;
+    }
+
+    const trackDurationSec =
+      Number.isFinite(trackAudio.duration) && trackAudio.duration > 0 ? trackAudio.duration : durationSec;
+    if (!(trackDurationSec > 0)) {
+      return;
+    }
+
+    const segueDurationSec = resolveSegueDurationSec(pending);
+    const remainSec = Math.max(0, trackDurationSec - trackAudio.currentTime);
+    if (remainSec > segueDurationSec + SEGUE_START_TOLERANCE_SEC) {
+      return;
+    }
+
+    pending.started = true;
+    trackAudio.volume = TRACK_DUCKING_VOLUME;
+    void pending.audio
+      .play()
+      .then(() => {
+        setStatusText(`DJ 过渡播报中（约 ${Math.round(segueDurationSec)} 秒）`);
+      })
+      .catch(() => {
+        pending.started = false;
+        restoreTrackVolume();
+        setStatusText('DJ 过渡语音已就绪，等待用户点击 Play 后继续');
+      });
+  }, [durationSec, resolveSegueDurationSec, restoreTrackVolume]);
 
   useEffect(() => {
     if (queueIds.length === 0) {
@@ -116,32 +193,72 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
         if (say) setStatusText(`DJ: ${say}`);
       } else if (msg.type === 'segue.tts-ready') {
         setSegueStatus('ready');
-        const maybeDuckingHintSec =
+
+        const ttsHintSec =
           msg.segue && typeof msg.segue === 'object' && 'duckingHintSec' in msg.segue
             ? Number((msg.segue as { duckingHintSec: unknown }).duckingHintSec)
             : NaN;
-        if (Number.isFinite(maybeDuckingHintSec) && maybeDuckingHintSec > 0) {
-          setDuckingHintSec(maybeDuckingHintSec);
-        }
+        const speechDurationSec =
+          typeof msg.speechDurationSec === 'number' && msg.speechDurationSec > 0 ? msg.speechDurationSec : NaN;
+        const dynamicHintSec = Number.isFinite(speechDurationSec)
+          ? Math.max(1, speechDurationSec)
+          : Number.isFinite(ttsHintSec) && ttsHintSec > 0
+            ? ttsHintSec
+            : DEFAULT_DUCKING_HINT_SEC;
+        setDuckingHintSec(dynamicHintSec);
+
         const audioUrl = typeof msg.audioUrl === 'string' ? msg.audioUrl : null;
-        if (audioUrl) {
-          segueAudioRef.current?.pause();
-          const audio = new Audio(audioUrl);
-          audio.volume = 0.75;
-          segueAudioRef.current = audio;
-          void audio.play().catch(() => {
-            setStatusText('DJ 过渡语音已生成，等待用户交互后播放');
-          });
-        } else {
+        if (!audioUrl) {
           setStatusText('DJ 过渡语音已生成（未配置 TTS）');
+          return;
         }
+
+        disposeSegueAudio(true);
+        const audio = new Audio(audioUrl);
+        audio.preload = 'auto';
+        audio.volume = 1;
+        const pending: PendingSegueAudio = {
+          audio,
+          estimatedDurationSec: dynamicHintSec,
+          actualDurationSec: null,
+          started: false
+        };
+
+        audio.onloadedmetadata = () => {
+          const duration = audio.duration;
+          if (pendingSegueRef.current?.audio !== audio) return;
+          if (Number.isFinite(duration) && duration > 0) {
+            pending.actualDurationSec = duration;
+            setDuckingHintSec(duration);
+          }
+        };
+        audio.onended = () => {
+          if (pendingSegueRef.current?.audio === audio) {
+            pendingSegueRef.current = null;
+            segueAudioRef.current = null;
+          }
+          restoreTrackVolume();
+        };
+        audio.onerror = () => {
+          if (pendingSegueRef.current?.audio === audio) {
+            pendingSegueRef.current = null;
+            segueAudioRef.current = null;
+          }
+          restoreTrackVolume();
+          setStatusText('DJ 过渡语音播放失败');
+        };
+
+        pendingSegueRef.current = pending;
+        segueAudioRef.current = audio;
+        setStatusText(`DJ 过渡语音已就绪（约 ${Math.round(dynamicHintSec)} 秒）`);
+        maybeStartSegueAudio();
       } else if (msg.type === 'segue.degraded') {
         setSegueStatus('degraded');
         setStatusText('DJ 过渡语音暂不可用');
       }
     });
     return unsub;
-  }, []);
+  }, [disposeSegueAudio, maybeStartSegueAudio, restoreTrackVolume]);
 
   useEffect(() => {
     if (applyingRemoteQueueRef.current) {
@@ -159,15 +276,23 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
       return;
     }
 
+    disposeSegueAudio();
     prefetchTriggeredRef.current = false;
     segueTriggeredRef.current = false;
     setSegueStatus('idle');
-    setDuckingHintSec(8);
+    setDuckingHintSec(DEFAULT_DUCKING_HINT_SEC);
     setStatusText(`正在加载曲目 ${currentTrackId} ...`);
 
     void loadNowPlaying(currentTrackId);
     void refreshNextTrack(currentTrackId);
-  }, [currentTrackId]);
+  }, [currentTrackId, disposeSegueAudio]);
+
+  useEffect(
+    () => () => {
+      disposeSegueAudio(true);
+    },
+    [disposeSegueAudio]
+  );
 
   async function refreshSession(): Promise<void> {
     try {
@@ -199,6 +324,12 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
       if (audioRef.current) {
         audioRef.current.src = payload.url;
         audioRef.current.load();
+        if (shouldAutoplayNextRef.current) {
+          shouldAutoplayNextRef.current = false;
+          void audioRef.current.play().catch(() => {
+            setStatusText('下一首已就绪，点击 Play 继续播放');
+          });
+        }
       }
 
       setStatusText(`已加载 ${trackId}`);
@@ -230,7 +361,9 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
     }
 
     if (audio.paused) {
-      void audio.play();
+      void audio.play().then(() => {
+        maybeStartSegueAudio();
+      });
       return;
     }
 
@@ -238,6 +371,9 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
   }
 
   function handlePrev(): void {
+    if (isPlaying) {
+      shouldAutoplayNextRef.current = true;
+    }
     setCurrentIndex((index) => Math.max(0, index - 1));
   }
 
@@ -245,7 +381,17 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
     if (!queueIds.length) {
       return;
     }
+    if (isPlaying) {
+      shouldAutoplayNextRef.current = true;
+    }
     setCurrentIndex((index) => Math.min(queueIds.length - 1, index + 1));
+  }
+
+  function handleSelectIndex(index: number): void {
+    if (isPlaying) {
+      shouldAutoplayNextRef.current = true;
+    }
+    setCurrentIndex(index);
   }
 
   function handleToggleLike(): void {
@@ -295,6 +441,8 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
         setError(err instanceof Error ? err.message : 'segue 请求失败');
       });
     }
+
+    maybeStartSegueAudio();
   }
 
   function onLoadedMetadata(): void {
@@ -307,10 +455,12 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
 
   function onEnded(): void {
     if (currentIndex < queueIds.length - 1) {
+      shouldAutoplayNextRef.current = true;
       setCurrentIndex((index) => index + 1);
       return;
     }
     setIsPlaying(false);
+    shouldAutoplayNextRef.current = false;
     setStatusText('播放完成');
   }
 
@@ -482,7 +632,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
           <QueuePanel
             currentIndex={currentIndex}
             nextId={nextTrack?.track.id ?? null}
-            onSelectIndex={setCurrentIndex}
+            onSelectIndex={handleSelectIndex}
             queue={queue}
           />
           <section className="rounded-2xl border border-zinc-800/80 bg-zinc-950/60 p-4 text-sm text-zinc-300">
