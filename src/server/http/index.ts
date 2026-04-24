@@ -19,6 +19,8 @@ import {
 } from './routes/ncm-login.js';
 import { createNextHandler, createNowHandler } from './routes/now-next.js';
 import { createStartPlayHandler, createEndPlayHandler } from './routes/plays.js';
+import { createGetSettingsHandler, createSaveSettingsHandler } from './routes/settings.js';
+import type { SecretStore } from '../security.js';
 
 export type LocalServer = {
   port: number;
@@ -32,6 +34,7 @@ type StartLocalServerOptions = {
   ncm: NcmProcessManager;
   ncmAuth: NcmAuthService;
   ncmClient: NcmClient;
+  secrets: SecretStore;
   host: string;
   port: number;
   staticDir?: string | null;
@@ -70,6 +73,8 @@ export async function startLocalServer(options: StartLocalServerOptions): Promis
   app.get('/api/next', createNextHandler(options.ncmClient));
   app.post('/api/plays', createStartPlayHandler());
   app.patch('/api/plays/:id', createEndPlayHandler());
+  app.get('/api/settings', createGetSettingsHandler(options.secrets));
+  app.put('/api/settings', createSaveSettingsHandler(options.secrets));
 
   if (options.staticDir && fs.existsSync(options.staticDir)) {
     app.use(express.static(options.staticDir));

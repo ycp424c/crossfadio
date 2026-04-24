@@ -38,6 +38,7 @@ async function bootstrap(): Promise<void> {
       ncm,
       ncmAuth: authRef,
       ncmClient,
+      secrets,
       host: '127.0.0.1',
       port: resolveServerPort(),
       staticDir: resolveStaticDir()

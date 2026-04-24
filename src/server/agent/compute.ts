@@ -1,4 +1,4 @@
-import { LlmClient, type LlmConfig } from '../llm/client.js';
+import { LlmClient, type LlmConfig, type LlmMessage, type LlmResponse } from '../llm/client.js';
 import { assembleMessages } from './fragments.js';
 import {
   agentOutputSchema,
@@ -7,11 +7,24 @@ import {
   type Fragments
 } from './schema.js';
 
+/** Minimal interface a client must satisfy for compute(). Allows injection of fakes in tests. */
+export interface LlmClientLike {
+  complete(messages: LlmMessage[], opts?: { signal?: AbortSignal }): Promise<LlmResponse>;
+  stream(messages: LlmMessage[], opts?: { signal?: AbortSignal }): AsyncIterable<string>;
+}
+
 export type ComputeOptions = {
-  llmConfig: LlmConfig;
-  stream?: boolean;
+  llmConfig?: LlmConfig;
+  /** Override the LLM client — used by tests to inject FakeLlmClient. */
+  llmClient?: LlmClientLike;
   signal?: AbortSignal;
 };
+
+function resolveClient(opts: ComputeOptions): LlmClientLike {
+  if (opts.llmClient) return opts.llmClient;
+  if (opts.llmConfig) return new LlmClient(opts.llmConfig);
+  throw new AgentError('ComputeOptions must provide either llmConfig or llmClient');
+}
 
 /**
  * Non-streaming: plan mode (and any non-stream call).
@@ -21,7 +34,7 @@ export async function computeSync(
   fragments: Fragments,
   opts: ComputeOptions
 ): Promise<AgentOutput> {
-  const client = new LlmClient(opts.llmConfig);
+  const client = resolveClient(opts);
   const messages = assembleMessages(fragments);
 
   const raw = await client.complete(messages, { signal: opts.signal });
@@ -31,12 +44,11 @@ export async function computeSync(
     return parsed.value;
   }
 
-  // Retry once with the validation error appended
-  const retryMessages = [
+  const retryMessages: LlmMessage[] = [
     ...messages,
-    { role: 'assistant' as const, content: raw.content },
+    { role: 'assistant', content: raw.content },
     {
-      role: 'user' as const,
+      role: 'user',
       content: `上次输出未通过 JSON schema 校验：${parsed.error}\n请重新生成，严格按照要求的 JSON 格式输出。`
     }
   ];
@@ -62,7 +74,7 @@ export async function* computeStream(
   fragments: Fragments,
   opts: ComputeOptions
 ): AsyncIterable<AgentEvent> {
-  const client = new LlmClient(opts.llmConfig);
+  const client = resolveClient(opts);
   const messages = assembleMessages(fragments);
 
   let fullContent = '';
@@ -77,12 +89,11 @@ export async function* computeStream(
     return;
   }
 
-  // Retry (non-streaming for simplicity on second attempt)
-  const retryMessages = [
+  const retryMessages: LlmMessage[] = [
     ...messages,
-    { role: 'assistant' as const, content: fullContent },
+    { role: 'assistant', content: fullContent },
     {
-      role: 'user' as const,
+      role: 'user',
       content: `上次输出未通过 JSON schema 校验：${parsed.error}\n请重新生成，严格按照要求的 JSON 格式输出。`
     }
   ];
@@ -105,7 +116,6 @@ type ParseResult =
   | { ok: false; error: string };
 
 function tryParseOutput(raw: string, mode: Fragments['mode']): ParseResult {
-  // Strip optional markdown code fences
   const cleaned = raw
     .replace(/^```(?:json)?\s*/i, '')
     .replace(/\s*```\s*$/, '')
@@ -118,7 +128,6 @@ function tryParseOutput(raw: string, mode: Fragments['mode']): ParseResult {
     return { ok: false, error: `不是合法 JSON: ${cleaned.slice(0, 100)}` };
   }
 
-  // Inject mode if missing (LLM sometimes omits it)
   if (json && typeof json === 'object' && !('mode' in (json as object))) {
     (json as Record<string, unknown>).mode = mode;
   }

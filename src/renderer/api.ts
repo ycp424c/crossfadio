@@ -84,6 +84,45 @@ export async function getNextTrack(queueIds: string[], currentId: string): Promi
   return nextTrackResponseSchema.parse(payload);
 }
 
+export type LlmSettings = {
+  baseUrl: string;
+  model: string;
+  hasApiKey: boolean;
+};
+
+export type TtsSettings = {
+  baseUrl: string;
+  model: string;
+  voice: string;
+  speed: number;
+  format: string;
+  hasApiKey: boolean;
+};
+
+export type SettingsResponse = {
+  ok: boolean;
+  llm: LlmSettings | null;
+  tts: TtsSettings | null;
+};
+
+export type SaveSettingsPayload = {
+  llm?: { baseUrl: string; model: string; apiKey?: string };
+  tts?: { baseUrl: string; model: string; voice: string; speed: number; format: string; apiKey?: string };
+};
+
+export async function getSettings(): Promise<SettingsResponse> {
+  return requestJson<SettingsResponse>('/api/settings');
+}
+
+export async function saveSettings(payload: SaveSettingsPayload): Promise<void> {
+  const result = await requestJson<{ ok: boolean }>('/api/settings', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
+  if (!result.ok) throw new Error('Failed to save settings');
+}
+
 function resolveRuntimeConfig(): RuntimeConfig {
   const baseUrl = window.location.origin.replace(/\/+$/, '');
   return { baseUrl };
