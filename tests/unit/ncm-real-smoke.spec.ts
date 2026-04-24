@@ -1,7 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { afterEach, describe, expect, it } from 'vitest';
-import { NcmAuthService } from '../../src/main/ncm/auth';
-import { NcmClient } from '../../src/main/ncm/client';
+import { NcmAuthService } from '../../src/server/ncm/auth';
+import { NcmClient } from '../../src/server/ncm/client';
 import { NCM_QR_CODE } from '../../src/shared/schema';
 
 const runRealSmoke = process.env.CROSSFADIO_REAL_NCM_SMOKE === '1';

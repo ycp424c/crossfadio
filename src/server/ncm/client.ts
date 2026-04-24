@@ -9,7 +9,7 @@ import {
   type NcmPlaylistDetail,
   type NcmSong,
   type NcmSongUrl
-} from '@shared/schema';
+} from '../../shared/schema.js';
 
 type NcmClientOptions = {
   getCookie?: () => string | null;

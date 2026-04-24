@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { NcmApiError, NcmClient } from '../../src/main/ncm/client';
+import { NcmApiError, NcmClient } from '../../src/server/ncm/client';
 import { NCM_ERROR_CODE } from '../../src/shared/schema';
 
 function mockFetch(handler: (url: URL, init?: RequestInit) => Promise<Response>): void {

@@ -3,7 +3,7 @@ import {
   estimateDurationMs,
   parseQueueIds,
   pickNextTrackId
-} from '../../src/main/server/routes/now-next';
+} from '../../src/server/http/routes/now-next';
 
 describe('parseQueueIds', () => {
   it('parses csv queue and trims blanks', () => {

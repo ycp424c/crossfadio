@@ -1,6 +1,6 @@
-import type { NcmClient } from './client';
-import type { SecretStore } from '@main/security';
-import { NCM_QR_CODE, NCM_QR_HINT, type NcmQrCode, type NcmQrHint } from '@shared/schema';
+import type { NcmClient } from './client.js';
+import type { SecretStore } from '../security.js';
+import { NCM_QR_CODE, NCM_QR_HINT, type NcmQrCode, type NcmQrHint } from '../../shared/schema.js';
 
 const NCM_COOKIE_KEY = 'ncm.cookie';
 

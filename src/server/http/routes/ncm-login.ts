@@ -1,8 +1,8 @@
 import type { RequestHandler, Response } from 'express';
 import { z } from 'zod';
-import type { NcmAuthService } from '@main/ncm/auth';
-import { NcmApiError } from '@main/ncm/client';
-import { NCM_ERROR_CODE, type NcmErrorCode } from '@shared/schema';
+import type { NcmAuthService } from '../../ncm/auth.js';
+import { NcmApiError } from '../../ncm/client.js';
+import { NCM_ERROR_CODE, type NcmErrorCode } from '../../../shared/schema.js';
 
 const qrQuerySchema = z.object({
   key: z.string().min(1)

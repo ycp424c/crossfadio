@@ -1,12 +1,12 @@
 import type { RequestHandler, Response } from 'express';
 import { z } from 'zod';
-import { NcmApiError, type NcmClient } from '@main/ncm/client';
+import { NcmApiError, type NcmClient } from '../../ncm/client.js';
 import {
   NCM_ERROR_CODE,
   nextTrackResponseSchema,
   nowPlayingResponseSchema,
   type NcmErrorCode
-} from '@shared/schema';
+} from '../../../shared/schema.js';
 
 const DEFAULT_PREFETCH_LEAD_SEC = 10;
 const DEFAULT_CROSSFADE_SEC = 8;

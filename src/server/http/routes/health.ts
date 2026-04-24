@@ -1,6 +1,6 @@
 import type { RequestHandler } from 'express';
-import { healthResponseSchema } from '@shared/schema';
-import { getDb } from '@main/store/db';
+import { healthResponseSchema } from '../../../shared/schema.js';
+import { getDb } from '../../store/db.js';
 
 const bootTime = Date.now();
 

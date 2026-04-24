@@ -11,3 +11,4 @@ playwright-report
 
 # Local agent settings
 .claude/
+.trae/

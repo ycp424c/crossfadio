@@ -1,14 +1,7 @@
 import { EventEmitter } from 'node:events';
 import { describe, expect, it, vi } from 'vitest';
 
-vi.mock('electron', () => ({
-  app: {
-    getAppPath: () => process.cwd(),
-    getPath: () => process.cwd()
-  }
-}));
-
-import { NcmProcessManager, parseCommandArgs, resolveNcmLaunchConfig } from '../../src/main/ncm/spawn';
+import { NcmProcessManager, parseCommandArgs, resolveNcmLaunchConfig } from '../../src/server/ncm/spawn';
 
 class FakeChildProcess extends EventEmitter {
   readonly stderr = new EventEmitter();
