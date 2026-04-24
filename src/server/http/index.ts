@@ -26,6 +26,8 @@ import {
   createReplanSegmentHandler,
   createGapFillHandler
 } from './routes/plan.js';
+import { createSegueTriggerHandler, createSegueAudioHandler } from './routes/segue.js';
+import { createChatMessageHandler } from './routes/chat.js';
 import type { SecretStore } from '../security.js';
 
 export type LocalServer = {
@@ -85,6 +87,8 @@ export async function startLocalServer(options: StartLocalServerOptions): Promis
   app.post('/api/plan/regenerate', createRegeneratePlanHandler({ secrets: options.secrets, ncmClient: options.ncmClient }));
   app.post('/api/plan/replan-segment', createReplanSegmentHandler({ secrets: options.secrets, ncmClient: options.ncmClient }));
   app.post('/api/plan/gap-fill', createGapFillHandler({ secrets: options.secrets, ncmClient: options.ncmClient }));
+  app.post('/api/segue/trigger', createSegueTriggerHandler({ secrets: options.secrets, ncmClient: options.ncmClient }));
+  app.get('/api/segue/audio/:filename', createSegueAudioHandler());
 
   if (options.staticDir && fs.existsSync(options.staticDir)) {
     app.use(express.static(options.staticDir));
@@ -100,7 +104,8 @@ export async function startLocalServer(options: StartLocalServerOptions): Promis
 
   const server = createServer(app);
   const sessionToken = randomBytes(24).toString('hex');
-  setupWsServer(server, sessionToken);
+  const chatHandler = createChatMessageHandler({ secrets: options.secrets, ncmClient: options.ncmClient });
+  setupWsServer(server, { sessionToken, onChatMessage: chatHandler });
 
   const port = await listen(server, options.host, options.port);
   const baseUrl = `http://${options.host}:${port}`;

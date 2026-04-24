@@ -110,15 +110,15 @@
 
 | ID | 任务 | 依赖 | 主要产出 | 验收标准 | 估时 | 优先级 | 状态 |
 |---|---|---|---|---|---:|---|---|
-| M4-01 | segue mode 与 `api/segue/trigger` 异步流程 | M2-06 M0-04 | `routes/segue.ts` + requestId | 可在 d-12s 提前触发并异步返回 | 0.6 | P0 | TODO |
-| M4-02 | TTS ready 事件与 `segue.tts-ready` WS 推送 | M4-01 M2-02 | `ws events` | browser 收到 ready 后可安全装载音频 | 0.5 | P0 | TODO |
-| M4-03 | “体验优先”串场时序（标准/晚到/模板/纯降级） | M4-01 M4-02 M1-05 | `performSegue` 编排 | 串场体验符合设计文档四级顺序 | 0.8 | P0 | TODO |
+| M4-01 | segue mode 与 `api/segue/trigger` 异步流程 | M2-06 M0-04 | `routes/segue.ts` + requestId | 可在 d-12s 提前触发并异步返回 | 0.6 | P0 | DONE |
+| M4-02 | TTS ready 事件与 `segue.tts-ready` WS 推送 | M4-01 M2-02 | `ws events` | browser 收到 ready 后可安全装载音频 | 0.5 | P0 | DONE |
+| M4-03 | “体验优先”串场时序（标准/晚到/模板/纯降级） | M4-01 M4-02 M1-05 | `performSegue` 编排 | 串场体验符合设计文档四级顺序 | 0.8 | P0 | DONE |
 | M4-04 | 模板口播缓存机制（fallback tts） | M2-02 | `cache/tts/fallback` 管理 | 主 TTS 超时仍可播一条模板口播 | 0.4 | P1 | TODO |
-| M4-05 | chat mode 流式输出与意图识别 | M2-06 M0-04 | `routes/chat.ts` + WS delta | chat.delta/chat.done 事件稳定 | 0.6 | P0 | TODO |
-| M4-06 | Action 执行器（swap/add/skip/ban/replan/set_pref） | M4-05 M3-06 | `router.executeActions()` | actions 落地且队列实时更新 | 0.7 | P0 | TODO |
+| M4-05 | chat mode 流式输出与意图识别 | M2-06 M0-04 | `routes/chat.ts` + WS delta | chat.delta/chat.done 事件稳定 | 0.6 | P0 | DONE |
+| M4-06 | Action 执行器（swap/add/skip/ban/replan/set_pref） | M4-05 M3-06 | `router.executeActions()` | actions 落地且队列实时更新 | 0.7 | P0 | DONE |
 | M4-07 | Timeline 只读可视化（crossfade/ducking 时序） | M1-05 M4-03 | `components/Timeline` | 可视化和实际参数一致 | 0.5 | P1 | TODO |
-| M4-08 | ChatPanel + Queue 同步刷新（queue-updated） | M4-05 M4-06 | `components/ChatPanel` | “跑步 30 分钟 Rap”3s 内触发队列变更 | 0.5 | P0 | TODO |
-| M4-09 | 串场与聊天链路集成测试（FakeLLM/FakeTTS） | M4-03 M4-06 | integration tests | 回归覆盖 3 个关键场景 | 0.4 | P1 | TODO |
+| M4-08 | ChatPanel + Queue 同步刷新（queue-updated） | M4-05 M4-06 | `components/ChatPanel` | “跑步 30 分钟 Rap”3s 内触发队列变更 | 0.5 | P0 | DONE |
+| M4-09 | 串场与聊天链路集成测试（FakeLLM/FakeTTS） | M4-03 M4-06 | integration tests | 回归覆盖 3 个关键场景 | 0.4 | P1 | DONE |
 
 ### 4.6 M5 打磨与发布准备（3d）
 
