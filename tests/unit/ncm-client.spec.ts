@@ -236,6 +236,44 @@ describe('NcmClient DTO mapping', () => {
     });
   });
 
+  it('maps /likelist response into liked song ids using login profile user id', async () => {
+    mockFetch(async (url) => {
+      if (url.pathname === '/login/status') {
+        return new Response(JSON.stringify({ data: { profile: { userId: 10001 } } }), { status: 200 });
+      }
+      if (url.pathname === '/likelist') {
+        expect(url.searchParams.get('uid')).toBe('10001');
+        return new Response(JSON.stringify({ ids: [101, 102, 103] }), { status: 200 });
+      }
+      return new Response('{}', { status: 404 });
+    });
+    const client = new NcmClient('http://127.0.0.1:3000');
+
+    expect(await client.getLikedSongIds()).toEqual(['101', '102', '103']);
+  });
+
+  it('maps /song/detail response into NcmPlaylistTrack[]', async () => {
+    mockFetch(async (url) => {
+      expect(url.pathname).toBe('/song/detail');
+      expect(url.searchParams.get('ids')).toBe('101,102');
+      return new Response(
+        JSON.stringify({
+          songs: [
+            { id: 101, name: 'Song A', dt: 210_000, ar: [{ name: 'Alice' }] },
+            { id: 102, name: 'Song B', dt: 180_000, ar: [{ name: 'Bob' }, { name: 'Carol' }] }
+          ]
+        }),
+        { status: 200 }
+      );
+    });
+    const client = new NcmClient('http://127.0.0.1:3000');
+
+    expect(await client.getSongDetails(['101', '102'])).toEqual([
+      { id: 101, name: 'Song A', artists: ['Alice'], durationMs: 210_000 },
+      { id: 102, name: 'Song B', artists: ['Bob', 'Carol'], durationMs: 180_000 }
+    ]);
+  });
+
   it('rejects malformed search payload as BAD_RESPONSE', async () => {
     mockFetch(async () =>
       new Response(

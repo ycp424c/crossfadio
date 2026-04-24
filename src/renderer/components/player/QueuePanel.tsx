@@ -1,7 +1,8 @@
 import { ListMusic } from 'lucide-react';
+import type { QueueTrackDto } from '@shared/schema';
 
 type QueuePanelProps = {
-  queueIds: string[];
+  queue: QueueTrackDto[];
   currentIndex: number;
   nextId: string | null;
   onSelectIndex: (index: number) => void;
@@ -16,15 +17,15 @@ export function QueuePanel(props: QueuePanelProps): JSX.Element {
           播放队列
         </h3>
         <span className="rounded-full bg-zinc-800 px-2.5 py-0.5 text-xs text-zinc-300">
-          {props.queueIds.length} 首
+          {props.queue.length} 首
         </span>
       </div>
       <ul className="space-y-2">
-        {props.queueIds.map((id, index) => {
+        {props.queue.map((track, index) => {
           const isCurrent = index === props.currentIndex;
-          const isNext = id === props.nextId && !isCurrent;
+          const isNext = track.id === props.nextId && !isCurrent;
           return (
-            <li key={id}>
+            <li key={track.id}>
               <button
                 className={`w-full rounded-xl border px-3 py-2 text-left text-sm transition ${
                   isCurrent
@@ -35,7 +36,9 @@ export function QueuePanel(props: QueuePanelProps): JSX.Element {
                 type="button"
               >
                 <div className="flex items-center justify-between gap-3">
-                  <span className="truncate">#{index + 1} · {id}</span>
+                  <span className="min-w-0 truncate">
+                    #{index + 1} · {track.name} - {track.artists.join(' / ') || '未知歌手'}
+                  </span>
                   {isCurrent ? <span className="text-xs text-violet-200">当前</span> : null}
                   {isNext ? <span className="text-xs text-cyan-300">下一首</span> : null}
                 </div>

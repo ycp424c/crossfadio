@@ -6,6 +6,9 @@
 export type QueueTrack = {
   ncmId: string;
   query?: string;
+  name?: string;
+  artists?: string[];
+  durationMs?: number;
 };
 
 let queue: QueueTrack[] = [];

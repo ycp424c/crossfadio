@@ -29,7 +29,7 @@ import {
 import { createSegueTriggerHandler, createSegueAudioHandler } from './routes/segue.js';
 import { createChatMessageHandler } from './routes/chat.js';
 import { createRuntimeHandler } from './routes/runtime.js';
-import { createSetQueueStateHandler } from './routes/queue.js';
+import { createGetLikedQueueHandler, createSetQueueStateHandler } from './routes/queue.js';
 import type { SecretStore } from '../security.js';
 
 export type LocalServer = {
@@ -92,6 +92,7 @@ export async function startLocalServer(options: StartLocalServerOptions): Promis
   app.post('/api/plan/regenerate', createRegeneratePlanHandler({ secrets: options.secrets, ncmClient: options.ncmClient }));
   app.post('/api/plan/replan-segment', createReplanSegmentHandler({ secrets: options.secrets, ncmClient: options.ncmClient }));
   app.post('/api/plan/gap-fill', createGapFillHandler({ secrets: options.secrets, ncmClient: options.ncmClient }));
+  app.get('/api/queue/liked', createGetLikedQueueHandler(options.ncmClient));
   app.put('/api/queue/state', createSetQueueStateHandler());
   app.post('/api/segue/trigger', createSegueTriggerHandler({ secrets: options.secrets, ncmClient: options.ncmClient }));
   app.get('/api/segue/audio/*', createSegueAudioHandler());

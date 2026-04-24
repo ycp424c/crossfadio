@@ -11,6 +11,7 @@ import {
 import {
   checkNcmQr,
   createNcmQr,
+  getLikedQueue,
   getNcmSession,
   getNextTrack,
   getNowPlaying,
@@ -22,13 +23,12 @@ import { getPrefetchDecision } from '@renderer/audio/prefetch';
 import { NowPlayingHero } from '@renderer/components/player/NowPlayingHero';
 import { PlaybackTimeline } from '@renderer/components/player/PlaybackTimeline';
 import { QueuePanel } from '@renderer/components/player/QueuePanel';
+import { SeekBar } from '@renderer/components/player/SeekBar';
 import { TransportControls } from '@renderer/components/player/TransportControls';
 import { onWsMessage } from '@renderer/ws/client';
-import type { NextTrackResponse, NowPlayingResponse } from '@shared/schema';
+import type { NextTrackResponse, NowPlayingResponse, QueueTrackDto } from '@shared/schema';
 import appMark from '@renderer/assets/image2/crossfadio-mark.svg';
 import playerDesignRef from '@renderer/assets/image2/2026-04-23-player-v1.png';
-
-const DEFAULT_QUEUE = '347230, 447925558, 186016';
 
 type NcmSessionState = {
   hasCookie: boolean;
@@ -40,7 +40,7 @@ type PlayerViewProps = {
 };
 
 export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
-  const [queueInput, setQueueInput] = useState(DEFAULT_QUEUE);
+  const [queue, setQueue] = useState<QueueTrackDto[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [nowPlaying, setNowPlaying] = useState<NowPlayingResponse | null>(null);
   const [nextTrack, setNextTrack] = useState<NextTrackResponse | null>(null);
@@ -62,8 +62,9 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
   const segueTriggeredRef = useRef(false);
   const applyingRemoteQueueRef = useRef(false);
 
-  const queueIds = useMemo(() => parseQueueInput(queueInput), [queueInput]);
-  const currentTrackId = queueIds[currentIndex] ?? null;
+  const queueIds = useMemo(() => queue.map((track) => track.id), [queue]);
+  const currentTrack = queue[currentIndex] ?? null;
+  const currentTrackId = currentTrack?.id ?? null;
 
   useEffect(() => {
     if (queueIds.length === 0) {
@@ -78,23 +79,37 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
 
   useEffect(() => {
     void refreshSession();
+    void loadLikedQueue();
   }, []);
 
   useEffect(() => {
     const unsub = onWsMessage((msg) => {
       if (msg.type === 'queue-updated') {
-        const nextQueue = Array.isArray(msg.queue)
+        const nextQueue: QueueTrackDto[] = Array.isArray(msg.queue)
           ? msg.queue
               .map((track) =>
                 track && typeof track === 'object' && 'ncmId' in track
-                  ? String((track as { ncmId: unknown }).ncmId)
-                  : ''
+                  ? {
+                      id: String((track as { ncmId: unknown }).ncmId),
+                      name:
+                        typeof (track as { name?: unknown }).name === 'string'
+                          ? String((track as { name: unknown }).name)
+                          : `Track ${(track as { ncmId: unknown }).ncmId}`,
+                      artists: Array.isArray((track as { artists?: unknown }).artists)
+                        ? (track as { artists: string[] }).artists
+                        : [],
+                      durationMs:
+                        typeof (track as { durationMs?: unknown }).durationMs === 'number'
+                          ? (track as { durationMs: number }).durationMs
+                          : 0
+                    }
+                  : null
               )
-              .filter(Boolean)
+              .filter((track): track is QueueTrackDto => track !== null)
           : [];
         const nextIndex = typeof msg.currentIndex === 'number' ? msg.currentIndex : 0;
         applyingRemoteQueueRef.current = true;
-        setQueueInput(nextQueue.join(', '));
+        setQueue(nextQueue);
         setCurrentIndex(nextIndex);
       } else if (msg.type === 'segue.delta') {
         const say = String(msg.say ?? '').trim();
@@ -133,10 +148,10 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
       applyingRemoteQueueRef.current = false;
       return;
     }
-    void saveQueueState(queueIds, currentIndex).catch(() => {
+    void saveQueueState(queue, currentIndex).catch(() => {
       // Queue sync is best effort; playback should keep running locally.
     });
-  }, [currentIndex, queueIds]);
+  }, [currentIndex, queue]);
 
   useEffect(() => {
     if (!currentTrackId) {
@@ -160,6 +175,18 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
       setSession({ hasCookie: payload.hasCookie, profile: payload.profile });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'session 请求失败');
+    }
+  }
+
+  async function loadLikedQueue(): Promise<void> {
+    try {
+      const payload = await getLikedQueue(100);
+      applyingRemoteQueueRef.current = true;
+      setQueue(payload.tracks);
+      setCurrentIndex(payload.currentIndex);
+      setStatusText(`已加载红心歌单 ${payload.tracks.length} 首`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '红心歌单加载失败');
     }
   }
 
@@ -229,6 +256,13 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
     setLikedTrackIds((ids) =>
       ids.includes(currentTrackId) ? ids.filter((id) => id !== currentTrackId) : [...ids, currentTrackId]
     );
+  }
+
+  function handleSeek(positionSec: number): void {
+    setPositionSec(positionSec);
+    if (audioRef.current) {
+      audioRef.current.currentTime = positionSec;
+    }
   }
 
   function onTimeUpdate(): void {
@@ -387,21 +421,20 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
             <div className="flex items-end justify-between gap-4">
               <div>
                 <h2 className="text-3xl font-semibold">正在播放</h2>
-                <p className="text-sm text-zinc-400">支持 play / pause / skip / prev / like</p>
+                <p className="text-sm text-zinc-400">红心歌单动态队列 · 支持进度拖动</p>
               </div>
               <div className="text-right text-xs text-zinc-400">
                 <p>{statusText}</p>
                 {error ? <p className="mt-1 text-red-300">{error}</p> : null}
               </div>
             </div>
-            <label className="mt-3 block">
-              <span className="mb-1 block text-xs text-zinc-400">队列 NCM IDs（逗号分隔）</span>
-              <input
-                className="w-full rounded-lg border border-zinc-700 bg-zinc-900/80 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-violet-400"
-                onChange={(event) => setQueueInput(event.target.value)}
-                value={queueInput}
-              />
-            </label>
+            <button
+              className="mt-3 rounded-lg border border-zinc-700 bg-zinc-900/80 px-3 py-2 text-sm text-zinc-200 transition hover:border-zinc-500"
+              onClick={() => void loadLikedQueue()}
+              type="button"
+            >
+              重新读取网易红心歌单
+            </button>
           </header>
 
           <NowPlayingHero
@@ -410,9 +443,11 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
             onToggleLike={handleToggleLike}
             positionSec={positionSec}
             subtitle={nowPlaying ? `直链已就绪 · ${nowPlaying.timing.crossfadeSec}s crossfade` : '等待加载'}
-            title={currentTrackId ? `Track ${currentTrackId}` : 'No Track'}
+            title={currentTrack?.name ?? 'No Track'}
             trackId={currentTrackId ?? '-'}
           />
+
+          <SeekBar durationSec={durationSec} onSeek={handleSeek} positionSec={positionSec} />
 
           <TransportControls
             canPrev={canPrev}
@@ -448,7 +483,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
             currentIndex={currentIndex}
             nextId={nextTrack?.track.id ?? null}
             onSelectIndex={setCurrentIndex}
-            queueIds={queueIds}
+            queue={queue}
           />
           <section className="rounded-2xl border border-zinc-800/80 bg-zinc-950/60 p-4 text-sm text-zinc-300">
             <h3 className="inline-flex items-center gap-2 text-lg font-semibold text-zinc-100">
@@ -469,11 +504,4 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
       </div>
     </main>
   );
-}
-
-function parseQueueInput(value: string): string[] {
-  return value
-    .split(',')
-    .map((id) => id.trim())
-    .filter((id) => id.length > 0);
 }

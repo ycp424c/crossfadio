@@ -1,8 +1,10 @@
 import {
   NCM_ERROR_CODE,
   ncmLyricResponseSchema,
+  ncmLikedIdsResponseSchema,
   ncmPlaylistDetailResponseSchema,
   ncmSearchResponseSchema,
+  ncmSongDetailResponseSchema,
   ncmSongUrlResponseSchema,
   type NcmErrorCode,
   type NcmLyric,
@@ -228,6 +230,52 @@ export class NcmClient {
     };
   }
 
+  async getLikedSongIds(): Promise<string[]> {
+    const loginStatus = await this.getLoginStatus();
+    const userId = extractUserId(loginStatus);
+    if (!userId) {
+      throw new NcmApiError(NCM_ERROR_CODE.UNAUTHORIZED, 'NCM login profile missing userId');
+    }
+
+    const json = await this.getJson('/likelist', { uid: userId });
+    const parsed = ncmLikedIdsResponseSchema.safeParse(json);
+    if (!parsed.success) {
+      throw new NcmApiError(
+        NCM_ERROR_CODE.BAD_RESPONSE,
+        `NCM likelist returned malformed payload: ${parsed.error.message}`
+      );
+    }
+
+    return parsed.data.ids.map(String);
+  }
+
+  async getSongDetails(ids: string[]): Promise<NcmPlaylistDetail['tracks']> {
+    const normalizedIds = ids
+      .map((id) => Number(id))
+      .filter((id) => Number.isInteger(id) && id > 0);
+    if (normalizedIds.length === 0) {
+      return [];
+    }
+
+    const json = await this.getJson('/song/detail', { ids: normalizedIds.join(',') });
+    const parsed = ncmSongDetailResponseSchema.safeParse(json);
+    if (!parsed.success) {
+      throw new NcmApiError(
+        NCM_ERROR_CODE.BAD_RESPONSE,
+        `NCM song/detail returned malformed payload: ${parsed.error.message}`
+      );
+    }
+
+    return parsed.data.songs.map((song) => ({
+      id: song.id,
+      name: song.name,
+      artists: (song.ar ?? [])
+        .map((artist) => artist.name)
+        .filter((name): name is string => typeof name === 'string' && name.length > 0),
+      durationMs: typeof song.dt === 'number' ? song.dt : 0
+    }));
+  }
+
   private async getJson(path: string, query: Record<string, string>): Promise<any> {
     const response = await this.rawFetch(path, query);
 
@@ -267,6 +315,19 @@ export class NcmClient {
       clearTimeout(timer);
     }
   }
+}
+
+function extractUserId(loginStatus: unknown): string | null {
+  if (!loginStatus || typeof loginStatus !== 'object') {
+    return null;
+  }
+
+  const root = loginStatus as {
+    profile?: { userId?: unknown };
+    data?: { profile?: { userId?: unknown } };
+  };
+  const userId = root.data?.profile?.userId ?? root.profile?.userId;
+  return typeof userId === 'number' || typeof userId === 'string' ? String(userId) : null;
 }
 
 function classifyHttpError(path: string, status: number): NcmApiError {

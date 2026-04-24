@@ -197,6 +197,49 @@ export const ncmPlaylistDetailResponseSchema = z
   })
   .passthrough();
 
+export const ncmLikedIdsResponseSchema = z
+  .object({
+    ids: z.array(z.number().int().positive()).default([])
+  })
+  .passthrough();
+
+export const ncmSongDetailResponseSchema = z
+  .object({
+    songs: z
+      .array(
+        z
+          .object({
+            id: z.number().int().positive(),
+            name: z.string(),
+            dt: z.number().int().nonnegative().optional(),
+            ar: z
+              .array(z.object({ name: z.string().optional() }).passthrough())
+              .optional()
+          })
+          .passthrough()
+      )
+      .default([])
+  })
+  .passthrough();
+
+export const queueTrackSchema = z.object({
+  id: z.string().min(1),
+  name: z.string(),
+  artists: z.array(z.string()).default([]),
+  durationMs: z.number().int().nonnegative()
+});
+
+export type QueueTrackDto = z.infer<typeof queueTrackSchema>;
+
+export const likedQueueResponseSchema = z.object({
+  ok: z.literal(true),
+  source: z.literal('ncm-liked'),
+  tracks: z.array(queueTrackSchema),
+  currentIndex: z.number().int().nonnegative()
+});
+
+export type LikedQueueResponse = z.infer<typeof likedQueueResponseSchema>;
+
 export const playbackTimingSchema = z.object({
   prefetchLeadSec: z.number().positive(),
   crossfadeSec: z.number().positive(),
@@ -220,7 +263,9 @@ export type NowPlayingResponse = z.infer<typeof nowPlayingResponseSchema>;
 export const nextTrackResponseSchema = z.object({
   ok: z.literal(true),
   track: z.object({
-    id: z.string().min(1)
+    id: z.string().min(1),
+    name: z.string().optional(),
+    artists: z.array(z.string()).optional()
   }),
   url: z.string().url(),
   durationMs: z.number().int().positive().nullable(),

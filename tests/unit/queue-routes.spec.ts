@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { createSetQueueStateHandler } from '../../src/server/http/routes/queue';
+import { createGetLikedQueueHandler, createSetQueueStateHandler } from '../../src/server/http/routes/queue';
 
 beforeEach(async () => {
   const q = await import('../../src/server/store/queue');
@@ -43,5 +43,33 @@ describe('queue routes', () => {
 
     expect(res.statusCode).toBe(400);
     expect(res.body).toEqual({ ok: false, error: 'invalid body' });
+  });
+
+  it('loads liked songs into the in-memory queue', async () => {
+    const handler = createGetLikedQueueHandler({
+      getLikedSongIds: async () => ['101', '102'],
+      getSongDetails: async () => [
+        { id: 101, name: 'Song A', artists: ['Alice'], durationMs: 210_000 },
+        { id: 102, name: 'Song B', artists: ['Bob', 'Carol'], durationMs: 180_000 }
+      ]
+    } as never);
+    const res = createJsonResponse();
+
+    await handler({ query: { limit: '20' } } as never, res as never, vi.fn());
+
+    const q = await import('../../src/server/store/queue');
+    expect(res.body).toEqual({
+      ok: true,
+      source: 'ncm-liked',
+      tracks: [
+        { id: '101', name: 'Song A', artists: ['Alice'], durationMs: 210_000 },
+        { id: '102', name: 'Song B', artists: ['Bob', 'Carol'], durationMs: 180_000 }
+      ],
+      currentIndex: 0
+    });
+    expect(q.getQueue()).toEqual([
+      { ncmId: '101', name: 'Song A', artists: ['Alice'], durationMs: 210_000 },
+      { ncmId: '102', name: 'Song B', artists: ['Bob', 'Carol'], durationMs: 180_000 }
+    ]);
   });
 });

@@ -1,7 +1,9 @@
 import {
   ncmQrStatusSchema,
+  likedQueueResponseSchema,
   nextTrackResponseSchema,
   nowPlayingResponseSchema,
+  type LikedQueueResponse,
   type NextTrackResponse,
   type NowPlayingResponse
 } from '@shared/schema';
@@ -93,11 +95,19 @@ export async function getNextTrack(queueIds: string[], currentId: string): Promi
   return nextTrackResponseSchema.parse(payload);
 }
 
-export async function saveQueueState(queueIds: string[], currentIndex: number): Promise<void> {
+export async function getLikedQueue(limit = 100): Promise<LikedQueueResponse> {
+  const payload = await requestJson<unknown>(`/api/queue/liked?limit=${encodeURIComponent(String(limit))}`);
+  return likedQueueResponseSchema.parse(payload);
+}
+
+export async function saveQueueState(
+  queue: Array<string | { id: string; name?: string; artists?: string[]; durationMs?: number }>,
+  currentIndex: number
+): Promise<void> {
   const result = await requestJson<{ ok: boolean }>('/api/queue/state', {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ queue: queueIds, currentIndex })
+    body: JSON.stringify({ queue, currentIndex })
   });
   if (!result.ok) throw new Error('Failed to save queue state');
 }
