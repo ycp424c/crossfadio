@@ -25,13 +25,7 @@ type NcmSession = {
 async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
   const runtime = resolveRuntimeConfig();
 
-  if (!runtime.baseUrl) {
-    throw new Error(
-      `本地 API 地址未注入，无法请求 ${path}。请关闭并重启应用后重试（当前 baseUrl 为空）。`
-    );
-  }
-
-  let response: Response | null = null;
+  let response: Response;
   try {
     response = await fetch(new URL(path, runtime.baseUrl), {
       ...init,
@@ -41,11 +35,6 @@ async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
       }
     });
   } catch (error) {
-    const fallback = await requestJsonViaMain(path, init);
-    if (fallback) {
-      return fallback as T;
-    }
-
     const message = error instanceof Error ? error.message : 'unknown network error';
     throw new Error(`请求 ${path} 失败（baseUrl=${runtime.baseUrl}）：${message}`);
   }
@@ -96,10 +85,7 @@ export async function getNextTrack(queueIds: string[], currentId: string): Promi
 }
 
 function resolveRuntimeConfig(): RuntimeConfig {
-  const raw = window.crossfadio?.getRuntimeConfig?.();
-  const fromBridge = typeof raw?.baseUrl === 'string' ? raw.baseUrl.trim() : '';
-  const fromQuery = new URLSearchParams(window.location.search).get('CROSSFADIO_BASE_URL') ?? '';
-  const baseUrl = (fromBridge || fromQuery).replace(/\/+$/, '');
+  const baseUrl = window.location.origin.replace(/\/+$/, '');
   return { baseUrl };
 }
 
@@ -133,21 +119,4 @@ function parseJsonRaw(raw: string, contentType: string, path: string): Record<st
 
 function previewRaw(raw: string): string {
   return raw.replace(/\s+/g, ' ').slice(0, 80);
-}
-
-async function requestJsonViaMain(path: string, init?: RequestInit): Promise<Record<string, unknown> | null> {
-  if (typeof window.crossfadio?.requestLocalApi !== 'function') {
-    return null;
-  }
-
-  const method = typeof init?.method === 'string' ? init.method : 'GET';
-  const fallback = await window.crossfadio.requestLocalApi(path, method);
-  const json = parseJsonRaw(fallback.text, fallback.contentType || 'unknown', path);
-
-  if (!fallback.ok) {
-    const message = typeof json?.message === 'string' ? json.message : `Request failed: ${path}`;
-    throw new Error(message);
-  }
-
-  return json;
 }

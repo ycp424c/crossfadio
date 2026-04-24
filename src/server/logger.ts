@@ -1,13 +1,12 @@
 import path from 'node:path';
 import fs from 'node:fs';
-import { app } from 'electron';
 import pino from 'pino';
+import { resolveLogsDir } from './app-paths.js';
 
 let loggerInstance: pino.Logger | null = null;
 
 function resolveLogFilePath(): string {
-  const userData = app.getPath('userData');
-  const logsDir = path.join(userData, 'logs');
+  const logsDir = resolveLogsDir();
   fs.mkdirSync(logsDir, { recursive: true });
 
   const day = new Date().toISOString().slice(0, 10);

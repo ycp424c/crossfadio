@@ -30,7 +30,7 @@
 
 | 里程碑 | 目标 | 预计工期 | 出口标准 |
 |---|---|---:|---|
-| M0 | 工程骨架 | 3d | `api/health` 可用，窗口可启动，日志/DB 初始化成功 |
+| M0 | 工程骨架 | 3d | `api/health` 可用，浏览器可访问，日志/DB 初始化成功 |
 | M1 | 播放 MVP | 4d | 扫码登录 + 连播 + crossfade 无明显断点 |
 | M2 | AI 底座 | 3d | LLM/TTS 设置可用，`compute()` 跑通 chat/segue 最小链路 |
 | M3 | 规划能力 | 3d | 每日计划可生成/持久化/展示，fallback 可用 |
@@ -59,13 +59,14 @@
 
 | ID | 任务 | 依赖 | 主要产出 | 验收标准 | 估时 | 优先级 | 状态 |
 |---|---|---|---|---|---:|---|---|
-| M0-01 | 初始化 Electron + Vite + TS + React + Tailwind + shadcn | 无 | 可运行工程骨架、基础脚本 | `pnpm dev` 能打开窗口且 HMR 正常 | 0.5 | P0 | DONE |
-| M0-02 | 建立主/预加载/渲染三层目录与 shared schema 目录 | M0-01 | `src/main` `src/preload` `src/renderer` `src/shared` | 目录与入口能被构建识别 | 0.3 | P0 | DONE |
-| M0-03 | 主进程启动流程与窗口管理（含单实例约束） | M0-01 | `main/index.ts` 启动与生命周期管理 | 二次启动不重复开实例 | 0.4 | P0 | DONE |
-| M0-04 | 内嵌 HTTP + WS 服务骨架（含 session token 鉴权） | M0-02 | `server/routes` + `ws.ts` | `GET /api/health` + WS 连接鉴权可用 | 0.6 | P0 | DONE |
-| M0-05 | SQLite 初始化与迁移框架（messages/plays/plan/prefs/tts_cache） | M0-02 | `store/db.ts` + `migrations.ts` | 首次启动自动建表，不重复建表报错 | 0.5 | P0 | DONE |
-| M0-06 | user-template 首次复制到 userData/user | M0-03 | 语料模板拷贝逻辑 | 空目录首次启动能落盘模板文件 | 0.3 | P1 | DONE |
-| M0-07 | pino 日志落盘与日志分级约定 | M0-03 | `logger.ts` + 文件日志 | 日志按天写入 `userData/logs` | 0.4 | P1 | DONE |
+| M0-01 | 初始化 Vite + TS + React + Tailwind + shadcn | 无 | 可运行工程骨架、基础脚本 | `pnpm dev` 能启动前后端且前端 HMR 正常 | 0.5 | P0 | DONE |
+| M0-02 | 建立 `src/server` / `src/renderer` / `src/shared` 目录与构建入口 | M0-01 | `src/server` `src/renderer` `src/shared` | 目录与入口能被构建识别 | 0.3 | P0 | DONE |
+| M0-03 | Node 服务启动流程与优雅退出 | M0-01 | `src/server/index.ts` 生命周期管理 | `pnpm start` 可启动/停止且能清理资源 | 0.4 | P0 | DONE |
+| M0-04 | 本地 HTTP + WS 服务骨架（含 WS token 鉴权） | M0-02 | `src/server/http/routes` + `ws.ts` | `GET /api/health` + WS 首包鉴权可用 | 0.6 | P0 | DONE |
+| M0-05 | SQLite 初始化与迁移框架（messages/plays/plan/prefs/tts_cache） | M0-02 | `src/server/store/db.ts` + `migrations.ts` | 首次启动自动建表，不重复建表报错 | 0.5 | P0 | DONE |
+| M0-06 | `user-template` 首次复制到应用数据目录 `user/` | M0-03 | 语料模板拷贝逻辑 | 空目录首次启动能落盘模板文件 | 0.3 | P1 | DONE |
+| M0-07 | pino 日志落盘与日志分级约定 | M0-03 | `src/server/logger.ts` + 文件日志 | 日志按天写入应用数据目录 `logs/` | 0.4 | P1 | DONE |
+| M0-08 | 移除 Electron，切换到 Web Server 架构 | M0-01 M0-04 | `vite.config.ts`、`src/server`、同源 API 访问 | `pnpm build` 通过，浏览器可访问生产服务 | 0.8 | P0 | DONE |
 
 ### 4.2 M1 播放 MVP（4d）
 
@@ -86,7 +87,7 @@
 |---|---|---|---|---|---:|---|---|
 | M2-01 | OpenAI-compatible LLM client（流式/非流式） | M0-04 | `llm/client.ts` `llm/stream.ts` | 可连通配置端点并返回统一结构 | 0.6 | P0 | TODO |
 | M2-02 | OpenAI-compatible TTS client 与缓存索引 | M0-05 | `tts/client.ts` `tts/cache.ts` | hash 维度含 endpoint/model/voice/speed/format/text | 0.5 | P0 | TODO |
-| M2-03 | `safeStorage` 凭证封装与降级策略 | M0-03 | `security.ts` | key/cookie 不明文落盘 | 0.5 | P0 | TODO |
+| M2-03 | `secrets.json` 凭证封装与降级策略 | M0-03 | `src/server/security.ts` | key/cookie 统一经服务端封装读写 | 0.5 | P0 | DONE |
 | M2-04 | Settings 视图（LLM/TTS/声音试听） | M2-01 M2-02 M2-03 | `views/Settings` | 可保存配置、可试听、可错误提示 | 0.6 | P1 | TODO |
 | M2-05 | Agent `compute(fragments)` 骨架与 schema 校验 | M0-02 M2-01 | `agent/compute.ts` `schema.ts` | 非法输出可重试/降级 | 0.5 | P0 | TODO |
 | M2-06 | fragments 组装与 mode 模板（plan/segue/chat） | M2-05 | `fragments.ts` `modes.ts` | 输入 6 片完整拼装并可测试 | 0.4 | P0 | TODO |
@@ -110,7 +111,7 @@
 | ID | 任务 | 依赖 | 主要产出 | 验收标准 | 估时 | 优先级 | 状态 |
 |---|---|---|---|---|---:|---|---|
 | M4-01 | segue mode 与 `api/segue/trigger` 异步流程 | M2-06 M0-04 | `routes/segue.ts` + requestId | 可在 d-12s 提前触发并异步返回 | 0.6 | P0 | TODO |
-| M4-02 | TTS ready 事件与 `segue.tts-ready` WS 推送 | M4-01 M2-02 | `ws events` | renderer 收到 ready 后可安全装载音频 | 0.5 | P0 | TODO |
+| M4-02 | TTS ready 事件与 `segue.tts-ready` WS 推送 | M4-01 M2-02 | `ws events` | browser 收到 ready 后可安全装载音频 | 0.5 | P0 | TODO |
 | M4-03 | “体验优先”串场时序（标准/晚到/模板/纯降级） | M4-01 M4-02 M1-05 | `performSegue` 编排 | 串场体验符合设计文档四级顺序 | 0.8 | P0 | TODO |
 | M4-04 | 模板口播缓存机制（fallback tts） | M2-02 | `cache/tts/fallback` 管理 | 主 TTS 超时仍可播一条模板口播 | 0.4 | P1 | TODO |
 | M4-05 | chat mode 流式输出与意图识别 | M2-06 M0-04 | `routes/chat.ts` + WS delta | chat.delta/chat.done 事件稳定 | 0.6 | P0 | TODO |
@@ -126,19 +127,20 @@
 | M5-01 | 全局错误 UX（toast/离线角标/登录过期引导） | M1-02 M3-06 M4-03 | 统一错误交互层 | 常见失败可感知且可恢复 | 0.5 | P1 | TODO |
 | M5-02 | Profile 视图（`user/*.md` + playlists.json 编辑） | M0-06 M3-04 | `views/Profile` | 可编辑并实时校验语料格式 | 0.6 | P1 | TODO |
 | M5-03 | 快捷指令与高频操作入口（安静/跑步/跳过） | M4-06 | 快捷指令面板 | 一键触发 action 成功 | 0.4 | P2 | TODO |
-| M5-04 | e2e 冒烟（5 条关键链路） | M1-M4 完成 | `tests/e2e` | 本地通过登录->起播->换歌->聊天->重排 | 0.7 | P0 | TODO |
+| M5-04 | 浏览器 e2e 冒烟（5 条关键链路） | M1-M4 完成 | `tests/e2e` | 本地通过登录->起播->换歌->聊天->重排 | 0.7 | P0 | TODO |
 | M5-05 | README 与运维文档（配置、故障、隐私） | 全量 | 文档更新 | 新人可按文档 30 分钟起服务 | 0.4 | P1 | TODO |
-| M5-06 | 发布前检查清单（构建、打包、回滚） | 全量 | release checklist | 可执行一次本地打包与回滚演练 | 0.4 | P1 | TODO |
+| M5-06 | 发布前检查清单（构建、启动、回滚） | 全量 | release checklist | 可执行一次本地构建、启动与回滚演练 | 0.4 | P1 | TODO |
 
 ### 4.7 DOING 阻塞说明
 
-1. `M1-01`：已完成（DONE）。`ncm/spawn.ts` 支持默认自动拉起 `pnpm exec NeteaseCloudMusicApi`（也支持 `CROSSFADIO_NCM_COMMAND` 覆盖），健康探测修正为 `/`（回退 `/login/status`），并实现崩溃重启限流（3 秒重启，60 秒内最多 3 次）；单测覆盖参数解析、健康超时、重启上限。
+1. `M1-01`：已完成（DONE）。`src/server/ncm/spawn.ts` 支持默认自动拉起 `pnpm exec NeteaseCloudMusicApi`（也支持 `CROSSFADIO_NCM_COMMAND` 覆盖），健康探测修正为 `/`（回退 `/login/status`），并实现崩溃重启限流（3 秒重启，60 秒内最多 3 次）；单测覆盖参数解析、健康超时、重启上限。
 2. `M1-02`：已完成（DONE）。`/api/ncm/login/qr|status|session|logout` 已稳定输出标准错误码与扫码状态映射，cookie 由 `NcmAuthService` 持久化到 `SecretStore`；新增真实 smoke（`tests/unit/ncm-real-smoke.spec.ts`）在 2026-04-23 验证 `qr key/create/check` 链路通过（返回 `801 等待扫码`）。
-3. `M1-03`：已完成（DONE）。错误码统一为 `NCM_E_*`，`NcmApiError` 分类输出（timeout/unavailable/cookie_expired/rate_limited/bad_response/unknown）；`src/shared/schema.ts` 落盘 `NcmSong/NcmSongUrl/NcmLyric/NcmPlaylistDetail` DTO 并在 `client.ts` 用 zod 校验落地；单测覆盖 QR 四分支 + 错误分类 + DTO 正向映射（共 23 用例）。
+3. `M1-03`：已完成（DONE）。错误码统一为 `NCM_E_*`，`NcmApiError` 分类输出（timeout/unavailable/cookie_expired/rate_limited/bad_response/unknown）；`src/shared/schema.ts` 落盘 `NcmSong/NcmSongUrl/NcmLyric/NcmPlaylistDetail` DTO 并在 `src/server/ncm/client.ts` 用 zod 校验落地；单测覆盖 QR 四分支 + 错误分类 + DTO 正向映射（共 23 用例）。
 4. `M1-04`：已完成（DONE）。新增 `src/renderer/audio/engine.ts` 双 deck 引擎（A/B 切换、stop、suspend/resume、snapshot），并补充 `tests/unit/audio-engine.spec.ts` 覆盖核心状态流转（累计 26 用例通过）。
 5. `M1-05`：已完成（DONE）。新增 `src/renderer/audio/crossfade.ts`，实现等能量曲线调度（`cos/sin`）与 `from` deck lowpass sweep（20kHz → 2kHz）；补充 `tests/unit/crossfade.spec.ts` 校验曲线边界、恒功率特性、参数调度与 dB/gain 转换（累计 32 用例通过）。
-6. `M1-06`：已完成（DONE）。新增 `src/main/server/routes/now-next.ts`（`/api/now` + `/api/next`）与 `src/renderer/audio/prefetch.ts`（d-12/d-10/d-8 触发时序计算）；补充 `now-next/prefetch` 单测覆盖队列选取、时长估算和触发窗口（累计 43 用例通过）。
+6. `M1-06`：已完成（DONE）。新增 `src/server/http/routes/now-next.ts`（`/api/now` + `/api/next`）与 `src/renderer/audio/prefetch.ts`（d-12/d-10/d-8 触发时序计算）；补充 `now-next/prefetch` 单测覆盖队列选取、时长估算和触发窗口（累计 43 用例通过）。
 7. `M1-07`：已完成（DONE）。落地 `src/renderer/views/Player/PlayerView.tsx` 与 Player 组件拆分（NowPlayingHero/QueuePanel/TransportControls），接入 `/api/now` `/api/next` + 本地音频控制，支持 `play/pause/skip/prev/like` 最小闭环。
+8. `M0-08 / M2-03`：已完成（DONE）。项目已移除 Electron，目录语义统一到 `src/server` + `src/renderer`，前端改为同源 `/api` 请求；应用数据目录抽象到 `app-paths.ts`，凭证落 `secrets.json` 文件存储降级方案，并通过 `pnpm check` / `pnpm test` / `pnpm build` 与 `/api/health` 运行验证。
 
 ### 4.8 M1-07 前置 UI 任务与依赖（已确认）
 
@@ -185,7 +187,7 @@
 
 | 批次 | 任务 ID | 目标 |
 |---|---|---|
-| Batch-1 | M0-01 M0-02 M0-03 M0-05 | 已完成（主框架和数据库底座已落地） |
+| Batch-1 | M0-01 M0-02 M0-03 M0-05 M0-08 | 已完成（主框架、Web Server 化与数据库底座已落地） |
 | Batch-UI-A（并行） | UI-04 UI-07 | 与 Batch-1 并行，沉淀组件设计与映射清单 |
 | Batch-2 | M0-04 M0-06 M0-07 | 已完成（服务最小骨架与 user-template 已落地） |
 | Batch-3 | M1-01 M1-02 M1-03 | 下一批：打通 NCM 登录与取歌基础能力 |
@@ -211,3 +213,4 @@
 | 2026-04-23 | justynchen / codex | M1-01/M1-02 → DONE：NCM 子进程接入真实 `NeteaseCloudMusicApi` 默认启动策略、健康探测与崩溃重启限流；新增真实 smoke `ncm-real-smoke.spec.ts` 并实测 `qr key/create/check` 返回 801 等待扫码 |
 | 2026-04-23 | justynchen / codex | UI-04/UI-07 → DONE：补充 `ui04-component-breakdown.md` 与 `ui07-design-to-component-mapping.md`，完成 `M1-07` 的设计前置依赖固化（`UI-05` 仍为建议项） |
 | 2026-04-23 | justynchen / codex | M1-07 → DONE：新增 `PlayerView` 与核心 Player 组件，接入 `/api/now` `/api/next` 数据流与 HTMLAudio 控制，完成 `play/pause/skip/prev/like` 闭环 |
+| 2026-04-24 | justynchen / codex | 完成 Web Server 架构迁移：移除 Electron，目录重组为 `src/server` + `src/renderer`，新增 `vite.config.ts`、应用数据目录抽象与 `secrets.json` 存储，并同步本文档任务定义与状态 |

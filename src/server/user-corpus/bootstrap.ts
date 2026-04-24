@@ -1,24 +1,23 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { app } from 'electron';
-
-const TEMPLATE_DIR = path.resolve(__dirname, '../../../user-template');
+import { resolveUserCorpusDir, resolveUserTemplateDir } from '../app-paths.js';
 
 export function ensureUserCorpus(): void {
-  const userDir = path.join(app.getPath('userData'), 'user');
+  const userDir = resolveUserCorpusDir();
+  const templateDir = resolveUserTemplateDir();
   fs.mkdirSync(userDir, { recursive: true });
 
-  if (!fs.existsSync(TEMPLATE_DIR)) {
+  if (!fs.existsSync(templateDir)) {
     return;
   }
 
-  const templateEntries = fs.readdirSync(TEMPLATE_DIR, { withFileTypes: true });
+  const templateEntries = fs.readdirSync(templateDir, { withFileTypes: true });
   for (const entry of templateEntries) {
     if (!entry.isFile()) {
       continue;
     }
 
-    const source = path.join(TEMPLATE_DIR, entry.name);
+    const source = path.join(templateDir, entry.name);
     const target = path.join(userDir, entry.name);
     if (!fs.existsSync(target)) {
       fs.copyFileSync(source, target);

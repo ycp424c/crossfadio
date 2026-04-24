@@ -1,8 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { app } from 'electron';
 import Database from 'better-sqlite3';
-import { runMigrations } from './migrations';
+import { resolveStateDbPath } from '../app-paths.js';
+import { runMigrations } from './migrations.js';
 
 let dbInstance: Database.Database | null = null;
 
@@ -11,9 +11,8 @@ export function initDb(): Database.Database {
     return dbInstance;
   }
 
-  const userData = app.getPath('userData');
-  fs.mkdirSync(userData, { recursive: true });
-  const dbPath = path.join(userData, 'state.db');
+  const dbPath = resolveStateDbPath();
+  fs.mkdirSync(path.dirname(dbPath), { recursive: true });
 
   dbInstance = new Database(dbPath);
   dbInstance.pragma('journal_mode = WAL');

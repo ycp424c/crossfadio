@@ -1,6 +1,7 @@
 # Crossfadio 产品与技术架构设计
 
-> 你的本地 AI DJ 桌面应用 —— 读你自己的歌单,像电台 DJ 一样为你串起今天的声音。
+> 你的本地 AI DJ Web App —— 读你自己的歌单,像电台 DJ 一样为你串起今天的声音。
+> 本文已按当前实现更新为本地 Web Server 架构基线:前端采用 Vite + React,后端采用 Node.js + Express + WebSocket,生产期由 Node 服务托管静态资源。
 
 - **文档日期**:2026-04-23
 - **状态**:设计稿(MVP 前)
@@ -15,7 +16,7 @@
 
 ### 1.1 一句话定位
 
-**Crossfadio = 本地 AI DJ 桌面应用。** 它读你自己的网易云歌单和 `user/*.md` 里的品味语料,按时段生成"今日电台计划",像电台 DJ 一样介绍歌曲、把歌平滑串起来;边听边聊即可动态调整。全程本地运行,LLM / TTS / 网易云 cookie 只留在你自己的电脑上。
+**Crossfadio = 本地 AI DJ Web App。** 它读你自己的网易云歌单和 `user/*.md` 里的品味语料,按时段生成"今日电台计划",像电台 DJ 一样介绍歌曲、把歌平滑串起来;边听边聊即可动态调整。全程本地运行,LLM / TTS / 网易云 cookie 只留在你自己的电脑上。
 
 ### 1.2 四条黄金用户故事
 
@@ -26,7 +27,7 @@
 
 ### 1.3 产品边界
 
-- **个人用 / 本地优先 / 单机 Electron app**
+- **个人用 / 本地优先 / 单机 Web App**
 - 不做:多用户、云同步、社交分享、商业化订阅
 - 核心价值不在"播放器"本身,而在"像电台 DJ 一样懂你 + 把歌串起来"
 
@@ -65,28 +66,28 @@
 
 | 维度 | 选型 | 备注 |
 |------|------|------|
-| 语言 | **TypeScript**(全栈) | 主/preload/renderer 共享 zod schema |
-| 桌面框架 | **Electron** + **electron-vite** | HMR 完善 |
+| 语言 | **TypeScript**(全栈) | 前后端共享 zod schema |
+| 前端构建 | **Vite** | 开发期提供 HMR 与 `/api` `/ws` 代理 |
 | UI | **React + Tailwind + shadcn/ui** | 贴合图1 深色质感 |
-| 本地状态 | **zustand**(renderer) | |
+| 本地状态 | **zustand**(browser) | |
 | Agent 抽象 | **自研**,compute(fragments) | LLM 用 OpenAI 兼容协议 |
 | LLM 客户端 | **OpenAI-compatible**(用户填 base_url + api_key + model) | 覆盖 OpenAI/DeepSeek/Moonshot/OpenRouter/Ollama 等 |
 | TTS 客户端 | **OpenAI `audio/speech` 兼容** | 同样填 endpoint+key+voice |
 | 音乐源 | **网易云** via 内嵌 NeteaseCloudMusicApi 子进程 | 扫码登录 |
-| 播放引擎 | **Web Audio API**(AudioContext + GainNode + BiquadFilterNode) | renderer 侧 |
-| 本地 Server | **Electron 主进程内嵌 HTTP + WS**(127.0.0.1,随机端口) | 保留与图2 一致的 BFF 边界 |
+| 播放引擎 | **Web Audio API**(AudioContext + GainNode + BiquadFilterNode) | 浏览器侧 |
+| 本地 Server | **Node.js + Express + WebSocket**(`127.0.0.1`,固定端口,生产期托管静态资源) | 保留本地 BFF 边界 |
 | 状态存储 | **better-sqlite3** | `messages`/`plays`/`plan`/`prefs`/`tts_cache` |
-| 凭证存储 | Electron **`safeStorage`** | 走系统 keychain |
+| 凭证存储 | **本地 JSON 文件降级存储** | 默认 `secrets.json`,支持后续升级到系统钥匙串 |
 | 用户语料 | **`user/*.md` + `playlists.json`** | 人类可读、可 git |
 | 定时 | **node-cron** | |
-| 日志 | **pino** | 结构化 JSON → `userData/logs/` |
-| 测试 | **Vitest** 单元/集成 + **Playwright-for-Electron** e2e | |
+| 日志 | **pino** | 结构化 JSON → 应用数据目录 `logs/` |
+| 测试 | **Vitest** 单元/集成 + 浏览器 e2e(预留) | 当前仓库已落地 Vitest |
 
 ---
 
 ## §4 系统架构总览
 
-严格对齐图2 的四层,BRAIN 从 "Claude Code 子进程" 替换为 **自研 Agent 模块**(内置 OpenAI 兼容 LLM 客户端,用户可在设置里配置 endpoint)。
+严格对齐图2 的四层,BRAIN 从 "Claude Code 子进程" 替换为 **自研 Agent 模块**(内置 OpenAI 兼容 LLM 客户端,用户可在设置里配置 endpoint)。当前实现已收敛为标准浏览器前端 + 本地 Node BFF。
 
 ```
 ┌───────────────────────────────────────────────────────────────┐
@@ -95,12 +96,12 @@
 │  │                    dj-persona / playlists.json             │
 │  ├─ LLM endpoint      OpenAI 兼容(用户配)                     │
 │  ├─ TTS endpoint      OpenAI audio/speech 兼容(用户配)        │
-│  ├─ NCM API           内嵌子进程 127.0.0.1:xxxxx              │
+│  ├─ NCM API           内嵌子进程 127.0.0.1:3000(默认)         │
 │  └─ Weather           wttr.in / openweather                   │
 └───────────────────────────────────────────────────────────────┘
                               ↓
 ┌───────────────────────────────────────────────────────────────┐
-│  L2  本地大脑 (Electron 主进程 / Node)                         │
+│  L2  本地大脑 (Node.js Web Server / BFF)                      │
 │  ├─ router         意图分流(快捷指令直连 / 聊天走 agent)      │
 │  ├─ context        prompt 组装(6 片 fragments)               │
 │  ├─ agent          compute(fragments) → {say,play[],actions}  │
@@ -109,8 +110,8 @@
 │  ├─ ncm            spawn + 登录/歌单/直链/歌词/搜索             │
 │  ├─ llm            OpenAI 兼容 client(流式/非流式)             │
 │  ├─ store          better-sqlite3                              │
-│  ├─ security       safeStorage 封装                            │
-│  └─ http+ws server 127.0.0.1 随机端口                          │
+│  ├─ security       本地 secrets.json 封装                      │
+│  └─ http+ws server 127.0.0.1:4318(默认)                        │
 └───────────────────────────────────────────────────────────────┘
                               ↓  localhost HTTP + WS
 ┌───────────────────────────────────────────────────────────────┐
@@ -126,19 +127,19 @@
 └───────────────────────────────────────────────────────────────┘
                               ↓
 ┌───────────────────────────────────────────────────────────────┐
-│  L4  交互表层 (Electron Renderer / React + Tailwind)           │
+│  L4  交互表层 (Browser / React + Tailwind)                    │
 │  ├─ 三视图:Player / Profile / Settings                        │
 │  ├─ Web Audio 引擎(双 deck + TTS 通道 + GainNode + Biquad)   │
-│  ├─ WS 流式聊天 + 推送                                          │
+│  ├─ 同源 `/api` + `/ws` 访问 BFF                              │
 │  └─ 10s prefetch 下一首直链                                    │
 └───────────────────────────────────────────────────────────────┘
 ```
 
 ### 4.1 关键数据流
 
-- **启动 → 起播**:renderer `GET /api/plan/today` → main scheduler(若无今日计划,触发 plan mode)→ 返回计划 → renderer 取首段首曲 → `GET /api/now` 拿直链 → Web Audio 起播
-- **换歌 crossfade**:renderer 在 `d-12s` 触发 `POST /api/segue/trigger`(体验优先,尽量保证有口播)→ main 调 segue mode + tts → WS 推 `segue.tts-ready` → 到达 crossfade 起点执行 §9.3 的底铺式插入
-- **聊天**:renderer WS 送 `{type:"chat",text}` → router → agent(chat mode)→ 流式回 `{delta.say, done{say,actions}}` → renderer 展示 + 执行 actions → WS 推 `queue-updated`
+- **启动 → 起播**:browser `GET /api/plan/today` → server scheduler(若无今日计划,触发 plan mode)→ 返回计划 → browser 取首段首曲 → `GET /api/now` 拿直链 → Web Audio 起播
+- **换歌 crossfade**:browser 在 `d-12s` 触发 `POST /api/segue/trigger`(体验优先,尽量保证有口播)→ server 调 segue mode + tts → WS 推 `segue.tts-ready` → 到达 crossfade 起点执行 §9.3 的底铺式插入
+- **聊天**:browser WS 送 `{type:"chat",text}` → router → agent(chat mode)→ 流式回 `{delta.say, done{say,actions}}` → browser 展示 + 执行 actions → WS 推 `queue-updated`
 
 ---
 
@@ -149,38 +150,33 @@
 ```
 crossfadio/
 ├─ package.json
-├─ electron.vite.config.ts
+├─ vite.config.ts
 ├─ tsconfig.{node,web}.json
 ├─ docs/superpowers/specs/          规划文档
-├─ resources/                       图标 / tray
-├─ user-template/                   首次启动时拷到 userData/user/
+├─ user-template/                   首次启动时拷到应用数据目录 `user/`
 │  ├─ taste.md  routines.md  mood-rules.md
 │  ├─ playlists.json  dj-persona.md
 ├─ src/
-│  ├─ main/                         本地大脑 (Node)
-│  │  ├─ index.ts                  app 启动、窗口管理、spawn ncm
-│  │  ├─ server/                   localhost HTTP + WS
-│  │  │  ├─ routes/{chat,now,next,plan,taste,ncm,tts,control,prefs}.ts
+│  ├─ server/                       本地大脑 (Node.js)
+│  │  ├─ index.ts                  server 启动、spawn ncm、优雅退出
+│  │  ├─ app-paths.ts              应用数据目录解析
+│  │  ├─ http/                     localhost HTTP + WS
+│  │  │  ├─ routes/{health,ncm,ncm-login,now-next}.ts
 │  │  │  └─ ws.ts
-│  │  ├─ agent/
-│  │  │  ├─ compute.ts             compute(fragments) 入口
-│  │  │  ├─ fragments.ts           6 片组装
-│  │  │  ├─ modes.ts               plan / segue / chat 三 mode
-│  │  │  └─ tools.ts               Action 工具定义
-│  │  ├─ router.ts                 意图分流
-│  │  ├─ context.ts                环境注入
-│  │  ├─ scheduler.ts              cron + hook
-│  │  ├─ llm/{client,stream}.ts
-│  │  ├─ tts/{client,cache}.ts
-│  │  ├─ ncm/{spawn,client}.ts
-│  │  ├─ weather.ts
-│  │  ├─ store/                    better-sqlite3
+│  │  ├─ agent/                    预留: compute(fragments) / modes / tools
+│  │  ├─ router.ts                 预留: 意图分流
+│  │  ├─ context.ts                预留: 环境注入
+│  │  ├─ scheduler.ts              预留: cron + hook
+│  │  ├─ llm/{client,stream}.ts    预留
+│  │  ├─ tts/{client,cache}.ts     预留
+│  │  ├─ ncm/{spawn,client,auth}.ts
+│  │  ├─ weather.ts                预留
+│  │  ├─ store/
 │  │  │  ├─ db.ts  migrations.ts
 │  │  │  └─ {messages,plays,plan,prefs,ttsCache}.ts
-│  │  ├─ user-corpus/{paths,loader,writer}.ts
-│  │  ├─ security.ts               safeStorage 封装
+│  │  ├─ user-corpus/bootstrap.ts
+│  │  ├─ security.ts               secrets.json 封装
 │  │  └─ logger.ts                 pino
-│  ├─ preload/index.ts             暴露 WS url + app 基础信息
 │  ├─ renderer/
 │  │  ├─ App.tsx                   三视图路由
 │  │  ├─ views/{Player,Profile,Settings}/
@@ -191,7 +187,7 @@ crossfadio/
 │  │  │  ├─ ducking.ts             底铺式 TTS 插入
 │  │  │  └─ prefetch.ts            10s 预取
 │  │  ├─ ws/client.ts
-│  │  ├─ api.ts
+│  │  ├─ api.ts                    同源 `/api` 请求封装
 │  │  └─ store/                    zustand
 │  └─ shared/
 │     ├─ schema.ts                 zod(compute I/O、WS 事件、HTTP DTO)
@@ -199,19 +195,25 @@ crossfadio/
 └─ tests/{unit,e2e}/
 ```
 
-### 5.2 运行时 userData 布局
+### 5.2 运行时应用数据目录布局
 
 ```
-${app.getPath('userData')}/
+${CROSSFADIO_DATA_DIR:-默认用户目录}/
 ├─ user/                     用户可手编的语料(MVP 也提供 UI 编辑器)
 │  ├─ taste.md  routines.md  mood-rules.md
 │  ├─ playlists.json         [{id,name,provider,segments,tags,energyRange,priority}]
 │  └─ dj-persona.md          DJ 人格 system prompt
 ├─ state.db                  better-sqlite3
 ├─ cache/tts/<sha>.mp3       tts 音频缓存
-├─ secrets.bin               safeStorage 加密(LLM key, TTS key, ncm cookie)
+├─ secrets.json              文件存储降级(LLM key, TTS key, ncm cookie)
 └─ logs/app-YYYY-MM-DD.log
 ```
+
+默认目录:
+
+- macOS: `~/Library/Application Support/Crossfadio`
+- Linux: `~/.crossfadio`
+- Windows: `%APPDATA%/Crossfadio`
 
 ---
 
@@ -220,7 +222,7 @@ ${app.getPath('userData')}/
 ### 6.1 接口签名
 
 ```ts
-// src/main/agent/compute.ts
+// src/server/agent/compute.ts
 export function compute(
   fragments: Fragments,
   opts?: { stream?: boolean; signal?: AbortSignal }
@@ -539,7 +541,7 @@ CREATE TABLE tts_cache (
 );
 ```
 
-### 7.3 `secrets.bin` — safeStorage 加密
+### 7.3 `secrets.json` — 本地文件降级存储
 
 反序列化后:
 
@@ -552,7 +554,7 @@ CREATE TABLE tts_cache (
 }
 ```
 
-所有读写走 `main/security.ts` 封装,renderer 永远不接触原文。设置页展示为 `sk-...xxxx` 脱敏摘要。
+所有读写走 `src/server/security.ts` 封装,浏览器前端永远不接触原文。设置页展示为 `sk-...xxxx` 脱敏摘要。
 
 ### 7.4 歌曲解析缓存(内存,非持久化)
 
@@ -564,23 +566,26 @@ CREATE TABLE tts_cache (
 
 ### 8.1 总原则
 
-- 本地 HTTP server 监听 `127.0.0.1` 随机端口
-- HTTP 请求必须带 `X-Session` header;WS 连接必须带 `?session=<sessionToken>`
-- **请求-响应**走 HTTP;**流式 / 推送**走单条 WS(`/stream`)
+- 本地 HTTP server 监听 `127.0.0.1:4318`(默认,可由 `CROSSFADIO_PORT` 覆盖)
+- HTTP 走同源 `/api/*`;WS 连接到 `/ws`
+- 当前 WS 鉴权为首包 `{type:"auth",token}`;HTTP 暂不要求额外 session header
 - 所有 body 用 JSON;错误统一 `{ error: { code, message } }`
 
 ### 8.2 HTTP 端点
 
 | Method | Path | 用途 | Req | Resp |
 |---|---|---|---|---|
-| GET | `/api/health` | 健康 | — | `{ok, version, port}` |
+| GET | `/api/health` | 健康 | — | `{ok, service, uptimeSec, dbReady, timestamp}` |
+| GET | `/api/ncm/status` | NCM 子进程状态 | — | `{ok, enabled, running, baseUrl, pid, lastError, restartCount}` |
+| GET | `/api/ncm/login/session` | 当前登录态 | — | `{ok, hasCookie, profile}` |
+| GET | `/api/ncm/login/qr` | 申请扫码 | — | `{ok, key, qrimg, qrurl}` |
 | GET | `/api/prefs` | 读偏好 | — | `{ [key]: value }` |
 | PUT | `/api/prefs` | 写偏好 | `{key,value}` | `{ok}` |
 | GET | `/api/taste` | 读所有语料文件 | — | `{taste,routines,moodRules,djPersona,playlists}` |
 | PUT | `/api/taste/:file` | 写单个语料文件 | `{content}` | `{ok}` |
-| POST | `/api/ncm/login/qr` | 申请扫码 | — | `{qrKey, qrImg(dataURL)}` |
 | GET | `/api/ncm/login/status` | 轮询扫码状态 | `?key=` | `{code: 801\|802\|803\|800, cookie?, profile?}` |
-| POST | `/api/ncm/logout` | 登出 | — | `{ok}` |
+| POST | `/api/ncm/login/logout` | 登出 | — | `{ok}` |
+| POST | `/api/ncm/logout` | 登出(兼容旧路径) | — | `{ok}` |
 | GET | `/api/plan/today` | 今日计划 | — | `PlanOutput` |
 | POST | `/api/plan/regenerate` | 重新规划全天 | — | `PlanOutput` |
 | POST | `/api/plan/replan-segment` | 替换单时段 | `{segmentId, hint}` | `PlanOutput` |
@@ -591,33 +596,37 @@ CREATE TABLE tts_cache (
 | POST | `/api/tts/preview` | 设置页试听 | `{text, voice, speed}` | `audio/mpeg` |
 | POST | `/api/control` | 播放控制 | `{action: "play"\|"pause"\|"skip"\|"prev"\|"like"\|"unlike"}` | `{ok}` |
 
-### 8.3 WebSocket `/stream` 事件
+### 8.3 WebSocket `/ws` 事件
 
 连接格式:
 
-`ws://127.0.0.1:{port}/stream?session=<sessionToken>`
+`ws://127.0.0.1:{port}/ws`
 
-鉴权失败时服务端立即关闭连接(`4401 Unauthorized`)。
+当前实现要求客户端首包发送:
+
+```ts
+{ type: "auth", token: sessionToken }
+```
+
+鉴权失败时服务端立即关闭连接。
 
 **Client → Server**
 
 ```ts
-{ type: "chat", text: string }
-{ type: "ping" }
+{ type: "auth", token: string }
+{ type: "chat", text: string }     // 预留
+{ type: "ping" }                   // 预留
 ```
 
 **Server → Client**
 
 ```ts
-{ type: "chat.delta",    chunk: string, requestId: string }
-{ type: "chat.done",     say: string, intent: ChatIntent, actions: Action[], requestId: string }
-{ type: "segue.tts-ready", hash: string, url: string, requestId: string }
-{ type: "segue.say-delta", chunk: string, requestId: string }
-{ type: "now-playing",    track: Track, positionMs: number }
-{ type: "queue-updated",  queue: Track[] }
-{ type: "plan-updated",   plan: PlanOutput, version: number }
-{ type: "toast",          level: "info"\|"warn"\|"error", message: string }
-{ type: "ncm.cookie-expired" }
+{ type: "auth.ok" }                // 当前已实现
+{ type: "noop", received: string } // 当前已实现的占位回包
+{ type: "chat.delta",    chunk: string, requestId: string }      // 预留
+{ type: "chat.done",     say: string, intent: ChatIntent, actions: Action[], requestId: string } // 预留
+{ type: "segue.tts-ready", hash: string, url: string, requestId: string } // 预留
+{ type: "plan-updated",   plan: PlanOutput, version: number }    // 预留
 ```
 
 ### 8.4 失败时的降级
@@ -627,7 +636,7 @@ CREATE TABLE tts_cache (
 
 ---
 
-## §9 播放引擎(renderer)
+## §9 播放引擎(browser)
 
 ### 9.1 AudioContext 信号图
 
@@ -690,8 +699,8 @@ async function performSegue(t0, ttsBuf, startOffset = 1.0, D = 8) {
 ### 9.4 Prefetch 与 segue 时序
 
 ```
-progress=d-12s      renderer 触发 `/api/segue/trigger`(体验优先:提前拿口播)
-progress=d-10s      renderer 预取下一首直链 → deck.load()
+progress=d-12s      browser 触发 `/api/segue/trigger`(体验优先:提前拿口播)
+progress=d-10s      browser 预取下一首直链 → deck.load()
 progress=d-9s       目标:收到 `segue.tts-ready`,deck#tts.src = url
 progress=d-D(=d-8)  crossfade 开始
 progress=d-7s       gainB duck 到 -8dB,TTS 起声(标准路径)
@@ -753,7 +762,7 @@ for each track in plan.segments[*].tracks:
   track.ncmId = hit?.id ?? null
 ```
 
-**ncmId=null 时的补位**:播放前若 null,renderer `/api/plan/gap-fill`,agent 即时补 1 首。
+**ncmId=null 时的补位**:播放前若 null,browser 调 `/api/plan/gap-fill`,agent 即时补 1 首。
 
 ### 10.4 replan-segment 最小扰动
 
@@ -777,27 +786,27 @@ for each track in plan.segments[*].tracks:
 
 ### 11.1 凭证存储
 
-- LLM Key / TTS Key / NCM cookie → `safeStorage.encryptString` → `userData/secrets.bin`
-- 系统 keychain 不可用时退化到基于 `os.userInfo().username + machineId` 派生的 AES-256,设置页红字提示"凭证强度降级"
-- Renderer 只拿脱敏摘要 `{configured, preview:"sk-...xxxx"}`
+- LLM Key / TTS Key / NCM cookie → `secrets.json`
+- 当前实现采用文件存储降级方案,不依赖 Electron `safeStorage`
+- Browser 端只拿脱敏摘要 `{configured, preview:"sk-...xxxx"}`
 
 ### 11.2 请求代理层
 
-- `main/llm/client.ts` / `main/tts/client.ts` 是唯一出口
+- `src/server/llm/client.ts` / `src/server/tts/client.ts` 是唯一出口
 - 出站白名单:用户配的 LLM base_url / TTS base_url / NCM localhost / 天气 provider
 
 ### 11.3 本地 HTTP 防护
 
-- 监听 `127.0.0.1` 随机端口
-- 每次启动生成 `sessionToken` 写 renderer `sessionStorage`;HTTP 走 `X-Session`,WS 走 `?session=`
-- `sessionToken` 仅本次 app 生命周期有效,进程退出即失效
+- 监听 `127.0.0.1` 固定端口(默认 `4318`)
+- 开发期由 Vite 代理 `/api` 与 `/ws`;生产期由同一个 Node 服务托管前端静态资源
+- 每次启动生成 `sessionToken`;当前只用于 WS 首包鉴权,进程退出即失效
 
 ### 11.4 隐私承诺(UI + README 明示)
 
 - 默认不上报任何数据给除用户配置的 LLM/TTS/NCM 外的服务
 - 不做匿名 crash report(MVP)
 - 播放历史、聊天消息**永不离开本机**
-- 设置页提供"一键删除所有数据"(清 `userData/` 下 `state.db` / `cache/` / `secrets.bin` / `user/`)
+- 设置页提供"一键删除所有数据"(清应用数据目录下 `state.db` / `cache/` / `secrets.json` / `user/`)
 
 ### 11.5 网易云登录
 
@@ -813,14 +822,14 @@ for each track in plan.segments[*].tracks:
 | LLM 超时 / schema 非法 | segue → 模板口播优先,失败再纯 crossfade;plan → 本地兜底;chat → "(DJ 走神了)" | toast.warn |
 | TTS 失败 | segue → 晚到插入/模板口播优先,失败再纯 crossfade;preview 报错 | toast.warn |
 | NCM 直链 404 | 跳过本曲,`plays.skipped=1,reason="url_404"` | 播放器淡显 |
-| NCM 子进程崩溃 | 主进程 3s 重启,60s 内重试 3 次 | toast.err |
+| NCM 子进程崩溃 | 后端 3s 重启,60s 内重试 3 次 | toast.err |
 | 网络断开 | 缓存 tts + 已预取曲继续播完,之后离线模式 | 顶栏离线角标 |
 | cookie 过期 | 引导扫码重登 | toast.warn + 模态 |
-| safeStorage 解密失败 | 按凭证损坏处理,要求重填 | 设置页红字 |
+| `secrets.json` 损坏/不可读 | 按凭证损坏处理,要求重填 | 设置页红字 |
 | user/*.md 解析失败 | 标红该文件,不进 agent,其他语料正常 | 设置页行内提示 |
 | 磁盘满 / tts cache 写失败 | 自动清最早 50% 缓存后重试 | 日志 info |
 
-**全局兜底**:renderer 崩溃不影响主进程(Electron 自动重开窗口);主进程崩溃写 crash log 并退出(不自动重启避免崩溃循环)。
+**全局兜底**:前端页面刷新不影响后端进程;后端崩溃写 crash log 并退出(不自动重启避免崩溃循环)。
 
 ---
 
@@ -829,7 +838,7 @@ for each track in plan.segments[*].tracks:
 ### 13.1 测试金字塔
 
 ```
-        ▲  Playwright-for-Electron(e2e,少量)
+        ▲  Browser E2E(预留,少量)
        ▲▲  → 登录→起播→换歌→crossfade→聊天调整→跑步 replan
       ▲▲▲  Vitest + jsdom(集成,中量)
      ▲▲▲▲  → HTTP 路由契约 / WS 事件时序 / compute × FakeLLM
@@ -855,7 +864,7 @@ for each track in plan.segments[*].tracks:
 
 ### 13.4 CI
 
-本地 make target 为主(`test:unit` / `test:integration` / `test:e2e`)。GH Actions 可选,CI 上只跑 unit + integration(e2e 需要桌面环境)。
+本地以 `pnpm check` / `pnpm test` / `pnpm build` 为主。GH Actions 可选,CI 上优先跑 unit + integration;浏览器 e2e 后续补入。
 
 ---
 
@@ -863,9 +872,9 @@ for each track in plan.segments[*].tracks:
 
 | 里程碑 | 工期 | 产出 | 验收 |
 |---|---|---|---|
-| **M0 工程骨架** | 3d | electron-vite + TS + Tailwind + shadcn;主进程 HTTP+WS;SQLite 初始化;user-template 拷贝;pino 落盘 | `/api/health` 返回 ok;window 启动 |
+| **M0 工程骨架** | 3d | Vite + TS + Tailwind + shadcn;Node HTTP+WS;SQLite 初始化;user-template 拷贝;pino 落盘 | `/api/health` 返回 ok;浏览器可访问 |
 | **M1 播放 MVP** | 4d | NCM 扫码登录 + 歌单读取;Web Audio 双 deck + crossfade(无 TTS);prefetch;Player UI | 单歌单从头到尾连播 + 平滑 crossfade |
-| **M2 AI 底座** | 3d | LLM 兼容 client(流式/非流式);TTS 兼容 client + cache;safeStorage + 设置页;compute(fragments) 骨架 + FakeLLM 单测 | 设置页试听 TTS 成功;FakeLLM 走通 chat |
+| **M2 AI 底座** | 3d | LLM 兼容 client(流式/非流式);TTS 兼容 client + cache;`secrets.json` + 设置页;compute(fragments) 骨架 + FakeLLM 单测 | 设置页试听 TTS 成功;FakeLLM 走通 chat |
 | **M3 规划** | 3d | scheduler + plan mode + 计划 UI + query→ncmId 兑现 + 降级 | 07:00 自动产出当日计划;UI 展示 4 时段 |
 | **M4 DJ 串场 + 聊天 + 动态调整** | 5d | segue mode + ducking + chat mode + actions 执行 + WS 流 + Timeline 只读 | 换歌有 DJ 口播;聊天 replan 生效;跑步场景 |
 | **M5 打磨** | 3d | 快捷指令 + 天气注入 + 5 模块 UI 整合 + e2e 冒烟 + README | Playwright 5 条 e2e 通过 |

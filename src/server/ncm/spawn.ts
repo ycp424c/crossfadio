@@ -1,6 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams, type SpawnOptionsWithoutStdio } from 'node:child_process';
 import { createRequire } from 'node:module';
-import { app } from 'electron';
+import { resolveAppDataDir } from '../app-paths.js';
 
 export type NcmStatus = {
   enabled: boolean;
@@ -68,8 +68,8 @@ export class NcmProcessManager {
     this.env = options.env ?? process.env;
     this.spawnImpl = options.spawnImpl ?? spawn;
     this.fetchImpl = options.fetchImpl ?? fetch;
-    this.getAppPath = options.getAppPath ?? (() => app.getAppPath());
-    this.getUserDataPath = options.getUserDataPath ?? (() => app.getPath('userData'));
+    this.getAppPath = options.getAppPath ?? (() => process.cwd());
+    this.getUserDataPath = options.getUserDataPath ?? (() => resolveAppDataDir());
     this.restartDelayMs = options.restartDelayMs ?? 3_000;
     this.restartWindowMs = options.restartWindowMs ?? 60_000;
     this.restartMaxAttempts = options.restartMaxAttempts ?? 3;

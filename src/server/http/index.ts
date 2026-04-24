@@ -1,21 +1,23 @@
 import { randomBytes } from 'node:crypto';
+import fs from 'node:fs';
 import { createServer, type Server } from 'node:http';
+import path from 'node:path';
 import express from 'express';
 import cors from 'cors';
-import { getHealthHandler } from './routes/health';
-import { setupWsServer } from './ws';
-import type { SessionToken } from '@shared/types';
-import type { NcmProcessManager } from '@main/ncm/spawn';
-import { createNcmStatusHandler } from './routes/ncm';
-import type { NcmAuthService } from '@main/ncm/auth';
-import type { NcmClient } from '@main/ncm/client';
+import { getHealthHandler } from './routes/health.js';
+import { setupWsServer } from './ws.js';
+import type { SessionToken } from '../../shared/types.js';
+import type { NcmProcessManager } from '../ncm/spawn.js';
+import { createNcmStatusHandler } from './routes/ncm.js';
+import type { NcmAuthService } from '../ncm/auth.js';
+import type { NcmClient } from '../ncm/client.js';
 import {
   createNcmLogoutHandler,
   createNcmQrHandler,
   createNcmQrStatusHandler,
   createNcmSessionHandler
-} from './routes/ncm-login';
-import { createNextHandler, createNowHandler } from './routes/now-next';
+} from './routes/ncm-login.js';
+import { createNextHandler, createNowHandler } from './routes/now-next.js';
 
 export type LocalServer = {
   port: number;
@@ -29,6 +31,9 @@ type StartLocalServerOptions = {
   ncm: NcmProcessManager;
   ncmAuth: NcmAuthService;
   ncmClient: NcmClient;
+  host: string;
+  port: number;
+  staticDir?: string | null;
 };
 
 export async function startLocalServer(options: StartLocalServerOptions): Promise<LocalServer> {
@@ -63,6 +68,13 @@ export async function startLocalServer(options: StartLocalServerOptions): Promis
   app.get('/api/now', createNowHandler(options.ncmClient));
   app.get('/api/next', createNextHandler(options.ncmClient));
 
+  if (options.staticDir && fs.existsSync(options.staticDir)) {
+    app.use(express.static(options.staticDir));
+    app.get(/^(?!\/api(?:\/|$)|\/ws(?:\/|$)).*/, (_req, res) => {
+      res.sendFile(path.join(options.staticDir!, 'index.html'));
+    });
+  }
+
   app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
     const message = error instanceof Error ? error.message : 'unknown error';
     res.status(500).json({ ok: false, error: message });
@@ -72,9 +84,9 @@ export async function startLocalServer(options: StartLocalServerOptions): Promis
   const sessionToken = randomBytes(24).toString('hex');
   setupWsServer(server, sessionToken);
 
-  const port = await listen(server);
-  const baseUrl = `http://127.0.0.1:${port}`;
-  const wsUrl = `ws://127.0.0.1:${port}/ws`;
+  const port = await listen(server, options.host, options.port);
+  const baseUrl = `http://${options.host}:${port}`;
+  const wsUrl = `ws://${options.host}:${port}/ws`;
 
   return {
     port,
@@ -85,10 +97,10 @@ export async function startLocalServer(options: StartLocalServerOptions): Promis
   };
 }
 
-function listen(server: Server): Promise<number> {
+function listen(server: Server, host: string, port: number): Promise<number> {
   return new Promise((resolve, reject) => {
     server.once('error', reject);
-    server.listen(0, '127.0.0.1', () => {
+    server.listen(port, host, () => {
       const address = server.address();
       if (!address || typeof address === 'string') {
         reject(new Error('Failed to acquire local server port.'));

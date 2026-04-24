@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { NcmAuthService } from '../../src/main/ncm/auth';
+import { NcmAuthService } from '../../src/server/ncm/auth';
 import { NCM_QR_CODE } from '../../src/shared/schema';
 
 type ClientMock = {

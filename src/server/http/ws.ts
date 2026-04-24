@@ -1,7 +1,7 @@
 import { WebSocketServer } from 'ws';
 import type { Server } from 'node:http';
-import type { SessionToken } from '@shared/types';
-import { wsAuthSchema } from '@shared/schema';
+import type { SessionToken } from '../../shared/types.js';
+import { wsAuthSchema } from '../../shared/schema.js';
 
 export function setupWsServer(server: Server, sessionToken: SessionToken): WebSocketServer {
   const wss = new WebSocketServer({ noServer: true });
