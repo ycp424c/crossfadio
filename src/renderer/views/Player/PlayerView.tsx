@@ -212,11 +212,11 @@ export function PlayerView(): JSX.Element {
     <main className="min-h-screen bg-[radial-gradient(circle_at_top_left,#1f2b5e_0%,#080b14_35%,#070a12_100%)] p-6 text-zinc-100">
       <div className="mx-auto grid max-w-[1480px] grid-cols-12 gap-4">
         <aside className="col-span-2 rounded-2xl border border-zinc-800/80 bg-zinc-950/60 p-4">
-          <h1 className="inline-flex items-center gap-2 text-3xl font-semibold tracking-tight text-violet-200">
-            <img alt="Crossfadio 应用图标" className="h-8 w-8 rounded-lg" src={appMark} />
+          <h1 className="inline-flex items-center gap-2 text-lg font-semibold tracking-tight text-violet-200">
+            <img alt="Crossfadio 应用图标" className="h-7 w-7 rounded-lg" src={appMark} />
             Crossfadio
           </h1>
-          <p className="mt-1 text-xs text-zinc-400">M1-07 Player MVP</p>
+          <p className="mt-0.5 text-xs text-zinc-400">M1-07 Player MVP</p>
           <nav className="mt-6 space-y-2 text-sm">
             <div className="inline-flex w-full items-center gap-2 rounded-xl border border-violet-500/30 bg-violet-500/15 px-3 py-2 text-violet-100">
               <Radio className="h-4 w-4" />
@@ -235,9 +235,9 @@ export function PlayerView(): JSX.Element {
           <section className="mt-6 rounded-xl border border-zinc-800 bg-zinc-900/60 p-3 text-xs text-zinc-300">
             <p className="font-medium text-zinc-100">NCM 登录状态</p>
             <p className="mt-1">{session.hasCookie ? '已登录' : '未登录'}</p>
-            <div className="mt-3 flex gap-2">
+            <div className="mt-3 flex flex-col gap-1.5">
               <button
-                className="inline-flex items-center gap-1 rounded border border-zinc-700 bg-zinc-950 px-2 py-1 hover:border-zinc-500"
+                className="inline-flex w-full items-center gap-2 rounded border border-zinc-700 bg-zinc-950 px-2.5 py-1.5 text-xs hover:border-zinc-500"
                 onClick={async () => {
                   try {
                     const qr = await createNcmQr();
@@ -249,11 +249,11 @@ export function PlayerView(): JSX.Element {
                 }}
                 type="button"
               >
-                <QrCode className="h-3.5 w-3.5" />
-                二维码
+                <QrCode className="h-4 w-4 shrink-0" />
+                二维码登录
               </button>
               <button
-                className="inline-flex items-center gap-1 rounded border border-zinc-700 bg-zinc-950 px-2 py-1 hover:border-zinc-500"
+                className="inline-flex w-full items-center gap-2 rounded border border-zinc-700 bg-zinc-950 px-2.5 py-1.5 text-xs hover:border-zinc-500"
                 onClick={async () => {
                   if (!qrPayload?.key) {
                     return;
@@ -268,11 +268,11 @@ export function PlayerView(): JSX.Element {
                 }}
                 type="button"
               >
-                <ScanSearch className="h-3.5 w-3.5" />
-                状态
+                <ScanSearch className="h-4 w-4 shrink-0" />
+                检查状态
               </button>
               <button
-                className="inline-flex items-center gap-1 rounded border border-zinc-700 bg-zinc-950 px-2 py-1 hover:border-zinc-500"
+                className="inline-flex w-full items-center gap-2 rounded border border-zinc-700 bg-zinc-950 px-2.5 py-1.5 text-xs hover:border-zinc-500"
                 onClick={async () => {
                   try {
                     await logoutNcm();
@@ -284,7 +284,7 @@ export function PlayerView(): JSX.Element {
                 }}
                 type="button"
               >
-                <LogOut className="h-3.5 w-3.5" />
+                <LogOut className="h-4 w-4 shrink-0" />
                 登出
               </button>
             </div>
