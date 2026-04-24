@@ -116,7 +116,7 @@
 | M4-04 | 模板口播缓存机制（fallback tts） | M2-02 | `cache/tts/fallback` 管理 | 主 TTS 超时仍可播一条模板口播 | 0.4 | P1 | DONE |
 | M4-05 | chat mode 流式输出与意图识别 | M2-06 M0-04 | `routes/chat.ts` + WS delta | chat.delta/chat.done 事件稳定 | 0.6 | P0 | DONE |
 | M4-06 | Action 执行器（swap/add/skip/ban/replan/set_pref） | M4-05 M3-06 | `router.executeActions()` | actions 落地且队列实时更新 | 0.7 | P0 | DONE |
-| M4-07 | Timeline 只读可视化（crossfade/ducking 时序） | M1-05 M4-03 | `components/Timeline` | 可视化和实际参数一致 | 0.5 | P1 | TODO |
+| M4-07 | Timeline 只读可视化（crossfade/ducking 时序） | M1-05 M4-03 | `components/Timeline` | 可视化和实际参数一致 | 0.5 | P1 | DONE |
 | M4-08 | ChatPanel + Queue 同步刷新（queue-updated） | M4-05 M4-06 | `components/ChatPanel` | “跑步 30 分钟 Rap”3s 内触发队列变更 | 0.5 | P0 | DONE |
 | M4-09 | 串场与聊天链路集成测试（FakeLLM/FakeTTS） | M4-03 M4-06 | integration tests | 回归覆盖 3 个关键场景 | 0.4 | P1 | DONE |
 
@@ -228,3 +228,4 @@
 | 2026-04-24 | justynchen / codex | M2-07 → DONE：FakeLlmClient/FakeTtsClient 测试替身；compute() 重构支持 llmClient 注入；集成测试 10 用例（chat/plan/segue 最小链路）|
 | 2026-04-24 | justynchen / codex | M2-04 → DONE：prefs store（getPref/setPref）+ GET/PUT /api/settings（apiKey 走 SecretStore）+ SettingsView（LLM/TTS 表单）+ App.tsx tab 导航；累计 129 用例通过 |
 | 2026-04-24 | justynchen / codex | M4-04 → DONE：新增 `tts/fallback.ts` 模板口播缓存，主 TTS 失败时读取 `cache/tts/fallback/<voice>` 本地模板音频；`segue` 路由成功生成主口播后异步预热模板缓存 |
+| 2026-04-24 | justynchen / codex | M4-07 → DONE：新增 `renderer/audio/timeline.ts` 与 `PlaybackTimeline`，在 Player 视图只读展示 prefetch/segue/crossfade 标记及 TTS ducking/crossfade 区间；补充 timeline 单测 |

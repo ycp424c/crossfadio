@@ -8,11 +8,8 @@ export type FallbackAwareTtsResult = TtsResult & {
   fallback: boolean;
 };
 
-export function buildFallbackTemplateText(to: Pick<Track, 'id' | 'name' | 'artist'>): string {
-  const title = to.name?.trim() || '下一首';
-  const artist = to.artist?.trim();
-  const label = artist ? `${artist} 的 ${title}` : title;
-  return `接下来换到 ${label}，让音乐继续。`;
+export function buildFallbackTemplateText(_to: Pick<Track, 'id' | 'name' | 'artist'>): string {
+  return '接下来切换到下一首，让音乐继续。';
 }
 
 export function getCachedFallbackTts(config: TtsConfig, text: string): TtsResult | null {
@@ -58,7 +55,7 @@ export async function synthesizeTtsWithFallback(
 
 function fallbackFilePath(config: TtsConfig, text: string): string {
   const hash = buildCacheHash({
-    endpoint: 'fallback-template',
+    endpoint: `${config.baseUrl}/fallback-template`,
     model: config.model,
     voice: config.voice,
     speed: config.speed,

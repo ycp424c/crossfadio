@@ -38,10 +38,11 @@ afterEach(() => {
 });
 
 describe('buildFallbackTemplateText', () => {
-  it('uses the target track title in a short reusable segue line', () => {
+  it('uses a short reusable segue line that is independent of the target track', () => {
     const text = buildFallbackTemplateText({ id: '1', name: 'Holocene' });
 
-    expect(text).toContain('Holocene');
+    expect(text).toBe('接下来切换到下一首，让音乐继续。');
+    expect(text).not.toContain('Holocene');
     expect(text.length).toBeLessThanOrEqual(60);
   });
 });
@@ -63,6 +64,17 @@ describe('fallback TTS cache', () => {
     expect(fs.readFileSync(saved.filePath)).toEqual(audio);
     expect(cached).toEqual({ filePath: saved.filePath, cached: true });
     expect(saved.filePath).toContain(path.join('cache', 'tts', 'fallback', 'alloy'));
+  });
+
+  it('separates fallback cache entries by TTS endpoint', () => {
+    const text = buildFallbackTemplateText({ id: '1', name: 'Holocene' });
+    const otherEndpointConfig = { ...baseConfig, baseUrl: 'https://tts.example.net/v1' };
+
+    const saved = saveFallbackTtsToCache(baseConfig, text, Buffer.from('fallback-audio'));
+    const otherEndpointCached = getCachedFallbackTts(otherEndpointConfig, text);
+
+    expect(otherEndpointCached).toBeNull();
+    expect(getCachedFallbackTts(baseConfig, text)?.filePath).toBe(saved.filePath);
   });
 
   it('returns cached fallback audio without synthesizing again', async () => {

@@ -20,6 +20,7 @@ import {
 } from '@renderer/api';
 import { getPrefetchDecision } from '@renderer/audio/prefetch';
 import { NowPlayingHero } from '@renderer/components/player/NowPlayingHero';
+import { PlaybackTimeline } from '@renderer/components/player/PlaybackTimeline';
 import { QueuePanel } from '@renderer/components/player/QueuePanel';
 import { TransportControls } from '@renderer/components/player/TransportControls';
 import { onWsMessage } from '@renderer/ws/client';
@@ -49,6 +50,8 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
   const [durationSec, setDurationSec] = useState(0);
   const [statusText, setStatusText] = useState('准备就绪');
   const [error, setError] = useState('');
+  const [segueStatus, setSegueStatus] = useState<'idle' | 'generating' | 'ready' | 'degraded'>('idle');
+  const [duckingHintSec, setDuckingHintSec] = useState(8);
 
   const [session, setSession] = useState<NcmSessionState>({ hasCookie: false, profile: null });
   const [qrPayload, setQrPayload] = useState<{ key: string; qrimg: string } | null>(null);
@@ -97,6 +100,14 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
         const say = String(msg.say ?? '').trim();
         if (say) setStatusText(`DJ: ${say}`);
       } else if (msg.type === 'segue.tts-ready') {
+        setSegueStatus('ready');
+        const maybeDuckingHintSec =
+          msg.segue && typeof msg.segue === 'object' && 'duckingHintSec' in msg.segue
+            ? Number((msg.segue as { duckingHintSec: unknown }).duckingHintSec)
+            : NaN;
+        if (Number.isFinite(maybeDuckingHintSec) && maybeDuckingHintSec > 0) {
+          setDuckingHintSec(maybeDuckingHintSec);
+        }
         const audioUrl = typeof msg.audioUrl === 'string' ? msg.audioUrl : null;
         if (audioUrl) {
           segueAudioRef.current?.pause();
@@ -110,6 +121,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
           setStatusText('DJ 过渡语音已生成（未配置 TTS）');
         }
       } else if (msg.type === 'segue.degraded') {
+        setSegueStatus('degraded');
         setStatusText('DJ 过渡语音暂不可用');
       }
     });
@@ -134,6 +146,8 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
 
     prefetchTriggeredRef.current = false;
     segueTriggeredRef.current = false;
+    setSegueStatus('idle');
+    setDuckingHintSec(8);
     setStatusText(`正在加载曲目 ${currentTrackId} ...`);
 
     void loadNowPlaying(currentTrackId);
@@ -249,6 +263,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
     const nextTrackId = nextTrack?.track.id ?? null;
     if (!segueTriggeredRef.current && decision.shouldTriggerSegue && currentTrackId && nextTrackId) {
       segueTriggeredRef.current = true;
+      setSegueStatus('generating');
       setStatusText(`DJ 过渡语音生成中：${currentTrackId} → ${nextTrackId}`);
       void triggerSegue(currentTrackId, nextTrackId).catch((err) => {
         setError(err instanceof Error ? err.message : 'segue 请求失败');
@@ -429,6 +444,15 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
             onPlayPause={handlePlayPause}
             onPrev={handlePrev}
             onSkip={handleSkip}
+          />
+
+          <PlaybackTimeline
+            duckingHintSec={duckingHintSec}
+            durationSec={durationSec}
+            nextTrackId={nextTrack?.track.id ?? null}
+            positionSec={positionSec}
+            segueStatus={segueStatus}
+            timing={nowPlaying?.timing ?? null}
           />
 
           <audio
