@@ -21,9 +21,17 @@ export function getTtsCacheDir(): string {
   return path.join(resolveAppDataDir(), 'cache', 'tts');
 }
 
-export function getCachedFilePath(hash: string, format: string): string | null {
-  const filePath = path.join(getTtsCacheDir(), `${hash}.${format}`);
-  return fs.existsSync(filePath) ? filePath : null;
+export function getCachedFilePath(hash: string, format: string | string[]): string | null {
+  const formats = Array.isArray(format) ? format : [format];
+
+  for (const item of formats) {
+    const filePath = path.join(getTtsCacheDir(), `${hash}.${item}`);
+    if (fs.existsSync(filePath)) {
+      return filePath;
+    }
+  }
+
+  return null;
 }
 
 export function saveToCache(hash: string, format: string, data: Buffer): string {

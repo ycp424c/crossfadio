@@ -158,6 +158,28 @@ export type SaveSettingsPayload = {
   };
 };
 
+export type TestLlmPayload = {
+  llm?: Partial<SaveSettingsPayload['llm']>;
+};
+
+export type TestTtsPayload = {
+  tts?: Partial<SaveSettingsPayload['tts']>;
+};
+
+export type TestLlmResponse = {
+  ok: boolean;
+  model: string;
+  preview: string;
+  message: string;
+};
+
+export type TestTtsResponse = {
+  ok: boolean;
+  cached: boolean;
+  audioUrl: string;
+  message: string;
+};
+
 export async function getSettings(): Promise<SettingsResponse> {
   return requestJson<SettingsResponse>('/api/settings');
 }
@@ -169,6 +191,22 @@ export async function saveSettings(payload: SaveSettingsPayload): Promise<void> 
     body: JSON.stringify(payload)
   });
   if (!result.ok) throw new Error('Failed to save settings');
+}
+
+export async function testLlmSettings(payload: TestLlmPayload): Promise<TestLlmResponse> {
+  return requestJson<TestLlmResponse>('/api/settings/test-llm', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
+}
+
+export async function testTtsSettings(payload: TestTtsPayload): Promise<TestTtsResponse> {
+  return requestJson<TestTtsResponse>('/api/settings/test-tts', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  });
 }
 
 export type PlanTrack = {

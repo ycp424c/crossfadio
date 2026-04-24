@@ -1,7 +1,13 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { buildCacheHash, getTtsCacheDir } from './cache.js';
-import type { TtsConfig, TtsResult } from './client.js';
+import {
+  resolvePreferredTtsAudioFormat,
+  resolveTtsCacheHashFormat,
+  resolveTtsCacheLookupFormats,
+  type TtsConfig,
+  type TtsResult
+} from './client.js';
 import type { Track } from '../agent/schema.js';
 
 export type FallbackAwareTtsResult = TtsResult & {
@@ -13,12 +19,23 @@ export function buildFallbackTemplateText(_to: Pick<Track, 'id' | 'name' | 'arti
 }
 
 export function getCachedFallbackTts(config: TtsConfig, text: string): TtsResult | null {
-  const filePath = fallbackFilePath(config, text);
-  return fs.existsSync(filePath) ? { filePath, cached: true } : null;
+  for (const format of resolveTtsCacheLookupFormats(config)) {
+    const filePath = fallbackFilePath(config, text, format);
+    if (fs.existsSync(filePath)) {
+      return { filePath, cached: true };
+    }
+  }
+  return null;
 }
 
-export function saveFallbackTtsToCache(config: TtsConfig, text: string, data: Buffer): TtsResult {
-  const filePath = fallbackFilePath(config, text);
+export function saveFallbackTtsToCache(
+  config: TtsConfig,
+  text: string,
+  data: Buffer,
+  format?: string
+): TtsResult {
+  const resolvedFormat = normalizeAudioFormat(format) ?? resolvePreferredTtsAudioFormat(config);
+  const filePath = fallbackFilePath(config, text, resolvedFormat);
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   fs.writeFileSync(filePath, data);
   return { filePath, cached: false };
@@ -34,7 +51,8 @@ export async function ensureFallbackTtsCached(
 
   const synthesized = await synthesize(text);
   const data = fs.readFileSync(synthesized.filePath);
-  return saveFallbackTtsToCache(config, text, data);
+  const synthesizedFormat = normalizeAudioFormat(path.extname(synthesized.filePath).slice(1));
+  return saveFallbackTtsToCache(config, text, data, synthesizedFormat ?? undefined);
 }
 
 export async function synthesizeTtsWithFallback(
@@ -53,18 +71,26 @@ export async function synthesizeTtsWithFallback(
   }
 }
 
-function fallbackFilePath(config: TtsConfig, text: string): string {
+function fallbackFilePath(config: TtsConfig, text: string, format: string): string {
   const hash = buildCacheHash({
     endpoint: `${config.baseUrl}/fallback-template`,
     model: config.model,
     voice: config.voice,
     speed: config.speed,
-    format: config.format,
+    format: resolveTtsCacheHashFormat(config),
     text
   });
-  return path.join(getTtsCacheDir(), 'fallback', safePathSegment(config.voice), `${hash}.${config.format}`);
+  return path.join(getTtsCacheDir(), 'fallback', safePathSegment(config.voice), `${hash}.${format}`);
 }
 
 function safePathSegment(value: string): string {
   return value.replace(/[^a-zA-Z0-9._-]/g, '_') || 'voice';
+}
+
+function normalizeAudioFormat(value: string | undefined): string | null {
+  if (!value) return null;
+  const normalized = value.trim().toLowerCase();
+  if (normalized === 'm4a') return 'aac';
+  if (normalized === 'wave') return 'wav';
+  return ['wav', 'mp3', 'opus', 'aac', 'flac'].includes(normalized) ? normalized : null;
 }

@@ -19,7 +19,12 @@ import {
 } from './routes/ncm-login.js';
 import { createNextHandler, createNowHandler } from './routes/now-next.js';
 import { createStartPlayHandler, createEndPlayHandler } from './routes/plays.js';
-import { createGetSettingsHandler, createSaveSettingsHandler } from './routes/settings.js';
+import {
+  createGetSettingsHandler,
+  createSaveSettingsHandler,
+  createTestLlmSettingsHandler,
+  createTestTtsSettingsHandler
+} from './routes/settings.js';
 import {
   createGetTodayPlanHandler,
   createRegeneratePlanHandler,
@@ -88,6 +93,8 @@ export async function startLocalServer(options: StartLocalServerOptions): Promis
   app.patch('/api/plays/:id', createEndPlayHandler());
   app.get('/api/settings', createGetSettingsHandler(options.secrets));
   app.put('/api/settings', createSaveSettingsHandler(options.secrets));
+  app.post('/api/settings/test-llm', createTestLlmSettingsHandler(options.secrets));
+  app.post('/api/settings/test-tts', createTestTtsSettingsHandler(options.secrets));
   app.get('/api/plan/today', createGetTodayPlanHandler({ secrets: options.secrets, ncmClient: options.ncmClient }));
   app.post('/api/plan/regenerate', createRegeneratePlanHandler({ secrets: options.secrets, ncmClient: options.ncmClient }));
   app.post('/api/plan/replan-segment', createReplanSegmentHandler({ secrets: options.secrets, ncmClient: options.ncmClient }));

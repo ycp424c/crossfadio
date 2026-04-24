@@ -106,6 +106,26 @@ describe('fallback TTS cache', () => {
     expect(fs.readFileSync(result.filePath)).toEqual(Buffer.from('synthesized-template'));
   });
 
+  it('stores Alibaba fallback template using real synthesized extension', async () => {
+    const text = buildFallbackTemplateText({ id: '1', name: 'Holocene' });
+    const aliyunConfig: TtsConfig = {
+      ...baseConfig,
+      provider: 'aliyun-qwen',
+      baseUrl: 'https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation',
+      model: 'qwen-tts',
+      voice: 'Cherry'
+    };
+    const synthesizedPath = path.join(dataDir, 'normal-cache.wav');
+    fs.writeFileSync(synthesizedPath, Buffer.from('aliyun-template'));
+
+    const result = await ensureFallbackTtsCached(aliyunConfig, text, async () => {
+      return { filePath: synthesizedPath, cached: false };
+    });
+
+    expect(path.extname(result.filePath)).toBe('.wav');
+    expect(fs.readFileSync(result.filePath)).toEqual(Buffer.from('aliyun-template'));
+  });
+
   it('returns main TTS result when synthesis succeeds', async () => {
     const result = await synthesizeTtsWithFallback(
       baseConfig,

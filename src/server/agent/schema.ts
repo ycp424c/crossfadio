@@ -17,6 +17,17 @@ export const trackSchema = z.object({
 
 export type Track = z.infer<typeof trackSchema>;
 
+export const segueTrackContextSchema = z.object({
+  id: z.string().min(1),
+  name: z.string().min(1),
+  artist: z.string().min(1),
+  lyricExcerpt: z.string().default(''),
+  lyricKeywords: z.array(z.string()).default([]),
+  tags: z.array(z.string()).default([])
+});
+
+export type SegueTrackContext = z.infer<typeof segueTrackContextSchema>;
+
 export const nowPlayingSchema = z.object({
   id: z.string().min(1),
   name: z.string(),
@@ -91,7 +102,17 @@ export const fragmentsSchema = z.object({
   // ⑤ input
   input: z.discriminatedUnion('kind', [
     z.object({ kind: z.literal('chat'), text: z.string() }),
-    z.object({ kind: z.literal('segueTrigger'), from: trackSchema, to: trackSchema }),
+    z.object({
+      kind: z.literal('segueTrigger'),
+      from: trackSchema,
+      to: trackSchema,
+      context: z
+        .object({
+          from: segueTrackContextSchema,
+          to: segueTrackContextSchema
+        })
+        .optional()
+    }),
     z.object({ kind: z.literal('planRequest'), date: z.string() }),
     z.object({ kind: z.literal('toolResult'), tool: z.string(), data: z.unknown() })
   ]),
@@ -161,7 +182,7 @@ export type PlanOutput = z.infer<typeof planOutputSchema>;
 
 export const segueOutputSchema = z.object({
   mode: z.literal('segue'),
-  say: z.string().max(200),
+  say: z.string().max(500),
   duckingHintSec: z.number().default(8),
   filterSweep: z.boolean().default(true),
   emotionTag: z.string()

@@ -94,7 +94,9 @@ function buildInputSlice(f: Fragments): string {
       inputText = f.input.text;
       break;
     case 'segueTrigger':
-      inputText = `[串场触发] 从"${f.input.from.name ?? f.input.from.id}"切到"${f.input.to.name ?? f.input.to.id}"`;
+      inputText = `[串场触发] 从"${f.input.from.name ?? f.input.from.id}"切到"${f.input.to.name ?? f.input.to.id}"${renderSegueContext(
+        f
+      )}`;
       break;
     case 'planRequest':
       inputText = `[计划请求] 日期：${f.input.date}`;
@@ -109,4 +111,31 @@ function buildInputSlice(f: Fragments): string {
   }`;
 
   return `${inputText}\n${traceText}`;
+}
+
+function renderSegueContext(f: Fragments): string {
+  if (f.input.kind !== 'segueTrigger' || !f.input.context) {
+    return '';
+  }
+
+  const from = f.input.context.from;
+  const to = f.input.context.to;
+
+  return `
+<segue_context>
+<from_track>
+歌名：${from.name}
+艺人：${from.artist}
+标签：${from.tags.join(' / ') || '无'}
+歌词片段：${from.lyricExcerpt || '无'}
+歌词关键词：${from.lyricKeywords.join(' / ') || '无'}
+</from_track>
+<to_track>
+歌名：${to.name}
+艺人：${to.artist}
+标签：${to.tags.join(' / ') || '无'}
+歌词片段：${to.lyricExcerpt || '无'}
+歌词关键词：${to.lyricKeywords.join(' / ') || '无'}
+</to_track>
+</segue_context>`;
 }

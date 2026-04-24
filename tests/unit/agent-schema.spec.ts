@@ -99,6 +99,16 @@ describe('segueOutputSchema', () => {
       expect(result.data.filterSweep).toBe(true);
     }
   });
+
+  it('accepts longer segue script when context is rich', () => {
+    const longSay =
+      '前一首把雨夜的低频情绪铺得很满，下一首从副歌开始把光线推开，鼓点更稳、呼吸更近，像是从窗边走到街口，情绪并不突兀，而是顺着同一个心事慢慢抬升。';
+    const result = segueOutputSchema.safeParse({
+      ...validSegue,
+      say: longSay
+    });
+    expect(result.success).toBe(true);
+  });
 });
 
 describe('chatOutputSchema', () => {

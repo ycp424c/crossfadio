@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import { CheckCircle2, Clock3, Filter, Volume2 } from 'lucide-react';
 import { buildPlaybackTimeline } from '@renderer/audio/timeline';
 import type { PlaybackTiming } from '@shared/schema';
@@ -11,6 +12,7 @@ type PlaybackTimelineProps = {
   duckingHintSec?: number;
   currentTrackId: string | null;
   nextTrackId: string | null;
+  segueScript?: string;
   segueStatus: SegueStatus;
 };
 
@@ -25,6 +27,7 @@ const ORANGE_WAVE = [18, 30, 22, 44, 28, 58, 36, 50, 24, 68, 32, 46, 26, 60, 38,
 const PURPLE_WAVE = [20, 42, 28, 50, 34, 66, 24, 46, 38, 58, 30, 52, 36, 64, 26, 44, 32, 54, 22, 48, 34, 60, 28, 40];
 
 export function PlaybackTimeline(props: PlaybackTimelineProps): JSX.Element {
+  const [showSegueTooltip, setShowSegueTooltip] = useState(false);
   const timeline = props.timing
     ? buildPlaybackTimeline(props.durationSec, {
         positionSec: props.positionSec,
@@ -46,6 +49,18 @@ export function PlaybackTimeline(props: PlaybackTimelineProps): JSX.Element {
         )
       : 0;
   const timeToSegueSec = timeline ? Math.max(0, timeline.windowStartSec - props.positionSec) : 0;
+  const script = (props.segueScript ?? '').trim();
+  const tooltipText =
+    script ||
+    (props.segueStatus === 'degraded'
+      ? '过渡文案不可用'
+      : props.segueStatus === 'generating'
+        ? '过渡文案生成中...'
+        : '尚未触发过渡文案');
+
+  useEffect(() => {
+    setShowSegueTooltip(false);
+  }, [props.currentTrackId, props.nextTrackId]);
 
   return (
     <section className="rounded-2xl border border-zinc-800/80 bg-zinc-950/60 p-5">
@@ -80,6 +95,23 @@ export function PlaybackTimeline(props: PlaybackTimelineProps): JSX.Element {
             <p className="mt-1 text-xs text-zinc-400">交叉淡入淡出</p>
             <div className="mt-3 rounded-full border border-zinc-700 bg-zinc-950 px-3 py-1 text-xs text-zinc-300">
               {crossfadePct}%
+            </div>
+            <div className="relative mt-3">
+              <button
+                className="rounded-full border border-zinc-600 bg-zinc-950/80 px-3 py-1 text-[11px] text-zinc-200 transition hover:border-zinc-400"
+                onClick={() => setShowSegueTooltip((value) => !value)}
+                type="button"
+              >
+                查看过渡文案
+              </button>
+              {showSegueTooltip ? (
+                <div
+                  className="absolute bottom-[calc(100%+8px)] left-1/2 z-20 w-64 -translate-x-1/2 rounded-lg border border-zinc-700 bg-zinc-950/95 px-3 py-2 text-left text-xs text-zinc-100 shadow-xl"
+                  role="tooltip"
+                >
+                  {tooltipText}
+                </div>
+              ) : null}
             </div>
           </div>
         </div>

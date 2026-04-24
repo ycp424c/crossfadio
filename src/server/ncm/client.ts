@@ -276,6 +276,14 @@ export class NcmClient {
     }));
   }
 
+  async getSongWikiSummary(id: string): Promise<Record<string, unknown> | null> {
+    const json = await this.getJson('/song/wiki/summary', { id });
+    if (!json || typeof json !== 'object') {
+      return null;
+    }
+    return json as Record<string, unknown>;
+  }
+
   private async getJson(path: string, query: Record<string, string>): Promise<any> {
     const response = await this.rawFetch(path, query);
 

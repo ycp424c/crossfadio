@@ -6,6 +6,7 @@ import { computeStream } from '../../agent/compute.js';
 import { buildSystemPrompt } from '../../agent/modes.js';
 import { trackSchema } from '../../agent/schema.js';
 import type { Fragments } from '../../agent/schema.js';
+import { buildSegueTrackContext } from '../../agent/segue-context.js';
 import { resolveLlmConfig } from '../../llm/config.js';
 import type { NcmClient } from '../../ncm/client.js';
 import type { SecretStore } from '../../security.js';
@@ -68,6 +69,7 @@ async function runSegueJob(
 
     const corpus = loadUserCorpus();
     const likedTracks = await loadLikedTracksForPlanning(opts.ncmClient);
+    const trackContext = await loadSegueContext(from, to, opts.ncmClient, logger);
     const weather = await fetchWeather();
     const now = new Date();
 
@@ -85,10 +87,23 @@ async function runSegueJob(
         nowIso: now.toISOString(),
         localTime: formatLocalTime(now),
         weather,
-        nowPlaying: { id: from.id, name: from.name ?? '', artist: from.artist ?? '', durationMs: null }
+        nowPlaying: {
+          id: from.id,
+          name: trackContext.fromTrack.name ?? '',
+          artist: trackContext.fromTrack.artist ?? '',
+          durationMs: null
+        }
       },
       memory: { recentPlays: getRecentPlays(50), recentChat: getRecentMessages(20) },
-      input: { kind: 'segueTrigger', from, to },
+      input: {
+        kind: 'segueTrigger',
+        from: trackContext.fromTrack,
+        to: trackContext.toTrack,
+        context: {
+          from: trackContext.fromContext,
+          to: trackContext.toContext
+        }
+      },
       trace: { triggeredBy: 'segue-hook', lastDecision: null }
     };
 
@@ -192,4 +207,68 @@ export function buildSegueAudioUrl(filePath: string): string {
 function isSafeTtsRelativePath(value: string | undefined): value is string {
   if (!value) return false;
   return !path.isAbsolute(value) && !value.includes('..') && !value.includes('\\');
+}
+
+async function loadSegueContext(
+  from: z.infer<typeof trackSchema>,
+  to: z.infer<typeof trackSchema>,
+  ncmClient: NcmClient,
+  logger: ReturnType<typeof getLogger>
+): Promise<{
+  fromTrack: z.infer<typeof trackSchema>;
+  toTrack: z.infer<typeof trackSchema>;
+  fromContext: ReturnType<typeof buildSegueTrackContext>;
+  toContext: ReturnType<typeof buildSegueTrackContext>;
+}> {
+  const [detailRows, fromLyric, toLyric, fromWikiSummary, toWikiSummary] = await Promise.all([
+    ncmClient.getSongDetails([from.id, to.id]).catch((err) => {
+      logger.debug({ err, fromId: from.id, toId: to.id }, 'Failed to load song details for segue context');
+      return [];
+    }),
+    ncmClient.getLyric(from.id).catch((err) => {
+      logger.debug({ err, id: from.id }, 'Failed to load source lyric for segue context');
+      return null;
+    }),
+    ncmClient.getLyric(to.id).catch((err) => {
+      logger.debug({ err, id: to.id }, 'Failed to load target lyric for segue context');
+      return null;
+    }),
+    ncmClient.getSongWikiSummary(from.id).catch((err) => {
+      logger.debug({ err, id: from.id }, 'Failed to load source wiki summary for segue context');
+      return null;
+    }),
+    ncmClient.getSongWikiSummary(to.id).catch((err) => {
+      logger.debug({ err, id: to.id }, 'Failed to load target wiki summary for segue context');
+      return null;
+    })
+  ]);
+
+  const detailMap = new Map(detailRows.map((detail) => [String(detail.id), detail]));
+  const fromContext = buildSegueTrackContext({
+    track: from,
+    detail: detailMap.get(from.id) ?? null,
+    lyric: fromLyric,
+    wikiSummary: fromWikiSummary
+  });
+  const toContext = buildSegueTrackContext({
+    track: to,
+    detail: detailMap.get(to.id) ?? null,
+    lyric: toLyric,
+    wikiSummary: toWikiSummary
+  });
+
+  return {
+    fromTrack: {
+      id: from.id,
+      name: fromContext.name,
+      artist: fromContext.artist
+    },
+    toTrack: {
+      id: to.id,
+      name: toContext.name,
+      artist: toContext.artist
+    },
+    fromContext,
+    toContext
+  };
 }

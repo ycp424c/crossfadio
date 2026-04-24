@@ -160,6 +160,43 @@ describe('TtsClient.synthesize', () => {
       }
     });
     expect(fs.readFileSync(result.filePath)).toEqual(fakeAudio);
+    expect(path.extname(result.filePath)).toBe('.wav');
+  });
+
+  it('uses cached Alibaba audio regardless of configured preferred format extension', async () => {
+    const fakeAudio = Buffer.from('aliyun-audio');
+    let fetchCalls = 0;
+    mockFetch(async (url) => {
+      fetchCalls++;
+      if (url.includes('/services/aigc/multimodal-generation/generation')) {
+        return Response.json({
+          output: {
+            audio: {
+              url: 'https://dashscope-result.example/audio.wav'
+            }
+          }
+        });
+      }
+      return new Response(fakeAudio, { status: 200, headers: { 'Content-Type': 'audio/wav' } });
+    });
+
+    const client = new TtsClient({
+      provider: 'aliyun-qwen',
+      baseUrl: 'https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation',
+      apiKey: 'dashscope-key',
+      model: 'qwen-tts',
+      voice: 'Cherry',
+      speed: 1,
+      format: 'mp3'
+    });
+
+    const first = await client.synthesize('你好，欢迎回来');
+    const second = await client.synthesize('你好，欢迎回来');
+
+    expect(path.extname(first.filePath)).toBe('.wav');
+    expect(second.cached).toBe(true);
+    expect(second.filePath).toBe(first.filePath);
+    expect(fetchCalls).toBe(2);
   });
 });
 

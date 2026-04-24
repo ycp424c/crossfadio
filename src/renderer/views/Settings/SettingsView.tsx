@@ -1,8 +1,19 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Settings2, Check, AlertCircle, Loader2 } from 'lucide-react';
-import { getSettings, saveSettings, type SaveSettingsPayload } from '@renderer/api';
+import {
+  getSettings,
+  saveSettings,
+  testLlmSettings,
+  testTtsSettings,
+  type SaveSettingsPayload
+} from '@renderer/api';
 
-type Status = { type: 'idle' } | { type: 'saving' } | { type: 'ok' } | { type: 'error'; message: string };
+type SaveStatus = { type: 'idle' } | { type: 'saving' } | { type: 'ok' } | { type: 'error'; message: string };
+type ActionStatus =
+  | { type: 'idle' }
+  | { type: 'loading' }
+  | { type: 'ok'; message: string; detail?: string }
+  | { type: 'error'; message: string };
 
 type LlmForm = { baseUrl: string; model: string; apiKey: string };
 type TtsProvider = 'openai-compatible' | 'aliyun-qwen';
@@ -26,18 +37,22 @@ const DEFAULT_TTS: TtsForm = {
   format: 'mp3',
   apiKey: ''
 };
+const API_KEY_PLACEHOLDER = '••••••••';
 
 export function SettingsView(): JSX.Element {
   const [llm, setLlm] = useState<LlmForm>(DEFAULT_LLM);
   const [tts, setTts] = useState<TtsForm>(DEFAULT_TTS);
-  const [status, setStatus] = useState<Status>({ type: 'idle' });
+  const [saveStatus, setSaveStatus] = useState<SaveStatus>({ type: 'idle' });
+  const [llmTestStatus, setLlmTestStatus] = useState<ActionStatus>({ type: 'idle' });
+  const [ttsTestStatus, setTtsTestStatus] = useState<ActionStatus>({ type: 'idle' });
   const [loading, setLoading] = useState(true);
+  const ttsPreviewRef = useRef<HTMLAudioElement | null>(null);
 
   useEffect(() => {
     getSettings()
       .then((s) => {
         if (s.llm) {
-          setLlm({ baseUrl: s.llm.baseUrl, model: s.llm.model, apiKey: s.llm.hasApiKey ? '••••••••' : '' });
+          setLlm({ baseUrl: s.llm.baseUrl, model: s.llm.model, apiKey: s.llm.hasApiKey ? API_KEY_PLACEHOLDER : '' });
         }
         if (s.tts) {
           setTts({
@@ -47,42 +62,76 @@ export function SettingsView(): JSX.Element {
             voice: s.tts.voice,
             speed: String(s.tts.speed),
             format: s.tts.format,
-            apiKey: s.tts.hasApiKey ? '••••••••' : ''
+            apiKey: s.tts.hasApiKey ? API_KEY_PLACEHOLDER : ''
           });
         }
       })
       .catch(() => {/* first launch, no config yet */})
       .finally(() => setLoading(false));
+
+    return () => {
+      ttsPreviewRef.current?.pause();
+      ttsPreviewRef.current = null;
+    };
   }, []);
 
   async function handleSave(): Promise<void> {
-    setStatus({ type: 'saving' });
+    setSaveStatus({ type: 'saving' });
     try {
-      const payload: SaveSettingsPayload = {};
-
-      const isApiKeyPlaceholder = (v: string) => v === '••••••••';
-
-      payload.llm = {
-        baseUrl: llm.baseUrl.trim(),
-        model: llm.model.trim(),
-        ...(llm.apiKey && !isApiKeyPlaceholder(llm.apiKey) && { apiKey: llm.apiKey.trim() })
-      };
-
-      payload.tts = {
-        provider: tts.provider,
-        baseUrl: tts.baseUrl.trim(),
-        model: tts.model.trim(),
-        voice: tts.voice.trim(),
-        speed: parseFloat(tts.speed) || 1.0,
-        format: tts.format as 'mp3' | 'opus' | 'aac' | 'flac',
-        ...(tts.apiKey && !isApiKeyPlaceholder(tts.apiKey) && { apiKey: tts.apiKey.trim() })
+      const payload: SaveSettingsPayload = {
+        llm: buildLlmPayload(llm),
+        tts: buildTtsPayload(tts)
       };
 
       await saveSettings(payload);
-      setStatus({ type: 'ok' });
-      setTimeout(() => setStatus({ type: 'idle' }), 2000);
+      setSaveStatus({ type: 'ok' });
+      setTimeout(() => setSaveStatus({ type: 'idle' }), 2000);
     } catch (err) {
-      setStatus({ type: 'error', message: err instanceof Error ? err.message : '保存失败' });
+      setSaveStatus({ type: 'error', message: err instanceof Error ? err.message : '保存失败' });
+    }
+  }
+
+  async function handleTestLlm(): Promise<void> {
+    setLlmTestStatus({ type: 'loading' });
+    try {
+      const result = await testLlmSettings({ llm: buildLlmPayload(llm) });
+      setLlmTestStatus({
+        type: 'ok',
+        message: result.message,
+        detail: `${result.model}: ${result.preview}`
+      });
+    } catch (err) {
+      setLlmTestStatus({ type: 'error', message: err instanceof Error ? err.message : 'LLM 测试失败' });
+    }
+  }
+
+  async function handleTestTts(): Promise<void> {
+    setTtsTestStatus({ type: 'loading' });
+    ttsPreviewRef.current?.pause();
+    ttsPreviewRef.current = null;
+
+    try {
+      const result = await testTtsSettings({ tts: buildTtsPayload(tts) });
+      const audio = new Audio(result.audioUrl);
+      audio.preload = 'auto';
+      ttsPreviewRef.current = audio;
+
+      try {
+        await audio.play();
+        setTtsTestStatus({
+          type: 'ok',
+          message: result.message,
+          detail: result.cached ? '已播放缓存测试音频' : '已播放最新生成的测试音频'
+        });
+      } catch (playErr) {
+        setTtsTestStatus({
+          type: 'ok',
+          message: result.message,
+          detail: playErr instanceof Error ? `音频已生成，但自动播放失败：${playErr.message}` : '音频已生成，但自动播放失败'
+        });
+      }
+    } catch (err) {
+      setTtsTestStatus({ type: 'error', message: err instanceof Error ? err.message : 'TTS 测试失败' });
     }
   }
 
@@ -137,6 +186,17 @@ export function SettingsView(): JSX.Element {
                 autoComplete="off"
               />
             </Field>
+            <div className="flex items-center justify-between gap-3 border-t border-zinc-800 pt-3">
+              <ActionStatusText status={llmTestStatus} />
+              <button
+                onClick={handleTestLlm}
+                disabled={llmTestStatus.type === 'loading' || saveStatus.type === 'saving'}
+                className="flex items-center gap-2 rounded-lg border border-zinc-700 bg-zinc-800 px-4 py-2 text-sm font-medium text-zinc-100 transition hover:border-zinc-600 hover:bg-zinc-700 disabled:opacity-50"
+              >
+                {llmTestStatus.type === 'loading' && <Loader2 className="h-4 w-4 animate-spin" />}
+                测试 LLM
+              </button>
+            </div>
           </div>
         </section>
 
@@ -232,19 +292,30 @@ export function SettingsView(): JSX.Element {
                 autoComplete="off"
               />
             </Field>
+            <div className="flex items-center justify-between gap-3 border-t border-zinc-800 pt-3">
+              <ActionStatusText status={ttsTestStatus} />
+              <button
+                onClick={handleTestTts}
+                disabled={ttsTestStatus.type === 'loading' || saveStatus.type === 'saving'}
+                className="flex items-center gap-2 rounded-lg border border-zinc-700 bg-zinc-800 px-4 py-2 text-sm font-medium text-zinc-100 transition hover:border-zinc-600 hover:bg-zinc-700 disabled:opacity-50"
+              >
+                {ttsTestStatus.type === 'loading' && <Loader2 className="h-4 w-4 animate-spin" />}
+                测试 TTS
+              </button>
+            </div>
           </div>
         </section>
       </div>
 
       {/* Footer save bar */}
       <div className="sticky bottom-0 flex items-center justify-between border-t border-zinc-800 bg-zinc-950 px-6 py-4">
-        <StatusIndicator status={status} />
+        <StatusIndicator status={saveStatus} />
         <button
           onClick={handleSave}
-          disabled={status.type === 'saving'}
+          disabled={saveStatus.type === 'saving'}
           className="flex items-center gap-2 rounded-lg bg-indigo-600 px-5 py-2 text-sm font-medium text-white transition hover:bg-indigo-500 disabled:opacity-50"
         >
-          {status.type === 'saving' && <Loader2 className="h-4 w-4 animate-spin" />}
+          {saveStatus.type === 'saving' && <Loader2 className="h-4 w-4 animate-spin" />}
           保存
         </button>
       </div>
@@ -261,7 +332,7 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
   );
 }
 
-function StatusIndicator({ status }: { status: Status }): JSX.Element {
+function StatusIndicator({ status }: { status: SaveStatus }): JSX.Element {
   if (status.type === 'ok') {
     return (
       <span className="flex items-center gap-1.5 text-sm text-emerald-400">
@@ -277,6 +348,52 @@ function StatusIndicator({ status }: { status: Status }): JSX.Element {
     );
   }
   return <span />;
+}
+
+function ActionStatusText({ status }: { status: ActionStatus }): JSX.Element {
+  if (status.type === 'idle') {
+    return <span className="text-sm text-zinc-500">使用当前表单配置即时验证，不会自动保存</span>;
+  }
+  if (status.type === 'loading') {
+    return (
+      <span className="flex items-center gap-1.5 text-sm text-zinc-400">
+        <Loader2 className="h-4 w-4 animate-spin" /> 测试中...
+      </span>
+    );
+  }
+  if (status.type === 'ok') {
+    return (
+      <span className="text-sm text-emerald-400">
+        {status.message}
+        {status.detail ? ` · ${status.detail}` : ''}
+      </span>
+    );
+  }
+  return (
+    <span className="flex items-center gap-1.5 text-sm text-red-400">
+      <AlertCircle className="h-4 w-4" /> {status.message}
+    </span>
+  );
+}
+
+function buildLlmPayload(llm: LlmForm): NonNullable<SaveSettingsPayload['llm']> {
+  return {
+    baseUrl: llm.baseUrl.trim(),
+    model: llm.model.trim(),
+    ...(llm.apiKey && llm.apiKey !== API_KEY_PLACEHOLDER ? { apiKey: llm.apiKey.trim() } : {})
+  };
+}
+
+function buildTtsPayload(tts: TtsForm): NonNullable<SaveSettingsPayload['tts']> {
+  return {
+    provider: tts.provider,
+    baseUrl: tts.baseUrl.trim(),
+    model: tts.model.trim(),
+    voice: tts.voice.trim(),
+    speed: parseFloat(tts.speed) || 1.0,
+    format: tts.format as 'mp3' | 'opus' | 'aac' | 'flac',
+    ...(tts.apiKey && tts.apiKey !== API_KEY_PLACEHOLDER ? { apiKey: tts.apiKey.trim() } : {})
+  };
 }
 
 const inputClass =

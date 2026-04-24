@@ -41,7 +41,7 @@ type PlayerViewProps = {
 
 const DEFAULT_DUCKING_HINT_SEC = 8;
 const TRACK_DEFAULT_VOLUME = 1;
-const TRACK_DUCKING_VOLUME = 0.45;
+const TRACK_DUCKING_VOLUME = 0.2;
 const SEGUE_START_TOLERANCE_SEC = 0.25;
 
 type PendingSegueAudio = {
@@ -64,6 +64,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
   const [error, setError] = useState('');
   const [segueStatus, setSegueStatus] = useState<'idle' | 'generating' | 'ready' | 'degraded'>('idle');
   const [duckingHintSec, setDuckingHintSec] = useState(DEFAULT_DUCKING_HINT_SEC);
+  const [segueScript, setSegueScript] = useState('');
 
   const [session, setSession] = useState<NcmSessionState>({ hasCookie: false, profile: null });
   const [qrPayload, setQrPayload] = useState<{ key: string; qrimg: string } | null>(null);
@@ -190,7 +191,10 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
         setCurrentIndex(nextIndex);
       } else if (msg.type === 'segue.delta') {
         const say = String(msg.say ?? '').trim();
-        if (say) setStatusText(`DJ: ${say}`);
+        if (say) {
+          setSegueScript((prev) => `${prev}${say}`);
+          setStatusText(`DJ: ${say}`);
+        }
       } else if (msg.type === 'segue.tts-ready') {
         setSegueStatus('ready');
 
@@ -206,6 +210,11 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
             ? ttsHintSec
             : DEFAULT_DUCKING_HINT_SEC;
         setDuckingHintSec(dynamicHintSec);
+        const finalSegueScript =
+          msg.segue && typeof msg.segue === 'object' && 'say' in msg.segue ? String((msg.segue as { say: unknown }).say) : '';
+        if (finalSegueScript.trim().length > 0) {
+          setSegueScript(finalSegueScript);
+        }
 
         const audioUrl = typeof msg.audioUrl === 'string' ? msg.audioUrl : null;
         if (!audioUrl) {
@@ -281,6 +290,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
     segueTriggeredRef.current = false;
     setSegueStatus('idle');
     setDuckingHintSec(DEFAULT_DUCKING_HINT_SEC);
+    setSegueScript('');
     setStatusText(`正在加载曲目 ${currentTrackId} ...`);
 
     void loadNowPlaying(currentTrackId);
@@ -436,6 +446,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
     if (!segueTriggeredRef.current && decision.shouldTriggerSegue && currentTrackId && nextTrackId) {
       segueTriggeredRef.current = true;
       setSegueStatus('generating');
+      setSegueScript('');
       setStatusText(`DJ 过渡语音生成中：${currentTrackId} → ${nextTrackId}`);
       void triggerSegue(currentTrackId, nextTrackId).catch((err) => {
         setError(err instanceof Error ? err.message : 'segue 请求失败');
@@ -614,6 +625,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
             durationSec={durationSec}
             nextTrackId={nextTrack?.track.id ?? null}
             positionSec={positionSec}
+            segueScript={segueScript}
             segueStatus={segueStatus}
             timing={nowPlaying?.timing ?? null}
           />

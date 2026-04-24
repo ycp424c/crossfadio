@@ -88,6 +88,41 @@ describe('assembleMessages', () => {
     expect(msgs[3].content).toContain('Song B');
   });
 
+  it('injects segue context details (lyrics and tags) when provided', () => {
+    const f: Fragments = {
+      ...base,
+      mode: 'segue',
+      input: {
+        kind: 'segueTrigger',
+        from: { id: 'a', name: 'Song A', artist: 'Artist A' },
+        to: { id: 'b', name: 'Song B', artist: 'Artist B' },
+        context: {
+          from: {
+            id: 'a',
+            name: 'Song A',
+            artist: 'Artist A',
+            lyricExcerpt: '雨滴落在窗沿上',
+            lyricKeywords: ['雨滴', '窗沿'],
+            tags: ['流行', '伤感']
+          },
+          to: {
+            id: 'b',
+            name: 'Song B',
+            artist: 'Artist B',
+            lyricExcerpt: '太阳在地平线上升起',
+            lyricKeywords: ['太阳', '地平线'],
+            tags: ['电子', '治愈']
+          }
+        }
+      }
+    };
+
+    const msgs = assembleMessages(f);
+    expect(msgs[3].content).toContain('<segue_context>');
+    expect(msgs[3].content).toContain('雨滴落在窗沿上');
+    expect(msgs[3].content).toContain('电子 / 治愈');
+  });
+
   it('renders weather as unknown when null', () => {
     const f: Fragments = { ...base, env: { ...base.env, weather: null } };
     const msgs = assembleMessages(f);
