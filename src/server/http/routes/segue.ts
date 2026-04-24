@@ -15,7 +15,12 @@ import { getRecentMessages } from '../../store/messages.js';
 import { fetchWeather } from '../../weather.js';
 import { TtsClient } from '../../tts/client.js';
 import { resolveTtsConfig } from '../../tts/config.js';
-import { resolveUserCorpusDir } from '../../app-paths.js';
+import { getTtsCacheDir } from '../../tts/cache.js';
+import {
+  buildFallbackTemplateText,
+  ensureFallbackTtsCached,
+  synthesizeTtsWithFallback
+} from '../../tts/fallback.js';
 import { broadcast } from '../broadcast.js';
 import { getLogger } from '../../logger.js';
 
@@ -120,14 +125,25 @@ async function runSegueJob(
     }
 
     const ttsClient = new TtsClient(ttsConfig);
-    const ttsResult = await ttsClient.synthesize(segueOutput.say);
+    const fallbackText = buildFallbackTemplateText(to);
+    const ttsResult = await synthesizeTtsWithFallback(
+      ttsConfig,
+      segueOutput.say,
+      fallbackText,
+      (text) => ttsClient.synthesize(text)
+    );
 
-    // Serve the file via /api/segue/audio/<filename>
-    const filename = path.basename(ttsResult.filePath);
+    if (!ttsResult.fallback) {
+      void ensureFallbackTtsCached(ttsConfig, fallbackText, (text) => ttsClient.synthesize(text)).catch((err) => {
+        logger.warn({ err }, 'Failed to warm fallback TTS template');
+      });
+    }
+
     broadcast({
       type: 'segue.tts-ready',
       requestId,
-      audioUrl: `/api/segue/audio/${filename}`,
+      audioUrl: buildSegueAudioUrl(ttsResult.filePath),
+      fallbackTts: ttsResult.fallback,
       segue: segueOutput
     });
   } catch (err) {
@@ -146,14 +162,26 @@ function formatLocalTime(date: Date): string {
 
 export function createSegueAudioHandler() {
   return (req: Request, res: Response): void => {
-    const filename = req.params.filename;
-    if (!filename || /[/\\]/.test(filename)) {
-      res.status(400).json({ ok: false, error: 'invalid filename' });
+    const relativePath = req.params[0];
+    if (!isSafeTtsRelativePath(relativePath)) {
+      res.status(400).json({ ok: false, error: 'invalid audio path' });
       return;
     }
-    const dir = path.join(resolveUserCorpusDir(), '..', 'cache', 'tts');
-    res.sendFile(filename, { root: dir }, (err) => {
+    res.sendFile(relativePath, { root: getTtsCacheDir() }, (err) => {
       if (err) res.status(404).json({ ok: false, error: 'not found' });
     });
   };
+}
+
+export function buildSegueAudioUrl(filePath: string): string {
+  const relativePath = path.relative(getTtsCacheDir(), filePath);
+  if (!isSafeTtsRelativePath(relativePath)) {
+    return `/api/segue/audio/${encodeURIComponent(path.basename(filePath))}`;
+  }
+  return `/api/segue/audio/${relativePath.split(path.sep).map(encodeURIComponent).join('/')}`;
+}
+
+function isSafeTtsRelativePath(value: string | undefined): value is string {
+  if (!value) return false;
+  return !path.isAbsolute(value) && !value.includes('..') && !value.includes('\\');
 }

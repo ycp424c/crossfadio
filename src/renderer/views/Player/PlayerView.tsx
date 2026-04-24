@@ -34,7 +34,11 @@ type NcmSessionState = {
   profile: unknown | null;
 };
 
-export function PlayerView(): JSX.Element {
+type PlayerViewProps = {
+  onNavigate?: (tab: 'plan' | 'settings') => void;
+};
+
+export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
   const [queueInput, setQueueInput] = useState(DEFAULT_QUEUE);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [nowPlaying, setNowPlaying] = useState<NowPlayingResponse | null>(null);
@@ -287,14 +291,22 @@ export function PlayerView(): JSX.Element {
               <Radio className="h-4 w-4" />
               正在播放
             </div>
-            <div className="inline-flex w-full items-center gap-2 rounded-xl border border-zinc-800 bg-zinc-900/60 px-3 py-2 text-zinc-300">
+            <button
+              className="inline-flex w-full items-center gap-2 rounded-xl border border-zinc-800 bg-zinc-900/60 px-3 py-2 text-left text-zinc-300 transition hover:border-zinc-700 hover:bg-zinc-900 hover:text-zinc-100"
+              onClick={() => onNavigate?.('plan')}
+              type="button"
+            >
               <CalendarDays className="h-4 w-4" />
               今日计划
-            </div>
-            <div className="inline-flex w-full items-center gap-2 rounded-xl border border-zinc-800 bg-zinc-900/60 px-3 py-2 text-zinc-300">
+            </button>
+            <button
+              className="inline-flex w-full items-center gap-2 rounded-xl border border-zinc-800 bg-zinc-900/60 px-3 py-2 text-left text-zinc-300 transition hover:border-zinc-700 hover:bg-zinc-900 hover:text-zinc-100"
+              onClick={() => onNavigate?.('settings')}
+              type="button"
+            >
               <Settings2 className="h-4 w-4" />
               设置
-            </div>
+            </button>
           </nav>
 
           <section className="mt-6 rounded-xl border border-zinc-800 bg-zinc-900/60 p-3 text-xs text-zinc-300">

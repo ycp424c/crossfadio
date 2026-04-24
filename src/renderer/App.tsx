@@ -24,7 +24,7 @@ export function App(): JSX.Element {
     <div className="flex h-screen flex-col bg-zinc-950 text-zinc-100">
       {/* Main content */}
       <div className="min-h-0 flex-1 overflow-hidden">
-        {tab === 'player' && <PlayerView />}
+        {tab === 'player' && <PlayerView onNavigate={setTab} />}
         {tab === 'plan' && <PlanView />}
         {tab === 'chat' && <ChatPanel />}
         {tab === 'settings' && <SettingsView />}

@@ -94,7 +94,7 @@ export async function startLocalServer(options: StartLocalServerOptions): Promis
   app.post('/api/plan/gap-fill', createGapFillHandler({ secrets: options.secrets, ncmClient: options.ncmClient }));
   app.put('/api/queue/state', createSetQueueStateHandler());
   app.post('/api/segue/trigger', createSegueTriggerHandler({ secrets: options.secrets, ncmClient: options.ncmClient }));
-  app.get('/api/segue/audio/:filename', createSegueAudioHandler());
+  app.get('/api/segue/audio/*', createSegueAudioHandler());
 
   if (options.staticDir && fs.existsSync(options.staticDir)) {
     app.use(express.static(options.staticDir));
