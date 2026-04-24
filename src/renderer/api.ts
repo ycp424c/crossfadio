@@ -10,6 +10,11 @@ type RuntimeConfig = {
   baseUrl: string;
 };
 
+type RuntimeInfo = {
+  ok: boolean;
+  sessionToken: string;
+};
+
 type NcmQrPayload = {
   key: string;
   qrimg: string;
@@ -57,6 +62,10 @@ export async function getNcmSession(): Promise<NcmSession> {
   return requestJson<NcmSession>('/api/ncm/login/session');
 }
 
+export async function getRuntimeInfo(): Promise<RuntimeInfo> {
+  return requestJson<RuntimeInfo>('/api/runtime');
+}
+
 export async function createNcmQr(): Promise<NcmQrPayload> {
   return requestJson<NcmQrPayload>('/api/ncm/login/qr');
 }
@@ -82,6 +91,26 @@ export async function getNextTrack(queueIds: string[], currentId: string): Promi
   const query = `queue=${encodeURIComponent(queueIds.join(','))}&current=${encodeURIComponent(currentId)}`;
   const payload = await requestJson<unknown>(`/api/next?${query}`);
   return nextTrackResponseSchema.parse(payload);
+}
+
+export async function saveQueueState(queueIds: string[], currentIndex: number): Promise<void> {
+  const result = await requestJson<{ ok: boolean }>('/api/queue/state', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ queue: queueIds, currentIndex })
+  });
+  if (!result.ok) throw new Error('Failed to save queue state');
+}
+
+export async function triggerSegue(fromId: string, toId: string): Promise<{ ok: boolean; requestId: string }> {
+  return requestJson<{ ok: boolean; requestId: string }>('/api/segue/trigger', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      from: { id: fromId },
+      to: { id: toId }
+    })
+  });
 }
 
 export type LlmSettings = {

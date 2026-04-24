@@ -4,7 +4,7 @@ import { defineConfig } from 'vite';
 
 export const localBackendProxyPatterns = {
   api: '^/api(?:/|$)',
-  ws: '^/ws(?:/|$)'
+  ws: '^/ws$'
 } as const;
 
 export default defineConfig({

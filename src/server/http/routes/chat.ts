@@ -10,7 +10,7 @@ import { getRecentPlays } from '../../store/plays.js';
 import { getRecentMessages, saveMessage } from '../../store/messages.js';
 import { fetchWeather } from '../../weather.js';
 import { executeActions } from '../../agent/actions.js';
-import { getQueue } from '../../store/queue.js';
+import { getCurrentIndex, getQueue } from '../../store/queue.js';
 import { broadcast } from '../broadcast.js';
 import { getLogger } from '../../logger.js';
 
@@ -102,7 +102,7 @@ async function handleChatMessage(
     if (chatOutput.actions.length > 0) {
       const result = await executeActions(chatOutput.actions, { ncmClient: opts.ncmClient });
       if (result.queueChanged) {
-        broadcast({ type: 'queue-updated', queue: getQueue() });
+        broadcast({ type: 'queue-updated', queue: getQueue(), currentIndex: getCurrentIndex() });
       }
     }
   } catch (err) {

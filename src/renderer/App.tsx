@@ -1,14 +1,24 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Radio, Settings2, CalendarDays, MessageCircle } from 'lucide-react';
 import { PlayerView } from '@renderer/views/Player/PlayerView';
 import { SettingsView } from '@renderer/views/Settings/SettingsView';
 import { PlanView } from '@renderer/views/Plan/PlanView';
 import { ChatPanel } from '@renderer/components/player/ChatPanel';
+import { getRuntimeInfo } from '@renderer/api';
+import { initWsClient } from '@renderer/ws/client';
 
 type Tab = 'player' | 'plan' | 'chat' | 'settings';
 
 export function App(): JSX.Element {
   const [tab, setTab] = useState<Tab>('player');
+
+  useEffect(() => {
+    void getRuntimeInfo()
+      .then((runtime) => initWsClient(runtime.sessionToken))
+      .catch(() => {
+        // The rest of the app can still work against HTTP endpoints.
+      });
+  }, []);
 
   return (
     <div className="flex h-screen flex-col bg-zinc-950 text-zinc-100">

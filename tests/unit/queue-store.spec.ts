@@ -14,6 +14,13 @@ describe('queue store', () => {
     expect(q.getCurrentIndex()).toBe(0);
   });
 
+  it('setQueueState replaces queue and clamps current index', async () => {
+    const q = await import('../../src/server/store/queue');
+    q.setQueueState([{ ncmId: 'a' }, { ncmId: 'b' }], 5);
+    expect(q.getQueue()).toHaveLength(2);
+    expect(q.getCurrentIndex()).toBe(1);
+  });
+
   it('swapNext inserts track at position after current', async () => {
     const q = await import('../../src/server/store/queue');
     q.setQueue([{ ncmId: 'a' }, { ncmId: 'c' }]);

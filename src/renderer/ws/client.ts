@@ -5,16 +5,26 @@ let socket: WebSocket | null = null;
 let sessionToken: string | null = null;
 const handlers = new Set<MessageHandler>();
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+let shouldReconnect = true;
 
 export function initWsClient(token: string): void {
+  if (
+    sessionToken === token &&
+    (socket?.readyState === WebSocket.OPEN || socket?.readyState === WebSocket.CONNECTING)
+  ) {
+    return;
+  }
   sessionToken = token;
+  shouldReconnect = true;
   connect();
 }
 
-export function sendChatMessage(text: string): void {
+export function sendChatMessage(text: string): boolean {
   if (socket?.readyState === WebSocket.OPEN) {
     socket.send(JSON.stringify({ type: 'chat', text }));
+    return true;
   }
+  return false;
 }
 
 export function onWsMessage(handler: MessageHandler): () => void {
@@ -42,6 +52,7 @@ function connect(): void {
 
   socket.addEventListener('close', () => {
     socket = null;
+    if (!shouldReconnect) return;
     reconnectTimer = setTimeout(() => {
       reconnectTimer = null;
       connect();
@@ -54,6 +65,7 @@ function connect(): void {
 }
 
 export function closeWsClient(): void {
+  shouldReconnect = false;
   if (reconnectTimer) clearTimeout(reconnectTimer);
   socket?.close();
   socket = null;

@@ -20,6 +20,11 @@ export function setQueue(tracks: QueueTrack[]): void {
   currentIndex = 0;
 }
 
+export function setQueueState(tracks: QueueTrack[], nextCurrentIndex = 0): void {
+  queue = [...tracks];
+  currentIndex = clampIndex(nextCurrentIndex);
+}
+
 export function getCurrentIndex(): number {
   return currentIndex;
 }
@@ -57,7 +62,15 @@ export function skipCurrent(): void {
 
 export function banNcmId(ncmId: string): void {
   queue = queue.filter((t) => t.ncmId !== ncmId);
-  if (currentIndex >= queue.length) {
-    currentIndex = Math.max(0, queue.length - 1);
+  currentIndex = clampIndex(currentIndex);
+}
+
+function clampIndex(index: number): number {
+  if (queue.length === 0) {
+    return 0;
   }
+  if (!Number.isInteger(index)) {
+    return 0;
+  }
+  return Math.min(Math.max(index, 0), queue.length - 1);
 }

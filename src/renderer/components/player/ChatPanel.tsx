@@ -64,7 +64,13 @@ export function ChatPanel(): JSX.Element {
     setMessages((prev) => [...prev, { id: ++msgId, role: 'user', text }]);
     setInput('');
     setSending(true);
-    sendChatMessage(text);
+    if (!sendChatMessage(text)) {
+      setMessages((prev) => [
+        ...prev,
+        { id: ++msgId, role: 'dj', text: '聊天连接还没准备好，请稍后再试。', pending: false }
+      ]);
+      setSending(false);
+    }
   }
 
   return (

@@ -14,12 +14,15 @@ import {
   getNcmSession,
   getNextTrack,
   getNowPlaying,
-  logoutNcm
+  logoutNcm,
+  saveQueueState,
+  triggerSegue
 } from '@renderer/api';
 import { getPrefetchDecision } from '@renderer/audio/prefetch';
 import { NowPlayingHero } from '@renderer/components/player/NowPlayingHero';
 import { QueuePanel } from '@renderer/components/player/QueuePanel';
 import { TransportControls } from '@renderer/components/player/TransportControls';
+import { onWsMessage } from '@renderer/ws/client';
 import type { NextTrackResponse, NowPlayingResponse } from '@shared/schema';
 import appMark from '@renderer/assets/image2/crossfadio-mark.svg';
 import playerDesignRef from '@renderer/assets/image2/2026-04-23-player-v1.png';
@@ -47,7 +50,10 @@ export function PlayerView(): JSX.Element {
   const [qrPayload, setQrPayload] = useState<{ key: string; qrimg: string } | null>(null);
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const segueAudioRef = useRef<HTMLAudioElement | null>(null);
   const prefetchTriggeredRef = useRef(false);
+  const segueTriggeredRef = useRef(false);
+  const applyingRemoteQueueRef = useRef(false);
 
   const queueIds = useMemo(() => parseQueueInput(queueInput), [queueInput]);
   const currentTrackId = queueIds[currentIndex] ?? null;
@@ -68,12 +74,62 @@ export function PlayerView(): JSX.Element {
   }, []);
 
   useEffect(() => {
+    const unsub = onWsMessage((msg) => {
+      if (msg.type === 'queue-updated') {
+        const nextQueue = Array.isArray(msg.queue)
+          ? msg.queue
+              .map((track) =>
+                track && typeof track === 'object' && 'ncmId' in track
+                  ? String((track as { ncmId: unknown }).ncmId)
+                  : ''
+              )
+              .filter(Boolean)
+          : [];
+        const nextIndex = typeof msg.currentIndex === 'number' ? msg.currentIndex : 0;
+        applyingRemoteQueueRef.current = true;
+        setQueueInput(nextQueue.join(', '));
+        setCurrentIndex(nextIndex);
+      } else if (msg.type === 'segue.delta') {
+        const say = String(msg.say ?? '').trim();
+        if (say) setStatusText(`DJ: ${say}`);
+      } else if (msg.type === 'segue.tts-ready') {
+        const audioUrl = typeof msg.audioUrl === 'string' ? msg.audioUrl : null;
+        if (audioUrl) {
+          segueAudioRef.current?.pause();
+          const audio = new Audio(audioUrl);
+          audio.volume = 0.75;
+          segueAudioRef.current = audio;
+          void audio.play().catch(() => {
+            setStatusText('DJ 过渡语音已生成，等待用户交互后播放');
+          });
+        } else {
+          setStatusText('DJ 过渡语音已生成（未配置 TTS）');
+        }
+      } else if (msg.type === 'segue.degraded') {
+        setStatusText('DJ 过渡语音暂不可用');
+      }
+    });
+    return unsub;
+  }, []);
+
+  useEffect(() => {
+    if (applyingRemoteQueueRef.current) {
+      applyingRemoteQueueRef.current = false;
+      return;
+    }
+    void saveQueueState(queueIds, currentIndex).catch(() => {
+      // Queue sync is best effort; playback should keep running locally.
+    });
+  }, [currentIndex, queueIds]);
+
+  useEffect(() => {
     if (!currentTrackId) {
       setNowPlaying(null);
       return;
     }
 
     prefetchTriggeredRef.current = false;
+    segueTriggeredRef.current = false;
     setStatusText(`正在加载曲目 ${currentTrackId} ...`);
 
     void loadNowPlaying(currentTrackId);
@@ -184,6 +240,15 @@ export function PlayerView(): JSX.Element {
       prefetchTriggeredRef.current = true;
       setStatusText(`预取触发：d-${nowPlaying.timing.prefetchLeadSec}s`);
       void refreshNextTrack(currentTrackId);
+    }
+
+    const nextTrackId = nextTrack?.track.id ?? null;
+    if (!segueTriggeredRef.current && decision.shouldTriggerSegue && currentTrackId && nextTrackId) {
+      segueTriggeredRef.current = true;
+      setStatusText(`DJ 过渡语音生成中：${currentTrackId} → ${nextTrackId}`);
+      void triggerSegue(currentTrackId, nextTrackId).catch((err) => {
+        setError(err instanceof Error ? err.message : 'segue 请求失败');
+      });
     }
   }
 

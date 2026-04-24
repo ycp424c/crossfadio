@@ -8,4 +8,11 @@ describe('Vite dev server proxy', () => {
     expect(apiProxyPattern.test('/api/health')).toBe(true);
     expect(apiProxyPattern.test('/api.ts')).toBe(false);
   });
+
+  it('only proxies the websocket endpoint, not renderer ws modules', () => {
+    const wsProxyPattern = new RegExp(localBackendProxyPatterns.ws);
+
+    expect(wsProxyPattern.test('/ws')).toBe(true);
+    expect(wsProxyPattern.test('/ws/client.ts')).toBe(false);
+  });
 });

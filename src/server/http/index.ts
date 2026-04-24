@@ -28,6 +28,8 @@ import {
 } from './routes/plan.js';
 import { createSegueTriggerHandler, createSegueAudioHandler } from './routes/segue.js';
 import { createChatMessageHandler } from './routes/chat.js';
+import { createRuntimeHandler } from './routes/runtime.js';
+import { createSetQueueStateHandler } from './routes/queue.js';
 import type { SecretStore } from '../security.js';
 
 export type LocalServer = {
@@ -69,6 +71,9 @@ export async function startLocalServer(options: StartLocalServerOptions): Promis
   );
   app.use(express.json({ limit: '1mb' }));
 
+  const sessionToken = randomBytes(24).toString('hex');
+
+  app.get('/api/runtime', createRuntimeHandler({ sessionToken }));
   app.get('/api/health', getHealthHandler);
   app.get('/api/ncm/status', createNcmStatusHandler(options.ncm));
   app.get('/api/ncm/login/qr', createNcmQrHandler(options.ncmAuth));
@@ -87,6 +92,7 @@ export async function startLocalServer(options: StartLocalServerOptions): Promis
   app.post('/api/plan/regenerate', createRegeneratePlanHandler({ secrets: options.secrets, ncmClient: options.ncmClient }));
   app.post('/api/plan/replan-segment', createReplanSegmentHandler({ secrets: options.secrets, ncmClient: options.ncmClient }));
   app.post('/api/plan/gap-fill', createGapFillHandler({ secrets: options.secrets, ncmClient: options.ncmClient }));
+  app.put('/api/queue/state', createSetQueueStateHandler());
   app.post('/api/segue/trigger', createSegueTriggerHandler({ secrets: options.secrets, ncmClient: options.ncmClient }));
   app.get('/api/segue/audio/:filename', createSegueAudioHandler());
 
@@ -103,7 +109,6 @@ export async function startLocalServer(options: StartLocalServerOptions): Promis
   });
 
   const server = createServer(app);
-  const sessionToken = randomBytes(24).toString('hex');
   const chatHandler = createChatMessageHandler({ secrets: options.secrets, ncmClient: options.ncmClient });
   setupWsServer(server, { sessionToken, onChatMessage: chatHandler });
 
