@@ -51,6 +51,17 @@ CREATE TABLE IF NOT EXISTS tts_cache (
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   last_used_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+`,
+  `
+CREATE TABLE IF NOT EXISTS segues (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  from_id TEXT,
+  from_name TEXT,
+  to_id TEXT,
+  to_name TEXT,
+  say TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 `
 ];
 

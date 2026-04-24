@@ -22,12 +22,20 @@ export function App(): JSX.Element {
 
   return (
     <div className="flex h-screen flex-col bg-zinc-950 text-zinc-100">
-      {/* Main content */}
+      {/* Main content — all views stay mounted so audio and chat history persist */}
       <div className="min-h-0 flex-1 overflow-y-auto">
-        {tab === 'player' && <PlayerView onNavigate={setTab} />}
-        {tab === 'plan' && <PlanView />}
-        {tab === 'chat' && <ChatPanel />}
-        {tab === 'settings' && <SettingsView />}
+        <div style={{ display: tab === 'player' ? 'block' : 'none' }}>
+          <PlayerView onNavigate={setTab} />
+        </div>
+        <div style={{ display: tab === 'plan' ? 'block' : 'none' }}>
+          <PlanView />
+        </div>
+        <div style={{ display: tab === 'chat' ? 'flex' : 'none' }} className="h-full flex-col">
+          <ChatPanel />
+        </div>
+        <div style={{ display: tab === 'settings' ? 'block' : 'none' }}>
+          <SettingsView />
+        </div>
       </div>
 
       {/* Bottom tab bar */}

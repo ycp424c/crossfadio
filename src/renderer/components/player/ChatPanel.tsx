@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { Send, Loader2, MessageCircle } from 'lucide-react';
 import { sendChatMessage, onWsMessage } from '@renderer/ws/client';
+import { getRecentChatMessages } from '@renderer/api';
 
 type Message = {
   id: number;
@@ -9,7 +10,13 @@ type Message = {
   pending?: boolean;
 };
 
+const MAX_MESSAGES = 200;
 let msgId = 0;
+
+function appendMessages(prev: Message[], next: Message[]): Message[] {
+  const combined = [...prev, ...next];
+  return combined.length > MAX_MESSAGES ? combined.slice(combined.length - MAX_MESSAGES) : combined;
+}
 
 export function ChatPanel(): JSX.Element {
   const [messages, setMessages] = useState<Message[]>([]);
@@ -17,6 +24,26 @@ export function ChatPanel(): JSX.Element {
   const [sending, setSending] = useState(false);
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const pendingIdRef = useRef<number | null>(null);
+  const historyLoadedRef = useRef(false);
+
+  useEffect(() => {
+    if (historyLoadedRef.current) return;
+    historyLoadedRef.current = true;
+    void getRecentChatMessages(50).then((msgs) => {
+      const historical: Message[] = msgs
+        .filter((m) => m.role === 'user' || m.role === 'assistant')
+        .map((m) => ({
+          id: ++msgId,
+          role: m.role === 'user' ? 'user' : 'dj',
+          text: m.content
+        }));
+      if (historical.length > 0) {
+        setMessages(historical);
+      }
+    }).catch(() => {
+      // History load is best-effort
+    });
+  }, []);
 
   useEffect(() => {
     const unsub = onWsMessage((msg) => {
@@ -61,7 +88,7 @@ export function ChatPanel(): JSX.Element {
   function handleSend(): void {
     const text = input.trim();
     if (!text || sending) return;
-    setMessages((prev) => [...prev, { id: ++msgId, role: 'user', text }]);
+    setMessages((prev) => appendMessages(prev, [{ id: ++msgId, role: 'user', text }]));
     setInput('');
     setSending(true);
     if (!sendChatMessage(text)) {

@@ -16,6 +16,7 @@ import {
   getNextTrack,
   getNowPlaying,
   logoutNcm,
+  pickNextTrack,
   saveQueueState,
   triggerSegue
 } from '@renderer/api';
@@ -43,6 +44,8 @@ const DEFAULT_DUCKING_HINT_SEC = 8;
 const TRACK_DEFAULT_VOLUME = 1;
 const TRACK_DUCKING_VOLUME = 0.2;
 const SEGUE_START_TOLERANCE_SEC = 0.25;
+const DJ_TARGET_QUEUE = 3;       // keep this many songs in queue at all times
+const DJ_PICK_COOLDOWN_MS = 3000; // min ms between pick-next calls
 
 type PendingSegueAudio = {
   audio: HTMLAudioElement;
@@ -75,6 +78,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
   const shouldAutoplayNextRef = useRef(false);
   const prefetchTriggeredRef = useRef(false);
   const segueTriggeredRef = useRef(false);
+  const djPickNextLastCallRef = useRef<number>(0);
   const applyingRemoteQueueRef = useRef(false);
 
   const queueIds = useMemo(() => queue.map((track) => track.id), [queue]);
@@ -189,6 +193,17 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
         applyingRemoteQueueRef.current = true;
         setQueue(nextQueue);
         setCurrentIndex(nextIndex);
+      } else if (msg.type === 'queue-appended') {
+        const t = msg.track as { ncmId?: unknown; name?: unknown; artists?: unknown; durationMs?: unknown } | null;
+        if (t && typeof t === 'object' && t.ncmId) {
+          const appended: QueueTrackDto = {
+            id: String(t.ncmId),
+            name: typeof t.name === 'string' ? t.name : `Track ${t.ncmId}`,
+            artists: Array.isArray(t.artists) ? (t.artists as string[]) : [],
+            durationMs: typeof t.durationMs === 'number' ? t.durationMs : 0
+          };
+          setQueue((prev) => [...prev, appended]);
+        }
       } else if (msg.type === 'segue.delta') {
         const say = String(msg.say ?? '').trim();
         if (say) {
@@ -279,6 +294,16 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
     });
   }, [currentIndex, queue]);
 
+  // When the queue gains a new song while currentTrackId hasn't changed,
+  // nextTrack may still be null — refresh it so segue can fire promptly.
+  useEffect(() => {
+    if (currentTrackId && queueIds.length > 1) {
+      void refreshNextTrack(currentTrackId);
+    }
+    // intentionally only watching queueIds.length
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [queueIds.length]);
+
   useEffect(() => {
     if (!currentTrackId) {
       setNowPlaying(null);
@@ -315,11 +340,18 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
 
   async function loadLikedQueue(): Promise<void> {
     try {
-      const payload = await getLikedQueue(100);
+      const payload = await getLikedQueue(50);
+      if (payload.tracks.length === 0) {
+        setError('红心歌单为空，请先在网易云收藏歌曲');
+        return;
+      }
+      const randomIdx = Math.floor(Math.random() * payload.tracks.length);
+      const startTrack = payload.tracks[randomIdx];
       applyingRemoteQueueRef.current = true;
-      setQueue(payload.tracks);
-      setCurrentIndex(payload.currentIndex);
-      setStatusText(`已加载红心歌单 ${payload.tracks.length} 首`);
+      djPickNextLastCallRef.current = 0;
+      setQueue([startTrack]);
+      setCurrentIndex(0);
+      setStatusText(`DJ 模式：随机选取「${startTrack.name ?? startTrack.id}」，正在补充队列…`);
     } catch (err) {
       setError(err instanceof Error ? err.message : '红心歌单加载失败');
     }
@@ -381,27 +413,21 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
   }
 
   function handlePrev(): void {
-    if (isPlaying) {
-      shouldAutoplayNextRef.current = true;
-    }
-    setCurrentIndex((index) => Math.max(0, index - 1));
+    // DJ mode: no history to go back to
   }
 
   function handleSkip(): void {
-    if (!queueIds.length) {
-      return;
-    }
-    if (isPlaying) {
-      shouldAutoplayNextRef.current = true;
-    }
-    setCurrentIndex((index) => Math.min(queueIds.length - 1, index + 1));
+    if (queue.length <= 1) return;
+    if (isPlaying) shouldAutoplayNextRef.current = true;
+    setQueue((q) => q.slice(1));
+    setCurrentIndex(0);
   }
 
   function handleSelectIndex(index: number): void {
-    if (isPlaying) {
-      shouldAutoplayNextRef.current = true;
-    }
-    setCurrentIndex(index);
+    if (index <= 0 || index >= queue.length) return;
+    if (isPlaying) shouldAutoplayNextRef.current = true;
+    setQueue((q) => q.slice(index));
+    setCurrentIndex(0);
   }
 
   function handleToggleLike(): void {
@@ -443,7 +469,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
     }
 
     const nextTrackId = nextTrack?.track.id ?? null;
-    if (!segueTriggeredRef.current && decision.shouldTriggerSegue && currentTrackId && nextTrackId) {
+    if (!segueTriggeredRef.current && decision.shouldTriggerSegue && currentTrackId && nextTrackId && nextTrackId !== currentTrackId) {
       segueTriggeredRef.current = true;
       setSegueStatus('generating');
       setSegueScript('');
@@ -451,6 +477,16 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
       void triggerSegue(currentTrackId, nextTrackId).catch((err) => {
         setError(err instanceof Error ? err.message : 'segue 请求失败');
       });
+    }
+
+    // DJ mode: keep queue at DJ_TARGET_QUEUE songs; rate-limited by cooldown
+    if (isPlaying && queueIds.length < DJ_TARGET_QUEUE) {
+      const now = Date.now();
+      if (now - djPickNextLastCallRef.current >= DJ_PICK_COOLDOWN_MS) {
+        djPickNextLastCallRef.current = now;
+        setStatusText('DJ 正在挑选下一首...');
+        void pickNextTrack().catch(() => {});
+      }
     }
 
     maybeStartSegueAudio();
@@ -465,9 +501,10 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
   }
 
   function onEnded(): void {
-    if (currentIndex < queueIds.length - 1) {
+    if (queue.length > 1) {
       shouldAutoplayNextRef.current = true;
-      setCurrentIndex((index) => index + 1);
+      setQueue((q) => q.slice(1));
+      setCurrentIndex(0);
       return;
     }
     setIsPlaying(false);
@@ -475,8 +512,8 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
     setStatusText('播放完成');
   }
 
-  const canPrev = currentIndex > 0;
-  const canSkip = currentIndex < queueIds.length - 1;
+  const canPrev = false;
+  const canSkip = queue.length > 1;
   const isLiked = currentTrackId ? likedTrackIds.includes(currentTrackId) : false;
 
   return (
@@ -582,7 +619,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
             <div className="flex items-end justify-between gap-4">
               <div>
                 <h2 className="text-3xl font-semibold">正在播放</h2>
-                <p className="text-sm text-zinc-400">红心歌单动态队列 · 支持进度拖动</p>
+                <p className="text-sm text-zinc-400">DJ 模式 · 动态队列 · 播放完自动补歌</p>
               </div>
               <div className="text-right text-xs text-zinc-400">
                 <p>{statusText}</p>
@@ -594,7 +631,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
               onClick={() => void loadLikedQueue()}
               type="button"
             >
-              重新读取网易红心歌单
+              重新开始 DJ 模式（重新加载红心歌单）
             </button>
           </header>
 

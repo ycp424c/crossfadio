@@ -112,6 +112,22 @@ export async function saveQueueState(
   if (!result.ok) throw new Error('Failed to save queue state');
 }
 
+export async function pickNextTrack(): Promise<{ ok: boolean }> {
+  return requestJson<{ ok: boolean }>('/api/dj/pick-next', { method: 'POST' });
+}
+
+export type RecentMessage = {
+  role: 'user' | 'assistant' | 'system';
+  content: string;
+};
+
+export async function getRecentChatMessages(limit = 50): Promise<RecentMessage[]> {
+  const payload = await requestJson<{ ok: boolean; messages: RecentMessage[] }>(
+    `/api/messages/recent?limit=${encodeURIComponent(String(limit))}`
+  );
+  return payload.messages ?? [];
+}
+
 export async function triggerSegue(fromId: string, toId: string): Promise<{ ok: boolean; requestId: string }> {
   return requestJson<{ ok: boolean; requestId: string }>('/api/segue/trigger', {
     method: 'POST',

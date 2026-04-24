@@ -96,7 +96,17 @@ export const fragmentsSchema = z.object({
   // ④ memory
   memory: z.object({
     recentPlays: z.array(playRecordSchema),
-    recentChat: z.array(messageSchema)
+    recentChat: z.array(messageSchema),
+    recentSegues: z
+      .array(
+        z.object({
+          fromName: z.string(),
+          toName: z.string(),
+          say: z.string(),
+          createdAt: z.string()
+        })
+      )
+      .optional()
   }),
 
   // ⑤ input

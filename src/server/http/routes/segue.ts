@@ -14,6 +14,7 @@ import { loadUserCorpus } from '../../user-corpus/loader.js';
 import { loadLikedTracksForPlanning } from '../../user-corpus/ncm-liked.js';
 import { getRecentPlays } from '../../store/plays.js';
 import { getRecentMessages } from '../../store/messages.js';
+import { saveSegue, getRecentSegues } from '../../store/segues.js';
 import { fetchWeather } from '../../weather.js';
 import { TtsClient } from '../../tts/client.js';
 import { resolveTtsConfig } from '../../tts/config.js';
@@ -42,6 +43,11 @@ export function createSegueTriggerHandler(opts: SegueRouteOptions) {
     const parsed = triggerBodySchema.safeParse(req.body);
     if (!parsed.success) {
       res.status(400).json({ ok: false, error: 'invalid body' });
+      return;
+    }
+
+    if (parsed.data.from.id === parsed.data.to.id) {
+      res.status(400).json({ ok: false, error: 'from and to must be different tracks' });
       return;
     }
 
@@ -94,7 +100,7 @@ async function runSegueJob(
           durationMs: null
         }
       },
-      memory: { recentPlays: getRecentPlays(50), recentChat: getRecentMessages(20) },
+      memory: { recentPlays: getRecentPlays(50), recentChat: getRecentMessages(20), recentSegues: getRecentSegues(10) },
       input: {
         kind: 'segueTrigger',
         from: trackContext.fromTrack,
@@ -133,6 +139,14 @@ async function runSegueJob(
     const textDerivedSpeechDurationSec = estimateTtsDurationSec(segueOutput.say);
 
     // Synthesize TTS
+    saveSegue({
+      fromId: from.id,
+      fromName: trackContext.fromTrack.name,
+      toId: to.id,
+      toName: trackContext.toTrack.name,
+      say: segueOutput.say
+    });
+
     const ttsConfig = resolveTtsConfig(opts.secrets);
     if (!ttsConfig) {
       broadcast({

@@ -76,6 +76,11 @@ function buildMemorySlice(f: Fragments): string {
     .map((m) => `${m.role === 'user' ? '用户' : 'DJ'}：${m.content}`)
     .join('\n');
 
+  const recentSegues = (f.memory.recentSegues ?? [])
+    .slice(0, 10)
+    .map((s) => `- [${s.createdAt.slice(11, 16)}] ${s.fromName} → ${s.toName}：${s.say}`)
+    .join('\n');
+
   return `<memory>
 <recent_plays>
 ${recentPlays || '（暂无播放记录）'}
@@ -83,6 +88,9 @@ ${recentPlays || '（暂无播放记录）'}
 <recent_chat>
 ${recentChat || '（暂无聊天记录）'}
 </recent_chat>
+<recent_segues>
+${recentSegues || '（暂无过渡语记录）'}
+</recent_segues>
 </memory>`;
 }
 

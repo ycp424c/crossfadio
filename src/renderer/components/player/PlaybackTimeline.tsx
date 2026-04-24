@@ -91,8 +91,14 @@ export function PlaybackTimeline(props: PlaybackTimelineProps): JSX.Element {
           <div className="absolute right-0 h-px w-9 bg-gradient-to-l from-violet-400 to-transparent" />
           <div className="relative flex h-full min-h-36 w-full flex-col items-center justify-center border-y border-zinc-800 bg-gradient-to-r from-amber-500/10 via-zinc-900 to-violet-500/10">
             <p className="text-[11px] uppercase tracking-wide text-zinc-400">X-FADE</p>
-            <p className="mt-1 text-4xl font-semibold text-amber-200">{props.timing?.crossfadeSec ?? 0}s</p>
-            <p className="mt-1 text-xs text-zinc-400">交叉淡入淡出</p>
+            <p className="mt-1 text-4xl font-semibold text-amber-200">
+              {Math.round(props.duckingHintSec ?? props.timing?.crossfadeSec ?? 0)}s
+            </p>
+            <p className="mt-1 text-xs text-zinc-400">
+              {props.duckingHintSec && props.duckingHintSec !== props.timing?.crossfadeSec
+                ? '语音时长'
+                : '交叉淡入淡出'}
+            </p>
             <div className="mt-3 rounded-full border border-zinc-700 bg-zinc-950 px-3 py-1 text-xs text-zinc-300">
               {crossfadePct}%
             </div>
