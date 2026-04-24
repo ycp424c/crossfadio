@@ -1,4 +1,5 @@
 import { Heart, Music2 } from 'lucide-react';
+import { SyncedLyrics } from './SyncedLyrics';
 import coverPlaceholder from '@renderer/assets/image2/cover-placeholder.svg';
 
 type NowPlayingHeroProps = {
@@ -6,6 +7,7 @@ type NowPlayingHeroProps = {
   title: string;
   subtitle: string;
   lyric: string;
+  positionSec: number;
   isLiked: boolean;
   onToggleLike: () => void;
 };
@@ -43,11 +45,7 @@ export function NowPlayingHero(props: NowPlayingHeroProps): JSX.Element {
           {props.isLiked ? '已喜欢' : '喜欢'}
         </button>
       </div>
-      <div className="mt-4 rounded-xl border border-zinc-800 bg-gradient-to-br from-indigo-950/60 via-zinc-950/80 to-cyan-950/40 p-4">
-        <p className="line-clamp-4 whitespace-pre-wrap text-sm leading-7 text-zinc-200">
-          {props.lyric || '暂无歌词，已进入纯音乐播放模式。'}
-        </p>
-      </div>
+      <SyncedLyrics lyric={props.lyric} positionSec={props.positionSec} />
     </section>
   );
 }

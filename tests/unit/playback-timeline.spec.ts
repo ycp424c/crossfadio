@@ -9,25 +9,28 @@ describe('buildPlaybackTimeline', () => {
       duckingHintSec: 6
     });
 
-    expect(timeline.progressPct).toBeCloseTo(94.44, 2);
+    expect(timeline.windowStartSec).toBe(168);
+    expect(timeline.windowEndSec).toBe(180);
+    expect(timeline.progressPct).toBeCloseTo(16.67, 2);
     expect(timeline.events.map((event) => event.id)).toEqual(['segue', 'prefetch', 'crossfade']);
     expect(timeline.events.map((event) => event.atSec)).toEqual([168, 170, 172]);
+    expect(timeline.events.map((event) => event.pct)).toEqual([0, 16.666666666666664, 33.33333333333333]);
     expect(timeline.ranges).toEqual([
       {
         id: 'ducking',
         label: 'TTS ducking',
         startSec: 168,
         endSec: 174,
-        startPct: 93.33333333333333,
-        widthPct: 3.3333333333333335
+        startPct: 0,
+        widthPct: 50
       },
       {
         id: 'crossfade',
         label: 'Crossfade',
         startSec: 172,
         endSec: 180,
-        startPct: 95.55555555555556,
-        widthPct: 4.444444444444445
+        startPct: 33.33333333333333,
+        widthPct: 66.66666666666666
       }
     ]);
   });

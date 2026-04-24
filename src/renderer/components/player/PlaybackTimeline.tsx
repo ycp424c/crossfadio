@@ -1,4 +1,4 @@
-import { Activity, RadioTower, Waves } from 'lucide-react';
+import { CheckCircle2, Clock3, Filter, Volume2 } from 'lucide-react';
 import { buildPlaybackTimeline } from '@renderer/audio/timeline';
 import type { PlaybackTiming } from '@shared/schema';
 
@@ -9,6 +9,7 @@ type PlaybackTimelineProps = {
   positionSec: number;
   timing: PlaybackTiming | null;
   duckingHintSec?: number;
+  currentTrackId: string | null;
   nextTrackId: string | null;
   segueStatus: SegueStatus;
 };
@@ -20,6 +21,9 @@ const STATUS_LABEL: Record<SegueStatus, string> = {
   degraded: '降级'
 };
 
+const ORANGE_WAVE = [18, 30, 22, 44, 28, 58, 36, 50, 24, 68, 32, 46, 26, 60, 38, 52, 20, 42, 34, 56, 30, 48, 24, 40];
+const PURPLE_WAVE = [20, 42, 28, 50, 34, 66, 24, 46, 38, 58, 30, 52, 36, 64, 26, 44, 32, 54, 22, 48, 34, 60, 28, 40];
+
 export function PlaybackTimeline(props: PlaybackTimelineProps): JSX.Element {
   const timeline = props.timing
     ? buildPlaybackTimeline(props.durationSec, {
@@ -28,14 +32,27 @@ export function PlaybackTimeline(props: PlaybackTimelineProps): JSX.Element {
         duckingHintSec: props.duckingHintSec ?? 8
       })
     : null;
+  const crossfadeRange = timeline?.ranges.find((range) => range.id === 'crossfade') ?? null;
+  const crossfadePct =
+    crossfadeRange && crossfadeRange.endSec > crossfadeRange.startSec
+      ? Math.round(
+          Math.min(
+            100,
+            Math.max(
+              0,
+              ((props.positionSec - crossfadeRange.startSec) / (crossfadeRange.endSec - crossfadeRange.startSec)) * 100
+            )
+          )
+        )
+      : 0;
+  const timeToSegueSec = timeline ? Math.max(0, timeline.windowStartSec - props.positionSec) : 0;
 
   return (
-    <section className="rounded-2xl border border-zinc-800/80 bg-zinc-950/60 p-4">
+    <section className="rounded-2xl border border-zinc-800/80 bg-zinc-950/60 p-5">
       <div className="flex items-start justify-between gap-4">
         <div>
-          <h3 className="inline-flex items-center gap-2 text-lg font-semibold text-zinc-100">
-            <Waves className="h-5 w-5 text-cyan-300" />
-            动态编排 Timeline
+          <h3 className="text-lg font-semibold text-zinc-100">
+            双 Deck 混音台
           </h3>
           <p className="mt-1 text-xs text-zinc-400">
             下一首 {props.nextTrackId ?? '未就绪'} · {STATUS_LABEL[props.segueStatus]}
@@ -46,63 +63,96 @@ export function PlaybackTimeline(props: PlaybackTimelineProps): JSX.Element {
         </div>
       </div>
 
-      <div className="mt-5">
-        <div className="relative h-12 rounded-xl border border-zinc-800 bg-zinc-900/80 shadow-inner shadow-black/30">
-          <div
-            className="absolute inset-y-0 left-0 rounded-l-xl bg-gradient-to-r from-cyan-400/20 via-violet-400/20 to-amber-300/20"
-            style={{ width: `${timeline?.progressPct ?? 0}%` }}
-          />
-          {timeline?.ranges.map((range) => (
-            <div
-              className={`absolute top-2 h-8 rounded-md border ${
-                range.id === 'crossfade'
-                  ? 'border-amber-300/40 bg-amber-300/15'
-                  : 'border-cyan-300/40 bg-cyan-300/15'
-              }`}
-              key={range.id}
-              style={{ left: `${range.startPct}%`, width: `${range.widthPct}%` }}
-              title={`${range.label}: ${formatClock(range.startSec)}-${formatClock(range.endSec)}`}
-            />
-          ))}
-          {timeline?.events.map((event) => (
-            <div
-              className="absolute top-1/2 h-8 w-px -translate-y-1/2 bg-zinc-100/80"
-              key={event.id}
-              style={{ left: `${event.pct}%` }}
-              title={`${event.label}: ${formatClock(event.atSec)}`}
-            >
-              <span className="absolute left-1 top-0 rounded bg-zinc-950/90 px-1.5 py-0.5 text-[10px] text-zinc-200">
-                {event.label}
-              </span>
+      <div className="mt-4 grid grid-cols-[1fr_150px_1fr] items-stretch gap-0">
+        <DeckCard
+          accent="orange"
+          badge="A"
+          meta={formatClock(props.positionSec)}
+          title={props.currentTrackId ? `Track ${props.currentTrackId}` : 'Deck A'}
+          wave={ORANGE_WAVE}
+        />
+        <div className="relative flex items-center justify-center">
+          <div className="absolute left-0 h-px w-9 bg-gradient-to-r from-amber-400 to-transparent" />
+          <div className="absolute right-0 h-px w-9 bg-gradient-to-l from-violet-400 to-transparent" />
+          <div className="relative flex h-full min-h-36 w-full flex-col items-center justify-center border-y border-zinc-800 bg-gradient-to-r from-amber-500/10 via-zinc-900 to-violet-500/10">
+            <p className="text-[11px] uppercase tracking-wide text-zinc-400">X-FADE</p>
+            <p className="mt-1 text-4xl font-semibold text-amber-200">{props.timing?.crossfadeSec ?? 0}s</p>
+            <p className="mt-1 text-xs text-zinc-400">交叉淡入淡出</p>
+            <div className="mt-3 rounded-full border border-zinc-700 bg-zinc-950 px-3 py-1 text-xs text-zinc-300">
+              {crossfadePct}%
             </div>
-          ))}
+          </div>
         </div>
+        <DeckCard
+          accent="purple"
+          badge="B"
+          meta={props.nextTrackId ? '预载中' : '--:--'}
+          title={props.nextTrackId ? `Track ${props.nextTrackId}` : 'Deck B'}
+          wave={PURPLE_WAVE}
+        />
+      </div>
 
-        <div className="mt-4 grid grid-cols-3 gap-2 text-xs text-zinc-300">
-          <Metric icon={<RadioTower className="h-3.5 w-3.5" />} label="Segue" value={eventLabel(timeline, 'segue')} />
-          <Metric icon={<Activity className="h-3.5 w-3.5" />} label="Prefetch" value={eventLabel(timeline, 'prefetch')} />
-          <Metric icon={<Waves className="h-3.5 w-3.5" />} label="X-Fade" value={eventLabel(timeline, 'crossfade')} />
-        </div>
+      <div className="mt-4 grid grid-cols-4 overflow-hidden rounded-xl border border-zinc-800 bg-zinc-950/80 text-xs text-zinc-300">
+        <StatusItem icon={<Clock3 className="h-4 w-4" />} label={`下一首将在 ${Math.round(timeToSegueSec)} 秒后切入`} />
+        <StatusItem icon={<CheckCircle2 className="h-4 w-4 text-emerald-300" />} label="B Deck 已就绪" />
+        <StatusItem icon={<Volume2 className="h-4 w-4" />} label="音量衰减 -7.2 dB" />
+        <StatusItem icon={<Filter className="h-4 w-4" />} label="滤波切换中 LPF → HPF" />
       </div>
     </section>
   );
 }
 
-function Metric(props: { icon: JSX.Element; label: string; value: string }): JSX.Element {
+function DeckCard(props: {
+  accent: 'orange' | 'purple';
+  badge: string;
+  title: string;
+  meta: string;
+  wave: number[];
+}): JSX.Element {
+  const isOrange = props.accent === 'orange';
   return (
-    <div className="rounded-xl border border-zinc-800 bg-zinc-900/70 px-3 py-2">
-      <div className="flex items-center gap-1.5 text-zinc-400">
-        {props.icon}
-        {props.label}
+    <div
+      className={`rounded-xl border p-4 ${
+        isOrange
+          ? 'border-amber-500/60 bg-gradient-to-br from-amber-500/10 via-zinc-900 to-zinc-950'
+          : 'border-violet-500/40 bg-gradient-to-br from-violet-500/10 via-zinc-900 to-zinc-950'
+      }`}
+    >
+      <div className="flex items-start gap-3">
+        <div
+          className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full border text-sm font-semibold ${
+            isOrange ? 'border-amber-400 text-amber-300' : 'border-violet-400 text-violet-300'
+          }`}
+        >
+          {props.badge}
+        </div>
+        <div className="min-w-0">
+          <p className="truncate text-sm font-medium text-zinc-100">{props.title}</p>
+          <p className="mt-0.5 text-xs text-zinc-400">{isOrange ? '当前播放' : '下一首'}</p>
+        </div>
       </div>
-      <div className="mt-1 font-medium text-zinc-100">{props.value}</div>
+
+      <div className="mt-5 flex h-16 items-center gap-1">
+        {props.wave.map((height, index) => (
+          <span
+            className={`w-1 rounded-full ${isOrange ? 'bg-amber-400' : 'bg-violet-400'}`}
+            key={index}
+            style={{ height: `${height}%` }}
+          />
+        ))}
+      </div>
+      <p className="mt-3 text-xs text-zinc-400">{props.meta}</p>
     </div>
   );
 }
 
-function eventLabel(timeline: ReturnType<typeof buildPlaybackTimeline> | null, id: string): string {
-  const event = timeline?.events.find((item) => item.id === id);
-  return event ? formatClock(event.atSec) : '--:--';
+function StatusItem(props: { icon: JSX.Element; label: string }): JSX.Element {
+  return (
+    <div className="flex min-w-0 items-center gap-2 border-r border-zinc-800 px-3 py-2 last:border-r-0">
+      <span className="shrink-0 text-zinc-500">{props.icon}</span>
+      <span className="truncate">{props.label}</span>
+    </div>
+  );
 }
 
 function formatClock(totalSec: number): string {

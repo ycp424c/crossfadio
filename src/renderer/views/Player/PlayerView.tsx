@@ -231,14 +231,6 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
     );
   }
 
-  function handleSeek(event: React.ChangeEvent<HTMLInputElement>): void {
-    const nextSec = Number(event.target.value);
-    setPositionSec(nextSec);
-    if (audioRef.current) {
-      audioRef.current.currentTime = nextSec;
-    }
-  }
-
   function onTimeUpdate(): void {
     const audio = audioRef.current;
     if (!audio || !nowPlaying) {
@@ -416,26 +408,11 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
             isLiked={isLiked}
             lyric={nowPlaying?.lyric ?? ''}
             onToggleLike={handleToggleLike}
+            positionSec={positionSec}
             subtitle={nowPlaying ? `直链已就绪 · ${nowPlaying.timing.crossfadeSec}s crossfade` : '等待加载'}
             title={currentTrackId ? `Track ${currentTrackId}` : 'No Track'}
             trackId={currentTrackId ?? '-'}
           />
-
-          <section className="rounded-2xl border border-zinc-800/80 bg-zinc-950/60 p-4">
-            <div className="flex items-center justify-between text-sm text-zinc-300">
-              <span>{formatClock(positionSec)}</span>
-              <span>{formatClock(durationSec)}</span>
-            </div>
-            <input
-              className="mt-2 h-2 w-full cursor-pointer accent-violet-400"
-              max={durationSec || 0}
-              min={0}
-              onChange={handleSeek}
-              step={0.01}
-              type="range"
-              value={Math.min(positionSec, durationSec || 0)}
-            />
-          </section>
 
           <TransportControls
             canPrev={canPrev}
@@ -447,6 +424,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
           />
 
           <PlaybackTimeline
+            currentTrackId={currentTrackId}
             duckingHintSec={duckingHintSec}
             durationSec={durationSec}
             nextTrackId={nextTrack?.track.id ?? null}
@@ -498,17 +476,4 @@ function parseQueueInput(value: string): string[] {
     .split(',')
     .map((id) => id.trim())
     .filter((id) => id.length > 0);
-}
-
-function formatClock(totalSec: number): string {
-  if (!Number.isFinite(totalSec) || totalSec <= 0) {
-    return '00:00';
-  }
-
-  const rounded = Math.floor(totalSec);
-  const minutes = Math.floor(rounded / 60)
-    .toString()
-    .padStart(2, '0');
-  const seconds = (rounded % 60).toString().padStart(2, '0');
-  return `${minutes}:${seconds}`;
 }
