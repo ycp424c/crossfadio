@@ -18,6 +18,7 @@ import {
   createNcmSessionHandler
 } from './routes/ncm-login.js';
 import { createNextHandler, createNowHandler } from './routes/now-next.js';
+import { createStartPlayHandler, createEndPlayHandler } from './routes/plays.js';
 
 export type LocalServer = {
   port: number;
@@ -67,6 +68,8 @@ export async function startLocalServer(options: StartLocalServerOptions): Promis
   app.post('/api/ncm/logout', createNcmLogoutHandler(options.ncmAuth));
   app.get('/api/now', createNowHandler(options.ncmClient));
   app.get('/api/next', createNextHandler(options.ncmClient));
+  app.post('/api/plays', createStartPlayHandler());
+  app.patch('/api/plays/:id', createEndPlayHandler());
 
   if (options.staticDir && fs.existsSync(options.staticDir)) {
     app.use(express.static(options.staticDir));

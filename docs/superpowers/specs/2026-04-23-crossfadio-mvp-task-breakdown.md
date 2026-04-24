@@ -79,14 +79,14 @@
 | M1-05 | 等能量 crossfade + filter sweep | M1-04 | `crossfade.ts` | 切歌时无明显音量塌陷 | 0.5 | P0 | DONE |
 | M1-06 | `api/now` `api/next` + prefetch 时序 | M1-03 M1-04 | `routes/now,next.ts` + `prefetch.ts` | d-10s 预取，B deck 可按时就绪 | 0.5 | P0 | DONE |
 | M1-07 | Player 视图（播放信息/队列/控制） | M1-04 | `views/Player` + 组件 | 可播放、暂停、skip、prev、like | 0.6 | P1 | DONE |
-| M1-08 | 播放历史落库（plays）与基础错误码处理 | M0-05 M1-06 | `plays.ts` | 播放开始/结束、skip 原因可记录 | 0.4 | P1 | TODO |
+| M1-08 | 播放历史落库（plays）与基础错误码处理 | M0-05 M1-06 | `plays.ts` | 播放开始/结束、skip 原因可记录 | 0.4 | P1 | DONE |
 
 ### 4.3 M2 AI 底座（3d）
 
 | ID | 任务 | 依赖 | 主要产出 | 验收标准 | 估时 | 优先级 | 状态 |
 |---|---|---|---|---|---:|---|---|
-| M2-01 | OpenAI-compatible LLM client（流式/非流式） | M0-04 | `llm/client.ts` `llm/stream.ts` | 可连通配置端点并返回统一结构 | 0.6 | P0 | TODO |
-| M2-02 | OpenAI-compatible TTS client 与缓存索引 | M0-05 | `tts/client.ts` `tts/cache.ts` | hash 维度含 endpoint/model/voice/speed/format/text | 0.5 | P0 | TODO |
+| M2-01 | OpenAI-compatible LLM client（流式/非流式） | M0-04 | `llm/client.ts` `llm/stream.ts` | 可连通配置端点并返回统一结构 | 0.6 | P0 | DONE |
+| M2-02 | OpenAI-compatible TTS client 与缓存索引 | M0-05 | `tts/client.ts` `tts/cache.ts` | hash 维度含 endpoint/model/voice/speed/format/text | 0.5 | P0 | DONE |
 | M2-03 | `secrets.json` 凭证封装与降级策略 | M0-03 | `src/server/security.ts` | key/cookie 统一经服务端封装读写 | 0.5 | P0 | DONE |
 | M2-04 | Settings 视图（LLM/TTS/声音试听） | M2-01 M2-02 M2-03 | `views/Settings` | 可保存配置、可试听、可错误提示 | 0.6 | P1 | TODO |
 | M2-05 | Agent `compute(fragments)` 骨架与 schema 校验 | M0-02 M2-01 | `agent/compute.ts` `schema.ts` | 非法输出可重试/降级 | 0.5 | P0 | TODO |
@@ -141,6 +141,9 @@
 6. `M1-06`：已完成（DONE）。新增 `src/server/http/routes/now-next.ts`（`/api/now` + `/api/next`）与 `src/renderer/audio/prefetch.ts`（d-12/d-10/d-8 触发时序计算）；补充 `now-next/prefetch` 单测覆盖队列选取、时长估算和触发窗口（累计 43 用例通过）。
 7. `M1-07`：已完成（DONE）。落地 `src/renderer/views/Player/PlayerView.tsx` 与 Player 组件拆分（NowPlayingHero/QueuePanel/TransportControls），接入 `/api/now` `/api/next` + 本地音频控制，支持 `play/pause/skip/prev/like` 最小闭环。
 8. `M0-08 / M2-03`：已完成（DONE）。项目已移除 Electron，目录语义统一到 `src/server` + `src/renderer`，前端改为同源 `/api` 请求；应用数据目录抽象到 `app-paths.ts`，凭证落 `secrets.json` 文件存储降级方案，并通过 `pnpm check` / `pnpm test` / `pnpm build` 与 `/api/health` 运行验证。
+9. `M1-08`：已完成（DONE）。新增 `src/server/store/plays.ts`（`startPlay/endPlay/getRecentPlays`），`POST /api/plays` 与 `PATCH /api/plays/:id` 路由注册；单测覆盖 CRUD 操作、幂等性与排序（80 用例通过）。
+10. `M2-01`：已完成（DONE）。新增 `src/server/llm/client.ts`，实现 `LlmClient.complete()`（非流式）与 `LlmClient.stream()`（SSE 流式），覆盖 Authorization header、AbortSignal、malformed SSE 跳过；单测 10 用例通过。
+11. `M2-02`：已完成（DONE）。新增 `src/server/tts/cache.ts`（SHA-256 hash 含 endpoint/model/voice/speed/format/text）与 `src/server/tts/client.ts`（cache-first 合成、文件持久化到 `cache/tts/<hash>.mp3`）；单测 9 用例通过（含缓存命中/未命中、hash 差异、请求 body 校验）。
 
 ### 4.8 M1-07 前置 UI 任务与依赖（已确认）
 
@@ -214,3 +217,6 @@
 | 2026-04-23 | justynchen / codex | UI-04/UI-07 → DONE：补充 `ui04-component-breakdown.md` 与 `ui07-design-to-component-mapping.md`，完成 `M1-07` 的设计前置依赖固化（`UI-05` 仍为建议项） |
 | 2026-04-23 | justynchen / codex | M1-07 → DONE：新增 `PlayerView` 与核心 Player 组件，接入 `/api/now` `/api/next` 数据流与 HTMLAudio 控制，完成 `play/pause/skip/prev/like` 闭环 |
 | 2026-04-24 | justynchen / codex | 完成 Web Server 架构迁移：移除 Electron，目录重组为 `src/server` + `src/renderer`，新增 `vite.config.ts`、应用数据目录抽象与 `secrets.json` 存储，并同步本文档任务定义与状态 |
+| 2026-04-24 | justynchen / codex | M1-08 → DONE：新增 plays 存储（`startPlay/endPlay/getRecentPlays`）与 `POST /api/plays`、`PATCH /api/plays/:id` 路由；单测 6 用例（含幂等性与排序） |
+| 2026-04-24 | justynchen / codex | M2-01 → DONE：新增 `src/server/llm/client.ts`（`LlmClient`），支持非流式 `complete()` 与 SSE 流式 `stream()`，单测 10 用例通过 |
+| 2026-04-24 | justynchen / codex | M2-02 → DONE：新增 `src/server/tts/cache.ts`（SHA-256 cache key）与 `src/server/tts/client.ts`（cache-first TTS 合成），单测 9 用例通过；累计 80 用例通过 |
