@@ -8,6 +8,7 @@ import { NcmProcessManager } from './ncm/spawn.js';
 import { NcmClient } from './ncm/client.js';
 import { NcmAuthService } from './ncm/auth.js';
 import { SecretStore } from './security.js';
+import { resolveStaticDir as resolveRuntimeStaticDir } from './runtime.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -85,11 +86,10 @@ function resolveServerPort(): number {
 }
 
 function resolveStaticDir(): string | null {
-  if (process.env.NODE_ENV === 'production') {
-    return path.resolve(__dirname, '../../dist');
-  }
-
-  return null;
+  return resolveRuntimeStaticDir({
+    rootDir: path.resolve(__dirname, '../..'),
+    nodeEnv: process.env.NODE_ENV
+  });
 }
 
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {
