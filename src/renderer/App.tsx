@@ -1,9 +1,10 @@
 import { useState } from 'react';
-import { Radio, Settings2 } from 'lucide-react';
+import { Radio, Settings2, CalendarDays } from 'lucide-react';
 import { PlayerView } from '@renderer/views/Player/PlayerView';
 import { SettingsView } from '@renderer/views/Settings/SettingsView';
+import { PlanView } from '@renderer/views/Plan/PlanView';
 
-type Tab = 'player' | 'settings';
+type Tab = 'player' | 'plan' | 'settings';
 
 export function App(): JSX.Element {
   const [tab, setTab] = useState<Tab>('player');
@@ -13,12 +14,14 @@ export function App(): JSX.Element {
       {/* Main content */}
       <div className="min-h-0 flex-1 overflow-hidden">
         {tab === 'player' && <PlayerView />}
+        {tab === 'plan' && <PlanView />}
         {tab === 'settings' && <SettingsView />}
       </div>
 
       {/* Bottom tab bar */}
       <nav className="flex border-t border-zinc-800 bg-zinc-900">
         <TabButton active={tab === 'player'} onClick={() => setTab('player')} icon={<Radio className="h-4 w-4" />} label="播放" />
+        <TabButton active={tab === 'plan'} onClick={() => setTab('plan')} icon={<CalendarDays className="h-4 w-4" />} label="计划" />
         <TabButton active={tab === 'settings'} onClick={() => setTab('settings')} icon={<Settings2 className="h-4 w-4" />} label="设置" />
       </nav>
     </div>

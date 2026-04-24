@@ -1,0 +1,254 @@
+import type { Request, Response } from 'express';
+import { z } from 'zod';
+import { computeSync } from '../../agent/compute.js';
+import { buildSystemPrompt } from '../../agent/modes.js';
+import { buildFallbackPlan } from '../../agent/plan-fallback.js';
+import type { Fragments } from '../../agent/schema.js';
+import { resolveLlmConfig } from '../../llm/config.js';
+import type { NcmClient } from '../../ncm/client.js';
+import { resolveTrackQuery } from '../../ncm/resolver.js';
+import type { SecretStore } from '../../security.js';
+import { loadLatestPlan, savePlan, todayDateStr } from '../../store/plan.js';
+import { getRecentPlays } from '../../store/plays.js';
+import { loadUserCorpus } from '../../user-corpus/loader.js';
+import { fetchWeather } from '../../weather.js';
+
+type PlanRouteOptions = {
+  secrets: SecretStore;
+  ncmClient: NcmClient;
+};
+
+// ─── Shared helpers ───────────────────────────────────────────────────────────
+
+async function buildPlanFragments(date: string): Promise<Fragments> {
+  const corpus = loadUserCorpus();
+  const weather = await fetchWeather();
+  const recentPlays = getRecentPlays(50);
+  const now = new Date();
+
+  return {
+    mode: 'plan',
+    system: buildSystemPrompt(corpus.djPersona || 'You are a DJ.', 'plan'),
+    corpus: {
+      taste: corpus.taste,
+      routines: corpus.routines,
+      moodRules: corpus.moodRules,
+      playlists: corpus.playlists
+    },
+    env: {
+      nowIso: now.toISOString(),
+      localTime: formatLocalTime(now),
+      weather,
+      nowPlaying: null
+    },
+    memory: { recentPlays, recentChat: [] },
+    input: { kind: 'planRequest', date },
+    trace: { triggeredBy: 'user', lastDecision: null }
+  };
+}
+
+async function generatePlan(date: string, secrets: SecretStore) {
+  const llmConfig = resolveLlmConfig(secrets);
+  const corpus = loadUserCorpus();
+
+  if (!llmConfig) {
+    return buildFallbackPlan(date, corpus.playlists);
+  }
+
+  const fragments = await buildPlanFragments(date);
+  try {
+    const output = await computeSync(fragments, { llmConfig });
+    if (output.mode !== 'plan') throw new Error('unexpected mode');
+    return output;
+  } catch {
+    return buildFallbackPlan(date, corpus.playlists);
+  }
+}
+
+// ─── GET /api/plan/today ──────────────────────────────────────────────────────
+
+export function createGetTodayPlanHandler(opts: PlanRouteOptions) {
+  return async (_req: Request, res: Response): Promise<void> => {
+    try {
+      const date = todayDateStr();
+      let plan = loadLatestPlan(date);
+
+      if (!plan) {
+        plan = await generatePlan(date, opts.secrets);
+        savePlan(plan);
+      }
+
+      res.json({ ok: true, plan });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'unknown error';
+      res.status(500).json({ ok: false, error: msg });
+    }
+  };
+}
+
+// ─── POST /api/plan/regenerate ────────────────────────────────────────────────
+
+export function createRegeneratePlanHandler(opts: PlanRouteOptions) {
+  return async (_req: Request, res: Response): Promise<void> => {
+    try {
+      const date = todayDateStr();
+      const plan = await generatePlan(date, opts.secrets);
+      savePlan(plan);
+      res.json({ ok: true, plan });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'unknown error';
+      res.status(500).json({ ok: false, error: msg });
+    }
+  };
+}
+
+// ─── POST /api/plan/replan-segment ───────────────────────────────────────────
+
+const replanSegmentBodySchema = z.object({
+  segmentId: z.enum(['morning', 'work', 'evening', 'late-night']),
+  hint: z
+    .object({
+      mood: z.string().optional(),
+      genre: z.string().optional(),
+      bpmMin: z.number().optional(),
+      bpmMax: z.number().optional(),
+      durationMin: z.number().optional(),
+      count: z.number().optional()
+    })
+    .optional()
+});
+
+export function createReplanSegmentHandler(opts: PlanRouteOptions) {
+  return async (req: Request, res: Response): Promise<void> => {
+    const parsed = replanSegmentBodySchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ ok: false, error: 'invalid body' });
+      return;
+    }
+
+    try {
+      const date = todayDateStr();
+      let plan = loadLatestPlan(date) ?? (await generatePlan(date, opts.secrets));
+
+      const { segmentId } = parsed.data;
+      const corpus = loadUserCorpus();
+      const llmConfig = resolveLlmConfig(opts.secrets);
+
+      if (llmConfig) {
+        // Re-generate just this segment by creating a fresh full plan with a hint
+        const fragments = await buildPlanFragments(date);
+        const hintText = parsed.data.hint
+          ? ` 重点要求：${JSON.stringify(parsed.data.hint)}`
+          : '';
+        fragments.input = {
+          kind: 'planRequest',
+          date: `${date}，仅更新时段 ${segmentId}${hintText}`
+        };
+
+        try {
+          const newPlan = await computeSync(fragments, { llmConfig });
+          if (newPlan.mode === 'plan') {
+            const newSeg = newPlan.segments.find((s) => s.id === segmentId);
+            if (newSeg) {
+              plan = {
+                ...plan,
+                segments: plan.segments.map((s) => (s.id === segmentId ? newSeg : s))
+              };
+            }
+          }
+        } catch {
+          // keep existing plan
+        }
+      } else {
+        // Fallback: swap segment from fallback plan
+        const fallback = buildFallbackPlan(date, corpus.playlists);
+        const newSeg = fallback.segments.find((s) => s.id === segmentId);
+        if (newSeg) {
+          plan = {
+            ...plan,
+            segments: plan.segments.map((s) => (s.id === segmentId ? newSeg : s))
+          };
+        }
+      }
+
+      savePlan(plan);
+      res.json({ ok: true, plan });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'unknown error';
+      res.status(500).json({ ok: false, error: msg });
+    }
+  };
+}
+
+// ─── POST /api/plan/gap-fill ──────────────────────────────────────────────────
+
+const gapFillBodySchema = z.object({
+  segmentId: z.enum(['morning', 'work', 'evening', 'late-night']),
+  count: z.number().int().min(1).max(20).default(3),
+  durationMin: z.number().positive().default(30),
+  mood: z.string().optional()
+});
+
+export function createGapFillHandler(opts: PlanRouteOptions) {
+  return async (req: Request, res: Response): Promise<void> => {
+    const parsed = gapFillBodySchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ ok: false, error: 'invalid body' });
+      return;
+    }
+
+    try {
+      const { segmentId, count, mood } = parsed.data;
+      const corpus = loadUserCorpus();
+
+      // Pick best playlist for this segment and resolve track IDs
+      const segMoods: Record<string, string[]> = {
+        morning: ['calm', 'indie'],
+        work: ['focus', 'instrumental'],
+        evening: ['chill', 'ambient'],
+        'late-night': ['sleep', 'ambient']
+      };
+
+      const tags = mood
+        ? [mood, ...(segMoods[segmentId] ?? [])]
+        : (segMoods[segmentId] ?? []);
+
+      const relevant = corpus.playlists
+        .filter(
+          (p) =>
+            p.segments.includes(segmentId) ||
+            p.tags.some((t) => tags.includes(t.toLowerCase()))
+        )
+        .sort((a, b) => a.priority - b.priority);
+
+      const tracks: Array<{ query: string; ncmId: string | null }> = [];
+      for (let i = 0; i < count; i++) {
+        const playlist = relevant[i % Math.max(relevant.length, 1)];
+        const query = playlist
+          ? `playlist:${playlist.id}`
+          : `${mood ?? segmentId} music ${i + 1}`;
+
+        const ncmId = playlist?.id
+          ? await resolveTrackQuery(query, opts.ncmClient).catch(() => null)
+          : null;
+
+        tracks.push({ query, ncmId });
+      }
+
+      res.json({ ok: true, tracks });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'unknown error';
+      res.status(500).json({ ok: false, error: msg });
+    }
+  };
+}
+
+// ─── Utilities ────────────────────────────────────────────────────────────────
+
+function formatLocalTime(date: Date): string {
+  const weekdays = ['日', '一', '二', '三', '四', '五', '六'];
+  const day = weekdays[date.getDay()];
+  const hh = String(date.getHours()).padStart(2, '0');
+  const mm = String(date.getMinutes()).padStart(2, '0');
+  return `周${day} ${hh}:${mm}`;
+}

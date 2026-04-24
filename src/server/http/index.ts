@@ -20,6 +20,12 @@ import {
 import { createNextHandler, createNowHandler } from './routes/now-next.js';
 import { createStartPlayHandler, createEndPlayHandler } from './routes/plays.js';
 import { createGetSettingsHandler, createSaveSettingsHandler } from './routes/settings.js';
+import {
+  createGetTodayPlanHandler,
+  createRegeneratePlanHandler,
+  createReplanSegmentHandler,
+  createGapFillHandler
+} from './routes/plan.js';
 import type { SecretStore } from '../security.js';
 
 export type LocalServer = {
@@ -75,6 +81,10 @@ export async function startLocalServer(options: StartLocalServerOptions): Promis
   app.patch('/api/plays/:id', createEndPlayHandler());
   app.get('/api/settings', createGetSettingsHandler(options.secrets));
   app.put('/api/settings', createSaveSettingsHandler(options.secrets));
+  app.get('/api/plan/today', createGetTodayPlanHandler({ secrets: options.secrets, ncmClient: options.ncmClient }));
+  app.post('/api/plan/regenerate', createRegeneratePlanHandler({ secrets: options.secrets, ncmClient: options.ncmClient }));
+  app.post('/api/plan/replan-segment', createReplanSegmentHandler({ secrets: options.secrets, ncmClient: options.ncmClient }));
+  app.post('/api/plan/gap-fill', createGapFillHandler({ secrets: options.secrets, ncmClient: options.ncmClient }));
 
   if (options.staticDir && fs.existsSync(options.staticDir)) {
     app.use(express.static(options.staticDir));

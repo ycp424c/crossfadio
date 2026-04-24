@@ -97,14 +97,14 @@
 
 | ID | 任务 | 依赖 | 主要产出 | 验收标准 | 估时 | 优先级 | 状态 |
 |---|---|---|---|---|---:|---|---|
-| M3-01 | scheduler（07:00 日规划 + 每小时检查） | M0-03 M2-06 | `scheduler.ts` | cron 可触发且防重入 | 0.5 | P0 | TODO |
-| M3-02 | plan mode 输出契约与落库（plan/version） | M2-05 M0-05 | `plan.ts` | 每日计划可持久化覆盖更新 | 0.5 | P0 | TODO |
-| M3-03 | query -> ncmId 兑现与匹配策略 | M1-03 M3-02 | `plan resolver` | query 能稳定映射 songId，失败返回 null | 0.5 | P0 | TODO |
-| M3-04 | `playlists.json` 结构化元数据读取与校验 | M0-06 | `user-corpus/loader.ts` | segments/tags/energyRange/priority 校验通过 | 0.4 | P0 | TODO |
-| M3-05 | fallback 计划打分器（segments+tags+energy） | M3-04 | `plan fallback scorer` | LLM 失败时可出可播计划 | 0.4 | P0 | TODO |
-| M3-06 | `api/plan/*`（today/regenerate/replan-segment/gap-fill） | M0-04 M3-02 | `routes/plan.ts` | API 契约与 schema 一致 | 0.5 | P0 | TODO |
-| M3-07 | Today Plan UI（4 时段 + 一键切段） | M3-06 | `components/TodayPlan` | 可展示/切段/刷新计划版本 | 0.4 | P1 | TODO |
-| M3-08 | 天气注入（wttr/openweather）与错误降级 | M2-01 | `weather.ts` | 天气失败不阻塞生成计划 | 0.3 | P1 | TODO |
+| M3-01 | scheduler（07:00 日规划 + 每小时检查） | M0-03 M2-06 | `scheduler.ts` | cron 可触发且防重入 | 0.5 | P0 | DONE |
+| M3-02 | plan mode 输出契约与落库（plan/version） | M2-05 M0-05 | `plan.ts` | 每日计划可持久化覆盖更新 | 0.5 | P0 | DONE |
+| M3-03 | query -> ncmId 兑现与匹配策略 | M1-03 M3-02 | `plan resolver` | query 能稳定映射 songId，失败返回 null | 0.5 | P0 | DONE |
+| M3-04 | `playlists.json` 结构化元数据读取与校验 | M0-06 | `user-corpus/loader.ts` | segments/tags/energyRange/priority 校验通过 | 0.4 | P0 | DONE |
+| M3-05 | fallback 计划打分器（segments+tags+energy） | M3-04 | `plan fallback scorer` | LLM 失败时可出可播计划 | 0.4 | P0 | DONE |
+| M3-06 | `api/plan/*`（today/regenerate/replan-segment/gap-fill） | M0-04 M3-02 | `routes/plan.ts` | API 契约与 schema 一致 | 0.5 | P0 | DONE |
+| M3-07 | Today Plan UI（4 时段 + 一键切段） | M3-06 | `components/TodayPlan` | 可展示/切段/刷新计划版本 | 0.4 | P1 | DONE |
+| M3-08 | 天气注入（wttr/openweather）与错误降级 | M2-01 | `weather.ts` | 天气失败不阻塞生成计划 | 0.3 | P1 | DONE |
 
 ### 4.5 M4 DJ 串场与动态调整（5d）
 

@@ -123,6 +123,48 @@ export async function saveSettings(payload: SaveSettingsPayload): Promise<void> 
   if (!result.ok) throw new Error('Failed to save settings');
 }
 
+export type PlanTrack = {
+  query: string;
+  reason?: string;
+};
+
+export type PlanSegment = {
+  id: string;
+  label: string;
+  timeRange: string;
+  mood: string;
+  energyPct: number;
+  tracks: PlanTrack[];
+};
+
+export type PlanOutput = {
+  mode: 'plan';
+  date: string;
+  segments: PlanSegment[];
+  narrative?: string;
+};
+
+export type PlanResponse = {
+  ok: boolean;
+  plan: PlanOutput;
+};
+
+export async function getTodayPlan(): Promise<PlanResponse> {
+  return requestJson<PlanResponse>('/api/plan/today');
+}
+
+export async function regeneratePlan(): Promise<PlanResponse> {
+  return requestJson<PlanResponse>('/api/plan/regenerate', { method: 'POST' });
+}
+
+export async function replanSegment(segmentId: string): Promise<PlanResponse> {
+  return requestJson<PlanResponse>('/api/plan/replan-segment', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ segmentId })
+  });
+}
+
 function resolveRuntimeConfig(): RuntimeConfig {
   const baseUrl = window.location.origin.replace(/\/+$/, '');
   return { baseUrl };
