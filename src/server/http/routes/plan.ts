@@ -6,6 +6,7 @@ import { buildFallbackPlan } from '../../agent/plan-fallback.js';
 import type { Fragments } from '../../agent/schema.js';
 import { resolveLlmConfig } from '../../llm/config.js';
 import type { NcmClient } from '../../ncm/client.js';
+import type { NcmPlaylistDetail, NcmPlaylistTrack } from '../../../shared/schema.js';
 import { resolveTrackQuery } from '../../ncm/resolver.js';
 import type { SecretStore } from '../../security.js';
 import { loadLatestPlan, savePlan, todayDateStr } from '../../store/plan.js';
@@ -221,16 +222,22 @@ export function createGapFillHandler(opts: PlanRouteOptions) {
         )
         .sort((a, b) => a.priority - b.priority);
 
+      const playlistDetails = new Map<string, NcmPlaylistDetail | null>();
       const tracks: Array<{ query: string; ncmId: string | null }> = [];
       for (let i = 0; i < count; i++) {
         const playlist = relevant[i % Math.max(relevant.length, 1)];
-        const query = playlist
-          ? `playlist:${playlist.id}`
-          : `${mood ?? segmentId} music ${i + 1}`;
 
-        const ncmId = playlist?.id
-          ? await resolveTrackQuery(query, opts.ncmClient).catch(() => null)
-          : null;
+        if (playlist) {
+          const detail = await getCachedPlaylistDetail(playlist.id, opts.ncmClient, playlistDetails);
+          const track = detail?.tracks[i % Math.max(detail.tracks.length, 1)];
+          if (track) {
+            tracks.push({ query: formatTrackQuery(track), ncmId: String(track.id) });
+            continue;
+          }
+        }
+
+        const query = `${mood ?? segmentId} music ${i + 1}`;
+        const ncmId = await resolveTrackQuery(query, opts.ncmClient).catch(() => null);
 
         tracks.push({ query, ncmId });
       }
@@ -251,4 +258,23 @@ function formatLocalTime(date: Date): string {
   const hh = String(date.getHours()).padStart(2, '0');
   const mm = String(date.getMinutes()).padStart(2, '0');
   return `周${day} ${hh}:${mm}`;
+}
+
+async function getCachedPlaylistDetail(
+  playlistId: string,
+  ncmClient: NcmClient,
+  cache: Map<string, NcmPlaylistDetail | null>
+): Promise<NcmPlaylistDetail | null> {
+  if (cache.has(playlistId)) {
+    return cache.get(playlistId) ?? null;
+  }
+
+  const detail = await ncmClient.getPlaylistDetail(playlistId).catch(() => null);
+  cache.set(playlistId, detail);
+  return detail;
+}
+
+function formatTrackQuery(track: NcmPlaylistTrack): string {
+  const artists = track.artists.join(' / ');
+  return artists ? `${track.name} — ${artists}` : track.name;
 }

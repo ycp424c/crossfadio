@@ -17,6 +17,7 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   if (originalDataDir === undefined) {
     delete process.env.CROSSFADIO_DATA_DIR;
   } else {
@@ -74,5 +75,13 @@ describe('plan store', () => {
   it('todayDateStr returns YYYY-MM-DD format', async () => {
     const { todayDateStr } = await import('../../src/server/store/plan');
     expect(todayDateStr()).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+  });
+
+  it('todayDateStr uses local date instead of UTC date', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-04-23T18:30:00.000Z'));
+
+    const { todayDateStr } = await import('../../src/server/store/plan');
+    expect(todayDateStr()).toBe('2026-04-24');
   });
 });
