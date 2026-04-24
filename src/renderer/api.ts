@@ -130,6 +130,7 @@ export type LlmSettings = {
 };
 
 export type TtsSettings = {
+  provider?: 'openai-compatible' | 'aliyun-qwen';
   baseUrl: string;
   model: string;
   voice: string;
@@ -146,7 +147,15 @@ export type SettingsResponse = {
 
 export type SaveSettingsPayload = {
   llm?: { baseUrl: string; model: string; apiKey?: string };
-  tts?: { baseUrl: string; model: string; voice: string; speed: number; format: string; apiKey?: string };
+  tts?: {
+    provider: 'openai-compatible' | 'aliyun-qwen';
+    baseUrl: string;
+    model: string;
+    voice: string;
+    speed: number;
+    format: string;
+    apiKey?: string;
+  };
 };
 
 export async function getSettings(): Promise<SettingsResponse> {

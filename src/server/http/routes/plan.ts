@@ -11,6 +11,7 @@ import { resolveTrackQuery } from '../../ncm/resolver.js';
 import type { SecretStore } from '../../security.js';
 import { loadLatestPlan, savePlan, todayDateStr } from '../../store/plan.js';
 import { getRecentPlays } from '../../store/plays.js';
+import { loadLikedTracksForPlanning } from '../../user-corpus/ncm-liked.js';
 import { loadUserCorpus } from '../../user-corpus/loader.js';
 import { fetchWeather } from '../../weather.js';
 
@@ -21,10 +22,11 @@ type PlanRouteOptions = {
 
 // ─── Shared helpers ───────────────────────────────────────────────────────────
 
-async function buildPlanFragments(date: string): Promise<Fragments> {
+export async function buildPlanFragments(date: string, ncmClient: NcmClient): Promise<Fragments> {
   const corpus = loadUserCorpus();
   const weather = await fetchWeather();
   const recentPlays = getRecentPlays(50);
+  const likedTracks = await loadLikedTracksForPlanning(ncmClient);
   const now = new Date();
 
   return {
@@ -34,7 +36,8 @@ async function buildPlanFragments(date: string): Promise<Fragments> {
       taste: corpus.taste,
       routines: corpus.routines,
       moodRules: corpus.moodRules,
-      playlists: corpus.playlists
+      playlists: corpus.playlists,
+      likedTracks
     },
     env: {
       nowIso: now.toISOString(),
@@ -48,7 +51,7 @@ async function buildPlanFragments(date: string): Promise<Fragments> {
   };
 }
 
-async function generatePlan(date: string, secrets: SecretStore) {
+async function generatePlan(date: string, secrets: SecretStore, ncmClient: NcmClient) {
   const llmConfig = resolveLlmConfig(secrets);
   const corpus = loadUserCorpus();
 
@@ -56,7 +59,7 @@ async function generatePlan(date: string, secrets: SecretStore) {
     return buildFallbackPlan(date, corpus.playlists);
   }
 
-  const fragments = await buildPlanFragments(date);
+  const fragments = await buildPlanFragments(date, ncmClient);
   try {
     const output = await computeSync(fragments, { llmConfig });
     if (output.mode !== 'plan') throw new Error('unexpected mode');
@@ -75,7 +78,7 @@ export function createGetTodayPlanHandler(opts: PlanRouteOptions) {
       let plan = loadLatestPlan(date);
 
       if (!plan) {
-        plan = await generatePlan(date, opts.secrets);
+        plan = await generatePlan(date, opts.secrets, opts.ncmClient);
         savePlan(plan);
       }
 
@@ -93,7 +96,7 @@ export function createRegeneratePlanHandler(opts: PlanRouteOptions) {
   return async (_req: Request, res: Response): Promise<void> => {
     try {
       const date = todayDateStr();
-      const plan = await generatePlan(date, opts.secrets);
+      const plan = await generatePlan(date, opts.secrets, opts.ncmClient);
       savePlan(plan);
       res.json({ ok: true, plan });
     } catch (err) {
@@ -129,7 +132,7 @@ export function createReplanSegmentHandler(opts: PlanRouteOptions) {
 
     try {
       const date = todayDateStr();
-      let plan = loadLatestPlan(date) ?? (await generatePlan(date, opts.secrets));
+      let plan = loadLatestPlan(date) ?? (await generatePlan(date, opts.secrets, opts.ncmClient));
 
       const { segmentId } = parsed.data;
       const corpus = loadUserCorpus();
@@ -137,7 +140,7 @@ export function createReplanSegmentHandler(opts: PlanRouteOptions) {
 
       if (llmConfig) {
         // Re-generate just this segment by creating a fresh full plan with a hint
-        const fragments = await buildPlanFragments(date);
+        const fragments = await buildPlanFragments(date, opts.ncmClient);
         const hintText = parsed.data.hint
           ? ` 重点要求：${JSON.stringify(parsed.data.hint)}`
           : '';
@@ -222,9 +225,19 @@ export function createGapFillHandler(opts: PlanRouteOptions) {
         )
         .sort((a, b) => a.priority - b.priority);
 
+      const likedTracks = await loadLikedTracksForPlanning(opts.ncmClient, count);
       const playlistDetails = new Map<string, NcmPlaylistDetail | null>();
       const tracks: Array<{ query: string; ncmId: string | null }> = [];
       for (let i = 0; i < count; i++) {
+        const likedTrack = likedTracks[i];
+        if (likedTrack?.name) {
+          tracks.push({
+            query: likedTrack.artist ? `${likedTrack.name} — ${likedTrack.artist}` : likedTrack.name,
+            ncmId: likedTrack.id
+          });
+          continue;
+        }
+
         const playlist = relevant[i % Math.max(relevant.length, 1)];
 
         if (playlist) {

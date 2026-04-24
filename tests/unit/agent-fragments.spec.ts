@@ -11,6 +11,9 @@ const base: Fragments = {
     moodRules: '深夜要安静',
     playlists: [
       { id: 'p1', name: '晨间清醒', provider: 'ncm', segments: ['morning'], tags: ['indie'], energyRange: [30, 60], priority: 1 }
+    ],
+    likedTracks: [
+      { id: '101', name: 'Sweet Disposition', artist: 'The Temper Trap' }
     ]
   },
   env: {
@@ -49,6 +52,8 @@ describe('assembleMessages', () => {
     expect(msgs[1].content).toContain('18°C');
     expect(msgs[1].content).toContain('Holocene — Bon Iver');
     expect(msgs[1].content).toContain('晨间清醒');
+    expect(msgs[1].content).toContain('<liked_tracks>');
+    expect(msgs[1].content).toContain('Sweet Disposition — The Temper Trap');
   });
 
   it('third message contains memory tags with recent plays and chat', () => {
@@ -99,5 +104,11 @@ describe('assembleMessages', () => {
     const f: Fragments = { ...base, corpus: { ...base.corpus, playlists: [] } };
     const msgs = assembleMessages(f);
     expect(msgs[1].content).toContain('（无歌单）');
+  });
+
+  it('renders empty liked tracks gracefully', () => {
+    const f: Fragments = { ...base, corpus: { ...base.corpus, likedTracks: [] } };
+    const msgs = assembleMessages(f);
+    expect(msgs[1].content).toContain('（暂无红心歌曲）');
   });
 });

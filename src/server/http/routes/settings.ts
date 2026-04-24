@@ -12,9 +12,10 @@ const llmConfigSchema = z.object({
 });
 
 const ttsConfigSchema = z.object({
+  provider: z.enum(['openai-compatible', 'aliyun-qwen']).default('aliyun-qwen'),
   baseUrl: z.string().url(),
-  model: z.string().default('tts-1'),
-  voice: z.string().default('alloy'),
+  model: z.string().default('qwen-tts'),
+  voice: z.string().default('Cherry'),
   speed: z.number().min(0.25).max(4.0).default(1.0),
   format: z.enum(['mp3', 'opus', 'aac', 'flac']).default('mp3'),
   apiKey: z.string().optional()
@@ -31,7 +32,7 @@ export function createGetSettingsHandler(secrets: SecretStore) {
   return (_req: Request, res: Response): void => {
     const llm = getPref<{ baseUrl: string; model: string }>('llm.config') ?? null;
     const tts =
-      getPref<{ baseUrl: string; model: string; voice: string; speed: number; format: string }>(
+      getPref<{ provider?: string; baseUrl: string; model: string; voice: string; speed: number; format: string }>(
         'tts.config'
       ) ?? null;
 
@@ -51,6 +52,7 @@ export function createGetSettingsHandler(secrets: SecretStore) {
             voice: tts.voice,
             speed: tts.speed,
             format: tts.format,
+            provider: tts.provider ?? inferTtsProvider(tts),
             hasApiKey: Boolean(secrets.get('tts.apiKey'))
           }
         : null
@@ -96,4 +98,12 @@ export function createSaveSettingsHandler(secrets: SecretStore) {
 
     res.json({ ok: true });
   };
+}
+
+function inferTtsProvider(tts: { baseUrl?: string; model?: string }): 'openai-compatible' | 'aliyun-qwen' {
+  if (tts.baseUrl?.includes('dashscope.aliyuncs.com') || tts.model === 'qwen-tts') {
+    return 'aliyun-qwen';
+  }
+
+  return 'openai-compatible';
 }

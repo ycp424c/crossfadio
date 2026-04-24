@@ -6,6 +6,7 @@ import { resolveLlmConfig } from '../../llm/config.js';
 import type { NcmClient } from '../../ncm/client.js';
 import type { SecretStore } from '../../security.js';
 import { loadUserCorpus } from '../../user-corpus/loader.js';
+import { loadLikedTracksForPlanning } from '../../user-corpus/ncm-liked.js';
 import { getRecentPlays } from '../../store/plays.js';
 import { getRecentMessages, saveMessage } from '../../store/messages.js';
 import { fetchWeather } from '../../weather.js';
@@ -50,6 +51,7 @@ async function handleChatMessage(
     }
 
     const corpus = loadUserCorpus();
+    const likedTracks = await loadLikedTracksForPlanning(opts.ncmClient);
     const weather = await fetchWeather();
     const now = new Date();
 
@@ -60,7 +62,8 @@ async function handleChatMessage(
         taste: corpus.taste,
         routines: corpus.routines,
         moodRules: corpus.moodRules,
-        playlists: corpus.playlists
+        playlists: corpus.playlists,
+        likedTracks
       },
       env: {
         nowIso: now.toISOString(),

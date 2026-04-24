@@ -2,7 +2,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { createGapFillHandler } from '../../src/server/http/routes/plan';
+import { initDb } from '../../src/server/store/db';
+import { buildPlanFragments, createGapFillHandler } from '../../src/server/http/routes/plan';
 
 const originalDataDir = process.env.CROSSFADIO_DATA_DIR;
 
@@ -13,6 +14,7 @@ beforeEach(() => {
   dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'crossfadio-plan-routes-'));
   process.env.CROSSFADIO_DATA_DIR = dataDir;
   fs.mkdirSync(path.join(dataDir, 'user'), { recursive: true });
+  initDb();
 });
 
 afterEach(() => {
@@ -59,6 +61,48 @@ function createJsonResponse() {
 }
 
 describe('plan routes', () => {
+  it('plan fragments include user taste and NCM liked tracks', async () => {
+    writePlaylists();
+    fs.writeFileSync(path.join(dataDir, 'user', 'taste.md'), '偏好：dream pop 和女声', 'utf-8');
+    const ncmClient = {
+      getLikedSongIds: vi.fn().mockResolvedValue(['101']),
+      getSongDetails: vi.fn().mockResolvedValue([
+        { id: 101, name: 'Sweet Disposition', artists: ['The Temper Trap'], durationMs: 180_000 }
+      ])
+    };
+
+    const fragments = await buildPlanFragments('2026-04-24', ncmClient as never);
+
+    expect(fragments.corpus.taste).toContain('dream pop');
+    expect(ncmClient.getLikedSongIds).toHaveBeenCalled();
+    expect(fragments.corpus.likedTracks).toEqual([
+      { id: '101', name: 'Sweet Disposition', artist: 'The Temper Trap' }
+    ]);
+  });
+
+  it('gap-fill prefers liked tracks before generic playlist picks', async () => {
+    writePlaylists();
+    const ncmClient = {
+      getLikedSongIds: vi.fn().mockResolvedValue(['201']),
+      getSongDetails: vi.fn().mockResolvedValue([
+        { id: 201, name: 'Favorite Song', artists: ['Favorite Artist'], durationMs: 200_000 }
+      ]),
+      getPlaylistDetail: vi.fn(),
+      searchSongs: vi.fn()
+    };
+    const handler = createGapFillHandler({ secrets: {} as never, ncmClient: ncmClient as never });
+    const res = createJsonResponse();
+
+    await handler({ body: { segmentId: 'morning', count: 1 } } as never, res as never);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toEqual({
+      ok: true,
+      tracks: [{ query: 'Favorite Song — Favorite Artist', ncmId: '201' }]
+    });
+    expect(ncmClient.getPlaylistDetail).not.toHaveBeenCalled();
+  });
+
   it('gap-fill resolves tracks from matched playlist details', async () => {
     writePlaylists();
     const ncmClient = {

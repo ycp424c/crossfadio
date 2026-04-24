@@ -5,13 +5,23 @@ import { getSettings, saveSettings, type SaveSettingsPayload } from '@renderer/a
 type Status = { type: 'idle' } | { type: 'saving' } | { type: 'ok' } | { type: 'error'; message: string };
 
 type LlmForm = { baseUrl: string; model: string; apiKey: string };
-type TtsForm = { baseUrl: string; model: string; voice: string; speed: string; format: string; apiKey: string };
+type TtsProvider = 'openai-compatible' | 'aliyun-qwen';
+type TtsForm = {
+  provider: TtsProvider;
+  baseUrl: string;
+  model: string;
+  voice: string;
+  speed: string;
+  format: string;
+  apiKey: string;
+};
 
 const DEFAULT_LLM: LlmForm = { baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o', apiKey: '' };
 const DEFAULT_TTS: TtsForm = {
-  baseUrl: 'https://api.openai.com/v1',
-  model: 'tts-1',
-  voice: 'alloy',
+  provider: 'aliyun-qwen',
+  baseUrl: 'https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation',
+  model: 'qwen-tts',
+  voice: 'Cherry',
   speed: '1.0',
   format: 'mp3',
   apiKey: ''
@@ -31,6 +41,7 @@ export function SettingsView(): JSX.Element {
         }
         if (s.tts) {
           setTts({
+            provider: s.tts.provider ?? 'aliyun-qwen',
             baseUrl: s.tts.baseUrl,
             model: s.tts.model,
             voice: s.tts.voice,
@@ -58,6 +69,7 @@ export function SettingsView(): JSX.Element {
       };
 
       payload.tts = {
+        provider: tts.provider,
         baseUrl: tts.baseUrl.trim(),
         model: tts.model.trim(),
         voice: tts.voice.trim(),
@@ -134,12 +146,34 @@ export function SettingsView(): JSX.Element {
             语音合成（TTS）
           </h2>
           <div className="space-y-3 rounded-xl border border-zinc-800 bg-zinc-900 p-4">
+            <Field label="供应商">
+              <select
+                value={tts.provider}
+                onChange={(e) => {
+                  const provider = e.target.value as TtsProvider;
+                  setTts({
+                    ...tts,
+                    provider,
+                    baseUrl:
+                      provider === 'aliyun-qwen'
+                        ? 'https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation'
+                        : 'https://api.openai.com/v1',
+                    model: provider === 'aliyun-qwen' ? 'qwen-tts' : 'tts-1',
+                    voice: provider === 'aliyun-qwen' ? 'Cherry' : 'alloy'
+                  });
+                }}
+                className={inputClass}
+              >
+                <option value="aliyun-qwen">阿里云 Qwen TTS</option>
+                <option value="openai-compatible">OpenAI 兼容</option>
+              </select>
+            </Field>
             <Field label="API Base URL">
               <input
                 type="url"
                 value={tts.baseUrl}
                 onChange={(e) => setTts({ ...tts, baseUrl: e.target.value })}
-                placeholder="https://api.openai.com/v1"
+                placeholder="https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation"
                 className={inputClass}
               />
             </Field>
@@ -148,7 +182,7 @@ export function SettingsView(): JSX.Element {
                 type="text"
                 value={tts.model}
                 onChange={(e) => setTts({ ...tts, model: e.target.value })}
-                placeholder="tts-1"
+                placeholder="qwen-tts"
                 className={inputClass}
               />
             </Field>
@@ -158,7 +192,10 @@ export function SettingsView(): JSX.Element {
                 onChange={(e) => setTts({ ...tts, voice: e.target.value })}
                 className={inputClass}
               >
-                {['alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer'].map((v) => (
+                {(tts.provider === 'aliyun-qwen'
+                  ? ['Cherry', 'Ethan', 'Chelsie', 'Serena', 'Dylan']
+                  : ['alloy', 'echo', 'fable', 'onyx', 'nova', 'shimmer']
+                ).map((v) => (
                   <option key={v} value={v}>{v}</option>
                 ))}
               </select>

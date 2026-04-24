@@ -30,6 +30,7 @@ function mockFetch(handler: (url: string, init?: RequestInit) => Promise<Respons
 }
 
 const baseConfig = {
+  provider: 'openai-compatible' as const,
   baseUrl: 'https://api.example.com/v1',
   apiKey: 'tts-key',
   model: 'tts-1',
@@ -114,6 +115,51 @@ describe('TtsClient.synthesize', () => {
     const client = new TtsClient(baseConfig);
     const result = await client.synthesize('path check');
     expect(result.filePath).toContain(path.join('cache', 'tts'));
+  });
+
+  it('calls Alibaba Qwen TTS endpoint and downloads returned audio URL', async () => {
+    const fakeAudio = Buffer.from('aliyun-audio');
+    const urls: string[] = [];
+    let capturedBody: Record<string, unknown> | undefined;
+    mockFetch(async (url, init) => {
+      urls.push(url);
+      if (url.includes('/services/aigc/multimodal-generation/generation')) {
+        capturedBody = JSON.parse(init?.body as string) as Record<string, unknown>;
+        return Response.json({
+          output: {
+            audio: {
+              url: 'https://dashscope-result.example/audio.wav'
+            }
+          }
+        });
+      }
+      return new Response(fakeAudio, { status: 200, headers: { 'Content-Type': 'audio/wav' } });
+    });
+
+    const client = new TtsClient({
+      provider: 'aliyun-qwen',
+      baseUrl: 'https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation',
+      apiKey: 'dashscope-key',
+      model: 'qwen-tts',
+      voice: 'Cherry',
+      speed: 1,
+      format: 'mp3'
+    });
+    const result = await client.synthesize('你好，欢迎回来');
+
+    expect(urls).toEqual([
+      'https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation',
+      'https://dashscope-result.example/audio.wav'
+    ]);
+    expect(capturedBody).toEqual({
+      model: 'qwen-tts',
+      input: {
+        text: '你好，欢迎回来',
+        voice: 'Cherry',
+        language_type: 'Auto'
+      }
+    });
+    expect(fs.readFileSync(result.filePath)).toEqual(fakeAudio);
   });
 });
 

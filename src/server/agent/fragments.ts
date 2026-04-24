@@ -28,6 +28,11 @@ function buildCorpusEnvSlice(f: Fragments): string {
     })
     .join('\n');
 
+  const likedTracks = (f.corpus.likedTracks ?? [])
+    .slice(0, 50)
+    .map((track) => `- ${track.name ?? track.id}${track.artist ? ` — ${track.artist}` : ''}`)
+    .join('\n');
+
   const weather = f.env.weather
     ? `${f.env.weather.tempC}°C，${f.env.weather.desc}`
     : '未知';
@@ -49,6 +54,9 @@ ${f.corpus.moodRules}
 <playlists>
 ${playlists || '（无歌单）'}
 </playlists>
+<liked_tracks>
+${likedTracks || '（暂无红心歌曲）'}
+</liked_tracks>
 </corpus>
 <env>
 当前时间：${f.env.localTime}（${f.env.nowIso}）

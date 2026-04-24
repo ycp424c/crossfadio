@@ -5,13 +5,16 @@ import { computeSync } from './agent/compute.js';
 import { buildSystemPrompt } from './agent/modes.js';
 import { loadLatestPlan, savePlan, todayDateStr } from './store/plan.js';
 import { getRecentPlays } from './store/plays.js';
+import { loadLikedTracksForPlanning } from './user-corpus/ncm-liked.js';
 import { loadUserCorpus } from './user-corpus/loader.js';
 import { fetchWeather } from './weather.js';
 import type { SecretStore } from './security.js';
 import type { Fragments } from './agent/schema.js';
+import type { NcmClient } from './ncm/client.js';
 
 type SchedulerOptions = {
   secrets: SecretStore;
+  ncmClient?: NcmClient;
 };
 
 type SchedulerHandle = {
@@ -52,6 +55,7 @@ export function startScheduler(opts: SchedulerOptions): SchedulerHandle {
     try {
       const corpus = loadUserCorpus();
       const llmConfig = resolveLlmConfig(opts.secrets);
+      const likedTracks = opts.ncmClient ? await loadLikedTracksForPlanning(opts.ncmClient) : [];
       let plan = loadLatestPlan(date);
 
       if (!plan) {
@@ -65,7 +69,8 @@ export function startScheduler(opts: SchedulerOptions): SchedulerHandle {
               taste: corpus.taste,
               routines: corpus.routines,
               moodRules: corpus.moodRules,
-              playlists: corpus.playlists
+              playlists: corpus.playlists,
+              likedTracks
             },
             env: {
               nowIso: now.toISOString(),

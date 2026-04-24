@@ -70,7 +70,8 @@ export const fragmentsSchema = z.object({
     taste: z.string(),
     routines: z.string(),
     moodRules: z.string(),
-    playlists: z.array(playlistRefSchema)
+    playlists: z.array(playlistRefSchema),
+    likedTracks: z.array(trackSchema).default([])
   }),
 
   // ③ environment

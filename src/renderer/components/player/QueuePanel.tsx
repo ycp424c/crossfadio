@@ -20,7 +20,7 @@ export function QueuePanel(props: QueuePanelProps): JSX.Element {
           {props.queue.length} 首
         </span>
       </div>
-      <ul className="space-y-2">
+      <ul className="max-h-[52vh] space-y-2 overflow-y-auto pr-1">
         {props.queue.map((track, index) => {
           const isCurrent = index === props.currentIndex;
           const isNext = track.id === props.nextId && !isCurrent;

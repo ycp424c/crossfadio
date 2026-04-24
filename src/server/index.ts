@@ -45,7 +45,7 @@ async function bootstrap(): Promise<void> {
       staticDir: resolveStaticDir()
     });
 
-    startScheduler({ secrets });
+    startScheduler({ secrets, ncmClient });
     logger.info({ baseUrl: localServer.baseUrl, ncm: ncm.getStatus() }, 'Crossfadio web server started');
   } catch (error) {
     logger.error({ err: error }, 'Failed to bootstrap Crossfadio web server');
