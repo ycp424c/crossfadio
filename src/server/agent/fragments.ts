@@ -81,7 +81,12 @@ function buildMemorySlice(f: Fragments): string {
     .map((s) => `- [${s.createdAt.slice(11, 16)}] ${s.fromName} → ${s.toName}：${s.say}`)
     .join('\n');
 
+  const extractedPreferences = f.memory.extractedPreferences ?? '';
+
   return `<memory>
+<extracted_preferences>
+${extractedPreferences || '（暂无提取的偏好记忆）'}
+</extracted_preferences>
 <recent_plays>
 ${recentPlays || '（暂无播放记录）'}
 </recent_plays>

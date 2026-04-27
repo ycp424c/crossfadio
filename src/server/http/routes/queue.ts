@@ -66,16 +66,6 @@ export function createGetLikedQueueHandler(ncmClient: NcmClient): RequestHandler
         durationMs: track.durationMs
       }));
 
-      setQueueState(
-        tracks.map((track) => ({
-          ncmId: track.id,
-          name: track.name,
-          artists: track.artists,
-          durationMs: track.durationMs
-        })),
-        0
-      );
-
       res.json(likedQueueResponseSchema.parse({ ok: true, source: 'ncm-liked', tracks, currentIndex: 0 }));
     } catch (error) {
       const message = error instanceof Error ? error.message : 'unknown error';

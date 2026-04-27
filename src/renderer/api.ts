@@ -128,15 +128,38 @@ export async function getRecentChatMessages(limit = 50): Promise<RecentMessage[]
   return payload.messages ?? [];
 }
 
-export async function triggerSegue(fromId: string, toId: string): Promise<{ ok: boolean; requestId: string }> {
-  return requestJson<{ ok: boolean; requestId: string }>('/api/segue/trigger', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      from: { id: fromId },
-      to: { id: toId }
-    })
-  });
+export type SegueTrackInput = {
+  id: string;
+  name?: string;
+  artists?: string[];
+};
+
+export async function triggerSegue(
+  from: SegueTrackInput,
+  to: SegueTrackInput,
+  clientRequestId: string
+): Promise<{ ok: boolean; requestId: string; clientRequestId: string }> {
+  return requestJson<{ ok: boolean; requestId: string; clientRequestId: string }>(
+    '/api/segue/trigger',
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        clientRequestId,
+        from: serializeSegueTrack(from),
+        to: serializeSegueTrack(to)
+      })
+    }
+  );
+}
+
+function serializeSegueTrack(track: SegueTrackInput): { id: string; name?: string; artist?: string } {
+  const payload: { id: string; name?: string; artist?: string } = { id: track.id };
+  if (track.name) payload.name = track.name;
+  if (track.artists && track.artists.length > 0) {
+    payload.artist = track.artists.join(' / ');
+  }
+  return payload;
 }
 
 export type LlmSettings = {

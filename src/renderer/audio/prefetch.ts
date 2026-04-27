@@ -1,6 +1,7 @@
 export const DEFAULT_PREFETCH_LEAD_SEC = 10;
 export const DEFAULT_CROSSFADE_SEC = 8;
-export const DEFAULT_SEGUE_LEAD_SEC = 12;
+// Leave enough headroom for LLM generation + TTS synthesis before track end.
+export const DEFAULT_SEGUE_LEAD_SEC = 24;
 export const DEFAULT_TRIGGER_TOLERANCE_SEC = 0.25;
 
 export type PrefetchTiming = {
@@ -59,10 +60,9 @@ export function getPrefetchDecision(
       milestones.prefetchAtSec,
       resolved.triggerToleranceSec
     ),
-    shouldTriggerSegue: isWithinTriggerWindow(
+    shouldTriggerSegue: hasReachedTriggerPoint(
       positionSec,
-      milestones.segueAtSec,
-      resolved.triggerToleranceSec
+      milestones.segueAtSec
     ),
     shouldStartCrossfade: isWithinTriggerWindow(
       positionSec,
@@ -82,4 +82,8 @@ function triggerPoint(durationSec: number, leadSec: number): number {
 
 function isWithinTriggerWindow(positionSec: number, pointSec: number, toleranceSec: number): boolean {
   return positionSec >= pointSec && positionSec < pointSec + toleranceSec;
+}
+
+function hasReachedTriggerPoint(positionSec: number, pointSec: number): boolean {
+  return positionSec >= pointSec;
 }

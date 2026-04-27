@@ -18,4 +18,38 @@ describe('player layout', () => {
     expect(source).toContain('max-h-');
     expect(source).toContain('overflow-y-auto');
   });
+
+  it('persists the locally selected DJ start track instead of treating it as remote queue state', () => {
+    const source = fs.readFileSync(path.join(root, 'src/renderer/views/Player/PlayerView.tsx'), 'utf-8');
+    const loadLikedQueueStart = source.indexOf('async function loadLikedQueue');
+    const loadNowPlayingStart = source.indexOf('async function loadNowPlaying');
+    const loadLikedQueueBody = source.slice(loadLikedQueueStart, loadNowPlayingStart);
+
+    expect(loadLikedQueueBody).toContain('setQueue([startTrack])');
+    expect(loadLikedQueueBody).not.toContain('applyingRemoteQueueRef.current = true');
+  });
+
+  it('surfaces waiting segue states instead of falling back to idle text', () => {
+    const source = fs.readFileSync(path.join(root, 'src/renderer/views/Player/PlayerView.tsx'), 'utf-8');
+
+    expect(source).toContain("setSegueStatusText('已开播，等待下一首加入队列')");
+    expect(source).toContain("setSegueStatusText('下一首与当前相同，跳过')");
+  });
+
+  it('shows segue request failures directly in the player status area', () => {
+    const source = fs.readFileSync(path.join(root, 'src/renderer/views/Player/PlayerView.tsx'), 'utf-8');
+
+    expect(source).toContain("setSegueStatus('degraded')");
+    expect(source).toContain('setSegueStatusText(`请求失败：${message}`)');
+  });
+
+  it('triggers segue as soon as playback is running and a next track is known', () => {
+    const source = fs.readFileSync(path.join(root, 'src/renderer/views/Player/PlayerView.tsx'), 'utf-8');
+
+    expect(source).toContain('const maybeTriggerSegue = useCallback(() => {');
+    expect(source).toContain('if (!audio || audio.paused || !currentTrackId || !nextTrackId) {');
+    expect(source).toContain('useEffect(() => {');
+    expect(source).toContain('maybeTriggerSegue();');
+    expect(source).not.toContain('decision.shouldTriggerSegue &&');
+  });
 });

@@ -45,7 +45,10 @@ describe('queue routes', () => {
     expect(res.body).toEqual({ ok: false, error: 'invalid body' });
   });
 
-  it('loads liked songs into the in-memory queue', async () => {
+  it('returns liked songs without replacing the playback queue', async () => {
+    const queueStore = await import('../../src/server/store/queue');
+    queueStore.setQueue([{ ncmId: 'currently-playing', name: 'Current Song' }]);
+
     const handler = createGetLikedQueueHandler({
       getLikedSongIds: async () => ['101', '102'],
       getSongDetails: async () => [
@@ -57,7 +60,6 @@ describe('queue routes', () => {
 
     await handler({ query: { limit: '20' } } as never, res as never, vi.fn());
 
-    const q = await import('../../src/server/store/queue');
     expect(res.body).toEqual({
       ok: true,
       source: 'ncm-liked',
@@ -67,9 +69,6 @@ describe('queue routes', () => {
       ],
       currentIndex: 0
     });
-    expect(q.getQueue()).toEqual([
-      { ncmId: '101', name: 'Song A', artists: ['Alice'], durationMs: 210_000 },
-      { ncmId: '102', name: 'Song B', artists: ['Bob', 'Carol'], durationMs: 180_000 }
-    ]);
+    expect(queueStore.getQueue()).toEqual([{ ncmId: 'currently-playing', name: 'Current Song' }]);
   });
 });

@@ -43,9 +43,24 @@ type PlayerViewProps = {
 const DEFAULT_DUCKING_HINT_SEC = 8;
 const TRACK_DEFAULT_VOLUME = 1;
 const TRACK_DUCKING_VOLUME = 0.2;
-const SEGUE_START_TOLERANCE_SEC = 0.25;
 const DJ_TARGET_QUEUE = 3;       // keep this many songs in queue at all times
 const DJ_PICK_COOLDOWN_MS = 3000; // min ms between pick-next calls
+const SEGUE_RETRY_COOLDOWN_MS = 6000; // min ms between segue trigger retries within the same track
+
+function newClientRequestId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function isActiveSegueMessage(
+  msg: Record<string, unknown>,
+  activeId: string | null
+): boolean {
+  if (!activeId) return false;
+  return typeof msg.clientRequestId === 'string' && msg.clientRequestId === activeId;
+}
 
 type PendingSegueAudio = {
   audio: HTMLAudioElement;
@@ -63,7 +78,9 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
   const [isPlaying, setIsPlaying] = useState(false);
   const [positionSec, setPositionSec] = useState(0);
   const [durationSec, setDurationSec] = useState(0);
-  const [statusText, setStatusText] = useState('准备就绪');
+  const [trackStatusText, setTrackStatusText] = useState('准备就绪');
+  const [djStatusText, setDjStatusText] = useState('');
+  const [segueStatusText, setSegueStatusText] = useState('');
   const [error, setError] = useState('');
   const [segueStatus, setSegueStatus] = useState<'idle' | 'generating' | 'ready' | 'degraded'>('idle');
   const [duckingHintSec, setDuckingHintSec] = useState(DEFAULT_DUCKING_HINT_SEC);
@@ -77,13 +94,18 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
   const pendingSegueRef = useRef<PendingSegueAudio | null>(null);
   const shouldAutoplayNextRef = useRef(false);
   const prefetchTriggeredRef = useRef(false);
-  const segueTriggeredRef = useRef(false);
+  const segueClientRequestIdRef = useRef<string | null>(null);
+  const segueExpectedFromTrackIdRef = useRef<string | null>(null);
+  const segueSatisfiedForTrackIdRef = useRef<string | null>(null);
+  const segueLastAttemptAtRef = useRef<number>(0);
   const djPickNextLastCallRef = useRef<number>(0);
   const applyingRemoteQueueRef = useRef(false);
 
   const queueIds = useMemo(() => queue.map((track) => track.id), [queue]);
   const currentTrack = queue[currentIndex] ?? null;
   const currentTrackId = currentTrack?.id ?? null;
+  const currentTrackIdRef = useRef<string | null>(currentTrackId);
+  currentTrackIdRef.current = currentTrackId;
 
   const restoreTrackVolume = useCallback(() => {
     if (audioRef.current) {
@@ -122,31 +144,20 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
       return;
     }
 
-    const trackDurationSec =
-      Number.isFinite(trackAudio.duration) && trackAudio.duration > 0 ? trackAudio.duration : durationSec;
-    if (!(trackDurationSec > 0)) {
-      return;
-    }
-
     const segueDurationSec = resolveSegueDurationSec(pending);
-    const remainSec = Math.max(0, trackDurationSec - trackAudio.currentTime);
-    if (remainSec > segueDurationSec + SEGUE_START_TOLERANCE_SEC) {
-      return;
-    }
-
     pending.started = true;
     trackAudio.volume = TRACK_DUCKING_VOLUME;
     void pending.audio
       .play()
       .then(() => {
-        setStatusText(`DJ 过渡播报中（约 ${Math.round(segueDurationSec)} 秒）`);
+        setSegueStatusText(`过渡播报中（约 ${Math.round(segueDurationSec)} 秒）`);
       })
       .catch(() => {
         pending.started = false;
         restoreTrackVolume();
-        setStatusText('DJ 过渡语音已就绪，等待用户点击 Play 后继续');
+        setSegueStatusText('过渡语音已就绪，等待用户点击 Play 后继续');
       });
-  }, [durationSec, resolveSegueDurationSec, restoreTrackVolume]);
+  }, [resolveSegueDurationSec, restoreTrackVolume]);
 
   useEffect(() => {
     if (queueIds.length === 0) {
@@ -205,12 +216,21 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
           setQueue((prev) => [...prev, appended]);
         }
       } else if (msg.type === 'segue.delta') {
+        if (!isActiveSegueMessage(msg, segueClientRequestIdRef.current)) return;
         const say = String(msg.say ?? '').trim();
         if (say) {
           setSegueScript((prev) => `${prev}${say}`);
-          setStatusText(`DJ: ${say}`);
+          setSegueStatusText('生成中…接收文案 token');
         }
       } else if (msg.type === 'segue.tts-ready') {
+        if (!isActiveSegueMessage(msg, segueClientRequestIdRef.current)) return;
+        // Final guard: the tts is only useful while we're still on the from-track that triggered it.
+        if (
+          segueExpectedFromTrackIdRef.current &&
+          segueExpectedFromTrackIdRef.current !== currentTrackIdRef.current
+        ) {
+          return;
+        }
         setSegueStatus('ready');
 
         const ttsHintSec =
@@ -233,7 +253,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
 
         const audioUrl = typeof msg.audioUrl === 'string' ? msg.audioUrl : null;
         if (!audioUrl) {
-          setStatusText('DJ 过渡语音已生成（未配置 TTS）');
+          setSegueStatusText('过渡文案已生成（未配置 TTS）');
           return;
         }
 
@@ -269,16 +289,34 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
             segueAudioRef.current = null;
           }
           restoreTrackVolume();
-          setStatusText('DJ 过渡语音播放失败');
+          setSegueStatusText('过渡语音播放失败');
         };
 
         pendingSegueRef.current = pending;
         segueAudioRef.current = audio;
-        setStatusText(`DJ 过渡语音已就绪（约 ${Math.round(dynamicHintSec)} 秒）`);
+        if (currentTrackIdRef.current) {
+          segueSatisfiedForTrackIdRef.current = currentTrackIdRef.current;
+        }
+        setSegueStatusText(`过渡语音已就绪（约 ${Math.round(dynamicHintSec)} 秒）`);
         maybeStartSegueAudio();
       } else if (msg.type === 'segue.degraded') {
+        if (!isActiveSegueMessage(msg, segueClientRequestIdRef.current)) return;
+        const reason =
+          typeof msg.reason === 'string' && msg.reason.length > 0 ? msg.reason : 'unknown';
+        // Clear active id so the next tick can retry once cooldown elapses.
+        segueClientRequestIdRef.current = null;
         setSegueStatus('degraded');
-        setStatusText('DJ 过渡语音暂不可用');
+        setSegueStatusText(`过渡语音暂不可用（${reason}）`);
+      } else if (msg.type === 'dj.pick-next.done') {
+        if (msg.added) {
+          const name = typeof msg.trackName === 'string' ? msg.trackName : '';
+          setDjStatusText(name ? `已加入「${name}」` : '已补充一首');
+        } else {
+          // Failed — reset cooldown immediately so next onTimeUpdate retries sooner
+          djPickNextLastCallRef.current = 0;
+          const reason = typeof msg.reason === 'string' && msg.reason.length > 0 ? msg.reason : '稍后重试';
+          setDjStatusText(`补歌失败（${reason}）`);
+        }
       }
     });
     return unsub;
@@ -312,11 +350,15 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
 
     disposeSegueAudio();
     prefetchTriggeredRef.current = false;
-    segueTriggeredRef.current = false;
+    segueClientRequestIdRef.current = null;
+    segueExpectedFromTrackIdRef.current = null;
+    segueSatisfiedForTrackIdRef.current = null;
+    segueLastAttemptAtRef.current = 0;
     setSegueStatus('idle');
     setDuckingHintSec(DEFAULT_DUCKING_HINT_SEC);
     setSegueScript('');
-    setStatusText(`正在加载曲目 ${currentTrackId} ...`);
+    setSegueStatusText('');
+    setTrackStatusText(`正在加载曲目 ${currentTrackId} ...`);
 
     void loadNowPlaying(currentTrackId);
     void refreshNextTrack(currentTrackId);
@@ -347,11 +389,11 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
       }
       const randomIdx = Math.floor(Math.random() * payload.tracks.length);
       const startTrack = payload.tracks[randomIdx];
-      applyingRemoteQueueRef.current = true;
       djPickNextLastCallRef.current = 0;
       setQueue([startTrack]);
       setCurrentIndex(0);
-      setStatusText(`DJ 模式：随机选取「${startTrack.name ?? startTrack.id}」，正在补充队列…`);
+      setTrackStatusText(`DJ 模式启动：随机选中「${startTrack.name ?? startTrack.id}」`);
+      setDjStatusText('正在补充队列…');
     } catch (err) {
       setError(err instanceof Error ? err.message : '红心歌单加载失败');
     }
@@ -369,15 +411,15 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
         if (shouldAutoplayNextRef.current) {
           shouldAutoplayNextRef.current = false;
           void audioRef.current.play().catch(() => {
-            setStatusText('下一首已就绪，点击 Play 继续播放');
+            setTrackStatusText('下一首已就绪，点击 Play 继续播放');
           });
         }
       }
 
-      setStatusText(`已加载 ${trackId}`);
+      setTrackStatusText(`已加载 ${trackId}`);
     } catch (err) {
       setNowPlaying(null);
-      setStatusText('加载失败');
+      setTrackStatusText('加载失败');
       setError(err instanceof Error ? err.message : 'now 请求失败');
     }
   }
@@ -395,6 +437,53 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
       setNextTrack(null);
     }
   }
+
+  const maybeTriggerSegue = useCallback(() => {
+    const audio = audioRef.current;
+    const nextTrackId = nextTrack?.track.id ?? null;
+    if (!audio || audio.paused || !currentTrackId || !nextTrackId) {
+      return;
+    }
+
+    if (nextTrackId === currentTrackId) {
+      return;
+    }
+
+    if (segueSatisfiedForTrackIdRef.current === currentTrackId || segueClientRequestIdRef.current !== null) {
+      return;
+    }
+
+    if (Date.now() - segueLastAttemptAtRef.current < SEGUE_RETRY_COOLDOWN_MS) {
+      return;
+    }
+
+    const clientRequestId = newClientRequestId();
+    const nextQueueTrack = queue.find((track) => track.id === nextTrackId) ?? null;
+    segueClientRequestIdRef.current = clientRequestId;
+    segueExpectedFromTrackIdRef.current = currentTrackId;
+    segueLastAttemptAtRef.current = Date.now();
+    setSegueStatus('generating');
+    setSegueScript('');
+    setSegueStatusText(`生成中：${currentTrackId} → ${nextTrackId}`);
+    void triggerSegue(
+      { id: currentTrackId, name: currentTrack?.name, artists: currentTrack?.artists },
+      { id: nextTrackId, name: nextQueueTrack?.name ?? nextTrack?.track.name, artists: nextQueueTrack?.artists ?? nextTrack?.track.artists },
+      clientRequestId
+    ).catch((err) => {
+      // Allow the cooldown to elapse and retry; clear the active id so a stale tts-ready can't sneak in.
+      if (segueClientRequestIdRef.current === clientRequestId) {
+        segueClientRequestIdRef.current = null;
+      }
+      const message = err instanceof Error ? err.message : 'segue 请求失败';
+      setSegueStatus('degraded');
+      setSegueStatusText(`请求失败：${message}`);
+      setError(message);
+    });
+  }, [currentTrack, currentTrackId, nextTrack, queue]);
+
+  useEffect(() => {
+    maybeTriggerSegue();
+  }, [isPlaying, currentTrackId, nextTrack, maybeTriggerSegue]);
 
   function handlePlayPause(): void {
     const audio = audioRef.current;
@@ -464,27 +553,35 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
 
     if (!prefetchTriggeredRef.current && decision.shouldPrefetchNext && currentTrackId) {
       prefetchTriggeredRef.current = true;
-      setStatusText(`预取触发：d-${nowPlaying.timing.prefetchLeadSec}s`);
+      setTrackStatusText(`预取触发：d-${nowPlaying.timing.prefetchLeadSec}s`);
       void refreshNextTrack(currentTrackId);
     }
 
+    maybeTriggerSegue();
+
     const nextTrackId = nextTrack?.track.id ?? null;
-    if (!segueTriggeredRef.current && decision.shouldTriggerSegue && currentTrackId && nextTrackId && nextTrackId !== currentTrackId) {
-      segueTriggeredRef.current = true;
-      setSegueStatus('generating');
-      setSegueScript('');
-      setStatusText(`DJ 过渡语音生成中：${currentTrackId} → ${nextTrackId}`);
-      void triggerSegue(currentTrackId, nextTrackId).catch((err) => {
-        setError(err instanceof Error ? err.message : 'segue 请求失败');
-      });
+    const segueAttempted = segueSatisfiedForTrackIdRef.current === currentTrackId
+      || segueClientRequestIdRef.current !== null
+      || segueLastAttemptAtRef.current > 0;
+
+    if (!segueAttempted && currentTrackId) {
+      // Surface why the trigger hasn't fired yet, so "空闲" doesn't hide a waiting state.
+      if (!nextTrackId) {
+        setSegueStatusText('已开播，等待下一首加入队列');
+      } else if (nextTrackId === currentTrackId) {
+        setSegueStatusText('下一首与当前相同，跳过');
+      }
     }
 
-    // DJ mode: keep queue at DJ_TARGET_QUEUE songs; rate-limited by cooldown
-    if (isPlaying && queueIds.length < DJ_TARGET_QUEUE) {
+    // DJ mode: keep queue at DJ_TARGET_QUEUE songs; rate-limited by cooldown.
+    // Defer while a segue request is in flight so both jobs don't compete for LLM bandwidth —
+    // segue has a hard timing constraint, DJ pick-next does not.
+    const segueInFlight = segueClientRequestIdRef.current !== null;
+    if (isPlaying && !segueInFlight && queueIds.length < DJ_TARGET_QUEUE) {
       const now = Date.now();
       if (now - djPickNextLastCallRef.current >= DJ_PICK_COOLDOWN_MS) {
         djPickNextLastCallRef.current = now;
-        setStatusText('DJ 正在挑选下一首...');
+        setDjStatusText('正在挑选下一首…');
         void pickNextTrack().catch(() => {});
       }
     }
@@ -509,7 +606,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
     }
     setIsPlaying(false);
     shouldAutoplayNextRef.current = false;
-    setStatusText('播放完成');
+    setTrackStatusText('播放完成');
   }
 
   const canPrev = false;
@@ -576,7 +673,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
                   }
                   try {
                     const status = await checkNcmQr(qrPayload.key);
-                    setStatusText(`扫码状态: ${status.hint}`);
+                    setTrackStatusText(`扫码状态: ${status.hint}`);
                     await refreshSession();
                   } catch (err) {
                     setError(err instanceof Error ? err.message : '扫码状态查询失败');
@@ -593,7 +690,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
                   try {
                     await logoutNcm();
                     await refreshSession();
-                    setStatusText('已登出 NCM');
+                    setTrackStatusText('已登出 NCM');
                   } catch (err) {
                     setError(err instanceof Error ? err.message : '登出失败');
                   }
@@ -621,8 +718,19 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
                 <h2 className="text-3xl font-semibold">正在播放</h2>
                 <p className="text-sm text-zinc-400">DJ 模式 · 动态队列 · 播放完自动补歌</p>
               </div>
-              <div className="text-right text-xs text-zinc-400">
-                <p>{statusText}</p>
+              <div className="min-w-0 text-right text-xs text-zinc-400">
+                <p>
+                  <span className="text-zinc-500">曲目：</span>
+                  <span className="text-zinc-200">{trackStatusText || '—'}</span>
+                </p>
+                <p className="mt-1">
+                  <span className="text-zinc-500">DJ 选歌：</span>
+                  <span className="text-cyan-300">{djStatusText || '空闲'}</span>
+                </p>
+                <p className="mt-1">
+                  <span className="text-zinc-500">过渡文案：</span>
+                  <span className="text-violet-200">{segueStatusText || '空闲'}</span>
+                </p>
                 {error ? <p className="mt-1 text-red-300">{error}</p> : null}
               </div>
             </div>

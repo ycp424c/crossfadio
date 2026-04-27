@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { computeSync, computeStream, AgentError } from '../../src/server/agent/compute';
 import type { Fragments } from '../../src/server/agent/schema';
+import { FakeLlmClient } from '../support/fake-llm';
 
 function mockFetch(handler: (url: string, init?: RequestInit) => Promise<Response>): void {
   vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
@@ -115,6 +116,29 @@ describe('computeSync', () => {
     mockFetch(async () => makeLlmResponse(chatJson));
     const result = await computeSync(chatFragments, { llmConfig });
     expect(result.mode).toBe('chat');
+  });
+
+  it('normalizes legacy play chat action into swap_next', async () => {
+    const chatFragments: Fragments = {
+      ...baseFragments,
+      mode: 'chat',
+      input: { kind: 'chat', text: '来点舒缓的' },
+      trace: { triggeredBy: 'user', lastDecision: null }
+    };
+    const llmClient = new FakeLlmClient().queueResponse(JSON.stringify({
+      mode: 'chat',
+      intent: 'adjust_queue',
+      say: '给你换一首更缓的。',
+      actions: [{ type: 'play', track: 'The A Team — Ed Sheeran' }]
+    }));
+
+    const result = await computeSync(chatFragments, { llmClient });
+    expect(result.mode).toBe('chat');
+    if (result.mode === 'chat') {
+      expect(result.actions).toEqual([
+        { type: 'swap_next', pick: { query: 'The A Team — Ed Sheeran' } }
+      ]);
+    }
   });
 });
 

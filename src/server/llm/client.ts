@@ -31,6 +31,8 @@ export type LlmCompleteOptions = {
   signal?: AbortSignal;
 };
 
+const ERROR_BODY_MAX_CHARS = 2_000;
+
 export class LlmClient {
   constructor(private readonly config: LlmConfig) {}
 
@@ -48,7 +50,7 @@ export class LlmClient {
     });
 
     if (!resp.ok) {
-      throw new LlmError(`LLM request failed: ${resp.status} ${resp.statusText}`);
+      await throwLlmHttpError('LLM request failed', resp);
     }
 
     const data = (await resp.json()) as {
@@ -76,7 +78,7 @@ export class LlmClient {
     });
 
     if (!resp.ok) {
-      throw new LlmError(`LLM stream request failed: ${resp.status} ${resp.statusText}`);
+      await throwLlmHttpError('LLM stream request failed', resp);
     }
 
     if (!resp.body) {
@@ -141,8 +143,43 @@ function buildRequestBody(
 }
 
 export class LlmError extends Error {
-  constructor(message: string) {
+  readonly status?: number;
+  readonly statusText?: string;
+  readonly responseBody?: string;
+
+  constructor(message: string, options: { status?: number; statusText?: string; responseBody?: string } = {}) {
     super(message);
     this.name = 'LlmError';
+    this.status = options.status;
+    this.statusText = options.statusText;
+    this.responseBody = options.responseBody;
   }
+}
+
+async function throwLlmHttpError(prefix: string, response: Response): Promise<never> {
+  const responseBody = await readErrorBody(response);
+  throw new LlmError(formatLlmHttpError(prefix, response, responseBody), {
+    status: response.status,
+    statusText: response.statusText,
+    responseBody
+  });
+}
+
+async function readErrorBody(response: Response): Promise<string> {
+  try {
+    const text = await response.text();
+    const trimmed = text.trim();
+    if (trimmed.length <= ERROR_BODY_MAX_CHARS) {
+      return trimmed;
+    }
+    return `${trimmed.slice(0, ERROR_BODY_MAX_CHARS)}...`;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return `failed to read response body: ${message}`;
+  }
+}
+
+function formatLlmHttpError(prefix: string, response: Response, responseBody: string): string {
+  const status = response.statusText ? `${response.status} ${response.statusText}` : String(response.status);
+  return responseBody ? `${prefix}: ${status}; response body: ${responseBody}` : `${prefix}: ${status}`;
 }

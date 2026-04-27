@@ -67,6 +67,18 @@ const CHAT_CONSTRAINT = `
 }
 
 actions 数组仅在 adjust_queue / replan / control 意图时填充，chitchat / ask_meta 时为空数组。
+
+仅允许使用以下 action.type：
+- "swap_next"：立刻把一首歌换到下一首，格式：{ "type": "swap_next", "pick": { "query": "歌曲名 — 艺人名" } }
+- "add_to_queue"：加入队列，格式：{ "type": "add_to_queue", "pick": { "query": "歌曲名 — 艺人名" }, "position": "end" | "after_current" }
+- "skip"
+- "ban_artist"
+- "ban_track"
+- "adjust_mood"
+- "replan_segment"
+- "set_pref"
+
+不要输出未定义的动作类型，例如 "play"、"pause_music"、"queue_song"。
 `.trim();
 
 export function getModeConstraint(mode: Fragments['mode']): string {

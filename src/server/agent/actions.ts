@@ -1,6 +1,7 @@
 import { getLogger } from '../logger.js';
 import { setPref } from '../store/prefs.js';
 import { swapNext, addToQueue, skipCurrent, banNcmId } from '../store/queue.js';
+import { getRecentPlays } from '../store/plays.js';
 import { resolveTrackQuery } from '../ncm/resolver.js';
 import type { NcmClient } from '../ncm/client.js';
 import type { Action } from './schema.js';
@@ -24,22 +25,32 @@ export async function executeActions(
   const logger = getLogger();
   let queueChanged = false;
 
+  const recentPlayIds = new Set(
+    getRecentPlays(50)
+      .map((p) => p.song_id)
+      .filter((id): id is string => id !== null)
+  );
+
   for (const action of actions) {
     try {
       switch (action.type) {
         case 'swap_next': {
           const ncmId = await resolveTrackQuery(action.pick.query, ctx.ncmClient);
-          if (ncmId) {
+          if (ncmId && !recentPlayIds.has(ncmId)) {
             swapNext({ ncmId, query: action.pick.query });
             queueChanged = true;
+          } else if (ncmId) {
+            logger.info({ ncmId, query: action.pick.query }, 'swap_next skipped: track recently played');
           }
           break;
         }
         case 'add_to_queue': {
           const ncmId = await resolveTrackQuery(action.pick.query, ctx.ncmClient);
-          if (ncmId) {
+          if (ncmId && !recentPlayIds.has(ncmId)) {
             addToQueue({ ncmId, query: action.pick.query }, action.position);
             queueChanged = true;
+          } else if (ncmId) {
+            logger.info({ ncmId, query: action.pick.query }, 'add_to_queue skipped: track recently played');
           }
           break;
         }

@@ -8,6 +8,7 @@ type Message = {
   role: 'user' | 'dj';
   text: string;
   pending?: boolean;
+  phase?: 'thinking' | 'streaming';
 };
 
 const MAX_MESSAGES = 200;
@@ -23,7 +24,6 @@ export function ChatPanel(): JSX.Element {
   const [input, setInput] = useState('');
   const [sending, setSending] = useState(false);
   const bottomRef = useRef<HTMLDivElement | null>(null);
-  const pendingIdRef = useRef<number | null>(null);
   const historyLoadedRef = useRef(false);
 
   useEffect(() => {
@@ -54,27 +54,38 @@ export function ChatPanel(): JSX.Element {
           if (last?.pending) {
             return [
               ...prev.slice(0, -1),
-              { ...last, text: last.text + delta }
+              { ...last, text: last.phase === 'thinking' ? delta : last.text + delta, phase: 'streaming' }
             ];
           }
           const id = ++msgId;
-          pendingIdRef.current = id;
-          return [...prev, { id, role: 'dj', text: delta, pending: true }];
+          return [...prev, { id, role: 'dj', text: delta, pending: true, phase: 'streaming' }];
         });
       } else if (msg.type === 'chat.done') {
         setMessages((prev) => {
           const last = prev[prev.length - 1];
           if (last?.pending) {
-            return [...prev.slice(0, -1), { ...last, text: String(msg.say ?? last.text), pending: false }];
+            return [
+              ...prev.slice(0, -1),
+              { ...last, text: String(msg.say ?? last.text), pending: false, phase: undefined }
+            ];
           }
           return [...prev, { id: ++msgId, role: 'dj', text: String(msg.say ?? ''), pending: false }];
         });
         setSending(false);
       } else if (msg.type === 'chat.error') {
-        setMessages((prev) => [
-          ...prev,
-          { id: ++msgId, role: 'dj', text: '出错了，请稍后再试。', pending: false }
-        ]);
+        setMessages((prev) => {
+          const last = prev[prev.length - 1];
+          if (last?.pending) {
+            return [
+              ...prev.slice(0, -1),
+              { ...last, text: '出错了，请稍后再试。', pending: false, phase: undefined }
+            ];
+          }
+          return [
+            ...prev,
+            { id: ++msgId, role: 'dj', text: '出错了，请稍后再试。', pending: false }
+          ];
+        });
         setSending(false);
       }
     });
@@ -88,13 +99,17 @@ export function ChatPanel(): JSX.Element {
   function handleSend(): void {
     const text = input.trim();
     if (!text || sending) return;
-    setMessages((prev) => appendMessages(prev, [{ id: ++msgId, role: 'user', text }]));
+    const thinkingId = ++msgId;
+    setMessages((prev) => appendMessages(prev, [
+      { id: ++msgId, role: 'user', text },
+      { id: thinkingId, role: 'dj', text: '', pending: true, phase: 'thinking' }
+    ]));
     setInput('');
     setSending(true);
     if (!sendChatMessage(text)) {
       setMessages((prev) => [
-        ...prev,
-        { id: ++msgId, role: 'dj', text: '聊天连接还没准备好，请稍后再试。', pending: false }
+        ...prev.slice(0, -1),
+        { id: thinkingId, role: 'dj', text: '聊天连接还没准备好，请稍后再试。', pending: false }
       ]);
       setSending(false);
     }
@@ -127,7 +142,7 @@ export function ChatPanel(): JSX.Element {
                   : 'bg-zinc-800 text-zinc-100'
               } ${msg.pending ? 'opacity-80' : ''}`}
             >
-              {msg.text}
+              {msg.pending && msg.phase === 'thinking' && !msg.text ? 'DJ 正在思考中' : msg.text}
               {msg.pending && <span className="animate-pulse ml-0.5">▎</span>}
             </div>
           </div>

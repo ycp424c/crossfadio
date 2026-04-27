@@ -70,6 +70,23 @@ describe('LlmClient.complete', () => {
     });
   });
 
+  it('includes provider response body in non-2xx errors', async () => {
+    mockFetch(async () =>
+      new Response(JSON.stringify({ error: { message: 'model does not exist' } }), {
+        status: 400,
+        statusText: 'Bad Request'
+      })
+    );
+    const client = new LlmClient(config);
+
+    await expect(client.complete([{ role: 'user', content: 'hi' }])).rejects.toMatchObject({
+      name: 'LlmError',
+      status: 400,
+      responseBody: '{"error":{"message":"model does not exist"}}',
+      message: 'LLM request failed: 400 Bad Request; response body: {"error":{"message":"model does not exist"}}'
+    });
+  });
+
   it('propagates AbortSignal', async () => {
     mockFetch(async (_url, init) => new Promise<Response>((_resolve, reject) => {
       init?.signal?.addEventListener('abort', () =>
@@ -145,6 +162,24 @@ describe('LlmClient.stream', () => {
     const client = new LlmClient(config);
     const gen = client.stream([{ role: 'user', content: 'hi' }]);
     await expect(gen.next()).rejects.toMatchObject({ name: 'LlmError' });
+  });
+
+  it('includes provider response body in non-2xx stream errors', async () => {
+    mockFetch(async () =>
+      new Response('invalid stream option', {
+        status: 400,
+        statusText: 'Bad Request'
+      })
+    );
+    const client = new LlmClient(config);
+    const gen = client.stream([{ role: 'user', content: 'hi' }]);
+
+    await expect(gen.next()).rejects.toMatchObject({
+      name: 'LlmError',
+      status: 400,
+      responseBody: 'invalid stream option',
+      message: 'LLM stream request failed: 400 Bad Request; response body: invalid stream option'
+    });
   });
 
   it('skips malformed SSE lines without throwing', async () => {

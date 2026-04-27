@@ -132,6 +132,8 @@ function tryParseOutput(raw: string, mode: Fragments['mode']): ParseResult {
     (json as Record<string, unknown>).mode = mode;
   }
 
+  json = normalizeOutput(json, mode);
+
   const result = agentOutputSchema.safeParse(json);
   if (result.success) {
     return { ok: true, value: result.data };
@@ -141,6 +143,64 @@ function tryParseOutput(raw: string, mode: Fragments['mode']): ParseResult {
     ok: false,
     error: result.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ')
   };
+}
+
+function normalizeOutput(json: unknown, mode: Fragments['mode']): unknown {
+  if (!json || typeof json !== 'object') {
+    return json;
+  }
+
+  if (mode !== 'chat') {
+    return json;
+  }
+
+  const output = { ...(json as Record<string, unknown>) };
+  const actions = output.actions;
+  if (Array.isArray(actions)) {
+    output.actions = actions.map((action) => normalizeChatAction(action));
+  }
+
+  return output;
+}
+
+function normalizeChatAction(action: unknown): unknown {
+  if (!action || typeof action !== 'object') {
+    return action;
+  }
+
+  const candidate = action as Record<string, unknown>;
+  if (candidate.type !== 'play') {
+    return action;
+  }
+
+  const query = extractTrackQuery(candidate);
+  if (!query) {
+    return action;
+  }
+
+  return {
+    type: 'swap_next',
+    pick: {
+      query
+    }
+  };
+}
+
+function extractTrackQuery(action: Record<string, unknown>): string | null {
+  const track = typeof action.track === 'string' ? action.track.trim() : '';
+  if (track) {
+    return track;
+  }
+
+  const query = typeof action.query === 'string' ? action.query.trim() : '';
+  if (query) {
+    return query;
+  }
+
+  const title = typeof action.title === 'string' ? action.title.trim() : '';
+  const artist = typeof action.artist === 'string' ? action.artist.trim() : '';
+  const combined = [title, artist].filter(Boolean).join(' ');
+  return combined || null;
 }
 
 export class AgentError extends Error {

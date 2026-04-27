@@ -62,6 +62,15 @@ CREATE TABLE IF NOT EXISTS segues (
   say TEXT NOT NULL,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+`,
+  `ALTER TABLE messages ADD COLUMN extracted_at TEXT;`,
+  `
+CREATE TABLE IF NOT EXISTS chat_preferences (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  summary TEXT NOT NULL,
+  message_ids TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 `
 ];
 

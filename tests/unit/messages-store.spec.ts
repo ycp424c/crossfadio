@@ -42,4 +42,33 @@ describe('messages store', () => {
     const msgs = getRecentMessages(3);
     expect(msgs).toHaveLength(3);
   });
+
+  it('getRecentMessages with withinMinutes returns recent messages', async () => {
+    const { saveMessage, getRecentMessages } = await import('../../src/server/store/messages');
+    saveMessage('user', 'recent message');
+    const msgs = getRecentMessages(20, 60);
+    expect(msgs.length).toBeGreaterThan(0);
+    expect(msgs[msgs.length - 1].content).toBe('recent message');
+  });
+
+  it('getUnextractedMessages returns messages with extracted_at = null', async () => {
+    const { saveMessage, getUnextractedMessages } = await import('../../src/server/store/messages');
+    saveMessage('user', 'hello');
+    saveMessage('assistant', 'hi');
+    const unextracted = getUnextractedMessages();
+    expect(unextracted.length).toBe(2);
+    expect(unextracted.every((m) => m.extracted_at === null)).toBe(true);
+  });
+
+  it('markMessagesExtracted sets extracted_at on the given ids', async () => {
+    const { saveMessage, getUnextractedMessages, markMessagesExtracted } = await import(
+      '../../src/server/store/messages'
+    );
+    const id1 = saveMessage('user', 'first');
+    saveMessage('assistant', 'second');
+    markMessagesExtracted([id1]);
+    const unextracted = getUnextractedMessages();
+    expect(unextracted).toHaveLength(1);
+    expect(unextracted[0].content).toBe('second');
+  });
 });

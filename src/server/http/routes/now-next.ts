@@ -10,7 +10,7 @@ import {
 
 const DEFAULT_PREFETCH_LEAD_SEC = 10;
 const DEFAULT_CROSSFADE_SEC = 8;
-const DEFAULT_SEGUE_LEAD_SEC = 12;
+const DEFAULT_SEGUE_LEAD_SEC = 24;
 
 const nowQuerySchema = z.object({
   ncmId: z.string().min(1)

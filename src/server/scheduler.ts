@@ -1,16 +1,22 @@
 import { getLogger } from './logger.js';
 import { buildFallbackPlan } from './agent/plan-fallback.js';
 import { resolveLlmConfig } from './llm/config.js';
+import { LlmClient } from './llm/client.js';
 import { computeSync } from './agent/compute.js';
 import { buildSystemPrompt } from './agent/modes.js';
 import { loadLatestPlan, savePlan, todayDateStr } from './store/plan.js';
 import { getRecentPlays } from './store/plays.js';
+import { getUnextractedMessages, markMessagesExtracted } from './store/messages.js';
+import { saveChatPreference } from './store/chat-preferences.js';
 import { loadLikedTracksForPlanning } from './user-corpus/ncm-liked.js';
 import { loadUserCorpus } from './user-corpus/loader.js';
 import { fetchWeather } from './weather.js';
 import type { SecretStore } from './security.js';
 import type { Fragments } from './agent/schema.js';
 import type { NcmClient } from './ncm/client.js';
+
+const PREFERENCE_EXTRACTION_MIN_MESSAGES = 3;
+const PREFERENCE_EXTRACTION_INTERVAL_MS = 30 * 60 * 1000;
 
 type SchedulerOptions = {
   secrets: SecretStore;
@@ -107,7 +113,6 @@ export function startScheduler(opts: SchedulerOptions): SchedulerHandle {
 
   function runHourlyCheck(): void {
     logger.debug('Scheduler: hourly check');
-    // Currently a no-op placeholder — future: segment transition hook
     scheduleNext(runHourlyCheck, msUntilNextHour());
   }
 
@@ -119,9 +124,55 @@ export function startScheduler(opts: SchedulerOptions): SchedulerHandle {
     return next.getTime() - now.getTime();
   }
 
-  // Start both loops
+  // ─── Preference extraction (every 30 min) ────────────────────────────────
+
+  async function runPreferenceExtraction(): Promise<void> {
+    const llmConfig = resolveLlmConfig(opts.secrets);
+    if (!llmConfig) {
+      scheduleNext(() => void runPreferenceExtraction(), PREFERENCE_EXTRACTION_INTERVAL_MS);
+      return;
+    }
+
+    try {
+      const unextracted = getUnextractedMessages();
+      if (unextracted.length < PREFERENCE_EXTRACTION_MIN_MESSAGES) {
+        scheduleNext(() => void runPreferenceExtraction(), PREFERENCE_EXTRACTION_INTERVAL_MS);
+        return;
+      }
+
+      logger.info({ count: unextracted.length }, 'Scheduler: extracting preferences from chat');
+
+      const chatText = unextracted
+        .map((m) => `${m.role === 'user' ? '用户' : 'DJ'}：${m.content}`)
+        .join('\n');
+
+      const client = new LlmClient(llmConfig);
+      const response = await client.complete([
+        {
+          role: 'system',
+          content: '你是一个音乐偏好分析助手。请从以下对话中提取用户对音乐的偏好、情绪需求和聆听习惯，用简洁中文概括（不超过200字）。只输出偏好摘要，不要解释。'
+        },
+        { role: 'user', content: `对话记录：\n${chatText}\n\n请提取用户音乐偏好：` }
+      ]);
+
+      const summary = response.content.trim();
+      if (summary) {
+        const ids = unextracted.map((m) => m.id);
+        saveChatPreference(summary, ids);
+        markMessagesExtracted(ids);
+        logger.info({ messageCount: ids.length }, 'Scheduler: preferences extracted and saved');
+      }
+    } catch (err) {
+      logger.warn({ err }, 'Scheduler: preference extraction failed');
+    }
+
+    scheduleNext(() => void runPreferenceExtraction(), PREFERENCE_EXTRACTION_INTERVAL_MS);
+  }
+
+  // Start all loops
   scheduleNext(() => void runDailyPlan(), msUntilNext(7, 0));
   scheduleNext(runHourlyCheck, msUntilNextHour());
+  scheduleNext(() => void runPreferenceExtraction(), PREFERENCE_EXTRACTION_INTERVAL_MS);
 
   // Also run planning immediately if no plan exists today
   void (async () => {

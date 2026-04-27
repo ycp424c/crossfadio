@@ -106,7 +106,8 @@ export const fragmentsSchema = z.object({
           createdAt: z.string()
         })
       )
-      .optional()
+      .optional(),
+    extractedPreferences: z.string().optional()
   }),
 
   // ⑤ input

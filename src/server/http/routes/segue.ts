@@ -28,7 +28,11 @@ import {
 import { broadcast } from '../broadcast.js';
 import { getLogger } from '../../logger.js';
 
+const SEGUE_LLM_TIMEOUT_MS = 12_000;
+const SEGUE_TTS_TIMEOUT_MS = 8_000;
+
 const triggerBodySchema = z.object({
+  clientRequestId: z.string().min(1).max(128).optional(),
   from: trackSchema,
   to: trackSchema
 });
@@ -37,6 +41,21 @@ type SegueRouteOptions = {
   secrets: SecretStore;
   ncmClient: NcmClient;
 };
+
+type ActiveSegueJob = {
+  requestId: string;
+  clientRequestId: string | null;
+  fromId: string;
+  toId: string;
+  controller: AbortController;
+};
+
+let activeJob: ActiveSegueJob | null = null;
+
+export function _resetActiveSegueJobForTests(): void {
+  if (activeJob) activeJob.controller.abort();
+  activeJob = null;
+}
 
 export function createSegueTriggerHandler(opts: SegueRouteOptions) {
   return (req: Request, res: Response): void => {
@@ -51,32 +70,76 @@ export function createSegueTriggerHandler(opts: SegueRouteOptions) {
       return;
     }
 
-    const requestId = randomBytes(8).toString('hex');
-    res.json({ ok: true, requestId });
+    const clientRequestId = parsed.data.clientRequestId ?? null;
 
-    void runSegueJob(requestId, parsed.data.from, parsed.data.to, opts);
+    // Dedup: if same client request is in flight, return its existing requestId.
+    if (
+      activeJob &&
+      clientRequestId !== null &&
+      activeJob.clientRequestId === clientRequestId &&
+      !activeJob.controller.signal.aborted
+    ) {
+      res.json({ ok: true, requestId: activeJob.requestId, clientRequestId });
+      return;
+    }
+
+    // Abort any prior job; we only ever care about the latest segue request.
+    if (activeJob && !activeJob.controller.signal.aborted) {
+      activeJob.controller.abort();
+    }
+
+    const requestId = randomBytes(8).toString('hex');
+    const controller = new AbortController();
+    const job: ActiveSegueJob = {
+      requestId,
+      clientRequestId,
+      fromId: parsed.data.from.id,
+      toId: parsed.data.to.id,
+      controller
+    };
+    activeJob = job;
+
+    res.json({ ok: true, requestId, clientRequestId });
+
+    void runSegueJob(job, parsed.data.from, parsed.data.to, opts).finally(() => {
+      if (activeJob === job) activeJob = null;
+    });
   };
 }
 
 async function runSegueJob(
-  requestId: string,
+  job: ActiveSegueJob,
   from: z.infer<typeof trackSchema>,
   to: z.infer<typeof trackSchema>,
   opts: SegueRouteOptions
 ): Promise<void> {
   const logger = getLogger();
+  const { requestId, clientRequestId, controller } = job;
+  const signal = controller.signal;
+
+  const emit = (payload: Record<string, unknown>): void => {
+    if (signal.aborted) return;
+    broadcast({ ...payload, requestId, clientRequestId });
+  };
+
+  // Wire LLM/TTS hard timeouts to the same controller — abort cascades to all in-flight fetches.
+  const llmTimeout = setTimeout(() => controller.abort(makeAbortReason('llm-timeout')), SEGUE_LLM_TIMEOUT_MS);
+  let ttsTimeout: ReturnType<typeof setTimeout> | null = null;
 
   try {
     const llmConfig = resolveLlmConfig(opts.secrets);
     if (!llmConfig) {
-      broadcast({ type: 'segue.degraded', requestId, reason: 'no-llm' });
+      emit({ type: 'segue.degraded', reason: 'no-llm' });
       return;
     }
 
     const corpus = loadUserCorpus();
     const likedTracks = await loadLikedTracksForPlanning(opts.ncmClient);
+    if (signal.aborted) return;
     const trackContext = await loadSegueContext(from, to, opts.ncmClient, logger);
+    if (signal.aborted) return;
     const weather = await fetchWeather();
+    if (signal.aborted) return;
     const now = new Date();
 
     const fragments: Fragments = {
@@ -113,20 +176,22 @@ async function runSegueJob(
       trace: { triggeredBy: 'segue-hook', lastDecision: null }
     };
 
-    let sayText = '';
     let finalOutput: unknown = null;
 
-    for await (const event of computeStream(fragments, { llmConfig })) {
+    for await (const event of computeStream(fragments, { llmConfig, signal })) {
+      if (signal.aborted) return;
       if (event.type === 'delta') {
-        sayText += event.say;
-        broadcast({ type: 'segue.delta', requestId, say: event.say });
+        emit({ type: 'segue.delta', say: event.say });
       } else if (event.type === 'done') {
         finalOutput = event.output;
       }
     }
 
+    clearTimeout(llmTimeout);
+    if (signal.aborted) return;
+
     if (!finalOutput || typeof finalOutput !== 'object' || !('say' in finalOutput)) {
-      broadcast({ type: 'segue.degraded', requestId, reason: 'parse-failed' });
+      emit({ type: 'segue.degraded', reason: 'parse-failed' });
       return;
     }
 
@@ -138,7 +203,6 @@ async function runSegueJob(
     };
     const textDerivedSpeechDurationSec = estimateTtsDurationSec(segueOutput.say);
 
-    // Synthesize TTS
     saveSegue({
       fromId: from.id,
       fromName: trackContext.fromTrack.name,
@@ -149,15 +213,16 @@ async function runSegueJob(
 
     const ttsConfig = resolveTtsConfig(opts.secrets);
     if (!ttsConfig) {
-      broadcast({
+      emit({
         type: 'segue.tts-ready',
-        requestId,
         audioUrl: null,
         speechDurationSec: textDerivedSpeechDurationSec,
         segue: segueOutput
       });
       return;
     }
+
+    ttsTimeout = setTimeout(() => controller.abort(makeAbortReason('tts-timeout')), SEGUE_TTS_TIMEOUT_MS);
 
     const speechDurationSec = estimateTtsDurationSec(segueOutput.say, ttsConfig.speed);
     const ttsClient = new TtsClient(ttsConfig);
@@ -166,8 +231,14 @@ async function runSegueJob(
       ttsConfig,
       segueOutput.say,
       fallbackText,
-      (text) => ttsClient.synthesize(text)
+      (text) => ttsClient.synthesize(text, { signal })
     );
+
+    if (ttsTimeout) {
+      clearTimeout(ttsTimeout);
+      ttsTimeout = null;
+    }
+    if (signal.aborted) return;
 
     if (!ttsResult.fallback) {
       void ensureFallbackTtsCached(ttsConfig, fallbackText, (text) => ttsClient.synthesize(text)).catch((err) => {
@@ -175,18 +246,43 @@ async function runSegueJob(
       });
     }
 
-    broadcast({
+    emit({
       type: 'segue.tts-ready',
-      requestId,
       audioUrl: buildSegueAudioUrl(ttsResult.filePath),
       speechDurationSec,
       fallbackTts: ttsResult.fallback,
       segue: segueOutput
     });
   } catch (err) {
-    logger.warn({ err }, 'Segue job failed');
-    broadcast({ type: 'segue.degraded', requestId, reason: 'error' });
+    if (signal.aborted) {
+      const reason = abortReason(controller.signal.reason) ?? 'aborted';
+      logger.info({ requestId, clientRequestId, reason }, 'Segue job aborted');
+      // Only the in-flight job's owner gets to broadcast a degraded signal — and only if the
+      // reason is a timeout (not because a newer job replaced it).
+      if (reason === 'llm-timeout' || reason === 'tts-timeout') {
+        emit({ type: 'segue.degraded', reason });
+      }
+      return;
+    }
+    logger.warn({ err, requestId, clientRequestId }, 'Segue job failed');
+    emit({ type: 'segue.degraded', reason: 'error' });
+  } finally {
+    clearTimeout(llmTimeout);
+    if (ttsTimeout) clearTimeout(ttsTimeout);
   }
+}
+
+function makeAbortReason(reason: string): Error {
+  const err = new Error(`segue:${reason}`);
+  err.name = 'SegueAbortReason';
+  return err;
+}
+
+function abortReason(value: unknown): string | null {
+  if (value instanceof Error && value.name === 'SegueAbortReason') {
+    return value.message.replace(/^segue:/, '');
+  }
+  return null;
 }
 
 function formatLocalTime(date: Date): string {

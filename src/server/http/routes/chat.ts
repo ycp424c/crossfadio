@@ -9,6 +9,7 @@ import { loadUserCorpus } from '../../user-corpus/loader.js';
 import { loadLikedTracksForPlanning } from '../../user-corpus/ncm-liked.js';
 import { getRecentPlays } from '../../store/plays.js';
 import { getRecentMessages, saveMessage } from '../../store/messages.js';
+import { getPreferenceContext } from '../../store/chat-preferences.js';
 import { fetchWeather } from '../../weather.js';
 import { executeActions } from '../../agent/actions.js';
 import { getCurrentIndex, getQueue } from '../../store/queue.js';
@@ -71,30 +72,35 @@ async function handleChatMessage(
         weather,
         nowPlaying: null
       },
-      memory: { recentPlays: getRecentPlays(50), recentChat: getRecentMessages(20) },
+      memory: {
+        recentPlays: getRecentPlays(50),
+        recentChat: getRecentMessages(20, 60),
+        extractedPreferences: getPreferenceContext(3)
+      },
       input: { kind: 'chat', text },
       trace: { triggeredBy: 'user', lastDecision: null }
     };
 
-    let fullSay = '';
+    let streamedRaw = '';
     let chatOutput: ChatOutput | null = null;
 
     for await (const event of computeStream(fragments, { llmConfig })) {
       if (event.type === 'delta') {
-        fullSay += event.say;
-        send({ type: 'chat.delta', say: event.say });
+        streamedRaw += event.say;
       } else if (event.type === 'done' && event.output.mode === 'chat') {
         chatOutput = event.output;
       }
     }
 
     if (!chatOutput) {
-      send({ type: 'chat.done', say: fullSay, intent: 'chitchat', actions: [] });
-      saveMessage('assistant', fullSay);
+      const fallback = extractSayFromRawChat(streamedRaw);
+      send({ type: 'chat.done', say: fallback, intent: 'chitchat', actions: [] });
+      saveMessage('assistant', fallback);
       return;
     }
 
     saveMessage('assistant', chatOutput.say);
+    send({ type: 'chat.delta', say: chatOutput.say });
     send({
       type: 'chat.done',
       say: chatOutput.say,
@@ -120,4 +126,26 @@ function formatLocalTime(date: Date): string {
   const hh = String(date.getHours()).padStart(2, '0');
   const mm = String(date.getMinutes()).padStart(2, '0');
   return `周${day} ${hh}:${mm}`;
+}
+
+function extractSayFromRawChat(raw: string): string {
+  const cleaned = raw
+    .replace(/^```(?:json)?\s*/i, '')
+    .replace(/\s*```\s*$/, '')
+    .trim();
+
+  if (!cleaned) {
+    return '抱歉，刚才没有生成有效回复。';
+  }
+
+  try {
+    const parsed = JSON.parse(cleaned) as { say?: unknown };
+    if (typeof parsed.say === 'string' && parsed.say.trim()) {
+      return parsed.say.trim();
+    }
+  } catch {
+    // Ignore parse failures and fall back to raw content.
+  }
+
+  return cleaned;
 }

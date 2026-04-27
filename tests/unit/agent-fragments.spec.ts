@@ -146,4 +146,16 @@ describe('assembleMessages', () => {
     const msgs = assembleMessages(f);
     expect(msgs[1].content).toContain('（暂无红心歌曲）');
   });
+
+  it('renders extracted preferences in memory slice when provided', () => {
+    const f: Fragments = { ...base, memory: { ...base.memory, extractedPreferences: '用户喜欢安静的indie风格' } };
+    const msgs = assembleMessages(f);
+    expect(msgs[2].content).toContain('<extracted_preferences>');
+    expect(msgs[2].content).toContain('用户喜欢安静的indie风格');
+  });
+
+  it('renders fallback text when extracted preferences absent', () => {
+    const msgs = assembleMessages(base);
+    expect(msgs[2].content).toContain('（暂无提取的偏好记忆）');
+  });
 });
