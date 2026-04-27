@@ -2,6 +2,7 @@ import type { RequestHandler } from 'express';
 import { computeSync } from '../../agent/compute.js';
 import { buildSystemPrompt } from '../../agent/modes.js';
 import type { Fragments, Track } from '../../agent/schema.js';
+import { LlmClient } from '../../llm/client.js';
 import { resolveLlmConfig } from '../../llm/config.js';
 import type { NcmClient } from '../../ncm/client.js';
 import type { SecretStore } from '../../security.js';
@@ -160,45 +161,39 @@ async function doPickNext(opts: DjNextOptions): Promise<void> {
         LIKED_SAMPLE_SIZE
       );
 
-      // ── Phase 2: LLM generates search queries ────────────────────────────
-      const searchQueryFragments: Fragments = {
-        mode: 'chat',
-        system: buildSystemPrompt(corpus.djPersona || 'You are a DJ.', 'chat'),
-        corpus: {
-          taste: corpus.taste,
-          routines: corpus.routines,
-          moodRules: corpus.moodRules,
-          playlists: corpus.playlists,
-          likedTracks: []
-        },
-        env: { nowIso, localTime, weather, nowPlaying: null },
-        memory: { recentPlays, recentChat, recentSegues, extractedPreferences },
-        input: {
-          kind: 'chat',
-          text: 'DJ，根据当前时间、天气和最近播放记录，生成 2-3 个网易云音乐搜索词（艺人名、风格、情绪关键词等），用于扩展候选歌曲池。在 say 字段返回 JSON 数组，例如：["搜索词1","搜索词2"]。无需执行任何动作。'
-        },
-        trace: { triggeredBy: 'scheduler', lastDecision: null }
-      };
+      // ── Phase 2: LLM generates search queries (raw call, no schema) ─────
+      const recentPlayNames = recentPlays
+        .slice(0, 10)
+        .map((p) => `${p.song_name ?? '?'} — ${p.artist_name ?? '?'}`)
+        .join('\n');
+      const weatherStr = weather ? `${weather.tempC}°C，${weather.desc}` : '未知';
+      const searchQueryPrompt =
+        `当前时间：${localTime}\n天气：${weatherStr}\n最近播放：\n${recentPlayNames}\n\n` +
+        `请根据以上信息，生成 2-3 个适合当前情境的网易云音乐搜索词（艺人名、风格关键词等）。` +
+        `直接返回 JSON 数组，例如：["赵雷","民谣 安静","爵士 夜晚"]`;
 
       let searchQueries: string[] = [];
+      let sqRawSay = '';
       try {
-        const sqOutput = await computeSync(searchQueryFragments, {
-          llmConfig,
-          signal: AbortSignal.timeout(SEARCH_QUERY_LLM_TIMEOUT_MS)
-        });
-        if (sqOutput.mode === 'chat') {
-          const match = sqOutput.say.match(/\[[\s\S]*?\]/);
-          if (match) {
-            const parsed: unknown = JSON.parse(match[0]);
-            if (Array.isArray(parsed)) {
-              searchQueries = parsed
-                .filter((s): s is string => typeof s === 'string' && s.trim().length > 0)
-                .slice(0, 3);
-            }
+        const sqResp = await new LlmClient(llmConfig).complete(
+          [
+            { role: 'system', content: corpus.djPersona || 'You are a DJ.' },
+            { role: 'user', content: searchQueryPrompt }
+          ],
+          { signal: AbortSignal.timeout(SEARCH_QUERY_LLM_TIMEOUT_MS) }
+        );
+        sqRawSay = sqResp.content;
+        const match = sqResp.content.match(/\[[\s\S]*?\]/);
+        if (match) {
+          const parsed: unknown = JSON.parse(match[0]);
+          if (Array.isArray(parsed)) {
+            searchQueries = parsed
+              .filter((s): s is string => typeof s === 'string' && s.trim().length > 0)
+              .slice(0, 3);
           }
         }
-      } catch {
-        // search query generation is best-effort; proceed with liked sample only
+      } catch (err) {
+        logger.warn({ err }, 'DJ pick-next: search query generation failed');
       }
 
       logger.info({ searchQueries }, 'DJ pick-next: generated search queries');
@@ -277,6 +272,7 @@ async function doPickNext(opts: DjNextOptions): Promise<void> {
           broadcast({
             type: 'dj.debug',
             likedSample: likedSample.map((t) => ({ id: t.id, name: t.name, artist: t.artist })),
+            sqRaw: sqRawSay,
             searchQueries,
             searchedTracks: searchedTracks.map((t) => ({ id: t.id, name: t.name, artist: t.artist })),
             totalCandidates: allCandidates.length,
