@@ -231,6 +231,10 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
         ) {
           return;
         }
+        segueClientRequestIdRef.current = null;
+        if (currentTrackIdRef.current) {
+          segueSatisfiedForTrackIdRef.current = currentTrackIdRef.current;
+        }
         setSegueStatus('ready');
 
         const ttsHintSec =
@@ -294,9 +298,6 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
 
         pendingSegueRef.current = pending;
         segueAudioRef.current = audio;
-        if (currentTrackIdRef.current) {
-          segueSatisfiedForTrackIdRef.current = currentTrackIdRef.current;
-        }
         setSegueStatusText(`过渡语音已就绪（约 ${Math.round(dynamicHintSec)} 秒）`);
         maybeStartSegueAudio();
       } else if (msg.type === 'segue.degraded') {

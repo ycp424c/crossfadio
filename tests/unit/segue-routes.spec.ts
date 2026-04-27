@@ -2,6 +2,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+vi.mock('../../src/server/weather', () => ({
+  fetchWeather: async () => null
+}));
+
 import {
   _resetActiveSegueJobForTests,
   buildSegueAudioUrl,
@@ -10,6 +15,8 @@ import {
 } from '../../src/server/http/routes/segue';
 import * as llmConfigModule from '../../src/server/llm/config';
 import { getTtsCacheDir } from '../../src/server/tts/cache';
+import { registerWss } from '../../src/server/http/broadcast';
+import { initDb } from '../../src/server/store/db';
 
 const originalDataDir = process.env.CROSSFADIO_DATA_DIR;
 
@@ -18,11 +25,15 @@ let dataDir: string;
 beforeEach(() => {
   dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'crossfadio-segue-routes-'));
   process.env.CROSSFADIO_DATA_DIR = dataDir;
+  initDb();
 });
 
 afterEach(() => {
   _resetActiveSegueJobForTests();
+  registerWss({ clients: new Set() } as never);
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+  vi.useRealTimers();
   if (originalDataDir === undefined) {
     delete process.env.CROSSFADIO_DATA_DIR;
   } else {
@@ -156,5 +167,81 @@ describe('segue trigger handler', () => {
     );
 
     expect(res.statusCode).toBe(400);
+  });
+
+  it('broadcasts a degraded terminal event when the LLM segue job times out', async () => {
+    vi.useFakeTimers();
+    vi.mocked(llmConfigModule.resolveLlmConfig).mockReturnValue({
+      baseUrl: 'https://llm.example/v1',
+      apiKey: 'test-key',
+      model: 'test-model'
+    });
+
+    const sent: string[] = [];
+    registerWss({
+      clients: new Set([
+        {
+          readyState: 1,
+          authenticated: true,
+          send: vi.fn((message: string) => {
+            sent.push(message);
+          })
+        }
+      ])
+    } as never);
+
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('llm.example')) {
+        return new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => {
+            reject(init.signal?.reason ?? new DOMException('aborted', 'AbortError'));
+          });
+        });
+      }
+      return Promise.reject(new Error(`unexpected fetch: ${url}`));
+    }));
+
+    const handler = createSegueTriggerHandler({
+      secrets: {} as never,
+      ncmClient: {
+        getLikedSongIds: async () => ['1', '2'],
+        getSongDetails: async () => [
+          { id: 1, name: 'From Song', artists: ['A'], durationMs: 180_000 },
+          { id: 2, name: 'To Song', artists: ['B'], durationMs: 190_000 }
+        ],
+        getLyric: async () => null,
+        getSongWikiSummary: async () => null
+      } as never
+    });
+    const res = createJsonResponse();
+
+    handler(
+      { body: { clientRequestId: 'cid-timeout', from: { id: '1' }, to: { id: '2' } } } as never,
+      res as never,
+      vi.fn() as never
+    );
+    for (let i = 0; i < 10; i++) {
+      await Promise.resolve();
+    }
+    vi.runAllTicks();
+    await vi.advanceTimersByTimeAsync(0);
+
+    await vi.waitFor(() => {
+      expect(fetch).toHaveBeenCalledWith(
+        expect.stringContaining('llm.example'),
+        expect.objectContaining({ method: 'POST' })
+      );
+    });
+    await vi.advanceTimersByTimeAsync(12_000);
+
+    const messages = sent.map((message) => JSON.parse(message) as Record<string, unknown>);
+    expect(messages).toContainEqual(
+      expect.objectContaining({
+        type: 'segue.degraded',
+        reason: 'llm-timeout',
+        clientRequestId: 'cid-timeout'
+      })
+    );
   });
 });

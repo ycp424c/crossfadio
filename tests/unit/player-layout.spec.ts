@@ -43,6 +43,16 @@ describe('player layout', () => {
     expect(source).toContain('setSegueStatusText(`请求失败：${message}`)');
   });
 
+  it('releases the active segue request after tts-ready so DJ refill can resume', () => {
+    const source = fs.readFileSync(path.join(root, 'src/renderer/views/Player/PlayerView.tsx'), 'utf-8');
+    const ttsReadyStart = source.indexOf("msg.type === 'segue.tts-ready'");
+    const degradedStart = source.indexOf("msg.type === 'segue.degraded'");
+    const ttsReadyBlock = source.slice(ttsReadyStart, degradedStart);
+
+    expect(ttsReadyBlock).toContain('segueClientRequestIdRef.current = null');
+    expect(ttsReadyBlock).toContain('segueSatisfiedForTrackIdRef.current = currentTrackIdRef.current');
+  });
+
   it('triggers segue as soon as playback is running and a next track is known', () => {
     const source = fs.readFileSync(path.join(root, 'src/renderer/views/Player/PlayerView.tsx'), 'utf-8');
 

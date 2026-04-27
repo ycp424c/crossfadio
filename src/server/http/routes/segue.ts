@@ -28,8 +28,8 @@ import {
 import { broadcast } from '../broadcast.js';
 import { getLogger } from '../../logger.js';
 
-const SEGUE_LLM_TIMEOUT_MS = 12_000;
-const SEGUE_TTS_TIMEOUT_MS = 8_000;
+const SEGUE_LLM_TIMEOUT_MS = 60_000;
+const SEGUE_TTS_TIMEOUT_MS = 30_000;
 
 const triggerBodySchema = z.object({
   clientRequestId: z.string().min(1).max(128).optional(),
@@ -117,8 +117,8 @@ async function runSegueJob(
   const { requestId, clientRequestId, controller } = job;
   const signal = controller.signal;
 
-  const emit = (payload: Record<string, unknown>): void => {
-    if (signal.aborted) return;
+  const emit = (payload: Record<string, unknown>, options: { allowAborted?: boolean } = {}): void => {
+    if (signal.aborted && !options.allowAborted) return;
     broadcast({ ...payload, requestId, clientRequestId });
   };
 
@@ -260,7 +260,7 @@ async function runSegueJob(
       // Only the in-flight job's owner gets to broadcast a degraded signal — and only if the
       // reason is a timeout (not because a newer job replaced it).
       if (reason === 'llm-timeout' || reason === 'tts-timeout') {
-        emit({ type: 'segue.degraded', reason });
+        emit({ type: 'segue.degraded', reason }, { allowAborted: true });
       }
       return;
     }
