@@ -461,6 +461,13 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
       return;
     }
 
+    // If current track is the last in the queue, there's no next track — skip the request.
+    const idx = queueIds.indexOf(trackId);
+    if (idx !== -1 && idx >= queueIds.length - 1) {
+      setNextTrack(null);
+      return;
+    }
+
     try {
       const payload = await getNextTrack(queueIds, trackId);
       setNextTrack(payload);
