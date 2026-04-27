@@ -106,6 +106,8 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
   const currentTrackId = currentTrack?.id ?? null;
   const currentTrackIdRef = useRef<string | null>(currentTrackId);
   currentTrackIdRef.current = currentTrackId;
+  const nowPlayingRef = useRef<NowPlayingResponse | null>(nowPlaying);
+  nowPlayingRef.current = nowPlaying;
 
   const restoreTrackVolume = useCallback(() => {
     if (audioRef.current) {
@@ -141,6 +143,17 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
     const pending = pendingSegueRef.current;
 
     if (!trackAudio || trackAudio.paused || !pending || pending.started) {
+      return;
+    }
+
+    // Only start at the crossfade window — don't play the moment TTS arrives
+    const crossfadeSec = nowPlayingRef.current?.timing.crossfadeSec ?? DEFAULT_DUCKING_HINT_SEC;
+    const trackDuration = trackAudio.duration;
+    if (!Number.isFinite(trackDuration) || trackDuration <= 0) {
+      return;
+    }
+    const crossfadeAtSec = Math.max(0, trackDuration - crossfadeSec);
+    if (trackAudio.currentTime < crossfadeAtSec) {
       return;
     }
 

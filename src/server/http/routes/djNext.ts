@@ -29,6 +29,13 @@ const LIKED_TRACKS_TIMEOUT_MS = 8_000;
 let isRunning = false;
 let likedTracksCache: Track[] = [];
 
+// trackId → short DJ selection reason, populated on each successful LLM pick
+const djPickReasonCache = new Map<string, string>();
+
+export function getDjPickReason(trackId: string): string | null {
+  return djPickReasonCache.get(trackId) ?? null;
+}
+
 function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
   return Promise.race([
     promise,
@@ -156,6 +163,11 @@ async function doPickNext(opts: DjNextOptions): Promise<void> {
         );
         const result = await executeActions(output.actions, { ncmClient: opts.ncmClient });
         if (result.queueChanged) {
+          const q = getQueue();
+          const added = q[q.length - 1];
+          if (added && typeof output.say === 'string' && output.say.trim()) {
+            djPickReasonCache.set(added.ncmId, output.say.trim());
+          }
           broadcastAppended();
           return;
         }

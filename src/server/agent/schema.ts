@@ -120,7 +120,8 @@ export const fragmentsSchema = z.object({
       context: z
         .object({
           from: segueTrackContextSchema,
-          to: segueTrackContextSchema
+          to: segueTrackContextSchema,
+          djPickReason: z.string().optional()
         })
         .optional()
     }),

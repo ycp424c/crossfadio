@@ -134,6 +134,8 @@ function renderSegueContext(f: Fragments): string {
   const from = f.input.context.from;
   const to = f.input.context.to;
 
+  const djPickReason = f.input.context.djPickReason;
+
   return `
 <segue_context>
 <from_track>
@@ -149,6 +151,6 @@ function renderSegueContext(f: Fragments): string {
 标签：${to.tags.join(' / ') || '无'}
 歌词片段：${to.lyricExcerpt || '无'}
 歌词关键词：${to.lyricKeywords.join(' / ') || '无'}
-</to_track>
+</to_track>${djPickReason ? `\n<dj_pick_reason>${djPickReason}</dj_pick_reason>` : ''}
 </segue_context>`;
 }

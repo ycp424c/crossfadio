@@ -25,6 +25,7 @@ import {
   ensureFallbackTtsCached,
   synthesizeTtsWithFallback
 } from '../../tts/fallback.js';
+import { getDjPickReason } from './djNext.js';
 import { broadcast } from '../broadcast.js';
 import { getLogger } from '../../logger.js';
 
@@ -142,6 +143,8 @@ async function runSegueJob(
     if (signal.aborted) return;
     const now = new Date();
 
+    const djPickReason = getDjPickReason(to.id);
+
     const fragments: Fragments = {
       mode: 'segue',
       system: buildSystemPrompt(corpus.djPersona || 'You are a DJ.', 'segue'),
@@ -170,7 +173,8 @@ async function runSegueJob(
         to: trackContext.toTrack,
         context: {
           from: trackContext.fromContext,
-          to: trackContext.toContext
+          to: trackContext.toContext,
+          ...(djPickReason ? { djPickReason } : {})
         }
       },
       trace: { triggeredBy: 'segue-hook', lastDecision: null }
