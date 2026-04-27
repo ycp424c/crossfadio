@@ -22,9 +22,12 @@ type DjNextOptions = {
   ncmClient: NcmClient;
 };
 
-const JOB_TIMEOUT_MS = 20_000;
-const LLM_TIMEOUT_MS = 15_000;
+const JOB_TIMEOUT_MS = 30_000;
+const SEARCH_QUERY_LLM_TIMEOUT_MS = 8_000;
+const PICK_LLM_TIMEOUT_MS = 12_000;
 const LIKED_TRACKS_TIMEOUT_MS = 8_000;
+const LIKED_SAMPLE_SIZE = 20;
+const SEARCH_RESULT_SIZE = 20;
 
 let isRunning = false;
 let likedTracksCache: Track[] = [];
@@ -41,6 +44,43 @@ function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T
     promise,
     new Promise<T>((resolve) => setTimeout(() => resolve(fallback), ms))
   ]);
+}
+
+// Fisher-Yates sample: return up to n random items from arr
+function sampleN<T>(arr: T[], n: number): T[] {
+  const copy = [...arr];
+  for (let i = copy.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [copy[i], copy[j]] = [copy[j], copy[i]];
+  }
+  return copy.slice(0, n);
+}
+
+// Run parallel NCM searches, deduplicate results, exclude known IDs
+async function searchCandidates(
+  queries: string[],
+  ncmClient: NcmClient,
+  excludeIds: Set<string>,
+  limit: number
+): Promise<Track[]> {
+  if (queries.length === 0) return [];
+  const perQuery = Math.ceil((limit + 5) / queries.length);
+  const results = await Promise.all(
+    queries.map((q) => ncmClient.searchSongs(q, perQuery).catch(() => []))
+  );
+  const seen = new Set<string>();
+  const tracks: Track[] = [];
+  for (const songs of results) {
+    for (const song of songs) {
+      const id = String(song.id);
+      if (!seen.has(id) && !excludeIds.has(id)) {
+        seen.add(id);
+        tracks.push({ id, name: song.name, artist: song.artists.join(' / ') });
+        if (tracks.length >= limit) return tracks;
+      }
+    }
+  }
+  return tracks;
 }
 
 export function createDjPickNextHandler(opts: DjNextOptions): RequestHandler {
@@ -83,7 +123,6 @@ async function doPickNext(opts: DjNextOptions): Promise<void> {
   if (fresh.length > 0) likedTracksCache = fresh;
   const likedTracks = likedTracksCache;
 
-  // Try LLM pick first
   const llmConfig = resolveLlmConfig(opts.secrets);
   if (!llmConfig) {
     logger.debug('DJ pick-next: skipping LLM pick because LLM config is missing');
@@ -94,33 +133,35 @@ async function doPickNext(opts: DjNextOptions): Promise<void> {
   if (llmConfig && likedTracks.length > 0) {
     try {
       const corpus = loadUserCorpus();
-      const [weather] = await Promise.all([
-        withTimeout(fetchWeather(), 4_000, null)
-      ]);
+      const [weather] = await Promise.all([withTimeout(fetchWeather(), 4_000, null)]);
       const now = new Date();
       const weekdays = ['日', '一', '二', '三', '四', '五', '六'];
       const day = weekdays[now.getDay()];
       const hh = String(now.getHours()).padStart(2, '0');
       const mm = String(now.getMinutes()).padStart(2, '0');
+      const localTime = `周${day} ${hh}:${mm}`;
+      const nowIso = now.toISOString();
       const recentPlays = getRecentPlays(50);
       const recentChat = getRecentMessages(20, 60);
       const recentSegues = getRecentSegues(10);
       const extractedPreferences = getPreferenceContext(3);
 
-      logger.info(
-        {
-          model: llmConfig.model,
-          baseUrl: llmConfig.baseUrl,
-          likedTrackCount: likedTracks.length,
-          currentQueueCount: getQueue().length,
-          recentPlayCount: recentPlays.length,
-          recentChatCount: recentChat.length,
-          recentSegueCount: recentSegues.length
-        },
-        'DJ pick-next: requesting LLM song pick'
+      const recentIds = new Set(
+        getRecentPlays(30)
+          .map((p) => p.song_id)
+          .filter((id): id is string => id !== null)
+      );
+      const currentQueueIds = new Set(getQueue().map((t) => t.ncmId));
+      const excludeIds = new Set([...recentIds, ...currentQueueIds]);
+
+      // ── Phase 1: random 20 from liked tracks ─────────────────────────────
+      const likedSample = sampleN(
+        likedTracks.filter((t) => t.id && !excludeIds.has(t.id)),
+        LIKED_SAMPLE_SIZE
       );
 
-      const fragments: Fragments = {
+      // ── Phase 2: LLM generates search queries ────────────────────────────
+      const searchQueryFragments: Fragments = {
         mode: 'chat',
         system: buildSystemPrompt(corpus.djPersona || 'You are a DJ.', 'chat'),
         corpus: {
@@ -128,54 +169,119 @@ async function doPickNext(opts: DjNextOptions): Promise<void> {
           routines: corpus.routines,
           moodRules: corpus.moodRules,
           playlists: corpus.playlists,
-          likedTracks
+          likedTracks: []
         },
-        env: {
-          nowIso: now.toISOString(),
-          localTime: `周${day} ${hh}:${mm}`,
-          weather,
-          nowPlaying: null
-        },
-        memory: {
-          recentPlays,
-          recentChat,
-          recentSegues,
-          extractedPreferences
-        },
+        env: { nowIso, localTime, weather, nowPlaying: null },
+        memory: { recentPlays, recentChat, recentSegues, extractedPreferences },
         input: {
           kind: 'chat',
-          text: 'DJ，播放队列即将到尾声，请为队列末尾补充一首新歌。根据当前时间、天气、用户喜好、最近播放记录和过渡语风格，从红心歌单中选择最合适的歌曲，使用 add_to_queue 动作添加，position 设为 end。请勿重复最近刚播过的歌曲。say 字段简短说明选曲理由（一句话即可）。'
+          text: 'DJ，根据当前时间、天气和最近播放记录，生成 2-3 个网易云音乐搜索词（艺人名、风格、情绪关键词等），用于扩展候选歌曲池。在 say 字段返回 JSON 数组，例如：["搜索词1","搜索词2"]。无需执行任何动作。'
         },
         trace: { triggeredBy: 'scheduler', lastDecision: null }
       };
 
-      const signal = AbortSignal.timeout(LLM_TIMEOUT_MS);
-      const output = await computeSync(fragments, { llmConfig, signal });
+      let searchQueries: string[] = [];
+      try {
+        const sqOutput = await computeSync(searchQueryFragments, {
+          llmConfig,
+          signal: AbortSignal.timeout(SEARCH_QUERY_LLM_TIMEOUT_MS)
+        });
+        if (sqOutput.mode === 'chat') {
+          const match = sqOutput.say.match(/\[[\s\S]*?\]/);
+          if (match) {
+            const parsed: unknown = JSON.parse(match[0]);
+            if (Array.isArray(parsed)) {
+              searchQueries = parsed
+                .filter((s): s is string => typeof s === 'string' && s.trim().length > 0)
+                .slice(0, 3);
+            }
+          }
+        }
+      } catch {
+        // search query generation is best-effort; proceed with liked sample only
+      }
+
+      logger.info({ searchQueries }, 'DJ pick-next: generated search queries');
+
+      // ── Phase 3: search NCM, collect up to 20 candidates ─────────────────
+      const searchedTracks = await searchCandidates(
+        searchQueries,
+        opts.ncmClient,
+        excludeIds,
+        SEARCH_RESULT_SIZE
+      );
+
+      // Combine 40 candidates, deduplicate by ID
+      const likedSampleIds = new Set(likedSample.map((t) => t.id));
+      const allCandidates = [
+        ...likedSample,
+        ...searchedTracks.filter((t) => !likedSampleIds.has(t.id))
+      ];
+
+      logger.info(
+        {
+          model: llmConfig.model,
+          baseUrl: llmConfig.baseUrl,
+          likedSampleCount: likedSample.length,
+          searchedCount: searchedTracks.length,
+          totalCandidates: allCandidates.length,
+          currentQueueCount: getQueue().length,
+          recentPlayCount: recentPlays.length
+        },
+        'DJ pick-next: requesting LLM song pick'
+      );
+
+      // ── Phase 4: LLM picks 2 from combined candidates ────────────────────
+      const pickFragments: Fragments = {
+        mode: 'chat',
+        system: buildSystemPrompt(corpus.djPersona || 'You are a DJ.', 'chat'),
+        corpus: {
+          taste: corpus.taste,
+          routines: corpus.routines,
+          moodRules: corpus.moodRules,
+          playlists: corpus.playlists,
+          likedTracks: allCandidates
+        },
+        env: { nowIso, localTime, weather, nowPlaying: null },
+        memory: { recentPlays, recentChat, recentSegues, extractedPreferences },
+        input: {
+          kind: 'chat',
+          text: `DJ，从上方 ${allCandidates.length} 首候选歌曲（红心歌单+搜索结果）中挑选最适合当前情境的 2 首，各用一个 add_to_queue 动作（position: end）添加至队列末尾。请勿重复最近刚播过的歌曲。say 字段用一句话说明选曲理由。`
+        },
+        trace: { triggeredBy: 'scheduler', lastDecision: null }
+      };
+
+      const output = await computeSync(pickFragments, {
+        llmConfig,
+        signal: AbortSignal.timeout(PICK_LLM_TIMEOUT_MS)
+      });
 
       if (output.mode === 'chat' && output.actions.length > 0) {
         logger.info(
           {
             intent: output.intent,
             actionCount: output.actions.length,
-            actionTypes: output.actions.map((action) => action.type)
+            actionTypes: output.actions.map((a) => a.type)
           },
           'DJ pick-next: LLM returned candidate actions'
         );
+        const prevQueueLength = getQueue().length;
         const result = await executeActions(output.actions, { ncmClient: opts.ncmClient });
         if (result.queueChanged) {
-          const q = getQueue();
-          const added = q[q.length - 1];
-          if (added && typeof output.say === 'string' && output.say.trim()) {
-            djPickReasonCache.set(added.ncmId, output.say.trim());
+          const newTracks = getQueue().slice(prevQueueLength);
+          if (typeof output.say === 'string' && output.say.trim()) {
+            for (const track of newTracks) {
+              djPickReasonCache.set(track.ncmId, output.say.trim());
+            }
           }
-          broadcastAppended();
+          broadcastAppended(prevQueueLength);
           return;
         }
         logger.warn(
           {
             intent: output.intent,
             actionCount: output.actions.length,
-            actionTypes: output.actions.map((action) => action.type)
+            actionTypes: output.actions.map((a) => a.type)
           },
           'DJ pick-next: LLM actions did not change queue, using random fallback'
         );
@@ -202,7 +308,7 @@ async function doPickNext(opts: DjNextOptions): Promise<void> {
     }
   }
 
-  // Random fallback: exclude recently played and current queue
+  // Random fallback: exclude recently played and current queue, pick 2
   const recentIds = new Set(
     getRecentPlays(30)
       .map((p) => p.song_id)
@@ -217,25 +323,29 @@ async function doPickNext(opts: DjNextOptions): Promise<void> {
     return;
   }
 
-  const pick = candidates[Math.floor(Math.random() * candidates.length)];
-  addToQueue(
-    {
-      ncmId: pick.id,
-      name: pick.name,
-      artists: pick.artist ? pick.artist.split(' / ') : []
-    },
-    'end'
-  );
-  broadcastAppended();
+  const prevQueueLength = getQueue().length;
+  const picks = sampleN(candidates, Math.min(2, candidates.length));
+  for (const pick of picks) {
+    addToQueue(
+      { ncmId: pick.id, name: pick.name, artists: pick.artist ? pick.artist.split(' / ') : [] },
+      'end'
+    );
+  }
+  broadcastAppended(prevQueueLength);
 }
 
-function broadcastAppended(): void {
+function broadcastAppended(prevQueueLength: number): void {
   const q = getQueue();
-  const added = q[q.length - 1];
-  if (added) {
-    broadcast({ type: 'queue-appended', track: added });
-    broadcast({ type: 'dj.pick-next.done', added: true, trackName: added.name });
+  const newTracks = q.slice(prevQueueLength);
+  for (const track of newTracks) {
+    broadcast({ type: 'queue-appended', track });
   }
+  const names = newTracks.map((t) => t.name).filter((n): n is string => Boolean(n));
+  broadcast({
+    type: 'dj.pick-next.done',
+    added: newTracks.length > 0,
+    trackName: names.join('、') || undefined
+  });
 }
 
 export function serializeDjPickNextErrorForLog(error: unknown): unknown {
