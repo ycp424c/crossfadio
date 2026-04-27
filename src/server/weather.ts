@@ -1,4 +1,5 @@
 import { getLogger } from './logger.js';
+import { getLocation } from './store/location.js';
 
 export type WeatherResult = {
   tempC: number;
@@ -9,11 +10,14 @@ const TIMEOUT_MS = 5000;
 
 /**
  * Fetches current weather from wttr.in.
+ * Uses browser-reported coordinates if available (set via POST /api/location),
+ * otherwise falls back to wttr.in auto-detection.
  * Returns null on any failure — callers must handle the null case gracefully.
  */
-export async function fetchWeather(city = ''): Promise<WeatherResult | null> {
-  const location = encodeURIComponent(city.trim() || 'auto');
-  const url = `https://wttr.in/${location}?format=j1`;
+export async function fetchWeather(): Promise<WeatherResult | null> {
+  const loc = getLocation();
+  const locationStr = loc ? `${loc.lat.toFixed(4)},${loc.lon.toFixed(4)}` : 'auto';
+  const url = `https://wttr.in/${encodeURIComponent(locationStr)}?format=j1`;
 
   try {
     const ac = new AbortController();

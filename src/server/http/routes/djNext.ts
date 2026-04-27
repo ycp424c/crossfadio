@@ -274,6 +274,14 @@ async function doPickNext(opts: DjNextOptions): Promise<void> {
               djPickReasonCache.set(track.ncmId, output.say.trim());
             }
           }
+          broadcast({
+            type: 'dj.debug',
+            likedSample: likedSample.map((t) => ({ id: t.id, name: t.name, artist: t.artist })),
+            searchQueries,
+            searchedTracks: searchedTracks.map((t) => ({ id: t.id, name: t.name, artist: t.artist })),
+            totalCandidates: allCandidates.length,
+            selectedSay: output.say
+          });
           broadcastAppended(prevQueueLength);
           return;
         }

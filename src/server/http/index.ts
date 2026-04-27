@@ -35,6 +35,7 @@ import { createSegueTriggerHandler, createSegueAudioHandler } from './routes/seg
 import { createChatMessageHandler } from './routes/chat.js';
 import { createDjPickNextHandler } from './routes/djNext.js';
 import { createGetRecentMessagesHandler } from './routes/messages.js';
+import { createSetLocationHandler } from './routes/location.js';
 import { createRuntimeHandler } from './routes/runtime.js';
 import { createGetLikedQueueHandler, createSetQueueStateHandler } from './routes/queue.js';
 import type { SecretStore } from '../security.js';
@@ -107,6 +108,7 @@ export async function startLocalServer(options: StartLocalServerOptions): Promis
   app.get('/api/segue/audio/*', createSegueAudioHandler());
   app.post('/api/dj/pick-next', createDjPickNextHandler({ secrets: options.secrets, ncmClient: options.ncmClient }));
   app.get('/api/messages/recent', createGetRecentMessagesHandler());
+  app.post('/api/location', createSetLocationHandler());
 
   if (options.staticDir && fs.existsSync(options.staticDir)) {
     app.use(express.static(options.staticDir));

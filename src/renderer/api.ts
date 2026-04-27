@@ -116,6 +116,14 @@ export async function pickNextTrack(): Promise<{ ok: boolean }> {
   return requestJson<{ ok: boolean }>('/api/dj/pick-next', { method: 'POST' });
 }
 
+export async function updateLocation(lat: number, lon: number): Promise<void> {
+  await requestJson<{ ok: boolean }>('/api/location', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ lat, lon })
+  });
+}
+
 export type RecentMessage = {
   role: 'user' | 'assistant' | 'system';
   content: string;

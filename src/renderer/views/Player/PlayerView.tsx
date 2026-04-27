@@ -18,7 +18,8 @@ import {
   logoutNcm,
   pickNextTrack,
   saveQueueState,
-  triggerSegue
+  triggerSegue,
+  updateLocation
 } from '@renderer/api';
 import { getPrefetchDecision } from '@renderer/audio/prefetch';
 import { NowPlayingHero } from '@renderer/components/player/NowPlayingHero';
@@ -186,6 +187,14 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
   useEffect(() => {
     void refreshSession();
     void loadLikedQueue();
+    if ('geolocation' in navigator) {
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          void updateLocation(pos.coords.latitude, pos.coords.longitude).catch(() => {});
+        },
+        () => {} // permission denied or unavailable — weather falls back to auto
+      );
+    }
   }, []);
 
   useEffect(() => {
@@ -321,6 +330,14 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
         segueClientRequestIdRef.current = null;
         setSegueStatus('degraded');
         setSegueStatusText(`过渡语音暂不可用（${reason}）`);
+      } else if (msg.type === 'dj.debug') {
+        console.log('[DJ] 候选歌曲', {
+          liked: msg.likedSample,
+          searchQueries: msg.searchQueries,
+          searched: msg.searchedTracks,
+          total: msg.totalCandidates,
+          say: msg.selectedSay
+        });
       } else if (msg.type === 'dj.pick-next.done') {
         if (msg.added) {
           const name = typeof msg.trackName === 'string' ? msg.trackName : '';
