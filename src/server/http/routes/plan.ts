@@ -250,9 +250,9 @@ export function createGapFillHandler(opts: PlanRouteOptions) {
         }
 
         const query = `${mood ?? segmentId} music ${i + 1}`;
-        const ncmId = await resolveTrackQuery(query, opts.ncmClient).catch(() => null);
+        const resolved = await resolveTrackQuery(query, opts.ncmClient).catch(() => null);
 
-        tracks.push({ query, ncmId });
+        tracks.push({ query, ncmId: resolved?.ncmId ?? null });
       }
 
       res.json({ ok: true, tracks });

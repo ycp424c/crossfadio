@@ -35,22 +35,22 @@ export async function executeActions(
     try {
       switch (action.type) {
         case 'swap_next': {
-          const ncmId = await resolveTrackQuery(action.pick.query, ctx.ncmClient);
-          if (ncmId && !recentPlayIds.has(ncmId)) {
-            swapNext({ ncmId, query: action.pick.query });
+          const resolved = await resolveTrackQuery(action.pick.query, ctx.ncmClient);
+          if (resolved && !recentPlayIds.has(resolved.ncmId)) {
+            swapNext({ ncmId: resolved.ncmId, name: resolved.name, artists: resolved.artists });
             queueChanged = true;
-          } else if (ncmId) {
-            logger.info({ ncmId, query: action.pick.query }, 'swap_next skipped: track recently played');
+          } else if (resolved) {
+            logger.info({ ncmId: resolved.ncmId, query: action.pick.query }, 'swap_next skipped: track recently played');
           }
           break;
         }
         case 'add_to_queue': {
-          const ncmId = await resolveTrackQuery(action.pick.query, ctx.ncmClient);
-          if (ncmId && !recentPlayIds.has(ncmId)) {
-            addToQueue({ ncmId, query: action.pick.query }, action.position);
+          const resolved = await resolveTrackQuery(action.pick.query, ctx.ncmClient);
+          if (resolved && !recentPlayIds.has(resolved.ncmId)) {
+            addToQueue({ ncmId: resolved.ncmId, name: resolved.name, artists: resolved.artists }, action.position);
             queueChanged = true;
-          } else if (ncmId) {
-            logger.info({ ncmId, query: action.pick.query }, 'add_to_queue skipped: track recently played');
+          } else if (resolved) {
+            logger.info({ ncmId: resolved.ncmId, query: action.pick.query }, 'add_to_queue skipped: track recently played');
           }
           break;
         }
@@ -65,9 +65,9 @@ export async function executeActions(
           break;
         case 'ban_track': {
           const key = `${action.title}___${action.artist}`.toLowerCase();
-          const ncmId = await resolveTrackQuery(`${action.title} ${action.artist}`, ctx.ncmClient);
-          if (ncmId) {
-            banNcmId(ncmId);
+          const resolved = await resolveTrackQuery(`${action.title} ${action.artist}`, ctx.ncmClient);
+          if (resolved) {
+            banNcmId(resolved.ncmId);
             queueChanged = true;
           }
           setPref(`ban.track.${key}`, true);
