@@ -1,7 +1,5 @@
 import type { RequestHandler } from 'express';
-import { computeSync } from '../../agent/compute.js';
-import { buildSystemPrompt } from '../../agent/modes.js';
-import type { Fragments, Track } from '../../agent/schema.js';
+import type { Action, Track } from '../../agent/schema.js';
 import { LlmClient } from '../../llm/client.js';
 import { resolveLlmConfig } from '../../llm/config.js';
 import type { NcmClient } from '../../ncm/client.js';
@@ -126,7 +124,7 @@ async function doPickNext(opts: DjNextOptions): Promise<void> {
 
   const llmConfig = resolveLlmConfig(opts.secrets);
   if (!llmConfig) {
-    logger.debug('DJ pick-next: skipping LLM pick because LLM config is missing');
+    logger.warn('DJ pick-next: skipping LLM pick because LLM config is missing');
   } else if (likedTracks.length === 0) {
     logger.warn('DJ pick-next: skipping LLM pick because liked tracks are unavailable');
   }
@@ -183,7 +181,11 @@ async function doPickNext(opts: DjNextOptions): Promise<void> {
           { signal: AbortSignal.timeout(SEARCH_QUERY_LLM_TIMEOUT_MS) }
         );
         sqRawSay = sqResp.content;
-        const match = sqResp.content.match(/\[[\s\S]*?\]/);
+        const cleaned = sqResp.content
+          .replace(/^```(?:json)?\s*/i, '')
+          .replace(/\s*```\s*$/, '')
+          .trim();
+        const match = cleaned.match(/\[[\s\S]*?\]/);
         if (match) {
           const parsed: unknown = JSON.parse(match[0]);
           if (Array.isArray(parsed)) {
@@ -191,6 +193,9 @@ async function doPickNext(opts: DjNextOptions): Promise<void> {
               .filter((s): s is string => typeof s === 'string' && s.trim().length > 0)
               .slice(0, 3);
           }
+        }
+        if (searchQueries.length === 0) {
+          logger.warn({ raw: sqResp.content.slice(0, 200) }, 'DJ pick-next: failed to parse search queries from LLM response');
         }
       } catch (err) {
         logger.warn({ err }, 'DJ pick-next: search query generation failed');
@@ -226,47 +231,92 @@ async function doPickNext(opts: DjNextOptions): Promise<void> {
         'DJ pick-next: requesting LLM song pick'
       );
 
-      // ── Phase 4: LLM picks 2 from combined candidates ────────────────────
-      const pickFragments: Fragments = {
-        mode: 'chat',
-        system: buildSystemPrompt(corpus.djPersona || 'You are a DJ.', 'chat'),
-        corpus: {
-          taste: corpus.taste,
-          routines: corpus.routines,
-          moodRules: corpus.moodRules,
-          playlists: corpus.playlists,
-          likedTracks: allCandidates
-        },
-        env: { nowIso, localTime, weather, nowPlaying: null },
-        memory: { recentPlays, recentChat, recentSegues, extractedPreferences },
-        input: {
-          kind: 'chat',
-          text: `DJ，从上方 ${allCandidates.length} 首候选歌曲（红心歌单+搜索结果）中挑选最适合当前情境的 2 首，各用一个 add_to_queue 动作（position: end）添加至队列末尾。请勿重复最近刚播过的歌曲。say 字段用一句话说明选曲理由。`
-        },
-        trace: { triggeredBy: 'scheduler', lastDecision: null }
-      };
+      // ── Phase 4: LLM picks 2 from combined candidates (raw call, no schema) ──
+      const candidateList = allCandidates
+        .map((t, i) => `${i + 1}. ${t.name ?? t.id} — ${t.artist ?? '未知艺人'}`)
+        .join('\n');
+      const weatherStr2 = weather ? `${weather.tempC}°C，${weather.desc}` : '未知';
 
-      const output = await computeSync(pickFragments, {
-        llmConfig,
-        signal: AbortSignal.timeout(PICK_LLM_TIMEOUT_MS)
-      });
+      const pickSystemPrompt = `${corpus.djPersona || 'You are a DJ.'}
 
-      if (output.mode === 'chat' && output.actions.length > 0) {
+## 当前任务：DJ 自动选曲
+
+从候选歌曲列表中挑选最适合当前情境的 2 首，用 add_to_queue 动作添加到队列末尾。
+不要重复最近刚播过的歌曲。say 字段用一句话中文说明选曲理由。
+
+输出格式：严格 JSON，不要包裹 markdown 代码块。
+{
+  "say": "选曲理由（一句话中文）",
+  "actions": [
+    { "type": "add_to_queue", "pick": { "query": "歌曲名 — 艺人名" }, "position": "end" }
+  ]
+}`;
+
+      const pickUserPrompt = `<context>
+当前时间：${localTime}
+天气：${weatherStr2}
+</context>
+
+<候选歌曲列表>
+${candidateList}
+</候选歌曲列表>
+
+从以上 ${allCandidates.length} 首候选歌曲中挑选 2 首。`;
+
+      let pickSay = '';
+      let pickActions: Action[] = [];
+      try {
+        const pickResp = await new LlmClient(llmConfig).complete(
+          [
+            { role: 'system', content: pickSystemPrompt },
+            { role: 'user', content: pickUserPrompt }
+          ],
+          { signal: AbortSignal.timeout(PICK_LLM_TIMEOUT_MS) }
+        );
+        const cleaned = pickResp.content
+          .replace(/^```(?:json)?\s*/i, '')
+          .replace(/\s*```\s*$/, '')
+          .trim();
+        const match = cleaned.match(/\{[\s\S]*\}/);
+        if (match) {
+          try {
+            const parsed: unknown = JSON.parse(match[0]);
+            if (parsed && typeof parsed === 'object') {
+              const obj = parsed as Record<string, unknown>;
+              if (typeof obj.say === 'string') pickSay = obj.say;
+              if (Array.isArray(obj.actions)) {
+                pickActions = obj.actions.filter(
+                  (a): a is Action =>
+                    typeof a === 'object' && a !== null &&
+                    typeof (a as Record<string, unknown>).type === 'string' &&
+                    (a as Record<string, unknown>).type === 'add_to_queue' &&
+                    typeof (a as Record<string, unknown>).pick === 'object'
+                );
+              }
+            }
+          } catch {
+            logger.warn({ jsonSnippet: match[0].slice(0, 200) }, 'DJ pick-next: JSON parse failed for LLM pick response');
+          }
+        }
+        if (pickActions.length === 0) {
+          logger.warn({ raw: pickResp.content.slice(0, 300) }, 'DJ pick-next: failed to extract actions from LLM pick response');
+        }
+      } catch (err) {
+        logger.warn({ err }, 'DJ pick-next: LLM pick failed, using random fallback');
+      }
+
+      if (pickActions.length > 0) {
         logger.info(
-          {
-            intent: output.intent,
-            actionCount: output.actions.length,
-            actionTypes: output.actions.map((a) => a.type)
-          },
+          { actionCount: pickActions.length, say: pickSay.slice(0, 80) },
           'DJ pick-next: LLM returned candidate actions'
         );
         const prevQueueLength = getQueue().length;
-        const result = await executeActions(output.actions, { ncmClient: opts.ncmClient });
+        const result = await executeActions(pickActions, { ncmClient: opts.ncmClient });
         if (result.queueChanged) {
           const newTracks = getQueue().slice(prevQueueLength);
-          if (typeof output.say === 'string' && output.say.trim()) {
+          if (pickSay.trim()) {
             for (const track of newTracks) {
-              djPickReasonCache.set(track.ncmId, output.say.trim());
+              djPickReasonCache.set(track.ncmId, pickSay.trim());
             }
           }
           broadcast({
@@ -276,28 +326,15 @@ async function doPickNext(opts: DjNextOptions): Promise<void> {
             searchQueries,
             searchedTracks: searchedTracks.map((t) => ({ id: t.id, name: t.name, artist: t.artist })),
             totalCandidates: allCandidates.length,
-            selectedSay: output.say
+            selectedSay: pickSay
           });
           broadcastAppended(prevQueueLength);
           return;
         }
-        logger.warn(
-          {
-            intent: output.intent,
-            actionCount: output.actions.length,
-            actionTypes: output.actions.map((a) => a.type)
-          },
-          'DJ pick-next: LLM actions did not change queue, using random fallback'
-        );
+        logger.warn('DJ pick-next: LLM actions did not change queue, using random fallback');
+      } else {
+        logger.warn('DJ pick-next: LLM returned no usable actions, using random fallback');
       }
-      logger.warn(
-        {
-          mode: output.mode,
-          intent: output.mode === 'chat' ? output.intent : undefined,
-          actionCount: output.mode === 'chat' ? output.actions.length : undefined
-        },
-        'DJ pick-next: LLM returned no usable actions, using random fallback'
-      );
     } catch (err) {
       logger.warn(
         {
@@ -307,7 +344,7 @@ async function doPickNext(opts: DjNextOptions): Promise<void> {
           likedTrackCount: likedTracks.length,
           currentQueueCount: getQueue().length
         },
-        'DJ pick-next: LLM failed, using random fallback'
+        'DJ pick-next: LLM pipeline failed, using random fallback'
       );
     }
   }
@@ -326,6 +363,16 @@ async function doPickNext(opts: DjNextOptions): Promise<void> {
     broadcast({ type: 'dj.pick-next.done', added: false, reason: 'no-candidates' });
     return;
   }
+
+  broadcast({
+    type: 'dj.debug',
+    likedSample: [],
+    sqRaw: '',
+    searchQueries: [],
+    searchedTracks: [],
+    totalCandidates: candidates.length,
+    selectedSay: '随机 fallback（LLM 未配置或选歌失败）'
+  });
 
   const prevQueueLength = getQueue().length;
   const picks = sampleN(candidates, Math.min(2, candidates.length));

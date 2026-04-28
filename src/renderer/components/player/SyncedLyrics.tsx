@@ -35,7 +35,7 @@ export function SyncedLyrics(props: SyncedLyricsProps): JSX.Element {
                   ? 'bg-cyan-300/10 text-cyan-100 shadow-[0_0_24px_rgba(103,232,249,0.12)]'
                   : 'text-zinc-500'
               }`}
-              key={`${line.timeSec}-${line.text}`}
+              key={`${index}-${line.timeSec}-${line.text}`}
               ref={isActive ? activeRef : undefined}
             >
               {line.text}

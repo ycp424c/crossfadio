@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react';
-import { CheckCircle2, Clock3, Filter, Volume2 } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import { Clock3 } from 'lucide-react';
 import { buildPlaybackTimeline } from '@renderer/audio/timeline';
 import type { PlaybackTiming } from '@shared/schema';
 
@@ -14,6 +14,7 @@ type PlaybackTimelineProps = {
   nextTrackId: string | null;
   segueScript?: string;
   segueStatus: SegueStatus;
+  onSeek?: (positionSec: number) => void;
 };
 
 const STATUS_LABEL: Record<SegueStatus, string> = {
@@ -28,6 +29,31 @@ const PURPLE_WAVE = [20, 42, 28, 50, 34, 66, 24, 46, 38, 58, 30, 52, 36, 64, 26,
 
 export function PlaybackTimeline(props: PlaybackTimelineProps): JSX.Element {
   const [showSegueTooltip, setShowSegueTooltip] = useState(false);
+  const [switchingDeck, setSwitchingDeck] = useState(false);
+  const prevCurrentRef = useRef(props.currentTrackId);
+  const prevNextRef = useRef(props.nextTrackId);
+
+  // Detect B→A switch: when currentTrackId changes to what was previously nextTrackId
+  useEffect(() => {
+    const prevCurrent = prevCurrentRef.current;
+    const prevNext = prevNextRef.current;
+    prevCurrentRef.current = props.currentTrackId;
+    prevNextRef.current = props.nextTrackId;
+
+    if (
+      props.currentTrackId &&
+      prevNext &&
+      props.currentTrackId !== prevCurrent &&
+      props.currentTrackId === prevNext
+    ) {
+      setSwitchingDeck(true);
+      const timer = setTimeout(() => setSwitchingDeck(false), 550);
+      return () => clearTimeout(timer);
+    }
+  }, [props.currentTrackId, props.nextTrackId]);
+
+  const progressPct = props.durationSec > 0 ? (props.positionSec / props.durationSec) * 100 : 0;
+
   const timeline = props.timing
     ? buildPlaybackTimeline(props.durationSec, {
         positionSec: props.positionSec,
@@ -63,7 +89,7 @@ export function PlaybackTimeline(props: PlaybackTimelineProps): JSX.Element {
   }, [props.currentTrackId, props.nextTrackId]);
 
   return (
-    <section className="rounded-2xl border border-zinc-800/80 bg-zinc-950/60 p-5">
+    <section className="overflow-hidden rounded-2xl border border-zinc-800/80 bg-zinc-950/60 p-5">
       <div className="flex items-start justify-between gap-4">
         <div>
           <h3 className="text-lg font-semibold text-zinc-100">
@@ -78,9 +104,29 @@ export function PlaybackTimeline(props: PlaybackTimelineProps): JSX.Element {
         </div>
       </div>
 
-      <div className="mt-4 grid grid-cols-[1fr_150px_1fr] items-stretch gap-0">
+      {/* Progress bar — replaces standalone SeekBar */}
+      <div className="mt-3">
+        <div className="relative">
+          <input
+            aria-label="播放进度"
+            className="h-2 w-full cursor-pointer appearance-none rounded-full bg-zinc-800 accent-amber-400"
+            max={props.durationSec || 0}
+            min={0}
+            onChange={(event) => props.onSeek?.(Number(event.target.value))}
+            step={0.1}
+            style={{
+              background: `linear-gradient(90deg, #f59e0b 0%, #f59e0b ${progressPct}%, #27272a ${progressPct}%, #27272a 100%)`
+            }}
+            type="range"
+            value={props.positionSec}
+          />
+        </div>
+      </div>
+
+      <div className="mt-4 grid grid-cols-[1fr_auto_1fr] items-stretch gap-0">
         <DeckCard
           accent="orange"
+          animKey={switchingDeck ? 1 : 0}
           badge="A"
           meta={formatClock(props.positionSec)}
           title={props.currentTrackId ? `Track ${props.currentTrackId}` : 'Deck A'}
@@ -89,7 +135,7 @@ export function PlaybackTimeline(props: PlaybackTimelineProps): JSX.Element {
         <div className="relative flex items-center justify-center">
           <div className="absolute left-0 h-px w-9 bg-gradient-to-r from-amber-400 to-transparent" />
           <div className="absolute right-0 h-px w-9 bg-gradient-to-l from-violet-400 to-transparent" />
-          <div className="relative flex h-full min-h-36 w-full flex-col items-center justify-center border-y border-zinc-800 bg-gradient-to-r from-amber-500/10 via-zinc-900 to-violet-500/10">
+          <div className="relative flex h-full min-h-36 w-[80px] sm:w-[120px] lg:w-[150px] flex-col items-center justify-center border-y border-zinc-800 bg-gradient-to-r from-amber-500/10 via-zinc-900 to-violet-500/10">
             <p className="text-[11px] uppercase tracking-wide text-zinc-400">X-FADE</p>
             <p className="mt-1 text-4xl font-semibold text-amber-200">
               {Math.round(props.duckingHintSec ?? props.timing?.crossfadeSec ?? 0)}s
@@ -130,11 +176,12 @@ export function PlaybackTimeline(props: PlaybackTimelineProps): JSX.Element {
         />
       </div>
 
-      <div className="mt-4 grid grid-cols-4 overflow-hidden rounded-xl border border-zinc-800 bg-zinc-950/80 text-xs text-zinc-300">
-        <StatusItem icon={<Clock3 className="h-4 w-4" />} label={`下一首将在 ${Math.round(timeToSegueSec)} 秒后切入`} />
-        <StatusItem icon={<CheckCircle2 className="h-4 w-4 text-emerald-300" />} label="B Deck 已就绪" />
-        <StatusItem icon={<Volume2 className="h-4 w-4" />} label="音量衰减 -7.2 dB" />
-        <StatusItem icon={<Filter className="h-4 w-4" />} label="滤波切换中 LPF → HPF" />
+      <div className="mt-4 flex items-center gap-3 rounded-xl border border-zinc-800 bg-zinc-950/80 px-4 py-2.5 text-xs text-zinc-300">
+        <Clock3 className="h-4 w-4 shrink-0 text-zinc-500" />
+        <span>
+          下一首 {Math.round(timeToSegueSec)}s 后切入 · B Deck{' '}
+          {props.nextTrackId ? '已就绪' : '待命中'} · {STATUS_LABEL[props.segueStatus]}
+        </span>
       </div>
     </section>
   );
@@ -146,15 +193,16 @@ function DeckCard(props: {
   title: string;
   meta: string;
   wave: number[];
+  animKey?: number;
 }): JSX.Element {
   const isOrange = props.accent === 'orange';
   return (
     <div
-      className={`rounded-xl border p-4 ${
+      className={`min-w-0 overflow-hidden rounded-xl border p-4 ${
         isOrange
           ? 'border-amber-500/60 bg-gradient-to-br from-amber-500/10 via-zinc-900 to-zinc-950'
           : 'border-violet-500/40 bg-gradient-to-br from-violet-500/10 via-zinc-900 to-zinc-950'
-      }`}
+      } ${isOrange && props.animKey ? 'animate-deck-switch' : ''}`}
     >
       <div className="flex items-start gap-3">
         <div
@@ -170,25 +218,16 @@ function DeckCard(props: {
         </div>
       </div>
 
-      <div className="mt-5 flex h-16 items-center gap-1">
+      <div className="mt-5 flex h-16 items-center gap-0.5">
         {props.wave.map((height, index) => (
           <span
-            className={`w-1 rounded-full ${isOrange ? 'bg-amber-400' : 'bg-violet-400'}`}
+            className={`min-w-[2px] flex-1 rounded-full ${isOrange ? 'bg-amber-400' : 'bg-violet-400'}`}
             key={index}
             style={{ height: `${height}%` }}
           />
         ))}
       </div>
       <p className="mt-3 text-xs text-zinc-400">{props.meta}</p>
-    </div>
-  );
-}
-
-function StatusItem(props: { icon: JSX.Element; label: string }): JSX.Element {
-  return (
-    <div className="flex min-w-0 items-center gap-2 border-r border-zinc-800 px-3 py-2 last:border-r-0">
-      <span className="shrink-0 text-zinc-500">{props.icon}</span>
-      <span className="truncate">{props.label}</span>
     </div>
   );
 }

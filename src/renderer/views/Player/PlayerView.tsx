@@ -25,7 +25,6 @@ import { getPrefetchDecision } from '@renderer/audio/prefetch';
 import { NowPlayingHero } from '@renderer/components/player/NowPlayingHero';
 import { PlaybackTimeline } from '@renderer/components/player/PlaybackTimeline';
 import { QueuePanel } from '@renderer/components/player/QueuePanel';
-import { SeekBar } from '@renderer/components/player/SeekBar';
 import { TransportControls } from '@renderer/components/player/TransportControls';
 import { onWsMessage } from '@renderer/ws/client';
 import type { NextTrackResponse, NowPlayingResponse, QueueTrackDto } from '@shared/schema';
@@ -791,7 +790,17 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
             trackId={currentTrackId ?? '-'}
           />
 
-          <SeekBar durationSec={durationSec} onSeek={handleSeek} positionSec={positionSec} />
+          <PlaybackTimeline
+            currentTrackId={currentTrackId}
+            duckingHintSec={duckingHintSec}
+            durationSec={durationSec}
+            nextTrackId={nextTrack?.track.id ?? null}
+            onSeek={handleSeek}
+            positionSec={positionSec}
+            segueScript={segueScript}
+            segueStatus={segueStatus}
+            timing={nowPlaying?.timing ?? null}
+          />
 
           <TransportControls
             canPrev={canPrev}
@@ -800,17 +809,6 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
             onPlayPause={handlePlayPause}
             onPrev={handlePrev}
             onSkip={handleSkip}
-          />
-
-          <PlaybackTimeline
-            currentTrackId={currentTrackId}
-            duckingHintSec={duckingHintSec}
-            durationSec={durationSec}
-            nextTrackId={nextTrack?.track.id ?? null}
-            positionSec={positionSec}
-            segueScript={segueScript}
-            segueStatus={segueStatus}
-            timing={nowPlaying?.timing ?? null}
           />
 
           <audio
