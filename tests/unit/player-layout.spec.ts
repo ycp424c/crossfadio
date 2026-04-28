@@ -84,4 +84,37 @@ describe('player layout', () => {
     expect(source).not.toContain('NCM ID');
     expect(source).not.toContain('trackId');
   });
+
+  it('PlayerView uses two-column layout and removes the left sidebar', () => {
+    const source = fs.readFileSync(
+      path.join(root, 'src/renderer/views/Player/PlayerView.tsx'),
+      'utf-8'
+    );
+
+    expect(source).not.toContain('col-span-2');
+    expect(source).not.toContain('col-span-7');
+    expect(source).not.toContain('col-span-3');
+    expect(source).toContain('col-span-12');
+    expect(source).toContain('col-span-6');
+  });
+
+  it('PlayerView removes the prefetch status panel', () => {
+    const source = fs.readFileSync(
+      path.join(root, 'src/renderer/views/Player/PlayerView.tsx'),
+      'utf-8'
+    );
+
+    expect(source).not.toContain('预取状态');
+    expect(source).not.toContain('prefetchLeadSec');
+  });
+
+  it('PlayerView has NCM chip dropdown controlled by showNcmDropdown state', () => {
+    const source = fs.readFileSync(
+      path.join(root, 'src/renderer/views/Player/PlayerView.tsx'),
+      'utf-8'
+    );
+
+    expect(source).toContain('showNcmDropdown');
+    expect(source).toContain('setShowNcmDropdown');
+  });
 });

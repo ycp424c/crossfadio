@@ -3,7 +3,6 @@ import {
   CalendarDays,
   LogOut,
   QrCode,
-  Radio,
   ScanSearch,
   Settings2
 } from 'lucide-react';
@@ -89,6 +88,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
 
   const [session, setSession] = useState<NcmSessionState>({ hasCookie: false, profile: null });
   const [qrPayload, setQrPayload] = useState<{ key: string; qrimg: string } | null>(null);
+  const [showNcmDropdown, setShowNcmDropdown] = useState(false);
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const segueAudioRef = useRef<HTMLAudioElement | null>(null);
@@ -595,15 +595,11 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
     setPositionSec(audio.currentTime);
     setDurationSec(audio.duration || 0);
 
-    const decision = getPrefetchDecision(audio.currentTime, audio.duration || 0, {
-      prefetchLeadSec: nowPlaying.timing.prefetchLeadSec,
-      crossfadeSec: nowPlaying.timing.crossfadeSec,
-      segueLeadSec: nowPlaying.timing.segueLeadSec
-    });
+    const decision = getPrefetchDecision(audio.currentTime, audio.duration || 0, nowPlaying.timing);
 
     if (!prefetchTriggeredRef.current && decision.shouldPrefetchNext && currentTrackId) {
       prefetchTriggeredRef.current = true;
-      setTrackStatusText(`预取触发：d-${nowPlaying.timing.prefetchLeadSec}s`);
+      setTrackStatusText('预取触发');
       void refreshNextTrack(currentTrackId);
     }
 
@@ -666,19 +662,16 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
   return (
     <main className="min-h-screen bg-[radial-gradient(circle_at_top_left,#1f2b5e_0%,#080b14_35%,#070a12_100%)] p-6 text-zinc-100">
       <div className="mx-auto grid max-w-[1480px] grid-cols-12 gap-4">
-        <aside className="col-span-2 rounded-2xl border border-zinc-800/80 bg-zinc-950/60 p-4">
-          <h1 className="inline-flex items-center gap-2 text-lg font-semibold tracking-tight text-violet-200">
+
+        {/* Header */}
+        <header className="col-span-12 flex items-center justify-between gap-4 rounded-2xl border border-zinc-800/80 bg-zinc-950/60 px-5 py-3">
+          <div className="flex items-center gap-2.5">
             <img alt="Crossfadio 应用图标" className="h-7 w-7 rounded-lg" src={appMark} />
-            Crossfadio
-          </h1>
-          <p className="mt-0.5 text-xs text-zinc-400">M1-07 Player MVP</p>
-          <nav className="mt-6 space-y-2 text-sm">
-            <div className="inline-flex w-full items-center gap-2 rounded-xl border border-violet-500/30 bg-violet-500/15 px-3 py-2 text-violet-100">
-              <Radio className="h-4 w-4" />
-              正在播放
-            </div>
+            <span className="text-lg font-semibold tracking-tight text-violet-200">Crossfadio</span>
+          </div>
+          <div className="flex items-center gap-2">
             <button
-              className="inline-flex w-full items-center gap-2 rounded-xl border border-zinc-800 bg-zinc-900/60 px-3 py-2 text-left text-zinc-300 transition hover:border-zinc-700 hover:bg-zinc-900 hover:text-zinc-100"
+              className="inline-flex items-center gap-2 rounded-xl border border-zinc-800 bg-zinc-900/60 px-3 py-2 text-sm text-zinc-300 transition hover:border-zinc-700 hover:bg-zinc-900 hover:text-zinc-100"
               onClick={() => onNavigate?.('plan')}
               type="button"
             >
@@ -686,132 +679,109 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
               今日计划
             </button>
             <button
-              className="inline-flex w-full items-center gap-2 rounded-xl border border-zinc-800 bg-zinc-900/60 px-3 py-2 text-left text-zinc-300 transition hover:border-zinc-700 hover:bg-zinc-900 hover:text-zinc-100"
+              className="inline-flex items-center gap-2 rounded-xl border border-zinc-800 bg-zinc-900/60 px-3 py-2 text-sm text-zinc-300 transition hover:border-zinc-700 hover:bg-zinc-900 hover:text-zinc-100"
               onClick={() => onNavigate?.('settings')}
               type="button"
             >
               <Settings2 className="h-4 w-4" />
               设置
             </button>
-          </nav>
-
-          <section className="mt-6 rounded-xl border border-zinc-800 bg-zinc-900/60 p-3 text-xs text-zinc-300">
-            <p className="font-medium text-zinc-100">NCM 登录状态</p>
-            <p className="mt-1">{session.hasCookie ? '已登录' : '未登录'}</p>
-            <div className="mt-3 flex flex-col gap-1.5">
+            <div className="relative">
               <button
-                className="inline-flex w-full items-center gap-2 rounded border border-zinc-700 bg-zinc-950 px-2.5 py-1.5 text-xs hover:border-zinc-500"
-                onClick={async () => {
-                  try {
-                    const qr = await createNcmQr();
-                    setQrPayload({ key: qr.key, qrimg: qr.qrimg });
-                    setError('');
-                  } catch (err) {
-                    setError(err instanceof Error ? err.message : '创建二维码失败');
-                  }
-                }}
+                className="inline-flex items-center gap-2 rounded-xl border border-zinc-800 bg-zinc-900/60 px-3 py-2 text-xs text-zinc-300 transition hover:border-zinc-700 hover:bg-zinc-900"
+                onClick={() => setShowNcmDropdown((v) => !v)}
                 type="button"
               >
-                <QrCode className="h-4 w-4 shrink-0" />
-                二维码登录
+                <span
+                  className={`h-2 w-2 shrink-0 rounded-full ${session.hasCookie ? 'bg-green-400' : 'bg-red-400'}`}
+                />
+                {session.hasCookie ? '已登录' : '未登录'}
               </button>
-              <button
-                className="inline-flex w-full items-center gap-2 rounded border border-zinc-700 bg-zinc-950 px-2.5 py-1.5 text-xs hover:border-zinc-500"
-                onClick={async () => {
-                  if (!qrPayload?.key) {
-                    return;
-                  }
-                  try {
-                    const status = await checkNcmQr(qrPayload.key);
-                    setTrackStatusText(`扫码状态: ${status.hint}`);
-                    await refreshSession();
-                  } catch (err) {
-                    setError(err instanceof Error ? err.message : '扫码状态查询失败');
-                  }
-                }}
-                type="button"
-              >
-                <ScanSearch className="h-4 w-4 shrink-0" />
-                检查状态
-              </button>
-              <button
-                className="inline-flex w-full items-center gap-2 rounded border border-zinc-700 bg-zinc-950 px-2.5 py-1.5 text-xs hover:border-zinc-500"
-                onClick={async () => {
-                  try {
-                    await logoutNcm();
-                    await refreshSession();
-                    setTrackStatusText('已登出 NCM');
-                  } catch (err) {
-                    setError(err instanceof Error ? err.message : '登出失败');
-                  }
-                }}
-                type="button"
-              >
-                <LogOut className="h-4 w-4 shrink-0" />
-                登出
-              </button>
+              {showNcmDropdown ? (
+                <div className="absolute right-0 top-[calc(100%+8px)] z-20 w-56 rounded-xl border border-zinc-700 bg-zinc-950/95 p-3 shadow-xl">
+                  <div className="flex flex-col gap-1.5 text-xs text-zinc-300">
+                    <button
+                      className="inline-flex w-full items-center gap-2 rounded border border-zinc-700 bg-zinc-950 px-2.5 py-1.5 hover:border-zinc-500"
+                      onClick={async () => {
+                        try {
+                          const qr = await createNcmQr();
+                          setQrPayload({ key: qr.key, qrimg: qr.qrimg });
+                          setError('');
+                        } catch (err) {
+                          setError(err instanceof Error ? err.message : '创建二维码失败');
+                        }
+                      }}
+                      type="button"
+                    >
+                      <QrCode className="h-4 w-4 shrink-0" />
+                      二维码登录
+                    </button>
+                    <button
+                      className="inline-flex w-full items-center gap-2 rounded border border-zinc-700 bg-zinc-950 px-2.5 py-1.5 hover:border-zinc-500"
+                      onClick={async () => {
+                        if (!qrPayload?.key) return;
+                        try {
+                          const status = await checkNcmQr(qrPayload.key);
+                          setTrackStatusText(`扫码状态: ${status.hint}`);
+                          await refreshSession();
+                        } catch (err) {
+                          setError(err instanceof Error ? err.message : '扫码状态查询失败');
+                        }
+                      }}
+                      type="button"
+                    >
+                      <ScanSearch className="h-4 w-4 shrink-0" />
+                      检查状态
+                    </button>
+                    <button
+                      className="inline-flex w-full items-center gap-2 rounded border border-zinc-700 bg-zinc-950 px-2.5 py-1.5 hover:border-zinc-500"
+                      onClick={async () => {
+                        try {
+                          await logoutNcm();
+                          await refreshSession();
+                          setTrackStatusText('已登出 NCM');
+                        } catch (err) {
+                          setError(err instanceof Error ? err.message : '登出失败');
+                        }
+                      }}
+                      type="button"
+                    >
+                      <LogOut className="h-4 w-4 shrink-0" />
+                      登出
+                    </button>
+                    {qrPayload ? (
+                      <img
+                        alt="ncm login qr"
+                        className="mt-2 h-28 w-28 rounded border border-zinc-700 bg-white p-1"
+                        src={qrPayload.qrimg}
+                      />
+                    ) : null}
+                  </div>
+                </div>
+              ) : null}
             </div>
-            {qrPayload ? (
-              <img
-                alt="ncm login qr"
-                className="mt-3 h-28 w-28 rounded border border-zinc-700 bg-white p-1"
-                src={qrPayload.qrimg}
-              />
-            ) : null}
-          </section>
-        </aside>
+          </div>
+        </header>
 
-        <section className="col-span-7 space-y-4">
-          <header className="rounded-2xl border border-zinc-800/80 bg-zinc-950/60 p-4">
-            <div className="flex items-end justify-between gap-4">
-              <div>
-                <h2 className="text-3xl font-semibold">正在播放</h2>
-                <p className="text-sm text-zinc-400">DJ 模式 · 动态队列 · 播放完自动补歌</p>
-              </div>
-              <div className="min-w-0 text-right text-xs text-zinc-400">
-                <p>
-                  <span className="text-zinc-500">曲目：</span>
-                  <span className="text-zinc-200">{trackStatusText || '—'}</span>
-                </p>
-                <p className="mt-1">
-                  <span className="text-zinc-500">DJ 选歌：</span>
-                  <span className="text-cyan-300">{djStatusText || '空闲'}</span>
-                </p>
-                <p className="mt-1">
-                  <span className="text-zinc-500">过渡文案：</span>
-                  <span className="text-violet-200">{segueStatusText || '空闲'}</span>
-                </p>
-                {error ? <p className="mt-1 text-red-300">{error}</p> : null}
-              </div>
-            </div>
-            <button
-              className="mt-3 rounded-lg border border-zinc-700 bg-zinc-900/80 px-3 py-2 text-sm text-zinc-200 transition hover:border-zinc-500"
-              onClick={() => void loadLikedQueue()}
-              type="button"
-            >
-              重新开始 DJ 模式（重新加载红心歌单）
-            </button>
-          </header>
-
+        {/* Left column — player */}
+        <section className="col-span-6 space-y-4">
           <NowPlayingHero
             isLiked={isLiked}
             lyric={nowPlaying?.lyric ?? ''}
             onToggleLike={handleToggleLike}
             positionSec={positionSec}
-            subtitle={nowPlaying ? `直链已就绪 · ${nowPlaying.timing.crossfadeSec}s crossfade` : '等待加载'}
+            subtitle={currentTrack?.artists.join(' / ') ?? ''}
             title={currentTrack?.name ?? 'No Track'}
-            trackId={currentTrackId ?? '-'}
           />
 
           <PlaybackTimeline
             currentTrackId={currentTrackId}
-            duckingHintSec={duckingHintSec}
+            currentTrackName={currentTrack?.name}
             durationSec={durationSec}
             nextTrackId={nextTrack?.track.id ?? null}
+            nextTrackName={nextTrack?.track.name}
             onSeek={handleSeek}
             positionSec={positionSec}
-            segueScript={segueScript}
-            segueStatus={segueStatus}
             timing={nowPlaying?.timing ?? null}
           />
 
@@ -834,7 +804,8 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
           />
         </section>
 
-        <section className="col-span-3 space-y-4">
+        {/* Right column — queue + status */}
+        <section className="col-span-6 flex flex-col gap-4">
           <QueuePanel
             currentIndex={currentIndex}
             nextId={nextTrack?.track.id ?? null}
@@ -842,15 +813,47 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
             queue={queue}
           />
 
-          <section className="rounded-2xl border border-zinc-800/80 bg-zinc-950/60 p-4 text-sm text-zinc-300">
-            <h3 className="text-lg font-semibold text-zinc-100">预取状态</h3>
-            <p className="mt-2">下一首: {nextTrack?.track.id ?? '未就绪'}</p>
-            <p className="mt-1">prefetch: {nowPlaying?.timing.prefetchLeadSec ?? '-'}s</p>
-            <p className="mt-1">segue: {nowPlaying?.timing.segueLeadSec ?? '-'}s</p>
-            <p className="mt-1">crossfade: {nowPlaying?.timing.crossfadeSec ?? '-'}s</p>
-          </section>
+          <div className="rounded-2xl border border-zinc-800/80 bg-zinc-950/60 p-3">
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+              <StatusChip label="曲目" text={trackStatusText || '—'} />
+              <StatusChip color="cyan" label="DJ选歌" text={djStatusText || '空闲'} />
+              <StatusChip color="violet" label="过渡文案" text={segueStatusText || '空闲'} />
+              {error ? <span className="text-xs text-red-300">{error}</span> : null}
+            </div>
+            <button
+              className="mt-2 rounded-lg border border-zinc-800 bg-zinc-900/60 px-2.5 py-1.5 text-xs text-zinc-400 transition hover:border-zinc-700 hover:text-zinc-200"
+              onClick={() => void loadLikedQueue()}
+              type="button"
+            >
+              重新开始 DJ 模式
+            </button>
+          </div>
         </section>
+
       </div>
     </main>
+  );
+}
+
+function StatusChip({
+  label,
+  text,
+  color = 'zinc'
+}: {
+  label: string;
+  text: string;
+  color?: 'zinc' | 'cyan' | 'violet';
+}): JSX.Element {
+  const textColor =
+    color === 'cyan'
+      ? 'text-cyan-300'
+      : color === 'violet'
+        ? 'text-violet-200'
+        : 'text-zinc-200';
+  return (
+    <span className="flex items-center gap-1 text-xs">
+      <span className="text-zinc-500">{label}：</span>
+      <span className={textColor}>{text}</span>
+    </span>
   );
 }
