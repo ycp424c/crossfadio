@@ -37,7 +37,7 @@ import { createDjPickNextHandler } from './routes/djNext.js';
 import { createGetRecentMessagesHandler } from './routes/messages.js';
 import { createSetLocationHandler } from './routes/location.js';
 import { createRuntimeHandler } from './routes/runtime.js';
-import { createGetLikedQueueHandler, createSetQueueStateHandler } from './routes/queue.js';
+import { createGetLikedIdsHandler, createGetLikedQueueHandler, createLikeTrackHandler, createSetQueueStateHandler } from './routes/queue.js';
 import type { SecretStore } from '../security.js';
 
 export type LocalServer = {
@@ -102,7 +102,9 @@ export async function startLocalServer(options: StartLocalServerOptions): Promis
   app.post('/api/plan/regenerate', createRegeneratePlanHandler({ secrets: options.secrets, ncmClient: options.ncmClient }));
   app.post('/api/plan/replan-segment', createReplanSegmentHandler({ secrets: options.secrets, ncmClient: options.ncmClient }));
   app.post('/api/plan/gap-fill', createGapFillHandler({ secrets: options.secrets, ncmClient: options.ncmClient }));
+  app.get('/api/queue/liked/ids', createGetLikedIdsHandler(options.ncmClient));
   app.get('/api/queue/liked', createGetLikedQueueHandler(options.ncmClient));
+  app.post('/api/queue/like', createLikeTrackHandler(options.ncmClient));
   app.put('/api/queue/state', createSetQueueStateHandler());
   app.post('/api/segue/trigger', createSegueTriggerHandler({ secrets: options.secrets, ncmClient: options.ncmClient }));
   app.get('/api/segue/audio/*', createSegueAudioHandler());

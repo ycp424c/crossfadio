@@ -100,6 +100,20 @@ export async function getLikedQueue(limit = 100): Promise<LikedQueueResponse> {
   return likedQueueResponseSchema.parse(payload);
 }
 
+export async function getLikedTrackIds(): Promise<string[]> {
+  const payload = await requestJson<{ ok: boolean; ids: string[] }>('/api/queue/liked/ids');
+  return payload.ids ?? [];
+}
+
+export async function toggleLikeTrack(id: string, like: boolean): Promise<void> {
+  const result = await requestJson<{ ok: boolean }>('/api/queue/like', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id, like })
+  });
+  if (!result.ok) throw new Error('Failed to toggle like');
+}
+
 export async function saveQueueState(
   queue: Array<string | { id: string; name?: string; artists?: string[]; durationMs?: number }>,
   currentIndex: number

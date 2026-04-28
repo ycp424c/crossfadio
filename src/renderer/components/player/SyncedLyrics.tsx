@@ -24,7 +24,10 @@ export function SyncedLyrics(props: SyncedLyricsProps): JSX.Element {
   }
 
   return (
-    <div className="mt-4 h-40 overflow-hidden rounded-xl border border-zinc-800 bg-gradient-to-br from-indigo-950/60 via-zinc-950/80 to-cyan-950/40 p-4">
+    <div
+      className="mt-4 h-40 overflow-y-auto rounded-xl border border-zinc-800 bg-gradient-to-br from-indigo-950/60 via-zinc-950/80 to-cyan-950/40 p-4 [&::-webkit-scrollbar]:hidden"
+      style={{ scrollbarWidth: 'none' }}
+    >
       <div className="space-y-2">
         {lines.map((line, index) => {
           const isActive = index === activeIndex;

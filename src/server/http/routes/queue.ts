@@ -19,6 +19,11 @@ const queueStateBodySchema = z.object({
   currentIndex: z.number().int().nonnegative().default(0)
 });
 
+const likeBodySchema = z.object({
+  id: z.string().min(1),
+  like: z.boolean()
+});
+
 const likedQueueQuerySchema = z.object({
   limit: z.coerce.number().int().positive().max(500).default(100)
 });
@@ -45,6 +50,36 @@ export function createSetQueueStateHandler(): RequestHandler {
       parsed.data.currentIndex
     );
     res.json({ ok: true });
+  };
+}
+
+export function createLikeTrackHandler(ncmClient: NcmClient): RequestHandler {
+  return async (req, res) => {
+    const parsed = likeBodySchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ ok: false, error: 'invalid body' });
+      return;
+    }
+
+    try {
+      await ncmClient.likeTrack(parsed.data.id, parsed.data.like);
+      res.json({ ok: true });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'unknown error';
+      res.status(502).json({ ok: false, error: 'NCM_E_BAD_RESPONSE', message });
+    }
+  };
+}
+
+export function createGetLikedIdsHandler(ncmClient: NcmClient): RequestHandler {
+  return async (_req, res) => {
+    try {
+      const ids = (await ncmClient.getLikedSongIds()).map(String);
+      res.json({ ok: true, ids });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'unknown error';
+      res.status(502).json({ ok: false, error: 'NCM_E_BAD_RESPONSE', message });
+    }
   };
 }
 

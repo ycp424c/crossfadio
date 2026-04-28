@@ -47,7 +47,7 @@ export async function executeActions(
         case 'add_to_queue': {
           const resolved = await resolveTrackQuery(action.pick.query, ctx.ncmClient);
           if (resolved && !recentPlayIds.has(resolved.ncmId)) {
-            addToQueue({ ncmId: resolved.ncmId, name: resolved.name, artists: resolved.artists }, action.position);
+            addToQueue({ ncmId: resolved.ncmId, name: resolved.name, artists: resolved.artists }, 'end');
             queueChanged = true;
           } else if (resolved) {
             logger.info({ ncmId: resolved.ncmId, query: action.pick.query }, 'add_to_queue skipped: track recently played');

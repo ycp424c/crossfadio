@@ -276,6 +276,10 @@ export class NcmClient {
     }));
   }
 
+  async likeTrack(id: string, like: boolean): Promise<void> {
+    await this.getJson('/like', { id, like: like ? 'true' : 'false', timestamp: String(Date.now()) });
+  }
+
   async getSongWikiSummary(id: string): Promise<Record<string, unknown> | null> {
     const json = await this.getJson('/song/wiki/summary', { id });
     if (!json || typeof json !== 'object') {

@@ -5,19 +5,20 @@ import {
   QrCode,
   Radio,
   ScanSearch,
-  Settings2,
-  Sparkles
+  Settings2
 } from 'lucide-react';
 import {
   checkNcmQr,
   createNcmQr,
   getLikedQueue,
+  getLikedTrackIds,
   getNcmSession,
   getNextTrack,
   getNowPlaying,
   logoutNcm,
   pickNextTrack,
   saveQueueState,
+  toggleLikeTrack,
   triggerSegue,
   updateLocation
 } from '@renderer/api';
@@ -29,7 +30,7 @@ import { TransportControls } from '@renderer/components/player/TransportControls
 import { onWsMessage } from '@renderer/ws/client';
 import type { NextTrackResponse, NowPlayingResponse, QueueTrackDto } from '@shared/schema';
 import appMark from '@renderer/assets/image2/crossfadio-mark.svg';
-import playerDesignRef from '@renderer/assets/image2/2026-04-23-player-v1.png';
+
 
 type NcmSessionState = {
   hasCookie: boolean;
@@ -412,7 +413,11 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
 
   async function loadLikedQueue(): Promise<void> {
     try {
-      const payload = await getLikedQueue(50);
+      const [payload, likedIds] = await Promise.all([
+        getLikedQueue(50),
+        getLikedTrackIds()
+      ]);
+      setLikedTrackIds(likedIds);
       if (payload.tracks.length === 0) {
         setError('红心歌单为空，请先在网易云收藏歌曲');
         return;
@@ -561,9 +566,17 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
       return;
     }
 
-    setLikedTrackIds((ids) =>
-      ids.includes(currentTrackId) ? ids.filter((id) => id !== currentTrackId) : [...ids, currentTrackId]
-    );
+    setLikedTrackIds((ids) => {
+      const isLiked = ids.includes(currentTrackId);
+      const nextLike = !isLiked;
+
+      // 乐观更新本地 state，异步同步到 NCM
+      toggleLikeTrack(currentTrackId, nextLike).catch(() => {
+        // 静默失败：本地状态优先，不阻断 UI
+      });
+
+      return isLiked ? ids.filter((id) => id !== currentTrackId) : [...ids, currentTrackId];
+    });
   }
 
   function handleSeek(positionSec: number): void {
@@ -828,14 +841,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
             onSelectIndex={handleSelectIndex}
             queue={queue}
           />
-          <section className="rounded-2xl border border-zinc-800/80 bg-zinc-950/60 p-4 text-sm text-zinc-300">
-            <h3 className="inline-flex items-center gap-2 text-lg font-semibold text-zinc-100">
-              <Sparkles className="h-5 w-5 text-violet-300" />
-              Image2 视觉稿
-            </h3>
-            <p className="mt-2 text-xs text-zinc-400">当前实现对齐 2026-04-23-player-v1 设计方向。</p>
-            <img alt="Image2 Player 视觉稿" className="mt-3 rounded-xl border border-zinc-800" src={playerDesignRef} />
-          </section>
+
           <section className="rounded-2xl border border-zinc-800/80 bg-zinc-950/60 p-4 text-sm text-zinc-300">
             <h3 className="text-lg font-semibold text-zinc-100">预取状态</h3>
             <p className="mt-2">下一首: {nextTrack?.track.id ?? '未就绪'}</p>
