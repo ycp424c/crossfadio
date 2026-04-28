@@ -56,7 +56,7 @@ function sampleN<T>(arr: T[], n: number): T[] {
 }
 
 // Run parallel NCM searches, deduplicate results, exclude known IDs
-async function searchCandidates(
+export async function searchCandidates(
   queries: string[],
   ncmClient: NcmClient,
   excludeIds: Set<string>,
@@ -112,6 +112,7 @@ async function runPickNextJob(opts: DjNextOptions): Promise<void> {
 
 async function doPickNext(opts: DjNextOptions): Promise<void> {
   const logger = getLogger();
+  let debugBroadcastSent = false;
 
   // Load liked tracks with a hard timeout; use cache on miss
   const fresh = await withTimeout(
@@ -218,6 +219,15 @@ async function doPickNext(opts: DjNextOptions): Promise<void> {
         ...searchedTracks.filter((t) => !likedSampleIds.has(t.id))
       ];
 
+      // Snapshot Phase 3 data for the debug broadcast — always emitted regardless of Phase 4 outcome
+      const phase3Debug = {
+        likedSample: likedSample.map((t) => ({ id: t.id, name: t.name, artist: t.artist })),
+        sqRaw: sqRawSay,
+        searchQueries,
+        searchedTracks: searchedTracks.map((t) => ({ id: t.id, name: t.name, artist: t.artist })),
+        totalCandidates: allCandidates.length
+      };
+
       logger.info(
         {
           model: llmConfig.model,
@@ -319,15 +329,8 @@ ${candidateList}
               djPickReasonCache.set(track.ncmId, pickSay.trim());
             }
           }
-          broadcast({
-            type: 'dj.debug',
-            likedSample: likedSample.map((t) => ({ id: t.id, name: t.name, artist: t.artist })),
-            sqRaw: sqRawSay,
-            searchQueries,
-            searchedTracks: searchedTracks.map((t) => ({ id: t.id, name: t.name, artist: t.artist })),
-            totalCandidates: allCandidates.length,
-            selectedSay: pickSay
-          });
+          broadcast({ type: 'dj.debug', ...phase3Debug, selectedSay: pickSay });
+          debugBroadcastSent = true;
           broadcastAppended(prevQueueLength);
           return;
         }
@@ -335,6 +338,10 @@ ${candidateList}
       } else {
         logger.warn('DJ pick-next: LLM returned no usable actions, using random fallback');
       }
+
+      // Phase 4 failed — still broadcast Phase 3 data so the debug panel reflects what was searched
+      broadcast({ type: 'dj.debug', ...phase3Debug, selectedSay: '选歌失败，使用随机降级' });
+      debugBroadcastSent = true;
     } catch (err) {
       logger.warn(
         {
@@ -364,15 +371,17 @@ ${candidateList}
     return;
   }
 
-  broadcast({
-    type: 'dj.debug',
-    likedSample: [],
-    sqRaw: '',
-    searchQueries: [],
-    searchedTracks: [],
-    totalCandidates: candidates.length,
-    selectedSay: '随机 fallback（LLM 未配置或选歌失败）'
-  });
+  if (!debugBroadcastSent) {
+    broadcast({
+      type: 'dj.debug',
+      likedSample: [],
+      sqRaw: '',
+      searchQueries: [],
+      searchedTracks: [],
+      totalCandidates: candidates.length,
+      selectedSay: '随机 fallback（LLM 未配置或选歌失败）'
+    });
+  }
 
   const prevQueueLength = getQueue().length;
   const picks = sampleN(candidates, Math.min(2, candidates.length));
