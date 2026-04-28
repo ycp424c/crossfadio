@@ -39,7 +39,7 @@ describe('player layout', () => {
   it('shows segue request failures directly in the player status area', () => {
     const source = fs.readFileSync(path.join(root, 'src/renderer/views/Player/PlayerView.tsx'), 'utf-8');
 
-    expect(source).toContain("setSegueStatus('degraded')");
+    expect(source).not.toContain("setSegueStatus('degraded')");
     expect(source).toContain('setSegueStatusText(`请求失败：${message}`)');
   });
 

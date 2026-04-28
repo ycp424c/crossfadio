@@ -82,14 +82,11 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
   const [djStatusText, setDjStatusText] = useState('');
   const [segueStatusText, setSegueStatusText] = useState('');
   const [error, setError] = useState('');
-  const [segueStatus, setSegueStatus] = useState<'idle' | 'generating' | 'ready' | 'degraded'>('idle');
-  const [duckingHintSec, setDuckingHintSec] = useState(DEFAULT_DUCKING_HINT_SEC);
-  const [segueScript, setSegueScript] = useState('');
-
   const [session, setSession] = useState<NcmSessionState>({ hasCookie: false, profile: null });
   const [qrPayload, setQrPayload] = useState<{ key: string; qrimg: string } | null>(null);
   const [showNcmDropdown, setShowNcmDropdown] = useState(false);
 
+  const ncmDropdownRef = useRef<HTMLDivElement>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const segueAudioRef = useRef<HTMLAudioElement | null>(null);
   const pendingSegueRef = useRef<PendingSegueAudio | null>(null);
@@ -101,6 +98,17 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
   const segueLastAttemptAtRef = useRef<number>(0);
   const djPickNextLastCallRef = useRef<number>(0);
   const applyingRemoteQueueRef = useRef(false);
+
+  useEffect(() => {
+    if (!showNcmDropdown) return;
+    function handleClickOutside(event: MouseEvent): void {
+      if (ncmDropdownRef.current && !ncmDropdownRef.current.contains(event.target as Node)) {
+        setShowNcmDropdown(false);
+      }
+    }
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [showNcmDropdown]);
 
   const queueIds = useMemo(() => queue.map((track) => track.id), [queue]);
   const currentTrack = queue[currentIndex] ?? null;
@@ -241,7 +249,6 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
         if (!isActiveSegueMessage(msg, segueClientRequestIdRef.current)) return;
         const say = String(msg.say ?? '').trim();
         if (say) {
-          setSegueScript((prev) => `${prev}${say}`);
           setSegueStatusText('生成中…接收文案 token');
         }
       } else if (msg.type === 'segue.tts-ready') {
@@ -257,7 +264,6 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
         if (currentTrackIdRef.current) {
           segueSatisfiedForTrackIdRef.current = currentTrackIdRef.current;
         }
-        setSegueStatus('ready');
 
         const ttsHintSec =
           msg.segue && typeof msg.segue === 'object' && 'duckingHintSec' in msg.segue
@@ -270,12 +276,6 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
           : Number.isFinite(ttsHintSec) && ttsHintSec > 0
             ? ttsHintSec
             : DEFAULT_DUCKING_HINT_SEC;
-        setDuckingHintSec(dynamicHintSec);
-        const finalSegueScript =
-          msg.segue && typeof msg.segue === 'object' && 'say' in msg.segue ? String((msg.segue as { say: unknown }).say) : '';
-        if (finalSegueScript.trim().length > 0) {
-          setSegueScript(finalSegueScript);
-        }
 
         const audioUrl = typeof msg.audioUrl === 'string' ? msg.audioUrl : null;
         if (!audioUrl) {
@@ -299,7 +299,6 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
           if (pendingSegueRef.current?.audio !== audio) return;
           if (Number.isFinite(duration) && duration > 0) {
             pending.actualDurationSec = duration;
-            setDuckingHintSec(duration);
           }
         };
         audio.onended = () => {
@@ -328,7 +327,6 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
           typeof msg.reason === 'string' && msg.reason.length > 0 ? msg.reason : 'unknown';
         // Clear active id so the next tick can retry once cooldown elapses.
         segueClientRequestIdRef.current = null;
-        setSegueStatus('degraded');
         setSegueStatusText(`过渡语音暂不可用（${reason}）`);
       } else if (msg.type === 'dj.debug') {
         console.log('[DJ] 候选歌曲', {
@@ -385,9 +383,6 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
     segueExpectedFromTrackIdRef.current = null;
     segueSatisfiedForTrackIdRef.current = null;
     segueLastAttemptAtRef.current = 0;
-    setSegueStatus('idle');
-    setDuckingHintSec(DEFAULT_DUCKING_HINT_SEC);
-    setSegueScript('');
     setSegueStatusText('');
     setTrackStatusText(`正在加载曲目 ${currentTrackId} ...`);
 
@@ -504,8 +499,6 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
     segueClientRequestIdRef.current = clientRequestId;
     segueExpectedFromTrackIdRef.current = currentTrackId;
     segueLastAttemptAtRef.current = Date.now();
-    setSegueStatus('generating');
-    setSegueScript('');
     setSegueStatusText(`生成中：${currentTrackId} → ${nextTrackId}`);
     void triggerSegue(
       { id: currentTrackId, name: currentTrack?.name, artists: currentTrack?.artists },
@@ -517,7 +510,6 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
         segueClientRequestIdRef.current = null;
       }
       const message = err instanceof Error ? err.message : 'segue 请求失败';
-      setSegueStatus('degraded');
       setSegueStatusText(`请求失败：${message}`);
       setError(message);
     });
@@ -686,7 +678,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
               <Settings2 className="h-4 w-4" />
               设置
             </button>
-            <div className="relative">
+            <div className="relative" ref={ncmDropdownRef}>
               <button
                 className="inline-flex items-center gap-2 rounded-xl border border-zinc-800 bg-zinc-900/60 px-3 py-2 text-xs text-zinc-300 transition hover:border-zinc-700 hover:bg-zinc-900"
                 onClick={() => setShowNcmDropdown((v) => !v)}
