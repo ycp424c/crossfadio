@@ -652,7 +652,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
   const isLiked = currentTrackId ? likedTrackIds.includes(currentTrackId) : false;
 
   return (
-    <main className="min-h-screen bg-[radial-gradient(circle_at_top_left,#1f2b5e_0%,#080b14_35%,#070a12_100%)] p-6 text-zinc-100">
+    <main className="bg-[radial-gradient(circle_at_top_left,#1f2b5e_0%,#080b14_35%,#070a12_100%)] p-6 text-zinc-100">
       <div className="mx-auto grid max-w-[1480px] grid-cols-12 gap-4">
 
         {/* Header */}
