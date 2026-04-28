@@ -5,7 +5,6 @@ import { resolveLlmConfig } from '../../llm/config.js';
 import type { NcmClient } from '../../ncm/client.js';
 import type { SecretStore } from '../../security.js';
 import { loadUserCorpus } from '../../user-corpus/loader.js';
-import { loadLikedTracksForPlanning } from '../../user-corpus/ncm-liked.js';
 import { getRecentPlays } from '../../store/plays.js';
 import { getRecentMessages } from '../../store/messages.js';
 import { getRecentSegues } from '../../store/segues.js';
@@ -24,12 +23,16 @@ type DjNextOptions = {
 const JOB_TIMEOUT_MS = 100_000;
 const SEARCH_QUERY_LLM_TIMEOUT_MS = 45_000;
 const PICK_LLM_TIMEOUT_MS = 45_000;
-const LIKED_TRACKS_TIMEOUT_MS = 8_000;
+const LIKED_IDS_TIMEOUT_MS = 8_000;
+const LIKED_DETAILS_TIMEOUT_MS = 8_000;
+const LIKED_IDS_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 1 day
 const LIKED_SAMPLE_SIZE = 20;
 const SEARCH_RESULT_SIZE = 20;
 
 let isRunning = false;
-let likedTracksCache: Track[] = [];
+
+type LikedIdsCache = { ids: string[]; fetchedAt: number };
+let likedIdsCache: LikedIdsCache | null = null;
 
 // trackId → short DJ selection reason, populated on each successful LLM pick
 const djPickReasonCache = new Map<string, string>();
@@ -114,33 +117,38 @@ async function doPickNext(opts: DjNextOptions): Promise<void> {
   const logger = getLogger();
   let debugBroadcastSent = false;
 
-  // Load liked tracks with a hard timeout; use cache on miss
-  const fresh = await withTimeout(
-    loadLikedTracksForPlanning(opts.ncmClient),
-    LIKED_TRACKS_TIMEOUT_MS,
-    [] as Track[]
-  );
-  if (fresh.length > 0) likedTracksCache = fresh;
-  const likedTracks = likedTracksCache;
+  // Refresh full liked-song ID list at most once per day
+  const now = Date.now();
+  if (!likedIdsCache || now - likedIdsCache.fetchedAt > LIKED_IDS_CACHE_TTL_MS) {
+    const freshIds = await withTimeout(
+      opts.ncmClient.getLikedSongIds().catch(() => [] as string[]),
+      LIKED_IDS_TIMEOUT_MS,
+      [] as string[]
+    );
+    if (freshIds.length > 0) {
+      likedIdsCache = { ids: freshIds, fetchedAt: now };
+    }
+  }
+  const allLikedIds = likedIdsCache?.ids ?? [];
 
   const llmConfig = resolveLlmConfig(opts.secrets);
   if (!llmConfig) {
     logger.warn('DJ pick-next: skipping LLM pick because LLM config is missing');
-  } else if (likedTracks.length === 0) {
+  } else if (allLikedIds.length === 0) {
     logger.warn('DJ pick-next: skipping LLM pick because liked tracks are unavailable');
   }
 
-  if (llmConfig && likedTracks.length > 0) {
+  if (llmConfig && allLikedIds.length > 0) {
     try {
       const corpus = loadUserCorpus();
       const [weather] = await Promise.all([withTimeout(fetchWeather(), 4_000, null)]);
-      const now = new Date();
+      const nowDate = new Date();
       const weekdays = ['日', '一', '二', '三', '四', '五', '六'];
-      const day = weekdays[now.getDay()];
-      const hh = String(now.getHours()).padStart(2, '0');
-      const mm = String(now.getMinutes()).padStart(2, '0');
+      const day = weekdays[nowDate.getDay()];
+      const hh = String(nowDate.getHours()).padStart(2, '0');
+      const mm = String(nowDate.getMinutes()).padStart(2, '0');
       const localTime = `周${day} ${hh}:${mm}`;
-      const nowIso = now.toISOString();
+      const nowIso = nowDate.toISOString();
       const recentPlays = getRecentPlays(50);
       const recentChat = getRecentMessages(20, 60);
       const recentSegues = getRecentSegues(10);
@@ -154,10 +162,23 @@ async function doPickNext(opts: DjNextOptions): Promise<void> {
       const currentQueueIds = new Set(getQueue().map((t) => t.ncmId));
       const excludeIds = new Set([...recentIds, ...currentQueueIds]);
 
-      // ── Phase 1: random 20 from liked tracks ─────────────────────────────
-      const likedSample = sampleN(
-        likedTracks.filter((t) => t.id && !excludeIds.has(t.id)),
-        LIKED_SAMPLE_SIZE
+      // ── Phase 1: sample 20 IDs from full liked list, then fetch details ──
+      const candidateIds = allLikedIds.filter((id) => !excludeIds.has(id));
+      const sampledIds = sampleN(candidateIds, LIKED_SAMPLE_SIZE);
+      const sampledDetails = await withTimeout(
+        opts.ncmClient.getSongDetails(sampledIds).catch(() => []),
+        LIKED_DETAILS_TIMEOUT_MS,
+        []
+      );
+      const likedSample: Track[] = sampledDetails.map((t) => ({
+        id: String(t.id),
+        name: t.name,
+        artist: t.artists.join(' / ') || undefined
+      }));
+
+      logger.info(
+        { totalLikedIds: allLikedIds.length, candidateCount: candidateIds.length, sampledCount: likedSample.length },
+        'DJ pick-next: sampled liked tracks from full list'
       );
 
       // ── Phase 2: LLM generates search queries (raw call, no schema) ─────
@@ -348,7 +369,7 @@ ${candidateList}
           err: serializeDjPickNextErrorForLog(err),
           model: llmConfig.model,
           baseUrl: llmConfig.baseUrl,
-          likedTrackCount: likedTracks.length,
+          likedIdCount: allLikedIds.length,
           currentQueueCount: getQueue().length
         },
         'DJ pick-next: LLM pipeline failed, using random fallback'
@@ -356,16 +377,16 @@ ${candidateList}
     }
   }
 
-  // Random fallback: exclude recently played and current queue, pick 2
+  // Random fallback: sample 2 IDs from full liked list, then fetch details
   const recentIds = new Set(
     getRecentPlays(30)
       .map((p) => p.song_id)
       .filter((id): id is string => id !== null)
   );
   const currentQueueIds = new Set(getQueue().map((t) => t.ncmId));
-  const candidates = likedTracks.filter((t) => t.id && !recentIds.has(t.id) && !currentQueueIds.has(t.id));
+  const fallbackIds = allLikedIds.filter((id) => !recentIds.has(id) && !currentQueueIds.has(id));
 
-  if (candidates.length === 0) {
+  if (fallbackIds.length === 0) {
     logger.warn('DJ pick-next fallback: no candidates');
     broadcast({ type: 'dj.pick-next.done', added: false, reason: 'no-candidates' });
     return;
@@ -378,18 +399,27 @@ ${candidateList}
       sqRaw: '',
       searchQueries: [],
       searchedTracks: [],
-      totalCandidates: candidates.length,
+      totalCandidates: fallbackIds.length,
       selectedSay: '随机 fallback（LLM 未配置或选歌失败）'
     });
   }
 
+  const pickedIds = sampleN(fallbackIds, Math.min(2, fallbackIds.length));
+  const pickedDetails = await withTimeout(
+    opts.ncmClient.getSongDetails(pickedIds).catch(() => []),
+    LIKED_DETAILS_TIMEOUT_MS,
+    []
+  );
+
+  if (pickedDetails.length === 0) {
+    logger.warn('DJ pick-next fallback: failed to fetch track details');
+    broadcast({ type: 'dj.pick-next.done', added: false, reason: 'no-candidates' });
+    return;
+  }
+
   const prevQueueLength = getQueue().length;
-  const picks = sampleN(candidates, Math.min(2, candidates.length));
-  for (const pick of picks) {
-    addToQueue(
-      { ncmId: pick.id, name: pick.name, artists: pick.artist ? pick.artist.split(' / ') : [] },
-      'end'
-    );
+  for (const pick of pickedDetails) {
+    addToQueue({ ncmId: String(pick.id), name: pick.name, artists: pick.artists }, 'end');
   }
   broadcastAppended(prevQueueLength);
 }
