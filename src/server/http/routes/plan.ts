@@ -15,6 +15,15 @@ import { loadLikedTracksForPlanning } from '../../user-corpus/ncm-liked.js';
 import { loadUserCorpus } from '../../user-corpus/loader.js';
 import { fetchWeather } from '../../weather.js';
 
+function sampleN<T>(arr: T[], n: number): T[] {
+  const copy = [...arr];
+  for (let i = copy.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [copy[i], copy[j]] = [copy[j], copy[i]];
+  }
+  return copy.slice(0, n);
+}
+
 type PlanRouteOptions = {
   secrets: SecretStore;
   ncmClient: NcmClient;
@@ -225,7 +234,16 @@ export function createGapFillHandler(opts: PlanRouteOptions) {
         )
         .sort((a, b) => a.priority - b.priority);
 
-      const likedTracks = await loadLikedTracksForPlanning(opts.ncmClient, count);
+      // Sample randomly from the full liked list instead of always taking the first N
+      const allLikedIds = await opts.ncmClient.getLikedSongIds().catch(() => [] as string[]);
+      const sampledIds = sampleN(allLikedIds, count);
+      const sampledDetails = await opts.ncmClient.getSongDetails(sampledIds).catch(() => []);
+      const likedTracks = sampledDetails.map((t) => ({
+        id: String(t.id),
+        name: t.name,
+        artist: t.artists.join(' / ') || undefined
+      }));
+
       const playlistDetails = new Map<string, NcmPlaylistDetail | null>();
       const tracks: Array<{ query: string; ncmId: string | null }> = [];
       for (let i = 0; i < count; i++) {

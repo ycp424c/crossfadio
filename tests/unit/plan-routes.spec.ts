@@ -106,6 +106,9 @@ describe('plan routes', () => {
   it('gap-fill resolves tracks from matched playlist details', async () => {
     writePlaylists();
     const ncmClient = {
+      // No liked tracks → falls through to playlist picks
+      getLikedSongIds: vi.fn().mockResolvedValue([]),
+      getSongDetails: vi.fn().mockResolvedValue([]),
       getPlaylistDetail: vi.fn().mockResolvedValue({
         id: 12345,
         name: 'Morning Focus',
