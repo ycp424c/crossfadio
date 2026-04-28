@@ -11,5 +11,9 @@
 - `crossfadio-mark.svg`
   - 用途: 应用品牌图标（侧栏标题）
 
+- `crossfadio-app-icon.png`
+  - 来源: Image2 生成
+  - 用途: 浏览器 favicon / 项目 App icon
+
 - `cover-placeholder.svg`
   - 用途: 当前播放封面占位图
