@@ -62,4 +62,15 @@ describe('player layout', () => {
     expect(source).toContain('maybeTriggerSegue();');
     expect(source).not.toContain('decision.shouldTriggerSegue &&');
   });
+
+  it('PlaybackTimeline does not render DeckCard or dual-deck section', () => {
+    const source = fs.readFileSync(
+      path.join(root, 'src/renderer/components/player/PlaybackTimeline.tsx'),
+      'utf-8'
+    );
+
+    expect(source).not.toContain('DeckCard');
+    expect(source).not.toContain('双 Deck 混音台');
+    expect(source).toContain('A→B');
+  });
 });
