@@ -25,8 +25,8 @@ export function SyncedLyrics(props: SyncedLyricsProps): JSX.Element {
 
   return (
     <div
-      className="mt-4 h-40 overflow-y-auto rounded-xl border border-zinc-800 bg-gradient-to-br from-indigo-950/60 via-zinc-950/80 to-cyan-950/40 p-4 [&::-webkit-scrollbar]:hidden"
-      style={{ scrollbarWidth: 'none' }}
+      className="mt-4 h-48 overflow-y-auto rounded-xl border border-zinc-800 bg-gradient-to-br from-indigo-950/60 via-zinc-950/80 to-cyan-950/40 p-4 [&::-webkit-scrollbar]:hidden [mask-image:linear-gradient(to_bottom,transparent_0%,black_12%,black_88%,transparent_100%)]"
+      style={{ scrollbarWidth: 'none', WebkitMaskImage: 'linear-gradient(to bottom, transparent 0%, black 12%, black 88%, transparent 100%)' }}
     >
       <div className="space-y-2">
         {lines.map((line, index) => {

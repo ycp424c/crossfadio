@@ -73,4 +73,15 @@ describe('player layout', () => {
     expect(source).not.toContain('双 Deck 混音台');
     expect(source).toContain('A→B');
   });
+
+  it('NowPlayingHero does not show DJ Deck A badge or NCM ID', () => {
+    const source = fs.readFileSync(
+      path.join(root, 'src/renderer/components/player/NowPlayingHero.tsx'),
+      'utf-8'
+    );
+
+    expect(source).not.toContain('DJ Deck A');
+    expect(source).not.toContain('NCM ID');
+    expect(source).not.toContain('trackId');
+  });
 });
