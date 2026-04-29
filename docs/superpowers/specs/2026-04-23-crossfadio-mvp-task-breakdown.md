@@ -1,6 +1,6 @@
 # Crossfadio MVP 任务拆分与持续维护清单
 
-- 文档日期: 2026-04-23
+- 文档日期: 2026-04-23（更新 2026-04-29）
 - 文档状态: Active（持续维护）
 - 对应架构: `docs/superpowers/specs/2026-04-23-crossfadio-ai-dj-design.md`
 - 目标范围: MVP（M0-M5）+ V1.1 预留任务位
@@ -229,3 +229,16 @@
 | 2026-04-24 | justynchen / codex | M2-04 → DONE：prefs store（getPref/setPref）+ GET/PUT /api/settings（apiKey 走 SecretStore）+ SettingsView（LLM/TTS 表单）+ App.tsx tab 导航；累计 129 用例通过 |
 | 2026-04-24 | justynchen / codex | M4-04 → DONE：新增 `tts/fallback.ts` 模板口播缓存，主 TTS 失败时读取 `cache/tts/fallback/<voice>` 本地模板音频；`segue` 路由成功生成主口播后异步预热模板缓存 |
 | 2026-04-24 | justynchen / codex | M4-07 → DONE：新增 `renderer/audio/timeline.ts` 与 `PlaybackTimeline`，在 Player 视图只读展示 prefetch/segue/crossfade 标记及 TTS ducking/crossfade 区间；补充 timeline 单测 |
+| 2026-04-25 | justynchen / claude | DJ 自动选歌：两阶段（红心随机采样 20 首 + LLM 搜索 20 首），一次选两首，缓存红心 ID 列表 1 天；LLM 超时放宽至 45s，job 总超时 100s |
+| 2026-04-25 | justynchen / claude | fix(resolver): resolveTrackQuery 返回完整 name/artists，修复队列歌曲信息缺失 |
+| 2026-04-25 | justynchen / claude | feat: DJ 候选歌曲 debug 广播 + 浏览器地理位置驱动天气；fix: Phase 1 改用 LlmClient 直调 |
+| 2026-04-26 | justynchen / claude | feat(player): 喜欢按钮联动红心、歌词隐藏滚动条、聊天加歌追加至队尾、DJ 超时延长；fix(plan): gap-fill 从全量红心随机采样 |
+| 2026-04-26 | justynchen / claude | feat(player): 整合 SeekBar 至 PlaybackTimeline，添加换碟动画与响应式布局；fix(player): 客户端预判队列末尾 |
+| 2026-04-26 | justynchen / claude | fix(dj): dj.debug 广播修复，searchedTracks 不再永远显示为空 |
+| 2026-04-27 | justynchen / claude | feat(renderer): 添加 Crossfadio 应用图标；feat(player): 多项目播放体验改进 |
+| 2026-04-28 | justynchen / claude | docs: Player UI 重设计 spec + implementation plan |
+| 2026-04-28 | justynchen / claude | refactor(player): PlaybackTimeline 简化为进度条 + A→B 行；移除 NowPlayingHero 调试字段；歌词高度扩展 h-48 + 渐隐遮罩 |
+| 2026-04-28 | justynchen / claude | refactor(player): 两栏布局（header + 左6/右6）、NCM chip dropdown、状态区移至右栏 |
+| 2026-04-29 | justynchen / claude | fix(player): NCM dropdown 点击外部关闭、移除孤立 segue 状态；style: 移除 min-h-screen |
+| 2026-04-29 | justynchen / claude | feat(player): 推荐候选歌曲选择改进 |
+| 2026-04-29 | justynchen / claude | docs: 同步更新 README、架构设计文档、任务拆分文档，新建 CLAUDE.md |

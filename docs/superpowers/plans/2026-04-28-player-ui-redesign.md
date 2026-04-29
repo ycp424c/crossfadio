@@ -1,5 +1,14 @@
 # Player UI 重设计 Implementation Plan
 
+> **状态：已完成（2026-04-29）**
+> 所有 4 个任务已通过以下 commits 完成：
+> - `884b556` refactor(player): simplify PlaybackTimeline to progress bar + A→B line
+> - `884b556` refactor(player): remove debug fields from NowPlayingHero, expand lyrics height
+> - `229345a` refactor(player): two-column layout, NCM chip dropdown, status area in right rail
+> - `62f108a` fix(player): add NCM dropdown click-outside handler, remove orphaned segue state
+> - `aa4b57f` style(player): remove min-h-screen from main container
+> - `0f746f0` feat(player): improve recommendation candidate selection
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 将播放页面重构为顶栏 + 左右两栏布局，删除调试信息，让主要元素集中在一屏。
@@ -28,7 +37,7 @@
 - Modify: `src/renderer/components/player/PlaybackTimeline.tsx`
 - Modify: `tests/unit/player-layout.spec.ts`
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 在 `tests/unit/player-layout.spec.ts` 的 `describe('player layout', ...)` 块末尾追加：
 
@@ -45,7 +54,7 @@ it('PlaybackTimeline does not render DeckCard or dual-deck section', () => {
 });
 ```
 
-- [ ] **Step 2: 运行测试，确认失败**
+- [x] **Step 2: 运行测试，确认失败**
 
 ```bash
 pnpm test -- --reporter=verbose tests/unit/player-layout.spec.ts
@@ -53,7 +62,7 @@ pnpm test -- --reporter=verbose tests/unit/player-layout.spec.ts
 
 Expected: FAIL — `expected string not to include 'DeckCard'`
 
-- [ ] **Step 3: 替换 PlaybackTimeline.tsx 全文**
+- [x] **Step 3: 替换 PlaybackTimeline.tsx 全文**
 
 ```typescript
 import { buildPlaybackTimeline } from '@renderer/audio/timeline';
@@ -138,7 +147,7 @@ function formatClock(totalSec: number): string {
 }
 ```
 
-- [ ] **Step 4: 运行测试，确认通过**
+- [x] **Step 4: 运行测试，确认通过**
 
 ```bash
 pnpm test -- --reporter=verbose tests/unit/player-layout.spec.ts
@@ -146,7 +155,7 @@ pnpm test -- --reporter=verbose tests/unit/player-layout.spec.ts
 
 Expected: PASS — all tests green
 
-- [ ] **Step 5: 检查 TypeScript 类型**
+- [x] **Step 5: 检查 TypeScript 类型**
 
 ```bash
 pnpm check
@@ -154,7 +163,7 @@ pnpm check
 
 Expected: 0 errors. 如果 `PlayerView.tsx` 报错（因为传了已删除的 props），先忽略，Task 3 会修复。
 
-- [ ] **Step 6: 提交**
+- [x] **Step 6: 提交**
 
 ```bash
 git add src/renderer/components/player/PlaybackTimeline.tsx tests/unit/player-layout.spec.ts
@@ -170,7 +179,7 @@ git commit -m "refactor(player): simplify PlaybackTimeline to progress bar + A�
 - Modify: `src/renderer/components/player/SyncedLyrics.tsx`
 - Modify: `tests/unit/player-layout.spec.ts`
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 在 `tests/unit/player-layout.spec.ts` 末尾追加：
 
@@ -187,7 +196,7 @@ it('NowPlayingHero does not show DJ Deck A badge or NCM ID', () => {
 });
 ```
 
-- [ ] **Step 2: 运行测试，确认失败**
+- [x] **Step 2: 运行测试，确认失败**
 
 ```bash
 pnpm test -- --reporter=verbose tests/unit/player-layout.spec.ts
@@ -195,7 +204,7 @@ pnpm test -- --reporter=verbose tests/unit/player-layout.spec.ts
 
 Expected: FAIL — `expected string not to include 'DJ Deck A'`
 
-- [ ] **Step 3: 替换 NowPlayingHero.tsx 全文**
+- [x] **Step 3: 替换 NowPlayingHero.tsx 全文**
 
 ```typescript
 import { Heart } from 'lucide-react';
@@ -245,7 +254,7 @@ export function NowPlayingHero(props: NowPlayingHeroProps): JSX.Element {
 }
 ```
 
-- [ ] **Step 4: 修改 SyncedLyrics.tsx — 高度 h-40 → h-48，加渐隐遮罩**
+- [x] **Step 4: 修改 SyncedLyrics.tsx — 高度 h-40 → h-48，加渐隐遮罩**
 
 在 `src/renderer/components/player/SyncedLyrics.tsx` 中，将 `h-40` 改为 `h-48`，并在滚动容器上追加渐隐遮罩：
 
@@ -265,7 +274,7 @@ export function NowPlayingHero(props: NowPlayingHeroProps): JSX.Element {
     >
 ```
 
-- [ ] **Step 5: 运行测试，确认通过**
+- [x] **Step 5: 运行测试，确认通过**
 
 ```bash
 pnpm test -- --reporter=verbose tests/unit/player-layout.spec.ts
@@ -273,7 +282,7 @@ pnpm test -- --reporter=verbose tests/unit/player-layout.spec.ts
 
 Expected: PASS — all tests green
 
-- [ ] **Step 6: 检查 TypeScript 类型**
+- [x] **Step 6: 检查 TypeScript 类型**
 
 ```bash
 pnpm check
@@ -281,7 +290,7 @@ pnpm check
 
 Expected: `PlayerView.tsx` 可能报 `trackId` prop 不存在，Task 3 会修复。其余文件应无错误。
 
-- [ ] **Step 7: 提交**
+- [x] **Step 7: 提交**
 
 ```bash
 git add src/renderer/components/player/NowPlayingHero.tsx src/renderer/components/player/SyncedLyrics.tsx tests/unit/player-layout.spec.ts
@@ -296,7 +305,7 @@ git commit -m "refactor(player): remove debug fields from NowPlayingHero, expand
 - Modify: `src/renderer/views/Player/PlayerView.tsx`
 - Modify: `tests/unit/player-layout.spec.ts`
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 在 `tests/unit/player-layout.spec.ts` 末尾追加：
 
@@ -335,7 +344,7 @@ it('PlayerView has NCM chip dropdown controlled by showNcmDropdown state', () =>
 });
 ```
 
-- [ ] **Step 2: 运行测试，确认失败**
+- [x] **Step 2: 运行测试，确认失败**
 
 ```bash
 pnpm test -- --reporter=verbose tests/unit/player-layout.spec.ts
@@ -343,7 +352,7 @@ pnpm test -- --reporter=verbose tests/unit/player-layout.spec.ts
 
 Expected: FAIL — 多条断言失败
 
-- [ ] **Step 3: 在 PlayerView.tsx 顶部 state 区增加 showNcmDropdown**
+- [x] **Step 3: 在 PlayerView.tsx 顶部 state 区增加 showNcmDropdown**
 
 在 `src/renderer/views/Player/PlayerView.tsx` 第 91 行附近，在 `const [qrPayload, ...]` 之后追加：
 
@@ -351,7 +360,7 @@ Expected: FAIL — 多条断言失败
   const [showNcmDropdown, setShowNcmDropdown] = useState(false);
 ```
 
-- [ ] **Step 4: 删除 Radio import（不再使用）**
+- [x] **Step 4: 删除 Radio import（不再使用）**
 
 将导入行：
 ```typescript
@@ -376,7 +385,7 @@ import {
 } from 'lucide-react';
 ```
 
-- [ ] **Step 5: 替换 PlayerView 的 JSX return（从 `<main>` 到结尾）**
+- [x] **Step 5: 替换 PlayerView 的 JSX return（从 `<main>` 到结尾）**
 
 将第 666 行开始的整个 `return (...)` 替换为：
 
@@ -557,7 +566,7 @@ import {
   );
 ```
 
-- [ ] **Step 6: 在 PlayerView.tsx 中添加 StatusChip 辅助组件**
+- [x] **Step 6: 在 PlayerView.tsx 中添加 StatusChip 辅助组件**
 
 在 `export function PlayerView(...)` 之前（文件末尾之前）插入：
 
@@ -586,7 +595,7 @@ function StatusChip({
 }
 ```
 
-- [ ] **Step 7: 运行全部测试**
+- [x] **Step 7: 运行全部测试**
 
 ```bash
 pnpm test -- --reporter=verbose tests/unit/player-layout.spec.ts
@@ -594,7 +603,7 @@ pnpm test -- --reporter=verbose tests/unit/player-layout.spec.ts
 
 Expected: PASS — all tests green
 
-- [ ] **Step 8: 检查 TypeScript 类型**
+- [x] **Step 8: 检查 TypeScript 类型**
 
 ```bash
 pnpm check
@@ -602,7 +611,7 @@ pnpm check
 
 Expected: 0 errors
 
-- [ ] **Step 9: 提交**
+- [x] **Step 9: 提交**
 
 ```bash
 git add src/renderer/views/Player/PlayerView.tsx tests/unit/player-layout.spec.ts
@@ -613,7 +622,7 @@ git commit -m "refactor(player): two-column layout, NCM chip dropdown, status ar
 
 ## Task 4: 全量验收
 
-- [ ] **Step 1: 跑全部测试**
+- [x] **Step 1: 跑全部测试**
 
 ```bash
 pnpm test
@@ -621,7 +630,7 @@ pnpm test
 
 Expected: 所有测试通过，包括 `playback-timeline.spec.ts`（它测的是 `buildPlaybackTimeline` 函数，不受本次改动影响）
 
-- [ ] **Step 2: 检查类型**
+- [x] **Step 2: 检查类型**
 
 ```bash
 pnpm check
@@ -629,7 +638,7 @@ pnpm check
 
 Expected: 0 errors
 
-- [ ] **Step 3: 启动开发服务，目测检查**
+- [x] **Step 3: 启动开发服务，目测检查**
 
 ```bash
 pnpm dev
@@ -645,7 +654,7 @@ pnpm dev
 - 右栏：状态 chip 行 + 重新开始DJ模式小按钮
 - 没有左侧边栏、没有双 Deck 卡片、没有预取状态面板
 
-- [ ] **Step 4: 提交（如有未提交的零散改动）**
+- [x] **Step 4: 提交（如有未提交的零散改动）**
 
 ```bash
 git status

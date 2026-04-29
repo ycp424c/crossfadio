@@ -4,14 +4,19 @@ Crossfadio 是一个本地运行的 AI DJ Web App（Node.js + React + TypeScript
 
 ## 当前状态
 
-当前实现已经完成从 Electron 到本地 Web Server 架构的迁移：
+当前实现已完成从 Electron 到本地 Web Server 架构的迁移，并实现了核心 DJ 功能：
 
-- Vite + React + Tailwind 前端
-- Node.js + Express 本地 HTTP/WS 服务
-- `GET /api/health`
+- Vite + React + Tailwind 前端，4 Tab（播放 / 计划 / 聊天 / 设置）
+- Node.js + Express 本地 HTTP/WS 服务，25+ API 路由
 - SQLite 初始化与迁移（messages/plays/plan/prefs/tts_cache）
 - `user-template/` 首次启动拷贝至用户应用目录
-- NCM 基础接入（子进程管理 + 客户端封装 + `/api/ncm/status`）
+- NCM 接入（子进程管理 + 客户端封装 + 扫码登录）
+- Web Audio 双 Deck 播放引擎（等能量 crossfade + filter sweep）
+- AI Agent（plan/segue/chat 三模式，OpenAI 兼容 LLM）
+- TTS 串场口播（cache-first，底铺式插入）
+- 每日电台计划（4 时段自动生成 + 手动调整）
+- 聊天动态调整（自然语言换歌/加歌/切段）
+- DJ 自动选歌（红心歌单采样 + LLM 搜索推荐）
 
 ## NCM 本地 API 启动配置（开发阶段）
 
@@ -31,6 +36,7 @@ Crossfadio 是一个本地运行的 AI DJ Web App（Node.js + React + TypeScript
 - `CROSSFADIO_NCM_CWD`: 子进程工作目录
 - `CROSSFADIO_NCM_HEALTH_PATH`: 健康探测路径（默认 `/`）
 - `CROSSFADIO_NCM_DISABLE_AUTO=1`: 禁用默认自动拉起
+- `CROSSFADIO_SECRET_KEY`: secrets.json 加密密钥（可选，不设置则明文存储）
 
 重启策略：
 

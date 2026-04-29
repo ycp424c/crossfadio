@@ -3,7 +3,7 @@
 > 你的本地 AI DJ Web App —— 读你自己的歌单,像电台 DJ 一样为你串起今天的声音。
 > 本文已按当前实现更新为本地 Web Server 架构基线:前端采用 Vite + React,后端采用 Node.js + Express + WebSocket,生产期由 Node 服务托管静态资源。
 
-- **文档日期**:2026-04-23
+- **文档日期**: 2026-04-23（更新 2026-04-29）
 - **状态**:设计稿(MVP 前)
 - **决策人**:justynchen
 - **适用范围**:MVP(含 V1.1 标注)
@@ -37,17 +37,18 @@
 
 ### 2.1 MVP 必做(对应图1 的 01–05 全部模块)
 
-- **01 正在播放**:当前曲目、进度、封面、接下来队列、快速操作
+- **01 正在播放**:两栏布局（左：封面+歌词+进度+控制；右：队列+状态），顶栏 NCM 登录 chip
 - **02 今日电台计划**:4 时段(早/午/傍晚/深夜)规划展示 + 一键切段
-- **03 和 AI DJ 聊天**:自然语言对话 + 快捷指令
-- **04 动态编排 Timeline**:crossfade 波形/时间轴 **只读可视化**(手动拖编辑留 V1.1)
-- **05 口味画像 / 设置**:`user/*.md` 编辑器 + LLM/TTS endpoint + 声音预览
+- **03 和 AI DJ 聊天**:自然语言对话 + 流式输出 + 推荐覆盖层
+- **04 动态编排 Timeline**:A→B 过渡指示行（简化版），手动拖编辑留 V1.1
+- **05 口味画像 / 设置**:LLM/TTS endpoint + 声音试听
 - **Crossfade 引擎**:等能量交叉 + Filter Sweep
 - **TTS 串场**:底铺式插入(DJ 口播叠在下一首前奏上)
-- **网易云**:扫码登录 + 歌单读取 + 直链播放 + 歌词
-- **持久化**:SQLite (`state.db`) + `user/*.md` 语料
-- **Agent**:单 Agent 双 Mode(plan / segue / chat)
-- **天气注入**:wttr.in 或 openweather
+- **网易云**:扫码登录 + 红心歌单 + 直链播放 + 歌词
+- **持久化**:SQLite (`state.db`)
+- **Agent**:单 Agent 三 Mode(plan / segue / chat)
+- **DJ 自动选歌**:两阶段（红心随机采样 + LLM 搜索推荐）
+- **天气注入**:浏览器地理位置 → wttr.in
 
 ### 2.2 V1.1 推迟
 
@@ -128,7 +129,7 @@
                               ↓
 ┌───────────────────────────────────────────────────────────────┐
 │  L4  交互表层 (Browser / React + Tailwind)                    │
-│  ├─ 三视图:Player / Profile / Settings                        │
+│  ├─ 四 Tab：播放 / 计划 / 聊天 / 设置                           │
 │  ├─ Web Audio 引擎(双 deck + TTS 通道 + GainNode + Biquad)   │
 │  ├─ 同源 `/api` + `/ws` 访问 BFF                              │
 │  └─ 10s prefetch 下一首直链                                    │
@@ -152,7 +153,8 @@ crossfadio/
 ├─ package.json
 ├─ vite.config.ts
 ├─ tsconfig.{node,web}.json
-├─ docs/superpowers/specs/          规划文档
+├─ CLAUDE.md                        AI agent 上下文
+├─ docs/superpowers/                规划与设计文档
 ├─ user-template/                   首次启动时拷到应用数据目录 `user/`
 │  ├─ taste.md  routines.md  mood-rules.md
 │  ├─ playlists.json  dj-persona.md
@@ -160,17 +162,17 @@ crossfadio/
 │  ├─ server/                       本地大脑 (Node.js)
 │  │  ├─ index.ts                  server 启动、spawn ncm、优雅退出
 │  │  ├─ app-paths.ts              应用数据目录解析
+│  │  ├─ runtime.ts                运行时信息
 │  │  ├─ http/                     localhost HTTP + WS
-│  │  │  ├─ routes/{health,ncm,ncm-login,now-next}.ts
-│  │  │  └─ ws.ts
-│  │  ├─ agent/                    预留: compute(fragments) / modes / tools
-│  │  ├─ router.ts                 预留: 意图分流
-│  │  ├─ context.ts                预留: 环境注入
-│  │  ├─ scheduler.ts              预留: cron + hook
-│  │  ├─ llm/{client,stream}.ts    预留
-│  │  ├─ tts/{client,cache}.ts     预留
+│  │  │  ├─ index.ts              Express app + route 注册
+│  │  │  ├─ ws.ts                 WebSocket server
+│  │  │  └─ routes/               路由处理器（按功能分文件）
+│  │  ├─ agent/                    compute(fragments) / modes / schema
+│  │  ├─ scheduler.ts              cron 日规划 + 小时检查
+│  │  ├─ llm/{client,stream}.ts   OpenAI 兼容 LLM 客户端
+│  │  ├─ tts/{client,cache,fallback}.ts  TTS 合成与缓存
 │  │  ├─ ncm/{spawn,client,auth}.ts
-│  │  ├─ weather.ts                预留
+│  │  ├─ weather.ts                wttr.in / openweather
 │  │  ├─ store/
 │  │  │  ├─ db.ts  migrations.ts
 │  │  │  └─ {messages,plays,plan,prefs,ttsCache}.ts
@@ -178,21 +180,24 @@ crossfadio/
 │  │  ├─ security.ts               secrets.json 封装
 │  │  └─ logger.ts                 pino
 │  ├─ renderer/
-│  │  ├─ App.tsx                   三视图路由
-│  │  ├─ views/{Player,Profile,Settings}/
-│  │  ├─ components/{PlayerBar,TodayPlan,ChatPanel,Timeline,...}.tsx
+│  │  ├─ App.tsx                   四 Tab 路由
+│  │  ├─ views/{Player,Plan,Settings}/
+│  │  ├─ components/player/        NowPlayingHero, PlaybackTimeline,
+│  │  │                            QueuePanel, ChatPanel, TransportControls,
+│  │  │                            SyncedLyrics, RecommendOverlay, SeekBar
 │  │  ├─ audio/
 │  │  │  ├─ engine.ts              AudioContext + 双 deck + TTS
 │  │  │  ├─ crossfade.ts           等能量曲线 + filter sweep
-│  │  │  ├─ ducking.ts             底铺式 TTS 插入
-│  │  │  └─ prefetch.ts            10s 预取
+│  │  │  ├─ prefetch.ts            d-12s 预取时序
+│  │  │  ├─ timeline.ts            playback timing 计算
+│  │  │  └─ lyrics.ts             歌词解析
 │  │  ├─ ws/client.ts
 │  │  ├─ api.ts                    同源 `/api` 请求封装
 │  │  └─ store/                    zustand
 │  └─ shared/
 │     ├─ schema.ts                 zod(compute I/O、WS 事件、HTTP DTO)
 │     └─ types.ts
-└─ tests/{unit,e2e}/
+└─ tests/{unit,e2e,support}/
 ```
 
 ### 5.2 运行时应用数据目录布局
@@ -573,28 +578,37 @@ CREATE TABLE tts_cache (
 
 ### 8.2 HTTP 端点
 
-| Method | Path | 用途 | Req | Resp |
-|---|---|---|---|---|
-| GET | `/api/health` | 健康 | — | `{ok, service, uptimeSec, dbReady, timestamp}` |
-| GET | `/api/ncm/status` | NCM 子进程状态 | — | `{ok, enabled, running, baseUrl, pid, lastError, restartCount}` |
-| GET | `/api/ncm/login/session` | 当前登录态 | — | `{ok, hasCookie, profile}` |
-| GET | `/api/ncm/login/qr` | 申请扫码 | — | `{ok, key, qrimg, qrurl}` |
-| GET | `/api/prefs` | 读偏好 | — | `{ [key]: value }` |
-| PUT | `/api/prefs` | 写偏好 | `{key,value}` | `{ok}` |
-| GET | `/api/taste` | 读所有语料文件 | — | `{taste,routines,moodRules,djPersona,playlists}` |
-| PUT | `/api/taste/:file` | 写单个语料文件 | `{content}` | `{ok}` |
-| GET | `/api/ncm/login/status` | 轮询扫码状态 | `?key=` | `{code: 801\|802\|803\|800, cookie?, profile?}` |
-| POST | `/api/ncm/login/logout` | 登出 | — | `{ok}` |
-| POST | `/api/ncm/logout` | 登出(兼容旧路径) | — | `{ok}` |
-| GET | `/api/plan/today` | 今日计划 | — | `PlanOutput` |
-| POST | `/api/plan/regenerate` | 重新规划全天 | — | `PlanOutput` |
-| POST | `/api/plan/replan-segment` | 替换单时段 | `{segmentId, hint}` | `PlanOutput` |
-| POST | `/api/plan/gap-fill` | 现场补位 | `{segmentId, count, durationMin, mood}` | `{tracks[]}` |
-| GET | `/api/now` | 取当前曲直链 | `?ncmId=` | `{url, durationMs, lyric}` |
-| GET | `/api/next` | 取下一首(配合 prefetch) | — | `{track, url, durationMs}` |
-| POST | `/api/segue/trigger` | 触发 DJ 串场生成 | `{from, to}` | `{requestId}`(异步经 WS 回) |
-| POST | `/api/tts/preview` | 设置页试听 | `{text, voice, speed}` | `audio/mpeg` |
-| POST | `/api/control` | 播放控制 | `{action: "play"\|"pause"\|"skip"\|"prev"\|"like"\|"unlike"}` | `{ok}` |
+| Method | Path | 用途 | 备注 |
+|---|---|---|---|
+| GET | `/api/health` | 健康检查 | `{ok, service, uptimeSec, dbReady, timestamp}` |
+| GET | `/api/runtime` | 获取 sessionToken | 前端初始化 WS 连接前调用 |
+| GET | `/api/ncm/status` | NCM 子进程状态 | `{ok, enabled, running, baseUrl, pid, ...}` |
+| GET/POST | `/api/ncm/login/qr` | 申请扫码登录 key | `{ok, key, qrimg, qrurl}` |
+| GET | `/api/ncm/login/status` | 轮询扫码状态 | `?key=` → `{code: 801\|802\|803\|800, cookie?, profile?}` |
+| GET | `/api/ncm/login/session` | 当前登录态 | `{ok, hasCookie, profile}` |
+| POST | `/api/ncm/login/logout` | 登出 | |
+| POST | `/api/ncm/logout` | 登出（兼容旧路径） | |
+| GET | `/api/now` | 当前曲直链 + 歌词 | `?ncmId=` → `{url, durationMs, lyric, timing?}` |
+| GET | `/api/next` | 下一首（prefetch） | `{track, url, durationMs}` |
+| POST | `/api/plays` | 播放开始 | `{ncmId, title, artist, durationMs}` |
+| PATCH | `/api/plays/:id` | 播放结束 | `{playedMs?, skipped?, reason?}` |
+| GET | `/api/queue/liked` | 红心歌单队列 | |
+| GET | `/api/queue/liked/ids` | 红心歌单 ID 列表 | 仅返回 ID，轻量 |
+| POST | `/api/queue/like` | 喜欢/取消喜欢 | `{trackId, like}` |
+| PUT | `/api/queue/state` | 持久化队列状态 | |
+| GET | `/api/settings` | 读设置 | apiKey 仅返回 `hasApiKey` |
+| PUT | `/api/settings` | 保存设置 | key 写入 SecretStore |
+| POST | `/api/settings/test-llm` | 测试 LLM 连接 | |
+| POST | `/api/settings/test-tts` | 测试 TTS + 试听 | 返回 `audio/mpeg` |
+| GET | `/api/plan/today` | 今日计划 | 无当日计划时自动触发生成 |
+| POST | `/api/plan/regenerate` | 重新规划全天 | |
+| POST | `/api/plan/replan-segment` | 替换单时段 | `{segmentId, hint}` |
+| POST | `/api/plan/gap-fill` | 现场补位 | `{segmentId, count, durationMin, mood}` |
+| POST | `/api/dj/pick-next` | DJ 自动选下一首 | |
+| POST | `/api/segue/trigger` | 触发串场生成 | `{from, to}` → `{requestId}`(异步经 WS 回) |
+| GET | `/api/segue/audio/*` | 获取串场音频文件 | |
+| GET | `/api/messages/recent` | 最近聊天消息 | |
+| POST | `/api/location` | 设置浏览器位置 | 用于天气查询 |
 
 ### 8.3 WebSocket `/ws` 事件
 
@@ -614,19 +628,21 @@ CREATE TABLE tts_cache (
 
 ```ts
 { type: "auth", token: string }
-{ type: "chat", text: string }     // 预留
-{ type: "ping" }                   // 预留
+{ type: "chat", text: string }
+{ type: "ping" }
 ```
 
 **Server → Client**
 
 ```ts
-{ type: "auth.ok" }                // 当前已实现
-{ type: "noop", received: string } // 当前已实现的占位回包
-{ type: "chat.delta",    chunk: string, requestId: string }      // 预留
-{ type: "chat.done",     say: string, intent: ChatIntent, actions: Action[], requestId: string } // 预留
-{ type: "segue.tts-ready", hash: string, url: string, requestId: string } // 预留
-{ type: "plan-updated",   plan: PlanOutput, version: number }    // 预留
+{ type: "auth.ok" }
+{ type: "noop", received: string }
+{ type: "chat.delta",    chunk: string, requestId: string }
+{ type: "chat.done",     say: string, intent: ChatIntent, actions: Action[], requestId: string }
+{ type: "segue.tts-ready", hash: string, url: string, requestId: string }
+{ type: "plan-updated",   plan: PlanOutput, version: number }
+{ type: "queue-updated" }
+{ type: "dj.debug", ... }           // DJ 候选歌曲调试广播
 ```
 
 ### 8.4 失败时的降级
