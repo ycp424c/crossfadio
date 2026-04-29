@@ -1,4 +1,4 @@
-import { ListMusic } from 'lucide-react';
+import { ListMusic, X } from 'lucide-react';
 import type { QueueTrackDto } from '@shared/schema';
 
 type QueuePanelProps = {
@@ -6,6 +6,7 @@ type QueuePanelProps = {
   currentIndex: number;
   nextId: string | null;
   onSelectIndex: (index: number) => void;
+  onDeleteIndex: (index: number) => void;
 };
 
 export function QueuePanel(props: QueuePanelProps): JSX.Element {
@@ -25,9 +26,9 @@ export function QueuePanel(props: QueuePanelProps): JSX.Element {
           const isCurrent = index === props.currentIndex;
           const isNext = track.id === props.nextId && !isCurrent;
           return (
-            <li key={track.id}>
+            <li key={track.id} className="flex items-center gap-1">
               <button
-                className={`w-full rounded-xl border px-3 py-2 text-left text-sm transition ${
+                className={`min-w-0 flex-1 rounded-xl border px-3 py-2 text-left text-sm transition ${
                   isCurrent
                     ? 'border-violet-400/70 bg-violet-500/15 text-violet-100'
                     : 'border-zinc-800 bg-zinc-900/80 text-zinc-300 hover:border-zinc-600'
@@ -43,6 +44,16 @@ export function QueuePanel(props: QueuePanelProps): JSX.Element {
                   {isNext ? <span className="text-xs text-cyan-300">下一首</span> : null}
                 </div>
               </button>
+              {!isCurrent ? (
+                <button
+                  className="shrink-0 rounded-lg border border-zinc-800 bg-zinc-900/80 p-1.5 text-zinc-500 transition hover:border-zinc-600 hover:text-red-400"
+                  onClick={() => props.onDeleteIndex(index)}
+                  title="从队列移除"
+                  type="button"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              ) : null}
             </li>
           );
         })}

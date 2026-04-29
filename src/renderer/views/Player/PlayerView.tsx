@@ -557,6 +557,28 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
     setCurrentIndex(0);
   }
 
+  function handleDeleteTrack(index: number): void {
+    if (index === currentIndex) return;
+
+    const deletedId = queue[index]?.id ?? null;
+    const isNext = deletedId !== null && deletedId === (nextTrack?.track.id ?? null);
+
+    setQueue((q) => [...q.slice(0, index), ...q.slice(index + 1)]);
+
+    if (index < currentIndex) {
+      setCurrentIndex((i) => i - 1);
+    }
+
+    if (isNext) {
+      disposeSegueAudio(true);
+      segueClientRequestIdRef.current = null;
+      segueSatisfiedForTrackIdRef.current = null;
+      segueLastAttemptAtRef.current = 0;
+      setNextTrack(null);
+      setSegueStatusText('下一首已移除，重新生成过渡…');
+    }
+  }
+
   function handleToggleLike(): void {
     if (!currentTrackId) {
       return;
@@ -805,6 +827,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
           <QueuePanel
             currentIndex={currentIndex}
             nextId={nextTrack?.track.id ?? null}
+            onDeleteIndex={handleDeleteTrack}
             onSelectIndex={handleSelectIndex}
             queue={queue}
           />
