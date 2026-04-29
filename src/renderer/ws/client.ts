@@ -27,6 +27,14 @@ export function sendChatMessage(text: string): boolean {
   return false;
 }
 
+export function sendCancelRecommend(jobId: string): boolean {
+  if (socket?.readyState === WebSocket.OPEN) {
+    socket.send(JSON.stringify({ type: 'chat.cancel-recommend', jobId }));
+    return true;
+  }
+  return false;
+}
+
 export function onWsMessage(handler: MessageHandler): () => void {
   handlers.add(handler);
   return () => handlers.delete(handler);

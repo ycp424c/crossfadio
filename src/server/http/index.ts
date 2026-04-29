@@ -32,7 +32,7 @@ import {
   createGapFillHandler
 } from './routes/plan.js';
 import { createSegueTriggerHandler, createSegueAudioHandler } from './routes/segue.js';
-import { createChatMessageHandler } from './routes/chat.js';
+import { createChatMessageHandler, cancelChatRecommend } from './routes/chat.js';
 import { createDjPickNextHandler } from './routes/djNext.js';
 import { createGetRecentMessagesHandler } from './routes/messages.js';
 import { createSetLocationHandler } from './routes/location.js';
@@ -126,7 +126,7 @@ export async function startLocalServer(options: StartLocalServerOptions): Promis
 
   const server = createServer(app);
   const chatHandler = createChatMessageHandler({ secrets: options.secrets, ncmClient: options.ncmClient });
-  setupWsServer(server, { sessionToken, onChatMessage: chatHandler });
+  setupWsServer(server, { sessionToken, onChatMessage: chatHandler, onCancelRecommend: cancelChatRecommend });
 
   const port = await listen(server, options.host, options.port);
   const baseUrl = `http://${options.host}:${port}`;

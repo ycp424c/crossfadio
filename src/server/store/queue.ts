@@ -52,10 +52,14 @@ export function swapNext(track: QueueTrack): void {
 
 export function addToQueue(track: QueueTrack, position: 'end' | 'after_current'): void {
   if (position === 'end') {
+    // Remove any existing instance of the same track to keep queue clean
+    queue = queue.filter((t) => t.ncmId !== track.ncmId);
     queue.push(track);
   } else {
     const insertAt = Math.min(currentIndex + 1, queue.length);
     queue.splice(insertAt, 0, track);
+    const laterIdx = queue.findIndex((t, i) => i > insertAt && t.ncmId === track.ncmId);
+    if (laterIdx !== -1) queue.splice(laterIdx, 1);
   }
 }
 

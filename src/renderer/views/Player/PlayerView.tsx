@@ -431,7 +431,11 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
 
   async function loadNowPlaying(trackId: string): Promise<void> {
     try {
-      const payload = await getNowPlaying(trackId);
+      const trackMeta = queue[currentIndex];
+      const payload = await getNowPlaying(trackId, {
+        name: trackMeta?.name,
+        artist: trackMeta?.artists?.join(' / ')
+      });
       setNowPlaying(payload);
       setError('');
 

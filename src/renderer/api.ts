@@ -84,8 +84,14 @@ export async function logoutNcm(): Promise<void> {
   }
 }
 
-export async function getNowPlaying(ncmId: string): Promise<NowPlayingResponse> {
-  const payload = await requestJson<unknown>(`/api/now?ncmId=${encodeURIComponent(ncmId)}`);
+export async function getNowPlaying(
+  ncmId: string,
+  meta?: { name?: string; artist?: string }
+): Promise<NowPlayingResponse> {
+  let query = `ncmId=${encodeURIComponent(ncmId)}`;
+  if (meta?.name) query += `&name=${encodeURIComponent(meta.name)}`;
+  if (meta?.artist) query += `&artist=${encodeURIComponent(meta.artist)}`;
+  const payload = await requestJson<unknown>(`/api/now?${query}`);
   return nowPlayingResponseSchema.parse(payload);
 }
 

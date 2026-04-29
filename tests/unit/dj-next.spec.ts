@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { serializeDjPickNextErrorForLog, searchCandidates } from '../../src/server/http/routes/djNext';
+import { parseDjCandidatePicks, serializeDjPickNextErrorForLog, searchCandidates } from '../../src/server/http/routes/djNext';
 import { LlmError } from '../../src/server/llm/client';
 import type { NcmClient } from '../../src/server/ncm/client';
 import type { NcmSong } from '../../src/shared/schema';
@@ -112,5 +112,40 @@ describe('searchCandidates', () => {
     });
     const result = await searchCandidates(['collab'], ncm as unknown as NcmClient, new Set(), 20);
     expect(result[0].artist).toBe('Artist A / Artist B');
+  });
+});
+
+// ── parseDjCandidatePicks ──────────────────────────────────────────────────
+
+describe('parseDjCandidatePicks', () => {
+  const candidates = [
+    { id: '101', name: '候选一', artist: '歌手一' },
+    { id: '202', name: '候选二', artist: '歌手二' },
+    { id: '303', name: '候选三', artist: '歌手三' }
+  ];
+
+  it('keeps only IDs that exist in the candidate pool', () => {
+    const parsed = parseDjCandidatePicks(
+      JSON.stringify({
+        say: '选两首',
+        pickIds: ['202', '999', '303']
+      }),
+      candidates
+    );
+
+    expect(parsed.say).toBe('选两首');
+    expect(parsed.tracks.map((track) => track.id)).toEqual(['202', '303']);
+  });
+
+  it('maps 1-based candidate indexes to whitelisted candidate tracks', () => {
+    const parsed = parseDjCandidatePicks(
+      JSON.stringify({
+        say: '按编号选',
+        picks: [2, 4, 1]
+      }),
+      candidates
+    );
+
+    expect(parsed.tracks.map((track) => track.id)).toEqual(['202', '101']);
   });
 });

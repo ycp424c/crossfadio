@@ -1,5 +1,5 @@
 import type { RequestHandler } from 'express';
-import type { Action, Track } from '../../agent/schema.js';
+import type { Track } from '../../agent/schema.js';
 import { LlmClient } from '../../llm/client.js';
 import { resolveLlmConfig } from '../../llm/config.js';
 import type { NcmClient } from '../../ncm/client.js';
@@ -10,7 +10,6 @@ import { getRecentMessages } from '../../store/messages.js';
 import { getRecentSegues } from '../../store/segues.js';
 import { getPreferenceContext } from '../../store/chat-preferences.js';
 import { fetchWeather } from '../../weather.js';
-import { executeActions } from '../../agent/actions.js';
 import { getQueue, addToQueue } from '../../store/queue.js';
 import { broadcast } from '../broadcast.js';
 import { getLogger } from '../../logger.js';
@@ -63,12 +62,14 @@ export async function searchCandidates(
   queries: string[],
   ncmClient: NcmClient,
   excludeIds: Set<string>,
-  limit: number
+  limit: number,
+  signal?: AbortSignal
 ): Promise<Track[]> {
   if (queries.length === 0) return [];
+  if (signal?.aborted) return [];
   const perQuery = Math.ceil((limit + 5) / queries.length);
   const results = await Promise.all(
-    queries.map((q) => ncmClient.searchSongs(q, perQuery).catch(() => []))
+    queries.map((q) => signal?.aborted ? [] : ncmClient.searchSongs(q, perQuery).catch(() => []))
   );
   const seen = new Set<string>();
   const tracks: Track[] = [];
@@ -83,6 +84,80 @@ export async function searchCandidates(
     }
   }
   return tracks;
+}
+
+export type ParsedDjCandidatePicks = {
+  say: string;
+  tracks: Track[];
+};
+
+export function parseDjCandidatePicks(raw: string, candidates: Track[]): ParsedDjCandidatePicks {
+  const cleaned = raw
+    .replace(/^```(?:json)?\s*/i, '')
+    .replace(/\s*```\s*$/, '')
+    .trim();
+  const match = cleaned.match(/\{[\s\S]*\}/);
+  if (!match) return { say: '', tracks: [] };
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(match[0]);
+  } catch {
+    return { say: '', tracks: [] };
+  }
+
+  if (!parsed || typeof parsed !== 'object') return { say: '', tracks: [] };
+
+  const obj = parsed as Record<string, unknown>;
+  const say = typeof obj.say === 'string' ? obj.say : '';
+  const byId = new Map(candidates.map((track) => [track.id, track]));
+  const seen = new Set<string>();
+  const tracks: Track[] = [];
+
+  const addById = (value: unknown): void => {
+    const id = typeof value === 'number' ? String(value) : typeof value === 'string' ? value.trim() : '';
+    const track = id ? byId.get(id) : undefined;
+    if (track && !seen.has(track.id)) {
+      seen.add(track.id);
+      tracks.push(track);
+    }
+  };
+
+  const addByIndex = (value: unknown): void => {
+    const index = typeof value === 'number'
+      ? value
+      : typeof value === 'string' && /^\d+$/.test(value.trim())
+        ? Number(value.trim())
+        : NaN;
+    if (!Number.isInteger(index)) return;
+    const track = candidates[index - 1];
+    if (track && !seen.has(track.id)) {
+      seen.add(track.id);
+      tracks.push(track);
+    }
+  };
+
+  for (const key of ['pickIds', 'ids', 'trackIds']) {
+    const values = obj[key];
+    if (Array.isArray(values)) values.forEach(addById);
+  }
+
+  for (const key of ['picks', 'indexes', 'indices', 'candidateIndexes']) {
+    const values = obj[key];
+    if (Array.isArray(values)) {
+      for (const value of values) {
+        if (value && typeof value === 'object') {
+          const pick = value as Record<string, unknown>;
+          addById(pick.id);
+          addByIndex(pick.index);
+        } else {
+          addByIndex(value);
+        }
+      }
+    }
+  }
+
+  return { say, tracks: tracks.slice(0, 2) };
 }
 
 export function createDjPickNextHandler(opts: DjNextOptions): RequestHandler {
@@ -264,7 +339,7 @@ async function doPickNext(opts: DjNextOptions): Promise<void> {
 
       // ── Phase 4: LLM picks 2 from combined candidates (raw call, no schema) ──
       const candidateList = allCandidates
-        .map((t, i) => `${i + 1}. ${t.name ?? t.id} — ${t.artist ?? '未知艺人'}`)
+        .map((t, i) => `${i + 1}. id=${t.id} ${t.name ?? t.id} — ${t.artist ?? '未知艺人'}`)
         .join('\n');
       const weatherStr2 = weather ? `${weather.tempC}°C，${weather.desc}` : '未知';
 
@@ -272,15 +347,14 @@ async function doPickNext(opts: DjNextOptions): Promise<void> {
 
 ## 当前任务：DJ 自动选曲
 
-从候选歌曲列表中挑选最适合当前情境的 2 首，用 add_to_queue 动作添加到队列末尾。
+从候选歌曲列表中挑选最适合当前情境的 2 首，返回它们的候选歌曲 id。
 不要重复最近刚播过的歌曲。say 字段用一句话中文说明选曲理由。
+只能返回候选歌曲列表中真实存在的 id，不要编造 id，不要返回歌名搜索词。
 
 输出格式：严格 JSON，不要包裹 markdown 代码块。
 {
   "say": "选曲理由（一句话中文）",
-  "actions": [
-    { "type": "add_to_queue", "pick": { "query": "歌曲名 — 艺人名" }, "position": "end" }
-  ]
+  "pickIds": ["候选歌曲id1", "候选歌曲id2"]
 }`;
 
       const pickUserPrompt = `<context>
@@ -295,7 +369,7 @@ ${candidateList}
 从以上 ${allCandidates.length} 首候选歌曲中挑选 2 首。`;
 
       let pickSay = '';
-      let pickActions: Action[] = [];
+      let pickedTracks: Track[] = [];
       try {
         const pickResp = await new LlmClient(llmConfig).complete(
           [
@@ -304,46 +378,38 @@ ${candidateList}
           ],
           { signal: AbortSignal.timeout(PICK_LLM_TIMEOUT_MS) }
         );
-        const cleaned = pickResp.content
-          .replace(/^```(?:json)?\s*/i, '')
-          .replace(/\s*```\s*$/, '')
-          .trim();
-        const match = cleaned.match(/\{[\s\S]*\}/);
-        if (match) {
-          try {
-            const parsed: unknown = JSON.parse(match[0]);
-            if (parsed && typeof parsed === 'object') {
-              const obj = parsed as Record<string, unknown>;
-              if (typeof obj.say === 'string') pickSay = obj.say;
-              if (Array.isArray(obj.actions)) {
-                pickActions = obj.actions.filter(
-                  (a): a is Action =>
-                    typeof a === 'object' && a !== null &&
-                    typeof (a as Record<string, unknown>).type === 'string' &&
-                    (a as Record<string, unknown>).type === 'add_to_queue' &&
-                    typeof (a as Record<string, unknown>).pick === 'object'
-                );
-              }
-            }
-          } catch {
-            logger.warn({ jsonSnippet: match[0].slice(0, 200) }, 'DJ pick-next: JSON parse failed for LLM pick response');
-          }
-        }
-        if (pickActions.length === 0) {
-          logger.warn({ raw: pickResp.content.slice(0, 300) }, 'DJ pick-next: failed to extract actions from LLM pick response');
+        const parsedPicks = parseDjCandidatePicks(pickResp.content, allCandidates);
+        pickSay = parsedPicks.say;
+        pickedTracks = parsedPicks.tracks;
+        if (pickedTracks.length === 0) {
+          logger.warn({ raw: pickResp.content.slice(0, 300) }, 'DJ pick-next: failed to extract whitelisted picks from LLM response');
         }
       } catch (err) {
         logger.warn({ err }, 'DJ pick-next: LLM pick failed, using random fallback');
       }
 
-      if (pickActions.length > 0) {
+      if (pickedTracks.length > 0) {
         logger.info(
-          { actionCount: pickActions.length, say: pickSay.slice(0, 80) },
-          'DJ pick-next: LLM returned candidate actions'
+          { pickedIds: pickedTracks.map((track) => track.id), say: pickSay.slice(0, 80) },
+          'DJ pick-next: LLM returned whitelisted candidate picks'
         );
         const prevQueueLength = getQueue().length;
-        const result = await executeActions(pickActions, { ncmClient: opts.ncmClient });
-        if (result.queueChanged) {
+        const recentPlayIds = new Set(
+          getRecentPlays(50)
+            .map((p) => p.song_id)
+            .filter((id): id is string => id !== null)
+        );
+        const currentQueueIds = new Set(getQueue().map((t) => t.ncmId));
+        for (const track of pickedTracks) {
+          if (recentPlayIds.has(track.id) || currentQueueIds.has(track.id)) continue;
+          addToQueue({
+            ncmId: track.id,
+            name: track.name,
+            artists: track.artist ? track.artist.split(' / ').filter(Boolean) : []
+          }, 'end');
+          currentQueueIds.add(track.id);
+        }
+        if (getQueue().length > prevQueueLength) {
           const newTracks = getQueue().slice(prevQueueLength);
           if (pickSay.trim()) {
             for (const track of newTracks) {
@@ -355,9 +421,9 @@ ${candidateList}
           broadcastAppended(prevQueueLength);
           return;
         }
-        logger.warn('DJ pick-next: LLM actions did not change queue, using random fallback');
+        logger.warn('DJ pick-next: whitelisted picks did not change queue, using random fallback');
       } else {
-        logger.warn('DJ pick-next: LLM returned no usable actions, using random fallback');
+        logger.warn('DJ pick-next: LLM returned no usable whitelisted picks, using random fallback');
       }
 
       // Phase 4 failed — still broadcast Phase 3 data so the debug panel reflects what was searched

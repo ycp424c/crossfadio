@@ -6,10 +6,12 @@ import { registerWss } from './broadcast.js';
 import { getLogger } from '../logger.js';
 
 export type ChatMessageHandler = (ws: WebSocket, text: string) => void;
+export type CancelRecommendHandler = (jobId: string) => void;
 
 type WsOptions = {
   sessionToken: SessionToken;
   onChatMessage?: ChatMessageHandler;
+  onCancelRecommend?: CancelRecommendHandler;
 };
 
 export function setupWsServer(server: Server, options: WsOptions): WebSocketServer;
@@ -56,6 +58,11 @@ export function setupWsServer(
           const msg = parsed as Record<string, unknown>;
           if (msg.type === 'chat' && typeof msg.text === 'string') {
             opts.onChatMessage?.(ws, msg.text);
+            return;
+          }
+
+          if (msg.type === 'chat.cancel-recommend' && typeof msg.jobId === 'string') {
+            opts.onCancelRecommend?.(msg.jobId);
             return;
           }
 

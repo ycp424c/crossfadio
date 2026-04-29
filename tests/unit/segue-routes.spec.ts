@@ -233,7 +233,7 @@ describe('segue trigger handler', () => {
         expect.objectContaining({ method: 'POST' })
       );
     });
-    await vi.advanceTimersByTimeAsync(12_000);
+    await vi.advanceTimersByTimeAsync(61_000);
 
     const messages = sent.map((message) => JSON.parse(message) as Record<string, unknown>);
     expect(messages).toContainEqual(

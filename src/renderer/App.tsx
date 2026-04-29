@@ -4,6 +4,7 @@ import { PlayerView } from '@renderer/views/Player/PlayerView';
 import { SettingsView } from '@renderer/views/Settings/SettingsView';
 import { PlanView } from '@renderer/views/Plan/PlanView';
 import { ChatPanel } from '@renderer/components/player/ChatPanel';
+import { RecommendOverlay } from '@renderer/components/player/RecommendOverlay';
 import { getRuntimeInfo } from '@renderer/api';
 import { initWsClient } from '@renderer/ws/client';
 
@@ -45,6 +46,8 @@ export function App(): JSX.Element {
         <TabButton active={tab === 'chat'} onClick={() => setTab('chat')} icon={<MessageCircle className="h-4 w-4" />} label="聊天" />
         <TabButton active={tab === 'settings'} onClick={() => setTab('settings')} icon={<Settings2 className="h-4 w-4" />} label="设置" />
       </nav>
+
+      <RecommendOverlay />
     </div>
   );
 }

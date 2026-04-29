@@ -7,13 +7,16 @@ import {
   nowPlayingResponseSchema,
   type NcmErrorCode
 } from '../../../shared/schema.js';
+import { startPlay } from '../../store/plays.js';
 
 const DEFAULT_PREFETCH_LEAD_SEC = 10;
 const DEFAULT_CROSSFADE_SEC = 8;
 const DEFAULT_SEGUE_LEAD_SEC = 24;
 
 const nowQuerySchema = z.object({
-  ncmId: z.string().min(1)
+  ncmId: z.string().min(1),
+  name: z.string().optional(),
+  artist: z.string().optional()
 });
 
 const nextQuerySchema = z.object({
@@ -56,6 +59,12 @@ export function createNowHandler(ncmClient: NcmClient): RequestHandler {
       });
 
       res.json(payload);
+
+      // Record play for dedup (best-effort, don't block the response)
+      const name = parsed.data.name?.trim();
+      if (name) {
+        try { startPlay({ songId: ncmId, songName: name, artistName: parsed.data.artist?.trim() ?? '' }); } catch { /* ignore */ }
+      }
     } catch (error) {
       sendNcmError(res, error);
     }

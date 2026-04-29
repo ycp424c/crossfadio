@@ -10,7 +10,7 @@ afterEach(() => {
 
 function makeClient(id: string | null) {
   return {
-    searchSongs: vi.fn().mockResolvedValue(id ? [{ id }] : [])
+    searchSongs: vi.fn().mockResolvedValue(id ? [{ id, name: 'Test Song', artists: ['Test Artist'] }] : [])
   };
 }
 
@@ -20,7 +20,7 @@ describe('resolveTrackQuery', () => {
     clearResolverCache();
     const client = makeClient('42');
     const result = await resolveTrackQuery('some song', client as never);
-    expect(result).toBe('42');
+    expect(result?.ncmId).toBe('42');
     expect(client.searchSongs).toHaveBeenCalledTimes(1);
   });
 

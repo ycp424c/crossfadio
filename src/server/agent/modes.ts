@@ -53,7 +53,9 @@ const CHAT_CONSTRAINT = `
 
 意图分类：
 - chitchat：纯闲聊，无需改变播放
-- adjust_queue：修改队列（换歌/添加/跳过）
+- adjust_queue：修改队列（换歌/添加/跳过）。注意区分两种场景：
+  1. 用户要求推荐歌曲（如"推荐几首民谣"）→ pick.query 填搜索关键词（如 "民谣 安静"、"爵士 夜晚"），系统会基于真实搜索结果选曲
+  2. 用户指定具体歌曲（如"播放周杰伦的晴天"）→ pick.query 填 "歌曲名 — 艺人名"
 - replan：重排当前时段或整体计划
 - control：直接控制指令（静音/暂停等）
 - ask_meta：询问元信息（当前播放/计划内容）
@@ -69,8 +71,8 @@ const CHAT_CONSTRAINT = `
 actions 数组仅在 adjust_queue / replan / control 意图时填充，chitchat / ask_meta 时为空数组。
 
 仅允许使用以下 action.type：
-- "swap_next"：立刻把一首歌换到下一首，格式：{ "type": "swap_next", "pick": { "query": "歌曲名 — 艺人名" } }
-- "add_to_queue"：加入队列，格式：{ "type": "add_to_queue", "pick": { "query": "歌曲名 — 艺人名" }, "position": "end" | "after_current" }
+- "swap_next"：立刻把一首歌换到下一首。推荐场景用搜索词：{ "type": "swap_next", "pick": { "query": "民谣 安静" } }；指定歌曲用完整名：{ "type": "swap_next", "pick": { "query": "晴天 — 周杰伦" } }
+- "add_to_queue"：加入队列。同上，{ "type": "add_to_queue", "pick": { "query": "..." }, "position": "end" | "after_current" }
 - "skip"
 - "ban_artist"
 - "ban_track"
