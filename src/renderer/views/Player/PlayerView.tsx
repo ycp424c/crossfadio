@@ -81,6 +81,8 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
   const [trackStatusText, setTrackStatusText] = useState('准备就绪');
   const [djStatusText, setDjStatusText] = useState('');
   const [segueStatusText, setSegueStatusText] = useState('');
+  const [segueScriptText, setSegueScriptText] = useState('');
+  const [segueScriptExpanded, setSegueScriptExpanded] = useState(false);
   const [error, setError] = useState('');
   const [session, setSession] = useState<NcmSessionState>({ hasCookie: false, profile: null });
   const [qrPayload, setQrPayload] = useState<{ key: string; qrimg: string } | null>(null);
@@ -277,6 +279,12 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
             ? ttsHintSec
             : DEFAULT_DUCKING_HINT_SEC;
 
+        const sayText =
+          msg.segue && typeof msg.segue === 'object' && 'say' in msg.segue
+            ? String((msg.segue as { say: unknown }).say).trim()
+            : '';
+        if (sayText) setSegueScriptText(sayText);
+
         const audioUrl = typeof msg.audioUrl === 'string' ? msg.audioUrl : null;
         if (!audioUrl) {
           setSegueStatusText('过渡文案已生成（未配置 TTS）');
@@ -384,6 +392,8 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
     segueSatisfiedForTrackIdRef.current = null;
     segueLastAttemptAtRef.current = 0;
     setSegueStatusText('');
+    setSegueScriptText('');
+    setSegueScriptExpanded(false);
     setTrackStatusText(`正在加载曲目 ${currentTrackId} ...`);
 
     void loadNowPlaying(currentTrackId);
@@ -837,8 +847,31 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
               <StatusChip label="曲目" text={trackStatusText || '—'} />
               <StatusChip color="cyan" label="DJ选歌" text={djStatusText || '空闲'} />
               <StatusChip color="violet" label="过渡文案" text={segueStatusText || '空闲'} />
+              {segueScriptText ? (
+                <button
+                  className="inline-flex items-center gap-0.5 text-xs text-violet-300/70 hover:text-violet-200 transition"
+                  onClick={() => setSegueScriptExpanded((v) => !v)}
+                  type="button"
+                >
+                  <span>{segueScriptExpanded ? '收起' : '展开'}</span>
+                  <svg
+                    className={`w-3 h-3 transition-transform ${segueScriptExpanded ? 'rotate-180' : ''}`}
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth={2}
+                  >
+                    <path d="M6 9l6 6 6-6" />
+                  </svg>
+                </button>
+              ) : null}
               {error ? <span className="text-xs text-red-300">{error}</span> : null}
             </div>
+            {segueScriptText && segueScriptExpanded ? (
+              <div className="mt-2 rounded-lg border border-violet-800/40 bg-violet-950/20 px-3 py-2">
+                <p className="text-xs text-violet-200/80 leading-relaxed whitespace-pre-wrap">{segueScriptText}</p>
+              </div>
+            ) : null}
             <button
               className="mt-2 rounded-lg border border-zinc-800 bg-zinc-900/60 px-2.5 py-1.5 text-xs text-zinc-400 transition hover:border-zinc-700 hover:text-zinc-200"
               onClick={() => void loadLikedQueue()}
