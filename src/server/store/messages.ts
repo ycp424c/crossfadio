@@ -44,7 +44,8 @@ export function getRecentMessages(limit = 20, withinMinutes?: number): AgentMess
 
   return rows.map((r) => ({
     role: r.role as 'user' | 'assistant' | 'system',
-    content: r.content
+    content: r.content,
+    created_at: r.created_at
   }));
 }
 

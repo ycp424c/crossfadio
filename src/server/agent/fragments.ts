@@ -73,7 +73,10 @@ function buildMemorySlice(f: Fragments): string {
 
   const recentChat = f.memory.recentChat
     .slice(0, 20)
-    .map((m) => `${m.role === 'user' ? '用户' : 'DJ'}：${m.content}`)
+    .map((m) => {
+      const prefix = m.created_at ? `[${m.created_at.slice(11, 16)}] ` : '';
+      return `${prefix}${m.role === 'user' ? '用户' : 'DJ'}：${m.content}`;
+    })
     .join('\n');
 
   const recentSegues = (f.memory.recentSegues ?? [])

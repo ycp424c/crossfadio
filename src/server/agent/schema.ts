@@ -63,7 +63,8 @@ export type PlayRecord = z.infer<typeof playRecordSchema>;
 
 export const messageSchema = z.object({
   role: z.enum(['user', 'assistant', 'system']),
-  content: z.string()
+  content: z.string(),
+  created_at: z.string().optional()
 });
 
 export type AgentMessage = z.infer<typeof messageSchema>;
