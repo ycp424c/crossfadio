@@ -181,10 +181,6 @@ async function handleChatMessage(
 
         if (added > 0) {
           broadcast({ type: 'queue-updated', queue: getQueue(), currentIndex: getCurrentIndex() });
-          const newTracks = getQueue().slice(prevLen);
-          for (const track of newTracks) {
-            broadcast({ type: 'queue-appended', track });
-          }
         }
 
         // Still execute any non-song actions (skip, ban, etc.)
