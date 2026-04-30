@@ -1,11 +1,11 @@
 type LocationState = { lat: number; lon: number } | null;
 
-let currentLocation: LocationState = null;
+const userLocations = new Map<string, LocationState>();
 
-export function setLocation(lat: number, lon: number): void {
-  currentLocation = { lat, lon };
+export function setLocation(userId: string, lat: number, lon: number): void {
+  userLocations.set(userId, { lat, lon });
 }
 
-export function getLocation(): LocationState {
-  return currentLocation;
+export function getLocation(userId: string): LocationState {
+  return userLocations.get(userId) ?? null;
 }

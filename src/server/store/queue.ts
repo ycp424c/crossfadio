@@ -1,8 +1,3 @@
-/**
- * In-memory playback queue.
- * Tracks the ordered list of ncmIds the browser should play next.
- */
-
 export type QueueTrack = {
   ncmId: string;
   query?: string;
@@ -11,73 +6,76 @@ export type QueueTrack = {
   durationMs?: number;
 };
 
-let queue: QueueTrack[] = [];
-let currentIndex = 0;
+type QueueState = {
+  queue: QueueTrack[];
+  currentIndex: number;
+};
 
-export function getQueue(): QueueTrack[] {
-  return [...queue];
-}
+const userQueues = new Map<string, QueueState>();
 
-export function setQueue(tracks: QueueTrack[]): void {
-  queue = [...tracks];
-  currentIndex = 0;
-}
-
-export function setQueueState(tracks: QueueTrack[], nextCurrentIndex = 0): void {
-  queue = [...tracks];
-  currentIndex = clampIndex(nextCurrentIndex);
-}
-
-export function getCurrentIndex(): number {
-  return currentIndex;
-}
-
-export function advanceCurrent(): void {
-  if (currentIndex < queue.length - 1) {
-    currentIndex += 1;
+function getState(userId: string): QueueState {
+  if (!userQueues.has(userId)) {
+    userQueues.set(userId, { queue: [], currentIndex: 0 });
   }
+  return userQueues.get(userId)!;
 }
 
-export function swapNext(track: QueueTrack): void {
-  if (queue.length === 0) {
-    queue = [track];
-    return;
-  }
-  const insertAt = Math.min(currentIndex + 1, queue.length);
-  queue.splice(insertAt, 0, track);
-  // Remove any existing instance further ahead to keep queue clean
-  const laterIdx = queue.findIndex((t, i) => i > insertAt && t.ncmId === track.ncmId);
-  if (laterIdx !== -1) queue.splice(laterIdx, 1);
-}
-
-export function addToQueue(track: QueueTrack, position: 'end' | 'after_current'): void {
-  if (position === 'end') {
-    // Remove any existing instance of the same track to keep queue clean
-    queue = queue.filter((t) => t.ncmId !== track.ncmId);
-    queue.push(track);
-  } else {
-    const insertAt = Math.min(currentIndex + 1, queue.length);
-    queue.splice(insertAt, 0, track);
-    const laterIdx = queue.findIndex((t, i) => i > insertAt && t.ncmId === track.ncmId);
-    if (laterIdx !== -1) queue.splice(laterIdx, 1);
-  }
-}
-
-export function skipCurrent(): void {
-  advanceCurrent();
-}
-
-export function banNcmId(ncmId: string): void {
-  queue = queue.filter((t) => t.ncmId !== ncmId);
-  currentIndex = clampIndex(currentIndex);
-}
-
-function clampIndex(index: number): number {
-  if (queue.length === 0) {
-    return 0;
-  }
-  if (!Number.isInteger(index)) {
-    return 0;
-  }
+function clampIndex(queue: QueueTrack[], index: number): number {
+  if (queue.length === 0) return 0;
+  if (!Number.isInteger(index)) return 0;
   return Math.min(Math.max(index, 0), queue.length - 1);
+}
+
+export function getQueue(userId: string): QueueTrack[] {
+  return [...getState(userId).queue];
+}
+
+export function setQueue(userId: string, tracks: QueueTrack[]): void {
+  userQueues.set(userId, { queue: [...tracks], currentIndex: 0 });
+}
+
+export function setQueueState(userId: string, tracks: QueueTrack[], nextCurrentIndex = 0): void {
+  const queue = [...tracks];
+  userQueues.set(userId, { queue, currentIndex: clampIndex(queue, nextCurrentIndex) });
+}
+
+export function getCurrentIndex(userId: string): number {
+  return getState(userId).currentIndex;
+}
+
+export function advanceCurrent(userId: string): void {
+  const s = getState(userId);
+  if (s.currentIndex < s.queue.length - 1) s.currentIndex += 1;
+}
+
+export function swapNext(userId: string, track: QueueTrack): void {
+  const s = getState(userId);
+  if (s.queue.length === 0) { s.queue = [track]; return; }
+  const insertAt = Math.min(s.currentIndex + 1, s.queue.length);
+  s.queue.splice(insertAt, 0, track);
+  const laterIdx = s.queue.findIndex((t, i) => i > insertAt && t.ncmId === track.ncmId);
+  if (laterIdx !== -1) s.queue.splice(laterIdx, 1);
+}
+
+export function addToQueue(userId: string, track: QueueTrack, position: 'end' | 'after_current'): void {
+  const s = getState(userId);
+  if (position === 'end') {
+    s.queue = s.queue.filter((t) => t.ncmId !== track.ncmId);
+    s.queue.push(track);
+  } else {
+    const insertAt = Math.min(s.currentIndex + 1, s.queue.length);
+    s.queue.splice(insertAt, 0, track);
+    const laterIdx = s.queue.findIndex((t, i) => i > insertAt && t.ncmId === track.ncmId);
+    if (laterIdx !== -1) s.queue.splice(laterIdx, 1);
+  }
+}
+
+export function skipCurrent(userId: string): void {
+  advanceCurrent(userId);
+}
+
+export function banNcmId(userId: string, ncmId: string): void {
+  const s = getState(userId);
+  s.queue = s.queue.filter((t) => t.ncmId !== ncmId);
+  s.currentIndex = clampIndex(s.queue, s.currentIndex);
 }
