@@ -76,7 +76,7 @@ export async function searchCandidates(
   for (const songs of results) {
     for (const song of songs) {
       const id = String(song.id);
-      if (!seen.has(id) && !excludeIds.has(id)) {
+      if (!seen.has(id) && !excludeIds.has(id) && song.artists.length > 0) {
         seen.add(id);
         tracks.push({ id, name: song.name, artist: song.artists.join(' / ') });
         if (tracks.length >= limit) return tracks;
@@ -245,11 +245,13 @@ async function doPickNext(opts: DjNextOptions): Promise<void> {
         LIKED_DETAILS_TIMEOUT_MS,
         []
       );
-      const likedSample: Track[] = sampledDetails.map((t) => ({
-        id: String(t.id),
-        name: t.name,
-        artist: t.artists.join(' / ') || undefined
-      }));
+      const likedSample: Track[] = sampledDetails
+        .filter((t) => t.artists.length > 0)
+        .map((t) => ({
+          id: String(t.id),
+          name: t.name,
+          artist: t.artists.join(' / ') || undefined
+        }));
 
       logger.info(
         { totalLikedIds: allLikedIds.length, candidateCount: candidateIds.length, sampledCount: likedSample.length },
@@ -349,6 +351,7 @@ async function doPickNext(opts: DjNextOptions): Promise<void> {
 
 从候选歌曲列表中挑选最适合当前情境的 2 首，返回它们的候选歌曲 id。
 不要重复最近刚播过的歌曲。say 字段用一句话中文说明选曲理由。
+优先选择艺人名像真实人名或乐队的歌曲，避开艺人名明显是厂牌、合集、影视原声、或自动生成的选项（如"群星""Various Artists""佚名""原声带"等）。
 只能返回候选歌曲列表中真实存在的 id，不要编造 id，不要返回歌名搜索词。
 
 输出格式：严格 JSON，不要包裹 markdown 代码块。
@@ -471,11 +474,11 @@ ${candidateList}
   }
 
   const pickedIds = sampleN(fallbackIds, Math.min(2, fallbackIds.length));
-  const pickedDetails = await withTimeout(
+  const pickedDetails = (await withTimeout(
     opts.ncmClient.getSongDetails(pickedIds).catch(() => []),
     LIKED_DETAILS_TIMEOUT_MS,
     []
-  );
+  )).filter((t) => t.artists.length > 0);
 
   if (pickedDetails.length === 0) {
     logger.warn('DJ pick-next fallback: failed to fetch track details');
