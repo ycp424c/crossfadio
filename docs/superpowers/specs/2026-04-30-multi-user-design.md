@@ -87,7 +87,7 @@ CREATE TABLE IF NOT EXISTS blocked_login_attempts (
 
 ### Cookie 加密
 
-`SecretStore` 移除，加密逻辑抽取为 `src/server/crypto.ts`（AES-256-GCM 工具函数），供 users 表 cookie 字段加解密使用。加密密钥来自 `CROSSFADIO_JWT_SECRET`（或单独的 `CROSSFADIO_COOKIE_ENCRYPT_KEY`）。
+`SecretStore` 移除，加密逻辑抽取为 `src/server/crypto.ts`（AES-256-GCM 工具函数），供 users 表 cookie 字段加解密使用。加密密钥由 `CROSSFADIO_JWT_SECRET` SHA-256 派生，不引入额外环境变量。
 
 ## 3. 请求管道
 
@@ -165,6 +165,10 @@ ncmClient.getLikedSongs();
 - `PUT /api/settings`（LLM/TTS 部分）
 - `POST /api/settings/test-llm`
 - `POST /api/settings/test-tts`
+
+### 变更接口
+
+- `GET /api/runtime`：不再返回 `sessionToken`，改为返回 `{ ok: true, version: string }`。前端 JWT 从登录响应获取，不再依赖此接口做 WS auth。
 
 ## 5. 部署与 CORS
 
