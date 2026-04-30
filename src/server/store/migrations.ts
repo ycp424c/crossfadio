@@ -71,6 +71,62 @@ CREATE TABLE IF NOT EXISTS chat_preferences (
   message_ids TEXT NOT NULL,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+`,
+  `
+CREATE TABLE IF NOT EXISTS users (
+  ncm_id       TEXT PRIMARY KEY,
+  ncm_cookie   TEXT NOT NULL,
+  profile_json TEXT,
+  created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+  last_seen_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+`,
+  `
+CREATE TABLE IF NOT EXISTS blocked_login_attempts (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  ncm_id       TEXT NOT NULL,
+  profile_json TEXT,
+  attempted_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+`,
+  `
+ALTER TABLE messages ADD COLUMN user_id TEXT NOT NULL DEFAULT '';
+UPDATE messages SET user_id = '__legacy__' WHERE user_id = '';
+
+ALTER TABLE plays ADD COLUMN user_id TEXT NOT NULL DEFAULT '';
+UPDATE plays SET user_id = '__legacy__' WHERE user_id = '';
+
+ALTER TABLE segues ADD COLUMN user_id TEXT NOT NULL DEFAULT '';
+UPDATE segues SET user_id = '__legacy__' WHERE user_id = '';
+
+ALTER TABLE chat_preferences ADD COLUMN user_id TEXT NOT NULL DEFAULT '';
+UPDATE chat_preferences SET user_id = '__legacy__' WHERE user_id = '';
+
+CREATE TABLE prefs_new (
+  user_id    TEXT NOT NULL DEFAULT '',
+  key        TEXT NOT NULL,
+  value_json TEXT NOT NULL,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (user_id, key)
+);
+INSERT INTO prefs_new (user_id, key, value_json, updated_at)
+  SELECT '__legacy__', key, value_json, updated_at FROM prefs;
+DROP TABLE prefs;
+ALTER TABLE prefs_new RENAME TO prefs;
+
+CREATE TABLE plan_new (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id      TEXT NOT NULL DEFAULT '',
+  plan_date    TEXT NOT NULL,
+  version      INTEGER NOT NULL,
+  payload_json TEXT NOT NULL,
+  created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(user_id, plan_date, version)
+);
+INSERT INTO plan_new (id, user_id, plan_date, version, payload_json, created_at)
+  SELECT id, '__legacy__', plan_date, version, payload_json, created_at FROM plan;
+DROP TABLE plan;
+ALTER TABLE plan_new RENAME TO plan;
 `
 ];
 
