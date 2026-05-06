@@ -1,12 +1,7 @@
 import type { RequestHandler } from 'express';
-import type { SessionToken } from '../../../shared/types.js';
 
-type RuntimeHandlerOptions = {
-  sessionToken: SessionToken;
-};
-
-export function createRuntimeHandler(options: RuntimeHandlerOptions): RequestHandler {
+export function createRuntimeHandler(): RequestHandler {
   return (_req, res) => {
-    res.json({ ok: true, sessionToken: options.sessionToken });
+    res.json({ ok: true, version: '2.0.0' });
   };
 }

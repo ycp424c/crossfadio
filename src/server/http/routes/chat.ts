@@ -57,9 +57,9 @@ function sampleN<T>(arr: T[], n: number): T[] {
   return copy.slice(0, n);
 }
 
-export function createChatMessageHandler(opts: ChatHandlerOptions) {
-  return (ws: WebSocket, text: string): void => {
-    void handleChatMessage(ws, text, opts);
+export function createChatMessageHandler(_opts?: ChatHandlerOptions) {
+  return (ws: WebSocket & { userId?: string; ncmClient?: NcmClient }, text: string): void => {
+    void handleChatMessage(ws, text, { userId: ws.userId ?? '__legacy__', ncmClient: ws.ncmClient!, secrets: null as any });
   };
 }
 

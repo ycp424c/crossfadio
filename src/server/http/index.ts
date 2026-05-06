@@ -1,12 +1,11 @@
-import { randomBytes } from 'node:crypto';
 import fs from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import path from 'node:path';
 import express from 'express';
 import cors from 'cors';
+import { getConfig } from '../config.js';
 import { getHealthHandler } from './routes/health.js';
 import { setupWsServer } from './ws.js';
-import type { SessionToken } from '../../shared/types.js';
 import type { NcmProcessManager } from '../ncm/spawn.js';
 import { createNcmStatusHandler } from './routes/ncm.js';
 import type { NcmAuthService } from '../ncm/auth.js';
@@ -21,9 +20,7 @@ import { createNextHandler, createNowHandler } from './routes/now-next.js';
 import { createStartPlayHandler, createEndPlayHandler } from './routes/plays.js';
 import {
   createGetSettingsHandler,
-  createSaveSettingsHandler,
-  createTestLlmSettingsHandler,
-  createTestTtsSettingsHandler
+  createSaveSettingsHandler
 } from './routes/settings.js';
 import {
   createGetTodayPlanHandler,
@@ -37,14 +34,19 @@ import { createDjPickNextHandler } from './routes/djNext.js';
 import { createGetRecentMessagesHandler } from './routes/messages.js';
 import { createSetLocationHandler } from './routes/location.js';
 import { createRuntimeHandler } from './routes/runtime.js';
-import { createGetLikedIdsHandler, createGetLikedQueueHandler, createLikeTrackHandler, createSetQueueStateHandler } from './routes/queue.js';
-import type { SecretStore } from '../security.js';
+import {
+  createGetLikedIdsHandler,
+  createGetLikedQueueHandler,
+  createLikeTrackHandler,
+  createSetQueueStateHandler
+} from './routes/queue.js';
+import { authMiddleware } from './middleware/auth.js';
+import { userScopeMiddleware } from './middleware/userScope.js';
 
 export type LocalServer = {
   port: number;
   baseUrl: string;
   wsUrl: string;
-  sessionToken: SessionToken;
   close: () => Promise<void>;
 };
 
@@ -52,65 +54,64 @@ type StartLocalServerOptions = {
   ncm: NcmProcessManager;
   ncmAuth: NcmAuthService;
   ncmClient: NcmClient;
-  secrets: SecretStore;
+  ncmBaseUrl: string;
   host: string;
   port: number;
   staticDir?: string | null;
 };
 
 export async function startLocalServer(options: StartLocalServerOptions): Promise<LocalServer> {
+  const config = getConfig();
   const app = express();
+
+  // Store NCM base URL for middleware
+  app.locals.ncmBaseUrl = options.ncmBaseUrl;
+
   app.use(
     cors({
       origin(origin, callback) {
-        if (!origin || origin === 'null') {
-          callback(null, true);
-          return;
-        }
-
-        if (/^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(origin)) {
-          callback(null, true);
-          return;
-        }
-
+        if (!origin || origin === 'null') { callback(null, true); return; }
+        if (/^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(origin)) { callback(null, true); return; }
+        if (config.allowedOrigins.some((o) => o === origin)) { callback(null, true); return; }
         callback(new Error(`CORS blocked origin: ${origin}`));
       }
     })
   );
   app.use(express.json({ limit: '1mb' }));
 
-  const sessionToken = randomBytes(24).toString('hex');
-
-  app.get('/api/runtime', createRuntimeHandler({ sessionToken }));
+  // ── Public routes ─────────────────────────────────────────────────────────
+  app.get('/api/runtime', createRuntimeHandler());
   app.get('/api/health', getHealthHandler);
   app.get('/api/ncm/status', createNcmStatusHandler(options.ncm));
   app.get('/api/ncm/login/qr', createNcmQrHandler(options.ncmAuth));
   app.post('/api/ncm/login/qr', createNcmQrHandler(options.ncmAuth));
   app.get('/api/ncm/login/status', createNcmQrStatusHandler(options.ncmAuth));
-  app.get('/api/ncm/login/session', createNcmSessionHandler());
-  app.post('/api/ncm/login/logout', createNcmLogoutHandler());
-  app.post('/api/ncm/logout', createNcmLogoutHandler());
-  app.get('/api/now', createNowHandler(options.ncmClient));
-  app.get('/api/next', createNextHandler(options.ncmClient));
-  app.post('/api/plays', createStartPlayHandler());
-  app.patch('/api/plays/:id', createEndPlayHandler());
-  app.get('/api/settings', createGetSettingsHandler(options.secrets));
-  app.put('/api/settings', createSaveSettingsHandler(options.secrets));
-  app.post('/api/settings/test-llm', createTestLlmSettingsHandler(options.secrets));
-  app.post('/api/settings/test-tts', createTestTtsSettingsHandler(options.secrets));
-  app.get('/api/plan/today', createGetTodayPlanHandler({ secrets: options.secrets, ncmClient: options.ncmClient }));
-  app.post('/api/plan/regenerate', createRegeneratePlanHandler({ secrets: options.secrets, ncmClient: options.ncmClient }));
-  app.post('/api/plan/replan-segment', createReplanSegmentHandler({ secrets: options.secrets, ncmClient: options.ncmClient }));
-  app.post('/api/plan/gap-fill', createGapFillHandler({ secrets: options.secrets, ncmClient: options.ncmClient }));
-  app.get('/api/queue/liked/ids', createGetLikedIdsHandler());
-  app.get('/api/queue/liked', createGetLikedQueueHandler());
-  app.post('/api/queue/like', createLikeTrackHandler());
-  app.put('/api/queue/state', createSetQueueStateHandler());
-  app.post('/api/segue/trigger', createSegueTriggerHandler({ secrets: options.secrets, ncmClient: options.ncmClient }));
   app.get('/api/segue/audio/*', createSegueAudioHandler());
-  app.post('/api/dj/pick-next', createDjPickNextHandler({ secrets: options.secrets, ncmClient: options.ncmClient }));
-  app.get('/api/messages/recent', createGetRecentMessagesHandler());
-  app.post('/api/location', createSetLocationHandler());
+
+  // ── Protected routes ──────────────────────────────────────────────────────
+  const protect = [authMiddleware, userScopeMiddleware];
+
+  app.get('/api/ncm/login/session', protect, createNcmSessionHandler());
+  app.post('/api/ncm/login/logout', protect, createNcmLogoutHandler());
+  app.post('/api/ncm/logout', protect, createNcmLogoutHandler());
+  app.get('/api/now', protect, createNowHandler(options.ncmClient));
+  app.get('/api/next', protect, createNextHandler(options.ncmClient));
+  app.post('/api/plays', protect, createStartPlayHandler());
+  app.patch('/api/plays/:id', protect, createEndPlayHandler());
+  app.get('/api/settings', protect, createGetSettingsHandler());
+  app.put('/api/settings', protect, createSaveSettingsHandler());
+  app.get('/api/plan/today', protect, createGetTodayPlanHandler({ secrets: null as any, ncmClient: options.ncmClient }));
+  app.post('/api/plan/regenerate', protect, createRegeneratePlanHandler({ secrets: null as any, ncmClient: options.ncmClient }));
+  app.post('/api/plan/replan-segment', protect, createReplanSegmentHandler({ secrets: null as any, ncmClient: options.ncmClient }));
+  app.post('/api/plan/gap-fill', protect, createGapFillHandler({ secrets: null as any, ncmClient: options.ncmClient }));
+  app.get('/api/queue/liked/ids', protect, createGetLikedIdsHandler());
+  app.get('/api/queue/liked', protect, createGetLikedQueueHandler());
+  app.post('/api/queue/like', protect, createLikeTrackHandler());
+  app.put('/api/queue/state', protect, createSetQueueStateHandler());
+  app.post('/api/segue/trigger', protect, createSegueTriggerHandler({ secrets: null as any, ncmClient: options.ncmClient }));
+  app.post('/api/dj/pick-next', protect, createDjPickNextHandler({ secrets: null as any, ncmClient: options.ncmClient }));
+  app.get('/api/messages/recent', protect, createGetRecentMessagesHandler());
+  app.post('/api/location', protect, createSetLocationHandler());
 
   if (options.staticDir && fs.existsSync(options.staticDir)) {
     app.use(express.static(options.staticDir));
@@ -125,8 +126,8 @@ export async function startLocalServer(options: StartLocalServerOptions): Promis
   });
 
   const server = createServer(app);
-  const chatHandler = createChatMessageHandler({ secrets: options.secrets, ncmClient: options.ncmClient, userId: '__legacy__' });
-  setupWsServer(server, { sessionToken, onChatMessage: chatHandler, onCancelRecommend: cancelChatRecommend });
+  const chatHandler = createChatMessageHandler({ secrets: null as any, ncmClient: options.ncmClient, userId: '__legacy__' });
+  setupWsServer(server, { ncmBaseUrl: options.ncmBaseUrl, onChatMessage: chatHandler, onCancelRecommend: cancelChatRecommend });
 
   const port = await listen(server, options.host, options.port);
   const baseUrl = `http://${options.host}:${port}`;
@@ -136,7 +137,6 @@ export async function startLocalServer(options: StartLocalServerOptions): Promis
     port,
     baseUrl,
     wsUrl,
-    sessionToken,
     close: async () => closeServer(server)
   };
 }
@@ -146,11 +146,7 @@ function listen(server: Server, host: string, port: number): Promise<number> {
     server.once('error', reject);
     server.listen(port, host, () => {
       const address = server.address();
-      if (!address || typeof address === 'string') {
-        reject(new Error('Failed to acquire local server port.'));
-        return;
-      }
-
+      if (!address || typeof address === 'string') { reject(new Error('Failed to acquire port.')); return; }
       resolve(address.port);
     });
   });
@@ -158,12 +154,6 @@ function listen(server: Server, host: string, port: number): Promise<number> {
 
 function closeServer(server: Server): Promise<void> {
   return new Promise((resolve, reject) => {
-    server.close((err) => {
-      if (err) {
-        reject(err);
-        return;
-      }
-      resolve();
-    });
+    server.close((err) => (err ? reject(err) : resolve()));
   });
 }

@@ -1,0 +1,39 @@
+import type { Request, Response, NextFunction } from 'express';
+import type { NcmClient as NcmClientType } from '../../ncm/client.js';
+import { NcmClient } from '../../ncm/client.js';
+import { getUserById } from '../../store/users.js';
+import { deriveKey, decrypt } from '../../crypto.js';
+import { getConfig } from '../../config.js';
+import { getLogger } from '../../logger.js';
+
+export async function userScopeMiddleware(
+  req: Request,
+  res: Response,
+  next: NextFunction
+): Promise<void> {
+  const userId = (req as Request & { userId?: string }).userId;
+  if (!userId) {
+    res.status(401).json({ ok: false, error: 'unauthorized' });
+    return;
+  }
+
+  const user = getUserById(userId);
+  if (!user) {
+    getLogger().warn({ userId }, 'Authed user not found in DB — cookie may have been cleared');
+    res.status(401).json({ ok: false, error: 'unauthorized', message: '用户记录不存在，请重新登录' });
+    return;
+  }
+
+  try {
+    const config = getConfig();
+    const key = deriveKey(config.jwtSecret);
+    const cookie = decrypt(user.ncm_cookie, key);
+    const ncmBaseUrl = req.app.locals.ncmBaseUrl as string;
+    const ncmClient = new NcmClient(ncmBaseUrl, { getCookie: () => cookie });
+    (req as Request & { userId: string; ncmClient: NcmClientType }).ncmClient = ncmClient;
+    next();
+  } catch (err) {
+    getLogger().error({ err, userId }, 'Failed to decrypt user cookie');
+    res.status(401).json({ ok: false, error: 'unauthorized', message: '用户凭证解密失败，请重新登录' });
+  }
+}

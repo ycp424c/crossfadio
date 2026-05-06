@@ -40,7 +40,7 @@ const ttsTestBodySchema = z.object({
 
 // ─── GET /api/settings ────────────────────────────────────────────────────────
 
-export function createGetSettingsHandler(secrets: SecretStore) {
+export function createGetSettingsHandler(secrets?: SecretStore) {
   return (_req: Request, res: Response): void => {
     const llm = getPref<{ baseUrl: string; model: string }>('__legacy__', 'llm.config') ?? null;
     const tts =
@@ -54,7 +54,7 @@ export function createGetSettingsHandler(secrets: SecretStore) {
         ? {
             baseUrl: llm.baseUrl,
             model: llm.model,
-            hasApiKey: Boolean(secrets.get('llm.apiKey'))
+            hasApiKey: Boolean(secrets!.get('llm.apiKey'))
           }
         : null,
       tts: tts
@@ -65,7 +65,7 @@ export function createGetSettingsHandler(secrets: SecretStore) {
             speed: tts.speed,
             format: tts.format,
             provider: tts.provider ?? inferTtsProvider(tts),
-            hasApiKey: Boolean(secrets.get('tts.apiKey'))
+            hasApiKey: Boolean(secrets!.get('tts.apiKey'))
           }
         : null
     });
@@ -74,7 +74,7 @@ export function createGetSettingsHandler(secrets: SecretStore) {
 
 // ─── PUT /api/settings ────────────────────────────────────────────────────────
 
-export function createSaveSettingsHandler(secrets: SecretStore) {
+export function createSaveSettingsHandler(secrets?: SecretStore) {
   return (req: Request, res: Response): void => {
     const parsed = settingsBodySchema.safeParse(req.body);
     if (!parsed.success) {
@@ -89,9 +89,9 @@ export function createSaveSettingsHandler(secrets: SecretStore) {
       setPref('__legacy__', 'llm.config', rest);
       if (apiKey !== undefined) {
         if (apiKey) {
-          secrets.set('llm.apiKey', apiKey);
+          secrets!.set('llm.apiKey', apiKey);
         } else {
-          secrets.remove('llm.apiKey');
+          secrets!.remove('llm.apiKey');
         }
       }
     }
@@ -101,9 +101,9 @@ export function createSaveSettingsHandler(secrets: SecretStore) {
       setPref('__legacy__', 'tts.config', rest);
       if (apiKey !== undefined) {
         if (apiKey) {
-          secrets.set('tts.apiKey', apiKey);
+          secrets!.set('tts.apiKey', apiKey);
         } else {
-          secrets.remove('tts.apiKey');
+          secrets!.remove('tts.apiKey');
         }
       }
     }
@@ -200,7 +200,7 @@ function resolveEffectiveLlmConfig(
   const stored = getPref<{ baseUrl: string; model: string }>('__legacy__', 'llm.config');
   const baseUrl = patch?.baseUrl?.trim() || stored?.baseUrl;
   const model = patch?.model?.trim() || stored?.model;
-  const apiKey = normalizeApiKey(patch?.apiKey) ?? secrets.get('llm.apiKey');
+  const apiKey = normalizeApiKey(patch?.apiKey) ?? secrets!.get('llm.apiKey');
 
   if (!baseUrl || !model || !apiKey) {
     return null;
@@ -228,7 +228,7 @@ function resolveEffectiveTtsConfig(
   const voice = patch?.voice?.trim() || stored.voice || DEFAULT_TTS_CONFIG.voice;
   const speed = patch?.speed ?? stored.speed ?? DEFAULT_TTS_CONFIG.speed;
   const format = patch?.format ?? stored.format ?? DEFAULT_TTS_CONFIG.format;
-  const apiKey = normalizeApiKey(patch?.apiKey) ?? secrets.get('tts.apiKey');
+  const apiKey = normalizeApiKey(patch?.apiKey) ?? secrets!.get('tts.apiKey');
 
   if (!baseUrl || !model || !voice || !apiKey) {
     return null;

@@ -7,7 +7,6 @@ import { ensureUserCorpus } from './user-corpus/bootstrap.js';
 import { NcmProcessManager } from './ncm/spawn.js';
 import { NcmClient } from './ncm/client.js';
 import { NcmAuthService } from './ncm/auth.js';
-import { SecretStore } from './security.js';
 import { resolveStaticDir as resolveRuntimeStaticDir } from './runtime.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -23,7 +22,6 @@ async function bootstrap(): Promise<void> {
     ensureUserCorpus();
     initDb();
 
-    const secrets = new SecretStore();
     ncm = new NcmProcessManager();
     await ncm.start();
 
@@ -37,8 +35,7 @@ async function bootstrap(): Promise<void> {
       ncm,
       ncmAuth: authRef,
       ncmClient,
-      secrets,
-      host: '127.0.0.1',
+      ncmBaseUrl: ncm.getStatus().baseUrl,      host: '127.0.0.1',
       port: resolveServerPort(),
       staticDir: resolveStaticDir()
     });
