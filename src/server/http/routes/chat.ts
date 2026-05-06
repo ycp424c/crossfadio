@@ -80,7 +80,7 @@ async function handleChatMessage(
   try {
     saveMessage(userId, 'user', text);
 
-    const llmConfig = resolveLlmConfig(opts.secrets);
+    const llmConfig = resolveLlmConfig();
     if (!llmConfig) {
       const fallback = '抱歉，AI DJ 暂时不可用（未配置 LLM）。';
       send({ type: 'chat.done', say: fallback, intent: 'chitchat', actions: [] });

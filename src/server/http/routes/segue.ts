@@ -132,7 +132,7 @@ async function runSegueJob(
   let ttsTimeout: ReturnType<typeof setTimeout> | null = null;
 
   try {
-    const llmConfig = resolveLlmConfig(opts.secrets);
+    const llmConfig = resolveLlmConfig();
     if (!llmConfig) {
       emit({ type: 'segue.degraded', reason: 'no-llm' });
       return;
@@ -219,7 +219,7 @@ async function runSegueJob(
       say: segueOutput.say
     });
 
-    const ttsConfig = resolveTtsConfig(opts.secrets);
+    const ttsConfig = resolveTtsConfig(userId);
     if (!ttsConfig) {
       emit({
         type: 'segue.tts-ready',

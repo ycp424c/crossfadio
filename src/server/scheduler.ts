@@ -60,7 +60,7 @@ export function startScheduler(opts: SchedulerOptions): SchedulerHandle {
 
     try {
       const corpus = loadUserCorpus();
-      const llmConfig = resolveLlmConfig(opts.secrets);
+      const llmConfig = resolveLlmConfig();
       const likedTracks = opts.ncmClient ? await loadLikedTracksForPlanning(opts.ncmClient) : [];
       let plan = loadLatestPlan('__legacy__', date);
 
@@ -127,7 +127,7 @@ export function startScheduler(opts: SchedulerOptions): SchedulerHandle {
   // ─── Preference extraction (every 30 min) ────────────────────────────────
 
   async function runPreferenceExtraction(): Promise<void> {
-    const llmConfig = resolveLlmConfig(opts.secrets);
+    const llmConfig = resolveLlmConfig();
     if (!llmConfig) {
       scheduleNext(() => void runPreferenceExtraction(), PREFERENCE_EXTRACTION_INTERVAL_MS);
       return;

@@ -63,7 +63,7 @@ export async function buildPlanFragments(userId: string, date: string, ncmClient
 }
 
 async function generatePlan(userId: string, date: string, secrets: SecretStore, ncmClient: NcmClient) {
-  const llmConfig = resolveLlmConfig(secrets);
+  const llmConfig = resolveLlmConfig();
   const corpus = loadUserCorpus();
 
   if (!llmConfig) {
@@ -150,7 +150,7 @@ export function createReplanSegmentHandler(opts: PlanRouteOptions) {
 
       const { segmentId } = parsed.data;
       const corpus = loadUserCorpus();
-      const llmConfig = resolveLlmConfig(opts.secrets);
+      const llmConfig = resolveLlmConfig();
 
       if (llmConfig) {
         // Re-generate just this segment by creating a fresh full plan with a hint

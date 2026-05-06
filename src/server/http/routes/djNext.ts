@@ -210,7 +210,7 @@ async function doPickNext(opts: DjNextOptions, userId: string): Promise<void> {
   }
   const allLikedIds = likedIdsCache.get(userId)?.ids ?? [];
 
-  const llmConfig = resolveLlmConfig(opts.secrets);
+  const llmConfig = resolveLlmConfig();
   if (!llmConfig) {
     logger.warn('DJ pick-next: skipping LLM pick because LLM config is missing');
   } else if (allLikedIds.length === 0) {
