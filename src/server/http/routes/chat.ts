@@ -1,3 +1,4 @@
+import type { Request } from 'express';
 import type { WebSocket } from 'ws';
 import { randomBytes } from 'node:crypto';
 import { computeStream } from '../../agent/compute.js';
@@ -20,7 +21,10 @@ import { broadcast } from '../broadcast.js';
 import { getLogger } from '../../logger.js';
 import { searchCandidates } from './djNext.js';
 
+type AuthedRequest = Request & { userId: string; ncmClient: NcmClient };
+
 type ChatHandlerOptions = {
+  userId: string;
   secrets: SecretStore;
   ncmClient: NcmClient;
 };
@@ -64,6 +68,7 @@ async function handleChatMessage(
   text: string,
   opts: ChatHandlerOptions
 ): Promise<void> {
+  const userId = opts.userId;
   const logger = getLogger();
 
   const send = (payload: unknown): void => {
@@ -73,13 +78,13 @@ async function handleChatMessage(
   };
 
   try {
-    saveMessage('user', text);
+    saveMessage(userId, 'user', text);
 
     const llmConfig = resolveLlmConfig(opts.secrets);
     if (!llmConfig) {
       const fallback = '抱歉，AI DJ 暂时不可用（未配置 LLM）。';
       send({ type: 'chat.done', say: fallback, intent: 'chitchat', actions: [] });
-      saveMessage('assistant', fallback);
+      saveMessage(userId, 'assistant', fallback);
       return;
     }
 
@@ -105,9 +110,9 @@ async function handleChatMessage(
         nowPlaying: null
       },
       memory: {
-        recentPlays: getRecentPlays(50),
-        recentChat: getRecentMessages(20, 60),
-        extractedPreferences: getPreferenceContext(3)
+        recentPlays: getRecentPlays(userId, 50),
+        recentChat: getRecentMessages(userId, 20, 60),
+        extractedPreferences: getPreferenceContext(userId, 3)
       },
       input: { kind: 'chat', text },
       trace: { triggeredBy: 'user', lastDecision: null }
@@ -127,11 +132,11 @@ async function handleChatMessage(
     if (!chatOutput) {
       const fallback = extractSayFromRawChat(streamedRaw);
       send({ type: 'chat.done', say: fallback, intent: 'chitchat', actions: [] });
-      saveMessage('assistant', fallback);
+      saveMessage(userId, 'assistant', fallback);
       return;
     }
 
-    saveMessage('assistant', chatOutput.say);
+    saveMessage(userId, 'assistant', chatOutput.say);
     send({ type: 'chat.delta', say: chatOutput.say });
     send({
       type: 'chat.done',
@@ -160,10 +165,10 @@ async function handleChatMessage(
 
         send({ type: 'chat.recommend.started', jobId });
 
-        const prevLen = getQueue().length;
+        const prevLen = getQueue(userId).length;
         let added = 0;
         try {
-          added = await runChatRecommendPipeline({
+          added = await runChatRecommendPipeline(userId, {
             actions: songActions,
             likedTracks,
             ncmClient: opts.ncmClient,
@@ -180,7 +185,7 @@ async function handleChatMessage(
         }
 
         if (added > 0) {
-          broadcast({ type: 'queue-updated', queue: getQueue(), currentIndex: getCurrentIndex() });
+          broadcast({ type: 'queue-updated', queue: getQueue(userId), currentIndex: getCurrentIndex(userId) });
         }
 
         // Still execute any non-song actions (skip, ban, etc.)
@@ -188,12 +193,12 @@ async function handleChatMessage(
           (a) => a.type !== 'swap_next' && a.type !== 'add_to_queue'
         );
         if (otherActions.length > 0) {
-          await executeActions(otherActions, { ncmClient: opts.ncmClient });
+          await executeActions(otherActions, { userId, ncmClient: opts.ncmClient });
         }
       } else {
-        const result = await executeActions(chatOutput.actions, { ncmClient: opts.ncmClient });
+        const result = await executeActions(chatOutput.actions, { userId, ncmClient: opts.ncmClient });
         if (result.queueChanged) {
-          broadcast({ type: 'queue-updated', queue: getQueue(), currentIndex: getCurrentIndex() });
+          broadcast({ type: 'queue-updated', queue: getQueue(userId), currentIndex: getCurrentIndex(userId) });
         }
       }
     }
@@ -213,7 +218,7 @@ type RecommendPipelineInput = {
   signal: AbortSignal;
 };
 
-async function runChatRecommendPipeline(input: RecommendPipelineInput): Promise<number> {
+async function runChatRecommendPipeline(userId: string, input: RecommendPipelineInput): Promise<number> {
   const logger = getLogger();
   const { actions, likedTracks, ncmClient, llmConfig, userText, onProgress, signal } = input;
 
@@ -226,11 +231,11 @@ async function runChatRecommendPipeline(input: RecommendPipelineInput): Promise<
   onProgress({ phase: 'searching' });
 
   const recentIds = new Set(
-    getRecentPlays(30)
+    getRecentPlays(userId, 30)
       .map((p) => p.song_id)
       .filter((id): id is string => id !== null)
   );
-  const currentQueueIds = new Set(getQueue().map((t) => t.ncmId));
+  const currentQueueIds = new Set(getQueue(userId).map((t) => t.ncmId));
   const excludeIds = new Set([...recentIds, ...currentQueueIds]);
 
   if (signal.aborted) return 0;
@@ -251,7 +256,7 @@ async function runChatRecommendPipeline(input: RecommendPipelineInput): Promise<
 
   if (allCandidates.length === 0) {
     onProgress({ phase: 'error', reason: 'no-candidates' });
-    return fallbackAddFromLiked(likedTracks, excludeIds);
+    return fallbackAddFromLiked(userId, likedTracks, excludeIds);
   }
 
   onProgress({ phase: 'picking', candidateCount: allCandidates.length });
@@ -314,16 +319,16 @@ ${candidateList}
   let added = 0;
   const addedTracks: Array<{ name: string; artist: string }> = [];
   const isSwap = actions.some((a) => a.type === 'swap_next');
-  const alreadyQueued = new Set(getQueue().map((t) => t.ncmId));
+  const alreadyQueued = new Set(getQueue(userId).map((t) => t.ncmId));
   for (const idx of chosenIndices) {
     const track = allCandidates[idx - 1];
     if (!track) continue;
     if (alreadyQueued.has(track.id)) continue;
     alreadyQueued.add(track.id);
     if (isSwap) {
-      swapNext({ ncmId: track.id, name: track.name, artists: track.artist ? [track.artist] : [] });
+      swapNext(userId, { ncmId: track.id, name: track.name, artists: track.artist ? [track.artist] : [] });
     } else {
-      addToQueue(
+      addToQueue(userId, 
         { ncmId: track.id, name: track.name, artists: track.artist ? [track.artist] : [] },
         'end'
       );
@@ -338,14 +343,14 @@ ${candidateList}
   return added;
 }
 
-function fallbackAddFromLiked(likedTracks: Track[], excludeIds: Set<string>): number {
+function fallbackAddFromLiked(userId: string, likedTracks: Track[], excludeIds: Set<string>): number {
   const logger = getLogger();
   const available = likedTracks.filter((t) => !excludeIds.has(t.id));
   if (available.length === 0) return 0;
 
   const picked = sampleN(available, Math.min(2, available.length));
   for (const track of picked) {
-    addToQueue(
+    addToQueue(userId, 
       { ncmId: track.id, name: track.name, artists: track.artist ? [track.artist] : [] },
       'end'
     );

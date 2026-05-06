@@ -9,7 +9,6 @@ import { NcmClient } from './ncm/client.js';
 import { NcmAuthService } from './ncm/auth.js';
 import { SecretStore } from './security.js';
 import { resolveStaticDir as resolveRuntimeStaticDir } from './runtime.js';
-import { startScheduler, stopScheduler } from './scheduler.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -45,7 +44,6 @@ async function bootstrap(): Promise<void> {
       staticDir: resolveStaticDir()
     });
 
-    startScheduler({ secrets, ncmClient });
     logger.info({ baseUrl: localServer.baseUrl, ncm: ncm.getStatus() }, 'Crossfadio web server started');
   } catch (error) {
     logger.error({ err: error }, 'Failed to bootstrap Crossfadio web server');
@@ -57,7 +55,6 @@ async function bootstrap(): Promise<void> {
 async function shutdown(): Promise<void> {
   const logger = getLogger();
 
-  stopScheduler();
 
   if (ncm) {
     try {

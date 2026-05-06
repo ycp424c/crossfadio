@@ -42,10 +42,10 @@ const ttsTestBodySchema = z.object({
 
 export function createGetSettingsHandler(secrets: SecretStore) {
   return (_req: Request, res: Response): void => {
-    const llm = getPref<{ baseUrl: string; model: string }>('llm.config') ?? null;
+    const llm = getPref<{ baseUrl: string; model: string }>('__legacy__', 'llm.config') ?? null;
     const tts =
       getPref<{ provider?: string; baseUrl: string; model: string; voice: string; speed: number; format: string }>(
-        'tts.config'
+        '__legacy__', 'tts.config'
       ) ?? null;
 
     res.json({
@@ -86,7 +86,7 @@ export function createSaveSettingsHandler(secrets: SecretStore) {
 
     if (llm) {
       const { apiKey, ...rest } = llm;
-      setPref('llm.config', rest);
+      setPref('__legacy__', 'llm.config', rest);
       if (apiKey !== undefined) {
         if (apiKey) {
           secrets.set('llm.apiKey', apiKey);
@@ -98,7 +98,7 @@ export function createSaveSettingsHandler(secrets: SecretStore) {
 
     if (tts) {
       const { apiKey, ...rest } = tts;
-      setPref('tts.config', rest);
+      setPref('__legacy__', 'tts.config', rest);
       if (apiKey !== undefined) {
         if (apiKey) {
           secrets.set('tts.apiKey', apiKey);
@@ -197,7 +197,7 @@ function resolveEffectiveLlmConfig(
   patch: Partial<z.infer<typeof llmConfigSchema>> | undefined,
   secrets: SecretStore
 ): { baseUrl: string; model: string; apiKey: string } | null {
-  const stored = getPref<{ baseUrl: string; model: string }>('llm.config');
+  const stored = getPref<{ baseUrl: string; model: string }>('__legacy__', 'llm.config');
   const baseUrl = patch?.baseUrl?.trim() || stored?.baseUrl;
   const model = patch?.model?.trim() || stored?.model;
   const apiKey = normalizeApiKey(patch?.apiKey) ?? secrets.get('llm.apiKey');
@@ -220,7 +220,7 @@ function resolveEffectiveTtsConfig(
     voice: string;
     speed: number;
     format: 'mp3' | 'opus' | 'aac' | 'flac';
-  }> = getPref('tts.config') ?? {};
+  }> = getPref('__legacy__', 'tts.config') ?? {};
 
   const provider = patch?.provider ?? stored.provider ?? inferTtsProvider(stored);
   const baseUrl = patch?.baseUrl?.trim() || stored.baseUrl || DEFAULT_TTS_CONFIG.baseUrl;

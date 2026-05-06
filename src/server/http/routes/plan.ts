@@ -6,6 +6,8 @@ import { buildFallbackPlan } from '../../agent/plan-fallback.js';
 import type { Fragments } from '../../agent/schema.js';
 import { resolveLlmConfig } from '../../llm/config.js';
 import type { NcmClient } from '../../ncm/client.js';
+
+type AuthedRequest = Request & { userId: string; ncmClient: NcmClient };
 import type { NcmPlaylistDetail, NcmPlaylistTrack } from '../../../shared/schema.js';
 import { resolveTrackQuery } from '../../ncm/resolver.js';
 import type { SecretStore } from '../../security.js';
@@ -31,10 +33,10 @@ type PlanRouteOptions = {
 
 // ─── Shared helpers ───────────────────────────────────────────────────────────
 
-export async function buildPlanFragments(date: string, ncmClient: NcmClient): Promise<Fragments> {
+export async function buildPlanFragments(userId: string, date: string, ncmClient: NcmClient): Promise<Fragments> {
   const corpus = loadUserCorpus();
   const weather = await fetchWeather();
-  const recentPlays = getRecentPlays(50);
+  const recentPlays = getRecentPlays(userId, 50);
   const likedTracks = await loadLikedTracksForPlanning(ncmClient);
   const now = new Date();
 
@@ -60,7 +62,7 @@ export async function buildPlanFragments(date: string, ncmClient: NcmClient): Pr
   };
 }
 
-async function generatePlan(date: string, secrets: SecretStore, ncmClient: NcmClient) {
+async function generatePlan(userId: string, date: string, secrets: SecretStore, ncmClient: NcmClient) {
   const llmConfig = resolveLlmConfig(secrets);
   const corpus = loadUserCorpus();
 
@@ -68,7 +70,7 @@ async function generatePlan(date: string, secrets: SecretStore, ncmClient: NcmCl
     return buildFallbackPlan(date, corpus.playlists);
   }
 
-  const fragments = await buildPlanFragments(date, ncmClient);
+  const fragments = await buildPlanFragments(userId, date, ncmClient);
   try {
     const output = await computeSync(fragments, { llmConfig });
     if (output.mode !== 'plan') throw new Error('unexpected mode');
@@ -81,14 +83,15 @@ async function generatePlan(date: string, secrets: SecretStore, ncmClient: NcmCl
 // ─── GET /api/plan/today ──────────────────────────────────────────────────────
 
 export function createGetTodayPlanHandler(opts: PlanRouteOptions) {
-  return async (_req: Request, res: Response): Promise<void> => {
+  return async (req: Request, res: Response): Promise<void> => {
     try {
       const date = todayDateStr();
-      let plan = loadLatestPlan(date);
+      const userId = (req as AuthedRequest).userId;
+      let plan = loadLatestPlan(userId, date);
 
       if (!plan) {
-        plan = await generatePlan(date, opts.secrets, opts.ncmClient);
-        savePlan(plan);
+        plan = await generatePlan(userId, date, opts.secrets, opts.ncmClient);
+        savePlan(userId, plan);
       }
 
       res.json({ ok: true, plan });
@@ -102,11 +105,12 @@ export function createGetTodayPlanHandler(opts: PlanRouteOptions) {
 // ─── POST /api/plan/regenerate ────────────────────────────────────────────────
 
 export function createRegeneratePlanHandler(opts: PlanRouteOptions) {
-  return async (_req: Request, res: Response): Promise<void> => {
+  return async (req: Request, res: Response): Promise<void> => {
     try {
       const date = todayDateStr();
-      const plan = await generatePlan(date, opts.secrets, opts.ncmClient);
-      savePlan(plan);
+      const userId = (req as AuthedRequest).userId;
+      const plan = await generatePlan(userId, date, opts.secrets, opts.ncmClient);
+      savePlan(userId, plan);
       res.json({ ok: true, plan });
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'unknown error';
@@ -141,7 +145,8 @@ export function createReplanSegmentHandler(opts: PlanRouteOptions) {
 
     try {
       const date = todayDateStr();
-      let plan = loadLatestPlan(date) ?? (await generatePlan(date, opts.secrets, opts.ncmClient));
+      const userId = (req as AuthedRequest).userId;
+      let plan = loadLatestPlan(userId, date) ?? (await generatePlan(userId, date, opts.secrets, opts.ncmClient));
 
       const { segmentId } = parsed.data;
       const corpus = loadUserCorpus();
@@ -149,7 +154,7 @@ export function createReplanSegmentHandler(opts: PlanRouteOptions) {
 
       if (llmConfig) {
         // Re-generate just this segment by creating a fresh full plan with a hint
-        const fragments = await buildPlanFragments(date, opts.ncmClient);
+        const fragments = await buildPlanFragments(userId, date, opts.ncmClient);
         const hintText = parsed.data.hint
           ? ` 重点要求：${JSON.stringify(parsed.data.hint)}`
           : '';
@@ -184,7 +189,7 @@ export function createReplanSegmentHandler(opts: PlanRouteOptions) {
         }
       }
 
-      savePlan(plan);
+      savePlan(userId, plan);
       res.json({ ok: true, plan });
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'unknown error';
@@ -212,6 +217,7 @@ export function createGapFillHandler(opts: PlanRouteOptions) {
 
     try {
       const { segmentId, count, mood } = parsed.data;
+      const userId = (req as AuthedRequest).userId;
       const corpus = loadUserCorpus();
 
       // Pick best playlist for this segment and resolve track IDs

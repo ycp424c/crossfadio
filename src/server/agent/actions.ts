@@ -7,6 +7,7 @@ import type { NcmClient } from '../ncm/client.js';
 import type { Action } from './schema.js';
 
 export type ActionContext = {
+  userId: string;
   ncmClient: NcmClient;
 };
 
@@ -26,7 +27,7 @@ export async function executeActions(
   let queueChanged = false;
 
   const recentPlayIds = new Set(
-    getRecentPlays(50)
+    getRecentPlays(ctx.userId, 50)
       .map((p) => p.song_id)
       .filter((id): id is string => id !== null)
   );
@@ -37,7 +38,7 @@ export async function executeActions(
         case 'swap_next': {
           const resolved = await resolveTrackQuery(action.pick.query, ctx.ncmClient);
           if (resolved && !recentPlayIds.has(resolved.ncmId)) {
-            swapNext({ ncmId: resolved.ncmId, name: resolved.name, artists: resolved.artists });
+            swapNext(ctx.userId, { ncmId: resolved.ncmId, name: resolved.name, artists: resolved.artists });
             queueChanged = true;
           } else if (resolved) {
             logger.info({ ncmId: resolved.ncmId, query: action.pick.query }, 'swap_next skipped: track recently played');
@@ -47,7 +48,7 @@ export async function executeActions(
         case 'add_to_queue': {
           const resolved = await resolveTrackQuery(action.pick.query, ctx.ncmClient);
           if (resolved && !recentPlayIds.has(resolved.ncmId)) {
-            addToQueue({ ncmId: resolved.ncmId, name: resolved.name, artists: resolved.artists }, 'end');
+            addToQueue(ctx.userId, { ncmId: resolved.ncmId, name: resolved.name, artists: resolved.artists }, 'end');
             queueChanged = true;
           } else if (resolved) {
             logger.info({ ncmId: resolved.ncmId, query: action.pick.query }, 'add_to_queue skipped: track recently played');
@@ -55,34 +56,34 @@ export async function executeActions(
           break;
         }
         case 'skip': {
-          skipCurrent();
+          skipCurrent(ctx.userId);
           queueChanged = true;
           break;
         }
         case 'ban_artist':
           // Artist bans are advisory — store as pref for future plan generation
-          setPref(`ban.artist.${action.artist}`, true);
+          setPref(ctx.userId, `ban.artist.${action.artist}`, true);
           break;
         case 'ban_track': {
           const key = `${action.title}___${action.artist}`.toLowerCase();
           const resolved = await resolveTrackQuery(`${action.title} ${action.artist}`, ctx.ncmClient);
           if (resolved) {
-            banNcmId(resolved.ncmId);
+            banNcmId(ctx.userId, resolved.ncmId);
             queueChanged = true;
           }
-          setPref(`ban.track.${key}`, true);
+          setPref(ctx.userId, `ban.track.${key}`, true);
           break;
         }
         case 'adjust_mood':
           // Store mood adjustment as pref — future plan/segue picks it up
-          setPref('queue.moodOverride', { mood: action.mood, applyTo: action.applyTo, n: action.n });
+          setPref(ctx.userId, 'queue.moodOverride', { mood: action.mood, applyTo: action.applyTo, n: action.n });
           break;
         case 'replan_segment':
           // Replan is handled by the caller via the plan API; just record the hint
-          setPref('plan.replanHint', action.hint);
+          setPref(ctx.userId, 'plan.replanHint', action.hint);
           break;
         case 'set_pref':
-          setPref(action.key, action.value);
+          setPref(ctx.userId, action.key, action.value);
           break;
         default:
           logger.warn({ action }, 'Unknown action type');

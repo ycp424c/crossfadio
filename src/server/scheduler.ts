@@ -62,7 +62,7 @@ export function startScheduler(opts: SchedulerOptions): SchedulerHandle {
       const corpus = loadUserCorpus();
       const llmConfig = resolveLlmConfig(opts.secrets);
       const likedTracks = opts.ncmClient ? await loadLikedTracksForPlanning(opts.ncmClient) : [];
-      let plan = loadLatestPlan(date);
+      let plan = loadLatestPlan('__legacy__', date);
 
       if (!plan) {
         if (llmConfig) {
@@ -84,7 +84,7 @@ export function startScheduler(opts: SchedulerOptions): SchedulerHandle {
               weather,
               nowPlaying: null
             },
-            memory: { recentPlays: getRecentPlays(50), recentChat: [] },
+            memory: { recentPlays: getRecentPlays('__legacy__', 50), recentChat: [] },
             input: { kind: 'planRequest', date },
             trace: { triggeredBy: 'scheduler', lastDecision: null }
           };
@@ -98,7 +98,7 @@ export function startScheduler(opts: SchedulerOptions): SchedulerHandle {
         }
 
         plan = plan ?? buildFallbackPlan(date, corpus.playlists);
-        savePlan(plan);
+        savePlan('__legacy__', plan);
         logger.info({ date }, 'Scheduler: plan saved');
       }
     } catch (err) {
@@ -134,7 +134,7 @@ export function startScheduler(opts: SchedulerOptions): SchedulerHandle {
     }
 
     try {
-      const unextracted = getUnextractedMessages();
+      const unextracted = getUnextractedMessages('__legacy__');
       if (unextracted.length < PREFERENCE_EXTRACTION_MIN_MESSAGES) {
         scheduleNext(() => void runPreferenceExtraction(), PREFERENCE_EXTRACTION_INTERVAL_MS);
         return;
@@ -158,8 +158,8 @@ export function startScheduler(opts: SchedulerOptions): SchedulerHandle {
       const summary = response.content.trim();
       if (summary) {
         const ids = unextracted.map((m) => m.id);
-        saveChatPreference(summary, ids);
-        markMessagesExtracted(ids);
+        saveChatPreference('__legacy__', summary, ids);
+        markMessagesExtracted('__legacy__', ids);
         logger.info({ messageCount: ids.length }, 'Scheduler: preferences extracted and saved');
       }
     } catch (err) {
@@ -177,7 +177,7 @@ export function startScheduler(opts: SchedulerOptions): SchedulerHandle {
   // Also run planning immediately if no plan exists today
   void (async () => {
     const date = todayDateStr();
-    if (!loadLatestPlan(date)) {
+    if (!loadLatestPlan('__legacy__', date)) {
       await runDailyPlan();
     }
   })();

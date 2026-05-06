@@ -12,7 +12,7 @@ export const DEFAULT_TTS_CONFIG = {
 } as const satisfies Omit<TtsConfig, 'apiKey'>;
 
 export function resolveTtsConfig(secrets: SecretStore): TtsConfig | null {
-  const stored = getPref<Partial<Omit<TtsConfig, 'apiKey'>>>('tts.config') ?? {};
+  const stored = getPref<Partial<Omit<TtsConfig, 'apiKey'>>>('__legacy__', 'tts.config') ?? {};
   const apiKey = secrets.get('tts.apiKey');
   if (!apiKey) return null;
   const merged = { ...DEFAULT_TTS_CONFIG, ...stored, provider: stored.provider ?? inferProvider(stored) };

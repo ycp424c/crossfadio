@@ -35,7 +35,7 @@ describe('resolveTtsConfig', () => {
   });
 
   it('keeps stored overrides while preserving Alibaba provider defaults', () => {
-    setPref('tts.config', { voice: 'Ethan', speed: 1.1 });
+    setPref('__legacy__', 'tts.config', { voice: 'Ethan', speed: 1.1 });
     const secrets = { get: (key: string) => (key === 'tts.apiKey' ? 'dashscope-key' : null) };
 
     expect(resolveTtsConfig(secrets as never)).toMatchObject({
@@ -45,11 +45,11 @@ describe('resolveTtsConfig', () => {
       speed: 1.1,
       apiKey: 'dashscope-key'
     });
-    expect(getPref('tts.config')).toEqual({ voice: 'Ethan', speed: 1.1 });
+    expect(getPref('__legacy__', 'tts.config')).toEqual({ voice: 'Ethan', speed: 1.1 });
   });
 
   it('treats legacy OpenAI-compatible stored configs as OpenAI-compatible', () => {
-    setPref('tts.config', {
+    setPref('__legacy__', 'tts.config', {
       baseUrl: 'https://api.openai.com/v1',
       model: 'tts-1',
       voice: 'alloy',

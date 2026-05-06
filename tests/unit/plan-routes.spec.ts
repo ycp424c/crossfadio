@@ -11,6 +11,11 @@ let dataDir: string;
 
 beforeEach(() => {
   vi.resetModules();
+  process.env.CROSSFADIO_JWT_SECRET = 'unit-test-secret-key-at-least-16-chars';
+  // Mock weather to avoid real network calls in unit tests
+  vi.mock('../../src/server/weather', () => ({
+    fetchWeather: vi.fn().mockResolvedValue({ tempC: 25, desc: '晴' })
+  }));
   dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'crossfadio-plan-routes-'));
   process.env.CROSSFADIO_DATA_DIR = dataDir;
   fs.mkdirSync(path.join(dataDir, 'user'), { recursive: true });
@@ -71,7 +76,7 @@ describe('plan routes', () => {
       ])
     };
 
-    const fragments = await buildPlanFragments('2026-04-24', ncmClient as never);
+    const fragments = await buildPlanFragments('test-user', '2026-04-24', ncmClient as never);
 
     expect(fragments.corpus.taste).toContain('dream pop');
     expect(ncmClient.getLikedSongIds).toHaveBeenCalled();

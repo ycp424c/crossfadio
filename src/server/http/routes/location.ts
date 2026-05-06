@@ -1,21 +1,24 @@
-import type { RequestHandler } from 'express';
+import type { Request, Response } from 'express';
+import { z } from 'zod';
+import type { NcmClient } from '../../ncm/client.js';
 import { setLocation } from '../../store/location.js';
 
-export function createSetLocationHandler(): RequestHandler {
-  return (req, res) => {
-    const { lat, lon } = req.body as { lat?: unknown; lon?: unknown };
-    if (
-      typeof lat !== 'number' ||
-      typeof lon !== 'number' ||
-      !Number.isFinite(lat) ||
-      !Number.isFinite(lon) ||
-      lat < -90 || lat > 90 ||
-      lon < -180 || lon > 180
-    ) {
-      res.status(400).json({ ok: false, error: 'invalid lat/lon' });
+type AuthedRequest = Request & { userId: string; ncmClient: NcmClient };
+
+const bodySchema = z.object({
+  lat: z.number().min(-90).max(90),
+  lon: z.number().min(-180).max(180)
+});
+
+export function createSetLocationHandler() {
+  return (req: Request, res: Response): void => {
+    const { userId } = req as AuthedRequest;
+    const parsed = bodySchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ ok: false, error: 'invalid body' });
       return;
     }
-    setLocation(lat, lon);
+    setLocation(userId, parsed.data.lat, parsed.data.lon);
     res.json({ ok: true });
   };
 }

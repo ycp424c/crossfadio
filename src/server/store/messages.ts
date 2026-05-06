@@ -9,39 +9,37 @@ export type StoredMessage = {
   extracted_at: string | null;
 };
 
-export function saveMessage(role: 'user' | 'assistant', content: string): number {
+export function saveMessage(userId: string, role: 'user' | 'assistant', content: string): number {
   const db = getDb();
   const result = db
-    .prepare<[string, string]>(
-      `INSERT INTO messages (role, content, created_at) VALUES (?, ?, datetime('now'))`
+    .prepare<[string, string, string]>(
+      `INSERT INTO messages (user_id, role, content, created_at) VALUES (?, ?, ?, datetime('now'))`
     )
-    .run(role, content);
+    .run(userId, role, content);
   return Number(result.lastInsertRowid);
 }
 
-/** Returns the most recent messages, optionally limited to those within the last `withinMinutes`. */
-export function getRecentMessages(limit = 20, withinMinutes?: number): AgentMessage[] {
+export function getRecentMessages(userId: string, limit = 20, withinMinutes?: number): AgentMessage[] {
   const db = getDb();
   let rows: StoredMessage[];
-
   if (withinMinutes !== undefined) {
     rows = db
-      .prepare<[number, number], StoredMessage>(
+      .prepare<[string, number, number], StoredMessage>(
         `SELECT id, role, content, created_at, extracted_at FROM messages
-         WHERE created_at >= datetime('now', ? || ' minutes')
+         WHERE user_id = ? AND created_at >= datetime('now', ? || ' minutes')
          ORDER BY id DESC LIMIT ?`
       )
-      .all(-withinMinutes, limit)
+      .all(userId, -withinMinutes, limit)
       .reverse();
   } else {
     rows = db
-      .prepare<[number], StoredMessage>(
-        `SELECT id, role, content, created_at, extracted_at FROM messages ORDER BY id DESC LIMIT ?`
+      .prepare<[string, number], StoredMessage>(
+        `SELECT id, role, content, created_at, extracted_at FROM messages
+         WHERE user_id = ? ORDER BY id DESC LIMIT ?`
       )
-      .all(limit)
+      .all(userId, limit)
       .reverse();
   }
-
   return rows.map((r) => ({
     role: r.role as 'user' | 'assistant' | 'system',
     content: r.content,
@@ -49,22 +47,21 @@ export function getRecentMessages(limit = 20, withinMinutes?: number): AgentMess
   }));
 }
 
-/** Returns unextracted messages (extracted_at IS NULL), oldest first. */
-export function getUnextractedMessages(): StoredMessage[] {
+export function getUnextractedMessages(userId: string): StoredMessage[] {
   const db = getDb();
   return db
-    .prepare<[], StoredMessage>(
+    .prepare<[string], StoredMessage>(
       `SELECT id, role, content, created_at, extracted_at FROM messages
-       WHERE extracted_at IS NULL ORDER BY id ASC`
+       WHERE user_id = ? AND extracted_at IS NULL ORDER BY id ASC`
     )
-    .all();
+    .all(userId);
 }
 
-/** Marks the given message IDs as extracted. */
-export function markMessagesExtracted(ids: number[]): void {
+export function markMessagesExtracted(userId: string, ids: number[]): void {
   if (ids.length === 0) return;
   const db = getDb();
   const placeholders = ids.map(() => '?').join(', ');
-  db.prepare(`UPDATE messages SET extracted_at = datetime('now') WHERE id IN (${placeholders})`)
-    .run(...ids);
+  db.prepare(
+    `UPDATE messages SET extracted_at = datetime('now') WHERE user_id = ? AND id IN (${placeholders})`
+  ).run(userId, ...ids);
 }

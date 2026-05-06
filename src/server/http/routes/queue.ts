@@ -1,8 +1,10 @@
-import type { RequestHandler } from 'express';
+import type { Request, Response } from 'express';
 import { z } from 'zod';
 import type { NcmClient } from '../../ncm/client.js';
 import { setQueueState } from '../../store/queue.js';
 import { likedQueueResponseSchema } from '../../../shared/schema.js';
+
+type AuthedRequest = Request & { userId: string; ncmClient: NcmClient };
 
 const queueStateBodySchema = z.object({
   queue: z.array(
@@ -28,8 +30,9 @@ const likedQueueQuerySchema = z.object({
   limit: z.coerce.number().int().positive().max(500).default(100)
 });
 
-export function createSetQueueStateHandler(): RequestHandler {
-  return (req, res) => {
+export function createSetQueueStateHandler() {
+  return (req: Request, res: Response): void => {
+    const { userId } = req as AuthedRequest;
     const parsed = queueStateBodySchema.safeParse(req.body);
     if (!parsed.success) {
       res.status(400).json({ ok: false, error: 'invalid body' });
@@ -37,6 +40,7 @@ export function createSetQueueStateHandler(): RequestHandler {
     }
 
     setQueueState(
+      userId,
       parsed.data.queue.map((track) =>
         typeof track === 'string'
           ? { ncmId: track }
@@ -53,8 +57,9 @@ export function createSetQueueStateHandler(): RequestHandler {
   };
 }
 
-export function createLikeTrackHandler(ncmClient: NcmClient): RequestHandler {
-  return async (req, res) => {
+export function createLikeTrackHandler() {
+  return async (req: Request, res: Response): Promise<void> => {
+    const { ncmClient } = req as AuthedRequest;
     const parsed = likeBodySchema.safeParse(req.body);
     if (!parsed.success) {
       res.status(400).json({ ok: false, error: 'invalid body' });
@@ -71,8 +76,9 @@ export function createLikeTrackHandler(ncmClient: NcmClient): RequestHandler {
   };
 }
 
-export function createGetLikedIdsHandler(ncmClient: NcmClient): RequestHandler {
-  return async (_req, res) => {
+export function createGetLikedIdsHandler() {
+  return async (req: Request, res: Response): Promise<void> => {
+    const { ncmClient } = req as AuthedRequest;
     try {
       const ids = (await ncmClient.getLikedSongIds()).map(String);
       res.json({ ok: true, ids });
@@ -83,8 +89,9 @@ export function createGetLikedIdsHandler(ncmClient: NcmClient): RequestHandler {
   };
 }
 
-export function createGetLikedQueueHandler(ncmClient: NcmClient): RequestHandler {
-  return async (req, res) => {
+export function createGetLikedQueueHandler() {
+  return async (req: Request, res: Response): Promise<void> => {
+    const { ncmClient } = req as AuthedRequest;
     const parsed = likedQueueQuerySchema.safeParse(req.query);
     if (!parsed.success) {
       res.status(400).json({ ok: false, error: 'invalid query' });

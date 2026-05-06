@@ -1,4 +1,4 @@
-import type { RequestHandler } from 'express';
+import type { Request, RequestHandler } from 'express';
 import type { Track } from '../../agent/schema.js';
 import { LlmClient } from '../../llm/client.js';
 import { resolveLlmConfig } from '../../llm/config.js';
@@ -14,6 +14,8 @@ import { getQueue, addToQueue } from '../../store/queue.js';
 import { broadcast } from '../broadcast.js';
 import { getLogger } from '../../logger.js';
 
+type AuthedRequest = Request & { userId: string; ncmClient: NcmClient };
+
 type DjNextOptions = {
   secrets: SecretStore;
   ncmClient: NcmClient;
@@ -28,10 +30,10 @@ const LIKED_IDS_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 1 day
 const LIKED_SAMPLE_SIZE = 20;
 const SEARCH_RESULT_SIZE = 20;
 
-let isRunning = false;
+const isRunning = new Map<string, boolean>();
 
 type LikedIdsCache = { ids: string[]; fetchedAt: number };
-let likedIdsCache: LikedIdsCache | null = null;
+const likedIdsCache = new Map<string, LikedIdsCache>();
 
 // trackId → short DJ selection reason, populated on each successful LLM pick
 const djPickReasonCache = new Map<string, string>();
@@ -162,49 +164,51 @@ export function parseDjCandidatePicks(raw: string, candidates: Track[]): ParsedD
 
 export function createDjPickNextHandler(opts: DjNextOptions): RequestHandler {
   return (req, res) => {
-    res.json({ ok: true, running: isRunning });
-    if (!isRunning) {
-      void runPickNextJob(opts);
+    const uid = (req as AuthedRequest).userId;
+    res.json({ ok: true, running: isRunning.get(uid) ?? false });
+    if (!(isRunning.get(uid) ?? false)) {
+      void runPickNextJob(opts, uid);
     }
   };
 }
 
-async function runPickNextJob(opts: DjNextOptions): Promise<void> {
-  if (isRunning) return;
-  isRunning = true;
+async function runPickNextJob(opts: DjNextOptions, userId: string): Promise<void> {
+  if (isRunning.get(userId)) return;
+  isRunning.set(userId, true);
   const logger = getLogger();
 
   const jobTimer = new Promise<'timeout'>((resolve) =>
     setTimeout(() => resolve('timeout'), JOB_TIMEOUT_MS)
   );
 
-  const jobResult = await Promise.race([doPickNext(opts).then(() => 'done' as const), jobTimer]);
+  const jobResult = await Promise.race([doPickNext(opts, userId).then(() => 'done' as const), jobTimer]);
 
   if (jobResult === 'timeout') {
     logger.warn('DJ pick-next job timed out after %dms', JOB_TIMEOUT_MS);
     broadcast({ type: 'dj.pick-next.done', added: false, reason: 'timeout' });
   }
 
-  isRunning = false;
+  isRunning.set(userId, false);
 }
 
-async function doPickNext(opts: DjNextOptions): Promise<void> {
+async function doPickNext(opts: DjNextOptions, userId: string): Promise<void> {
   const logger = getLogger();
   let debugBroadcastSent = false;
 
   // Refresh full liked-song ID list at most once per day
   const now = Date.now();
-  if (!likedIdsCache || now - likedIdsCache.fetchedAt > LIKED_IDS_CACHE_TTL_MS) {
+  const cached = likedIdsCache.get(userId);
+  if (!cached || now - cached.fetchedAt > LIKED_IDS_CACHE_TTL_MS) {
     const freshIds = await withTimeout(
       opts.ncmClient.getLikedSongIds().catch(() => [] as string[]),
       LIKED_IDS_TIMEOUT_MS,
       [] as string[]
     );
     if (freshIds.length > 0) {
-      likedIdsCache = { ids: freshIds, fetchedAt: now };
+      likedIdsCache.set(userId, { ids: freshIds, fetchedAt: now });
     }
   }
-  const allLikedIds = likedIdsCache?.ids ?? [];
+  const allLikedIds = likedIdsCache.get(userId)?.ids ?? [];
 
   const llmConfig = resolveLlmConfig(opts.secrets);
   if (!llmConfig) {
@@ -224,17 +228,17 @@ async function doPickNext(opts: DjNextOptions): Promise<void> {
       const mm = String(nowDate.getMinutes()).padStart(2, '0');
       const localTime = `周${day} ${hh}:${mm}`;
       const nowIso = nowDate.toISOString();
-      const recentPlays = getRecentPlays(50);
-      const recentChat = getRecentMessages(20, 60);
-      const recentSegues = getRecentSegues(10);
-      const extractedPreferences = getPreferenceContext(3);
+      const recentPlays = getRecentPlays(userId, 50);
+      const recentChat = getRecentMessages(userId, 20, 60);
+      const recentSegues = getRecentSegues(userId, 10);
+      const extractedPreferences = getPreferenceContext(userId, 3);
 
       const recentIds = new Set(
-        getRecentPlays(30)
+        getRecentPlays(userId, 30)
           .map((p) => p.song_id)
           .filter((id): id is string => id !== null)
       );
-      const currentQueueIds = new Set(getQueue().map((t) => t.ncmId));
+      const currentQueueIds = new Set(getQueue(userId).map((t) => t.ncmId));
       const excludeIds = new Set([...recentIds, ...currentQueueIds]);
 
       // ── Phase 1: sample 20 IDs from full liked list, then fetch details ──
@@ -333,7 +337,7 @@ async function doPickNext(opts: DjNextOptions): Promise<void> {
           likedSampleCount: likedSample.length,
           searchedCount: searchedTracks.length,
           totalCandidates: allCandidates.length,
-          currentQueueCount: getQueue().length,
+          currentQueueCount: getQueue(userId).length,
           recentPlayCount: recentPlays.length
         },
         'DJ pick-next: requesting LLM song pick'
@@ -396,24 +400,24 @@ ${candidateList}
           { pickedIds: pickedTracks.map((track) => track.id), say: pickSay.slice(0, 80) },
           'DJ pick-next: LLM returned whitelisted candidate picks'
         );
-        const prevQueueLength = getQueue().length;
+        const prevQueueLength = getQueue(userId).length;
         const recentPlayIds = new Set(
-          getRecentPlays(50)
+          getRecentPlays(userId, 50)
             .map((p) => p.song_id)
             .filter((id): id is string => id !== null)
         );
-        const currentQueueIds = new Set(getQueue().map((t) => t.ncmId));
+        const currentQueueIds = new Set(getQueue(userId).map((t) => t.ncmId));
         for (const track of pickedTracks) {
           if (recentPlayIds.has(track.id) || currentQueueIds.has(track.id)) continue;
-          addToQueue({
+          addToQueue(userId, {
             ncmId: track.id,
             name: track.name,
             artists: track.artist ? track.artist.split(' / ').filter(Boolean) : []
           }, 'end');
           currentQueueIds.add(track.id);
         }
-        if (getQueue().length > prevQueueLength) {
-          const newTracks = getQueue().slice(prevQueueLength);
+        if (getQueue(userId).length > prevQueueLength) {
+          const newTracks = getQueue(userId).slice(prevQueueLength);
           if (pickSay.trim()) {
             for (const track of newTracks) {
               djPickReasonCache.set(track.ncmId, pickSay.trim());
@@ -421,7 +425,7 @@ ${candidateList}
           }
           broadcast({ type: 'dj.debug', ...phase3Debug, selectedSay: pickSay });
           debugBroadcastSent = true;
-          broadcastAppended(prevQueueLength);
+          broadcastAppended(userId, prevQueueLength);
           return;
         }
         logger.warn('DJ pick-next: whitelisted picks did not change queue, using random fallback');
@@ -439,7 +443,7 @@ ${candidateList}
           model: llmConfig.model,
           baseUrl: llmConfig.baseUrl,
           likedIdCount: allLikedIds.length,
-          currentQueueCount: getQueue().length
+          currentQueueCount: getQueue(userId).length
         },
         'DJ pick-next: LLM pipeline failed, using random fallback'
       );
@@ -448,11 +452,11 @@ ${candidateList}
 
   // Random fallback: sample 2 IDs from full liked list, then fetch details
   const recentIds = new Set(
-    getRecentPlays(30)
+    getRecentPlays(userId, 30)
       .map((p) => p.song_id)
       .filter((id): id is string => id !== null)
   );
-  const currentQueueIds = new Set(getQueue().map((t) => t.ncmId));
+  const currentQueueIds = new Set(getQueue(userId).map((t) => t.ncmId));
   const fallbackIds = allLikedIds.filter((id) => !recentIds.has(id) && !currentQueueIds.has(id));
 
   if (fallbackIds.length === 0) {
@@ -486,15 +490,15 @@ ${candidateList}
     return;
   }
 
-  const prevQueueLength = getQueue().length;
+  const prevQueueLength = getQueue(userId).length;
   for (const pick of pickedDetails) {
-    addToQueue({ ncmId: String(pick.id), name: pick.name, artists: pick.artists }, 'end');
+    addToQueue(userId, { ncmId: String(pick.id), name: pick.name, artists: pick.artists }, 'end');
   }
-  broadcastAppended(prevQueueLength);
+  broadcastAppended(userId, prevQueueLength);
 }
 
-function broadcastAppended(prevQueueLength: number): void {
-  const q = getQueue();
+function broadcastAppended(userId: string, prevQueueLength: number): void {
+  const q = getQueue(userId);
   const newTracks = q.slice(prevQueueLength);
   for (const track of newTracks) {
     broadcast({ type: 'queue-appended', track });

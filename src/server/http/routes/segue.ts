@@ -38,6 +38,8 @@ const triggerBodySchema = z.object({
   to: trackSchema
 });
 
+type AuthedRequest = Request & { userId: string; ncmClient: NcmClient };
+
 type SegueRouteOptions = {
   secrets: SecretStore;
   ncmClient: NcmClient;
@@ -102,7 +104,8 @@ export function createSegueTriggerHandler(opts: SegueRouteOptions) {
 
     res.json({ ok: true, requestId, clientRequestId });
 
-    void runSegueJob(job, parsed.data.from, parsed.data.to, opts).finally(() => {
+    const userId = (req as AuthedRequest).userId;
+    void runSegueJob(job, parsed.data.from, parsed.data.to, opts, userId).finally(() => {
       if (activeJob === job) activeJob = null;
     });
   };
@@ -112,7 +115,8 @@ async function runSegueJob(
   job: ActiveSegueJob,
   from: z.infer<typeof trackSchema>,
   to: z.infer<typeof trackSchema>,
-  opts: SegueRouteOptions
+  opts: SegueRouteOptions,
+  userId: string
 ): Promise<void> {
   const logger = getLogger();
   const { requestId, clientRequestId, controller } = job;
@@ -166,7 +170,7 @@ async function runSegueJob(
           durationMs: null
         }
       },
-      memory: { recentPlays: getRecentPlays(50), recentChat: getRecentMessages(20), recentSegues: getRecentSegues(10) },
+      memory: { recentPlays: getRecentPlays(userId, 50), recentChat: getRecentMessages(userId, 20), recentSegues: getRecentSegues(userId, 10) },
       input: {
         kind: 'segueTrigger',
         from: trackContext.fromTrack,
@@ -207,7 +211,7 @@ async function runSegueJob(
     };
     const textDerivedSpeechDurationSec = estimateTtsDurationSec(segueOutput.say);
 
-    saveSegue({
+    saveSegue(userId, {
       fromId: from.id,
       fromName: trackContext.fromTrack.name,
       toId: to.id,

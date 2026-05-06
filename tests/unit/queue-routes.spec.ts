@@ -3,7 +3,7 @@ import { createGetLikedQueueHandler, createSetQueueStateHandler } from '../../sr
 
 beforeEach(async () => {
   const q = await import('../../src/server/store/queue');
-  q.setQueue([]);
+  q.setQueue('test-user', []);
 });
 
 function createJsonResponse() {
@@ -27,19 +27,19 @@ describe('queue routes', () => {
     const handler = createSetQueueStateHandler();
     const res = createJsonResponse();
 
-    handler({ body: { queue: ['a', 'b', 'c'], currentIndex: 2 } } as never, res as never, vi.fn());
+    handler({ body: { queue: ['a', 'b', 'c'], currentIndex: 2 }, userId: 'test-user' } as never, res as never, vi.fn());
 
     const q = await import('../../src/server/store/queue');
     expect(res.body).toEqual({ ok: true });
-    expect(q.getQueue().map((track) => track.ncmId)).toEqual(['a', 'b', 'c']);
-    expect(q.getCurrentIndex()).toBe(2);
+    expect(q.getQueue('test-user').map((track) => track.ncmId)).toEqual(['a', 'b', 'c']);
+    expect(q.getCurrentIndex('test-user')).toBe(2);
   });
 
   it('rejects invalid queue payloads', () => {
     const handler = createSetQueueStateHandler();
     const res = createJsonResponse();
 
-    handler({ body: { queue: [123], currentIndex: 0 } } as never, res as never, vi.fn());
+    handler({ body: { queue: [123], currentIndex: 0 }, userId: 'test-user' } as never, res as never, vi.fn());
 
     expect(res.statusCode).toBe(400);
     expect(res.body).toEqual({ ok: false, error: 'invalid body' });
@@ -47,18 +47,22 @@ describe('queue routes', () => {
 
   it('returns liked songs without replacing the playback queue', async () => {
     const queueStore = await import('../../src/server/store/queue');
-    queueStore.setQueue([{ ncmId: 'currently-playing', name: 'Current Song' }]);
+    queueStore.setQueue('test-user', [{ ncmId: 'currently-playing', name: 'Current Song' }]);
 
-    const handler = createGetLikedQueueHandler({
-      getLikedSongIds: async () => ['101', '102'],
-      getSongDetails: async () => [
-        { id: 101, name: 'Song A', artists: ['Alice'], durationMs: 210_000 },
-        { id: 102, name: 'Song B', artists: ['Bob', 'Carol'], durationMs: 180_000 }
-      ]
-    } as never);
+    const handler = createGetLikedQueueHandler();
     const res = createJsonResponse();
 
-    await handler({ query: { limit: '20' } } as never, res as never, vi.fn());
+    await handler({
+      query: { limit: '20' },
+      userId: 'test-user',
+      ncmClient: {
+        getLikedSongIds: async () => ['101', '102'],
+        getSongDetails: async () => [
+          { id: 101, name: 'Song A', artists: ['Alice'], durationMs: 210_000 },
+          { id: 102, name: 'Song B', artists: ['Bob', 'Carol'], durationMs: 180_000 }
+        ]
+      }
+    } as never, res as never, vi.fn());
 
     expect(res.body).toEqual({
       ok: true,
@@ -69,6 +73,6 @@ describe('queue routes', () => {
       ],
       currentIndex: 0
     });
-    expect(queueStore.getQueue()).toEqual([{ ncmId: 'currently-playing', name: 'Current Song' }]);
+    expect(queueStore.getQueue('test-user')).toEqual([{ ncmId: 'currently-playing', name: 'Current Song' }]);
   });
 });

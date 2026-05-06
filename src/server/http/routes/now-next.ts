@@ -1,4 +1,4 @@
-import type { RequestHandler, Response } from 'express';
+import type { Request, RequestHandler, Response } from 'express';
 import { z } from 'zod';
 import { NcmApiError, type NcmClient } from '../../ncm/client.js';
 import {
@@ -8,6 +8,8 @@ import {
   type NcmErrorCode
 } from '../../../shared/schema.js';
 import { startPlay } from '../../store/plays.js';
+
+type AuthedRequest = Request & { userId: string; ncmClient: NcmClient };
 
 const DEFAULT_PREFETCH_LEAD_SEC = 10;
 const DEFAULT_CROSSFADE_SEC = 8;
@@ -63,7 +65,7 @@ export function createNowHandler(ncmClient: NcmClient): RequestHandler {
       // Record play for dedup (best-effort, don't block the response)
       const name = parsed.data.name?.trim();
       if (name) {
-        try { startPlay({ songId: ncmId, songName: name, artistName: parsed.data.artist?.trim() ?? '' }); } catch { /* ignore */ }
+        try { startPlay((req as AuthedRequest).userId, { songId: ncmId, songName: name, artistName: parsed.data.artist?.trim() ?? '' }); } catch { /* ignore */ }
       }
     } catch (error) {
       sendNcmError(res, error);

@@ -1,16 +1,13 @@
-import type { RequestHandler } from 'express';
-import { z } from 'zod';
+import type { Request, Response } from 'express';
+import type { NcmClient } from '../../ncm/client.js';
 import { getRecentMessages } from '../../store/messages.js';
 
-const querySchema = z.object({
-  limit: z.coerce.number().int().positive().max(200).default(50)
-});
+type AuthedRequest = Request & { userId: string; ncmClient: NcmClient };
 
-export function createGetRecentMessagesHandler(): RequestHandler {
-  return (req, res) => {
-    const parsed = querySchema.safeParse(req.query);
-    const limit = parsed.success ? parsed.data.limit : 50;
-    const messages = getRecentMessages(limit);
+export function createGetRecentMessagesHandler() {
+  return (req: Request, res: Response): void => {
+    const { userId } = req as AuthedRequest;
+    const messages = getRecentMessages(userId, 20);
     res.json({ ok: true, messages });
   };
 }

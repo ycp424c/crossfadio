@@ -102,9 +102,9 @@ export async function startLocalServer(options: StartLocalServerOptions): Promis
   app.post('/api/plan/regenerate', createRegeneratePlanHandler({ secrets: options.secrets, ncmClient: options.ncmClient }));
   app.post('/api/plan/replan-segment', createReplanSegmentHandler({ secrets: options.secrets, ncmClient: options.ncmClient }));
   app.post('/api/plan/gap-fill', createGapFillHandler({ secrets: options.secrets, ncmClient: options.ncmClient }));
-  app.get('/api/queue/liked/ids', createGetLikedIdsHandler(options.ncmClient));
-  app.get('/api/queue/liked', createGetLikedQueueHandler(options.ncmClient));
-  app.post('/api/queue/like', createLikeTrackHandler(options.ncmClient));
+  app.get('/api/queue/liked/ids', createGetLikedIdsHandler());
+  app.get('/api/queue/liked', createGetLikedQueueHandler());
+  app.post('/api/queue/like', createLikeTrackHandler());
   app.put('/api/queue/state', createSetQueueStateHandler());
   app.post('/api/segue/trigger', createSegueTriggerHandler({ secrets: options.secrets, ncmClient: options.ncmClient }));
   app.get('/api/segue/audio/*', createSegueAudioHandler());
@@ -125,7 +125,7 @@ export async function startLocalServer(options: StartLocalServerOptions): Promis
   });
 
   const server = createServer(app);
-  const chatHandler = createChatMessageHandler({ secrets: options.secrets, ncmClient: options.ncmClient });
+  const chatHandler = createChatMessageHandler({ secrets: options.secrets, ncmClient: options.ncmClient, userId: '__legacy__' });
   setupWsServer(server, { sessionToken, onChatMessage: chatHandler, onCancelRecommend: cancelChatRecommend });
 
   const port = await listen(server, options.host, options.port);

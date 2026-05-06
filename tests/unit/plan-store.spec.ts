@@ -48,8 +48,8 @@ describe('plan store', () => {
     const { savePlan, loadLatestPlan, todayDateStr } = await import('../../src/server/store/plan');
     const date = todayDateStr();
     const plan = makePlan(date);
-    savePlan(plan);
-    const loaded = loadLatestPlan(date);
+    savePlan('test-user', plan);
+    const loaded = loadLatestPlan('test-user', date);
     expect(loaded).not.toBeNull();
     expect(loaded!.date).toBe(date);
     expect(loaded!.segments).toHaveLength(1);
@@ -58,17 +58,17 @@ describe('plan store', () => {
 
   it('loadLatestPlan returns null for missing date', async () => {
     const { loadLatestPlan } = await import('../../src/server/store/plan');
-    const loaded = loadLatestPlan('1990-01-01');
+    const loaded = loadLatestPlan('test-user', '1990-01-01');
     expect(loaded).toBeNull();
   });
 
   it('savePlan increments version on each save', async () => {
     const { savePlan, loadLatestPlan, todayDateStr } = await import('../../src/server/store/plan');
     const date = todayDateStr();
-    savePlan(makePlan(date));
+    savePlan('test-user', makePlan(date));
     const p2 = { ...makePlan(date), narrative: 'v2' };
-    savePlan(p2);
-    const loaded = loadLatestPlan(date);
+    savePlan('test-user', p2);
+    const loaded = loadLatestPlan('test-user', date);
     expect(loaded!.narrative).toBe('v2');
   });
 

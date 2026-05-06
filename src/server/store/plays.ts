@@ -18,31 +18,33 @@ export type StartPlayInput = {
 
 export type EndReason = 'completed' | 'skip' | 'error';
 
-export function startPlay(input: StartPlayInput): number {
+export function startPlay(userId: string, input: StartPlayInput): number {
   const db = getDb();
   const result = db
     .prepare(
-      `INSERT INTO plays (song_id, song_name, artist_name, started_at)
-       VALUES (?, ?, ?, datetime('now'))`
+      `INSERT INTO plays (user_id, song_id, song_name, artist_name, started_at)
+       VALUES (?, ?, ?, ?, datetime('now'))`
     )
-    .run(input.songId, input.songName, input.artistName);
+    .run(userId, input.songId, input.songName, input.artistName);
   return Number(result.lastInsertRowid);
 }
 
-export function endPlay(id: number, reason: EndReason): boolean {
+export function endPlay(userId: string, id: number, reason: EndReason): boolean {
   const db = getDb();
   const result = db
     .prepare(
       `UPDATE plays SET ended_at = datetime('now'), end_reason = ?
-       WHERE id = ? AND ended_at IS NULL`
+       WHERE user_id = ? AND id = ? AND ended_at IS NULL`
     )
-    .run(reason, id);
+    .run(reason, userId, id);
   return result.changes > 0;
 }
 
-export function getRecentPlays(limit = 50): PlayRecord[] {
+export function getRecentPlays(userId: string, limit = 50): PlayRecord[] {
   const db = getDb();
   return db
-    .prepare(`SELECT * FROM plays ORDER BY started_at DESC, id DESC LIMIT ?`)
-    .all(limit) as PlayRecord[];
+    .prepare<[string, number]>(
+      `SELECT * FROM plays WHERE user_id = ? ORDER BY started_at DESC, id DESC LIMIT ?`
+    )
+    .all(userId, limit) as PlayRecord[];
 }
