@@ -4,16 +4,17 @@ Crossfadio 是一个本地运行的 AI DJ Web App（Node.js + React + TypeScript
 
 ## 当前状态
 
-当前实现已完成从 Electron 到本地 Web Server 架构的迁移，并实现了核心 DJ 功能：
+多用户在线 AI DJ 服务，支持 JWT 认证、按用户隔离的数据存储：
 
 - Vite + React + Tailwind 前端，4 Tab（播放 / 计划 / 聊天 / 设置）
-- Node.js + Express 本地 HTTP/WS 服务，25+ API 路由
-- SQLite 初始化与迁移（messages/plays/plan/prefs/tts_cache）
-- `user-template/` 首次启动拷贝至用户应用目录
-- NCM 接入（子进程管理 + 客户端封装 + 扫码登录）
+- Node.js + Express HTTP/WS 服务，JWT 认证，公开/受保护路由分离
+- SQLite（better-sqlite3）：messages、plays、plan、prefs、segues、chat_preferences、users、blocked_login_attempts
+- 每用户数据隔离（`user_id` 列 + per-user Map）
+- NCM 接入（子进程管理 + 客户端封装 + 扫码登录 + JWT 签发）
+- 白名单控制（`allowlist.json`）
 - Web Audio 双 Deck 播放引擎（等能量 crossfade + filter sweep）
-- AI Agent（plan/segue/chat 三模式，OpenAI 兼容 LLM）
-- TTS 串场口播（cache-first，底铺式插入）
+- AI Agent（plan/segue/chat 三模式，OpenAI 兼容 LLM，env var 配置）
+- TTS 串场口播（cache-first，底铺式插入，阿里云 Qwen TTS）
 - 每日电台计划（4 时段自动生成 + 手动调整）
 - 聊天动态调整（自然语言换歌/加歌/切段）
 - DJ 自动选歌（红心歌单采样 + LLM 搜索推荐）
@@ -28,15 +29,24 @@ Crossfadio 是一个本地运行的 AI DJ Web App（Node.js + React + TypeScript
 
 可选环境变量：
 
-- `CROSSFADIO_NCM_COMMAND`: 自定义可执行命令（例如 `node` 或本地脚本）
-- `CROSSFADIO_NCM_ARGS`: 自定义参数字符串（支持引号）
+- `CROSSFADIO_NCM_COMMAND`: 自定义可执行命令
+- `CROSSFADIO_NCM_ARGS`: 自定义参数字符串
 - `CROSSFADIO_NCM_PORT`: 端口（默认 `3000`）
-- `CROSSFADIO_PORT`: Crossfadio Web Server 端口（默认 `4318`）
+- `CROSSFADIO_PORT`: Web Server 端口（默认 `4318`）
 - `CROSSFADIO_DATA_DIR`: 自定义本地数据目录
 - `CROSSFADIO_NCM_CWD`: 子进程工作目录
 - `CROSSFADIO_NCM_HEALTH_PATH`: 健康探测路径（默认 `/`）
 - `CROSSFADIO_NCM_DISABLE_AUTO=1`: 禁用默认自动拉起
-- `CROSSFADIO_SECRET_KEY`: secrets.json 加密密钥（可选，不设置则明文存储）
+- `CROSSFADIO_HOST`: 服务绑定地址（默认 `127.0.0.1`）
+- `CROSSFADIO_ALLOWED_ORIGINS`: 逗号分隔的 CORS 来源
+
+多用户必需环境变量：
+
+- `CROSSFADIO_JWT_SECRET`: JWT HS256 签名密钥
+- `CROSSFADIO_LLM_BASE_URL` / `CROSSFADIO_LLM_API_KEY` / `CROSSFADIO_LLM_MODEL`
+- `CROSSFADIO_TTS_BASE_URL` / `CROSSFADIO_TTS_API_KEY`
+
+白名单：在数据目录下创建 `allowlist.json`，内容为允许登录的 NCM 用户 ID 数组，如 `["12345"]`。
 
 重启策略：
 
@@ -70,8 +80,7 @@ pnpm start
 - macOS 默认目录：`~/Library/Application Support/Crossfadio`
 - Linux 默认目录：`~/.crossfadio`
 - Windows 默认目录：`%APPDATA%/Crossfadio`
-- 包含 `state.db`、`logs/`、`user/`、`secrets.json`
-- `secrets.json` 为文件存储降级方案，不再使用 Electron `safeStorage`
+- 包含 `state.db`、`logs/`、`users/<ncmId>/`（每用户语料）、`allowlist.json`
 
 ## 检查
 

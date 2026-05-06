@@ -1,6 +1,6 @@
 # Crossfadio — AI Agent Context
 
-Local AI DJ Web App. Node.js + Express BFF, React + Tailwind frontend, Web Audio playback engine, Netease Cloud Music as music source.
+Multi-user AI DJ Web App. Node.js + Express BFF (JWT auth, per-user SQLite), React + Tailwind frontend, Web Audio playback engine, Netease Cloud Music as music source.
 
 ## Tech Stack
 
@@ -12,7 +12,7 @@ Local AI DJ Web App. Node.js + Express BFF, React + Tailwind frontend, Web Audio
 | Database | better-sqlite3 (`state.db`) |
 | Audio | Web Audio API (dual-deck + GainNode + BiquadFilter) |
 | Music | NeteaseCloudMusicApi (spawned subprocess) |
-| LLM/TTS | OpenAI-compatible (user-configured endpoint) |
+| LLM/TTS | OpenAI-compatible (env-var configured, per-user TTS voice) |
 | Testing | Vitest (unit + integration) |
 
 ## Directory Structure
@@ -22,19 +22,22 @@ src/
   server/           # Local BFF (Node.js)
     index.ts        # Bootstrap, NCM spawn, graceful shutdown
     app-paths.ts    # Data dir resolution (macOS/Linux/Windows)
-    security.ts     # secrets.json encryption wrapper
+    config.ts       # Env var loader + startup validator
+    crypto.ts       # AES-256-GCM encrypt/decrypt
+    allowlist.ts    # NCM ID allowlist loader
     logger.ts       # pino structured logging
-    scheduler.ts    # Cron-based plan generation + hourly checks
     weather.ts      # wttr.in / openweather
     http/
       index.ts      # Express app setup, all route registration
       ws.ts         # WebSocket server (auth + chat)
       routes/       # One file per feature domain
+      middleware/   # Auth middleware (JWT + userScope) (multi-user)
     agent/          # compute() + fragments + modes + schema
     llm/            # OpenAI-compatible client (streaming/non-streaming)
     tts/            # TTS client + SHA-256 cache
     ncm/            # spawn.ts, client.ts, auth.ts
     store/          # db.ts, migrations.ts, domain stores
+      users.ts      # User CRUD + blocked login attempts (multi-user)
     user-corpus/    # Template bootstrap
   renderer/
     App.tsx         # 4-tab layout: Player / Plan / Chat / Settings
@@ -50,9 +53,10 @@ src/
 
 ## Conventions
 
-- **No mock in integration paths**: NCM auth, LLM calls in route handlers use real clients injected via options
-- **All HTTP routes registered in** `src/server/http/index.ts` — single source of truth
-- **Secrets never leave the server**: `SecretStore` wraps `secrets.json`, browser only sees `hasApiKey` / `hasCookie` booleans or masked values
+- **No mock in integration paths**: NCM auth, LLM calls in route handlers use real clients injected via middleware
+- **All HTTP routes registered in** `src/server/http/index.ts` — single source of truth, split into public and protected
+- **LLM/TTS keys from env vars**: `CROSSFADIO_LLM_*` / `CROSSFADIO_TTS_*` required at startup. Only TTS voice is per-user pref.
+- **JWT auth required for protected routes**: `Authorization: Bearer <token>` header, verified by `authMiddleware`
 - **Error codes**: `NCM_E_*` for NCM errors, zod validation for DTOs at boundaries
 - **TypeScript strict**: `pnpm check` runs `tsc --noEmit` on both tsconfigs, must pass before commit
 - **Commit style**: Conventional commits in Chinese (`feat(player):`, `fix(dj):`, `refactor(...):`, `style(...):`)
@@ -63,13 +67,23 @@ src/
 |----------|---------|---------|
 | `CROSSFADIO_PORT` | `4318` | Web server port |
 | `CROSSFADIO_DATA_DIR` | OS-specific | App data directory |
-| `CROSSFADIO_SECRET_KEY` | (none) | Encryption key for secrets.json |
+| `CROSSFADIO_SECRET_KEY` | (none) | (deprecated) Encryption key for secrets.json |
 | `CROSSFADIO_NCM_COMMAND` | `pnpm exec NeteaseCloudMusicApi` | NCM API launch command |
 | `CROSSFADIO_NCM_ARGS` | (none) | Additional NCM CLI args |
 | `CROSSFADIO_NCM_PORT` | `3000` | NCM API port |
 | `CROSSFADIO_NCM_CWD` | app path | NCM process working directory |
 | `CROSSFADIO_NCM_HEALTH_PATH` | `/` | NCM health check path |
 | `CROSSFADIO_NCM_DISABLE_AUTO` | (auto-enabled) | Set to `1` to disable auto-launch |
+| `CROSSFADIO_JWT_SECRET` | **required** | HS256 signing key for JWT tokens (multi-user) |
+| `CROSSFADIO_JWT_TTL_DAYS` | `7` | JWT token validity in days |
+| `CROSSFADIO_LLM_BASE_URL` | **required** | LLM API base URL (multi-user) |
+| `CROSSFADIO_LLM_API_KEY` | **required** | LLM API key (multi-user) |
+| `CROSSFADIO_LLM_MODEL` | **required** | LLM model name (multi-user) |
+| `CROSSFADIO_TTS_BASE_URL` | **required** | TTS API base URL (multi-user) |
+| `CROSSFADIO_TTS_API_KEY` | **required** | TTS API key (multi-user) |
+| `CROSSFADIO_TTS_VOICE_DEFAULT` | (none) | Default TTS voice, falls back to 'Cherry' |
+| `CROSSFADIO_HOST` | `127.0.0.1` | Server bind address |
+| `CROSSFADIO_ALLOWED_ORIGINS` | (none) | Comma-separated CORS origins beyond localhost |
 
 ## HTTP API Routes
 
@@ -77,7 +91,7 @@ src/
 | Method | Path | Purpose |
 |--------|------|---------|
 | GET | `/api/health` | Service health |
-| GET | `/api/runtime` | Session token + static dir info |
+| GET | `/api/runtime` | Service version + health (public) |
 
 ### NCM
 | Method | Path | Purpose |
@@ -122,19 +136,19 @@ src/
 | GET | `/api/messages/recent` | Recent chat messages |
 
 ### Settings & Location
-| Method | Path | Purpose |
-|--------|------|---------|
-| GET | `/api/settings` | Read settings (keys masked) |
-| PUT | `/api/settings` | Save settings |
-| POST | `/api/settings/test-llm` | Test LLM connection |
-| POST | `/api/settings/test-tts` | Test TTS + preview audio |
-| POST | `/api/location` | Set browser geolocation |
+| Method | Path | Auth | Purpose |
+|--------|------|------|---------|
+| GET | `/api/settings` | JWT | Read LLM/TTS config + TTS voice pref |
+| PUT | `/api/settings` | JWT | Save TTS voice preference |
+| POST | `/api/location` | JWT | Set browser geolocation |
+
+> **Note:** LLM/TTS `baseUrl`, `model`, and `apiKey` come from env vars (`CROSSFADIO_LLM_*`, `CROSSFADIO_TTS_*`), not from the Settings UI. The Settings UI only exposes TTS voice selection.
 
 ### WebSocket `/ws`
 
-Client connects and sends auth token as first message. Events:
-- **C→S**: `auth`, `chat`, `ping`
-- **S→C**: `auth.ok`, `chat.delta`, `chat.done`, `segue.tts-ready`, `plan-updated`, `queue-updated`, `dj.debug`
+Client connects and sends JWT token as first message (`{ type: "auth", token: "<jwt>" }`). Events:
+- **C→S**: `auth`, `chat`, `chat.cancel-recommend`
+- **S→C**: `auth.ok`, `chat.delta`, `chat.done`, `chat.recommend.started`, `chat.recommend.progress`, `segue.tts-ready`, `plan-updated`, `queue-updated`, `queue-appended`, `dj.debug`, `dj.pick-next.done`
 
 ## Commands
 
@@ -156,4 +170,6 @@ pnpm start            # Start production server
 - **Dual-deck audio**: `AudioContext` with A/B deck rotation, equal-energy crossfade (cos/sin curves), BiquadFilter lowpass sweep
 - **Segue timing**: d-12s trigger → d-10s prefetch → d-8s crossfade start → d-7s TTS ducking
 - **Agent**: Single-agent, 3 modes (plan/segue/chat), 6-fragment prompt assembly, zod output validation with retry
-- **NCM auth**: QR code login only, cookie persisted in secrets.json via SecretStore
+- **NCM auth**: QR code login → JWT token (HS256 via `jose`). Cookie encrypted with AES-256-GCM in `users` table. `authMiddleware` + `userScopeMiddleware` on all protected routes.
+- **Whitelist**: `allowlist.json` in app data dir controls which NCM user IDs can log in.
+- **Per-user isolation**: All DB tables have `user_id` column. Queue/location are per-user `Map`s. User corpus files under `users/<ncmId>/`.
