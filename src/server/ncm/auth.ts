@@ -1,8 +1,11 @@
+import { SignJWT } from 'jose';
 import type { NcmClient } from './client.js';
-import type { SecretStore } from '../security.js';
 import { NCM_QR_CODE, NCM_QR_HINT, type NcmQrCode, type NcmQrHint } from '../../shared/schema.js';
-
-const NCM_COOKIE_KEY = 'ncm.cookie';
+import { getConfig } from '../config.js';
+import { deriveKey, encrypt } from '../crypto.js';
+import { upsertUser, recordBlockedAttempt } from '../store/users.js';
+import { isAllowed } from '../allowlist.js';
+import { ensureUserCorpus } from '../user-corpus/bootstrap.js';
 
 const QR_MESSAGE: Record<NcmQrCode, string> = {
   [NCM_QR_CODE.EXPIRED]: '二维码已过期，请刷新重试',
@@ -11,31 +14,16 @@ const QR_MESSAGE: Record<NcmQrCode, string> = {
   [NCM_QR_CODE.AUTHORIZED]: '登录成功'
 };
 
-export type NcmSession = {
-  hasCookie: boolean;
-  profile: unknown | null;
-};
-
 export type NcmQrStatusResult = {
   code: NcmQrCode;
   hint: NcmQrHint;
   message: string;
   hasCookie: boolean;
+  token?: string;
 };
 
 export class NcmAuthService {
-  private cookie: string | null;
-
-  constructor(
-    private readonly client: NcmClient,
-    private readonly secrets: SecretStore
-  ) {
-    this.cookie = this.secrets.get(NCM_COOKIE_KEY);
-  }
-
-  getCookie(): string | null {
-    return this.cookie;
-  }
+  constructor(private readonly client: NcmClient) {}
 
   async createQr(): Promise<{ key: string; qrimg: string; qrurl: string }> {
     return this.client.createLoginQr();
@@ -45,46 +33,65 @@ export class NcmAuthService {
     const result = await this.client.checkLoginQr(key);
     const code = normalizeQrCode(result.code);
 
-    if (code === NCM_QR_CODE.AUTHORIZED && result.cookie) {
-      this.cookie = result.cookie;
-      this.secrets.set(NCM_COOKIE_KEY, result.cookie);
+    if (code !== NCM_QR_CODE.AUTHORIZED || !result.cookie) {
+      return {
+        code,
+        hint: NCM_QR_HINT[code],
+        message: result.message || QR_MESSAGE[code],
+        hasCookie: false
+      };
     }
+
+    // QR authorized — get NCM user ID
+    const loginStatus = await this.client.getLoginStatus();
+    const profile = (loginStatus as any)?.data?.profile ?? null;
+    const ncmId = String((profile as any)?.userId ?? '');
+
+    if (!ncmId) {
+      return {
+        code: NCM_QR_CODE.EXPIRED,
+        hint: 'expired',
+        message: '无法获取用户信息，请重试',
+        hasCookie: false
+      };
+    }
+
+    // Whitelist check
+    if (!isAllowed(ncmId)) {
+      const profileJson = profile ? JSON.stringify(profile) : null;
+      recordBlockedAttempt({ ncmId, profileJson });
+      return {
+        code: NCM_QR_CODE.AUTHORIZED,
+        hint: 'forbidden',
+        message: '您没有访问权限，请联系管理员',
+        hasCookie: false
+      };
+    }
+
+    // Persist encrypted cookie
+    const config = getConfig();
+    const keyDerived = deriveKey(config.jwtSecret);
+    const encryptedCookie = encrypt(result.cookie, keyDerived);
+    const profileJson = profile ? JSON.stringify(profile) : null;
+    upsertUser({ ncmId, encryptedCookie, profileJson });
+    ensureUserCorpus();
+
+    // Sign JWT
+    const secret = new TextEncoder().encode(config.jwtSecret);
+    const ttlDays = config.jwtTtlDays;
+    const token = await new SignJWT({ sub: ncmId })
+      .setProtectedHeader({ alg: 'HS256' })
+      .setIssuedAt()
+      .setExpirationTime(`${ttlDays}d`)
+      .sign(secret);
 
     return {
-      code,
-      hint: NCM_QR_HINT[code],
-      message: result.message || QR_MESSAGE[code],
-      hasCookie: Boolean(this.cookie)
+      code: NCM_QR_CODE.AUTHORIZED,
+      hint: 'authorized',
+      message: '登录成功',
+      hasCookie: true,
+      token
     };
-  }
-
-  async getSession(): Promise<NcmSession> {
-    if (!this.cookie) {
-      return { hasCookie: false, profile: null };
-    }
-
-    try {
-      const loginStatus = await this.client.getLoginStatus();
-      const profile = (loginStatus as any)?.data?.profile ?? null;
-      return {
-        hasCookie: true,
-        profile
-      };
-    } catch {
-      return {
-        hasCookie: true,
-        profile: null
-      };
-    }
-  }
-
-  async logout(): Promise<void> {
-    try {
-      await this.client.logout();
-    } finally {
-      this.cookie = null;
-      this.secrets.remove(NCM_COOKIE_KEY);
-    }
   }
 }
 

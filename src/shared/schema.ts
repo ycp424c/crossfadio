@@ -33,7 +33,7 @@ export const NCM_QR_HINT = {
   [NCM_QR_CODE.AUTHORIZED]: 'authorized'
 } as const satisfies Record<NcmQrCode, string>;
 
-export type NcmQrHint = (typeof NCM_QR_HINT)[NcmQrCode];
+export type NcmQrHint = (typeof NCM_QR_HINT)[NcmQrCode] | 'forbidden';
 
 export const ncmQrStatusSchema = z.object({
   code: z.union([
@@ -42,9 +42,10 @@ export const ncmQrStatusSchema = z.object({
     z.literal(NCM_QR_CODE.SCANNED),
     z.literal(NCM_QR_CODE.AUTHORIZED)
   ]),
-  hint: z.enum(['expired', 'waiting', 'scanned', 'authorized']),
+  hint: z.enum(['expired', 'waiting', 'scanned', 'authorized', 'forbidden']),
   message: z.string(),
-  hasCookie: z.boolean()
+  hasCookie: z.boolean(),
+  token: z.string().optional()
 });
 
 export type NcmQrStatus = z.infer<typeof ncmQrStatusSchema>;

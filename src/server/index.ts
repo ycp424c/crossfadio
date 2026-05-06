@@ -27,12 +27,11 @@ async function bootstrap(): Promise<void> {
     ncm = new NcmProcessManager();
     await ncm.start();
 
-    let authRef: NcmAuthService | null = null;
     const ncmClient = new NcmClient(ncm.getStatus().baseUrl, {
-      getCookie: () => authRef?.getCookie() ?? null
+      getCookie: () => null
     });
 
-    authRef = new NcmAuthService(ncmClient, secrets);
+    const authRef = new NcmAuthService(ncmClient);
 
     localServer = await startLocalServer({
       ncm,
