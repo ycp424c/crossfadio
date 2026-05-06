@@ -382,10 +382,12 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
   useEffect(() => {
     if (!currentTrackId) {
       setNowPlaying(null);
+      resetTrackMedia();
       return;
     }
 
     disposeSegueAudio();
+    resetTrackMedia();
     prefetchTriggeredRef.current = false;
     segueClientRequestIdRef.current = null;
     segueExpectedFromTrackIdRef.current = null;
@@ -446,6 +448,9 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
         name: trackMeta?.name,
         artist: trackMeta?.artists?.join(' / ')
       });
+      if (currentTrackIdRef.current !== trackId) {
+        return;
+      }
       setNowPlaying(payload);
       setError('');
 
@@ -462,10 +467,28 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
 
       setTrackStatusText(`已加载 ${trackId}`);
     } catch (err) {
+      if (currentTrackIdRef.current !== trackId) {
+        return;
+      }
       setNowPlaying(null);
       setTrackStatusText('加载失败');
       setError(err instanceof Error ? err.message : 'now 请求失败');
     }
+  }
+
+  function resetTrackMedia(): void {
+    setNowPlaying(null);
+    setPositionSec(0);
+    setDurationSec(0);
+
+    const audio = audioRef.current;
+    if (!audio) {
+      return;
+    }
+
+    audio.pause();
+    audio.removeAttribute('src');
+    audio.load();
   }
 
   async function refreshNextTrack(trackId: string): Promise<void> {
