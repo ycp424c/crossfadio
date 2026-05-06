@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
-import { resolveUserCorpusDir } from '../app-paths.js';
+import { resolveUserDir } from '../app-paths.js';
 import { playlistRefSchema } from '../agent/schema.js';
 import { getLogger } from '../logger.js';
 
@@ -9,8 +9,8 @@ const playlistsSchema = z.array(playlistRefSchema);
 
 export type PlaylistEntry = z.infer<typeof playlistRefSchema>;
 
-export function loadPlaylists(): PlaylistEntry[] {
-  const filePath = path.join(resolveUserCorpusDir(), 'playlists.json');
+export function loadPlaylists(ncmId: string): PlaylistEntry[] {
+  const filePath = path.join(resolveUserDir(ncmId), 'playlists.json');
   if (!fs.existsSync(filePath)) return [];
 
   try {
@@ -28,8 +28,8 @@ export function loadPlaylists(): PlaylistEntry[] {
   }
 }
 
-export function loadCorpusFile(filename: string): string {
-  const filePath = path.join(resolveUserCorpusDir(), filename);
+export function loadCorpusFile(ncmId: string, filename: string): string {
+  const filePath = path.join(resolveUserDir(ncmId), filename);
   if (!fs.existsSync(filePath)) return '';
   try {
     return fs.readFileSync(filePath, 'utf-8');
@@ -46,12 +46,12 @@ export type UserCorpus = {
   playlists: PlaylistEntry[];
 };
 
-export function loadUserCorpus(): UserCorpus {
+export function loadUserCorpus(ncmId: string): UserCorpus {
   return {
-    taste: loadCorpusFile('taste.md'),
-    routines: loadCorpusFile('routines.md'),
-    moodRules: loadCorpusFile('mood-rules.md'),
-    djPersona: loadCorpusFile('dj-persona.md'),
-    playlists: loadPlaylists()
+    taste: loadCorpusFile(ncmId, 'taste.md'),
+    routines: loadCorpusFile(ncmId, 'routines.md'),
+    moodRules: loadCorpusFile(ncmId, 'mood-rules.md'),
+    djPersona: loadCorpusFile(ncmId, 'dj-persona.md'),
+    playlists: loadPlaylists(ncmId)
   };
 }

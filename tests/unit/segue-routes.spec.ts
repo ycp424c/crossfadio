@@ -22,9 +22,17 @@ const originalDataDir = process.env.CROSSFADIO_DATA_DIR;
 
 let dataDir: string;
 
-beforeEach(() => {
+beforeEach(async () => {
   dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'crossfadio-segue-routes-'));
   process.env.CROSSFADIO_DATA_DIR = dataDir;
+  process.env.CROSSFADIO_JWT_SECRET = 'unit-test-secret-key-at-least-32-chars-long!!';
+  process.env.CROSSFADIO_LLM_BASE_URL = 'https://llm.example/v1';
+  process.env.CROSSFADIO_LLM_API_KEY = 'sk-test';
+  process.env.CROSSFADIO_LLM_MODEL = 'test-model';
+  process.env.CROSSFADIO_TTS_BASE_URL = 'https://tts.example/v1';
+  process.env.CROSSFADIO_TTS_API_KEY = 'sk-test-tts';
+  const { resetConfigForTest } = await import('../../src/server/config');
+  resetConfigForTest();
   initDb();
 });
 
@@ -122,12 +130,12 @@ describe('segue trigger handler', () => {
     const body = { clientRequestId: 'cid-stable', from: { id: 'a' }, to: { id: 'b' } };
 
     const first = createJsonResponse();
-    handler({ body } as never, first as never, vi.fn() as never);
+    handler({ body, userId: 'test-user' } as never, first as never, vi.fn() as never);
     await Promise.resolve();
     await Promise.resolve();
 
     const second = createJsonResponse();
-    handler({ body } as never, second as never, vi.fn() as never);
+    handler({ body, userId: 'test-user' } as never, second as never, vi.fn() as never);
 
     expect(first.body).toMatchObject({ ok: true, clientRequestId: 'cid-stable' });
     expect(second.body).toMatchObject({ ok: true, clientRequestId: 'cid-stable' });
@@ -145,9 +153,9 @@ describe('segue trigger handler', () => {
     const body = { from: { id: 'a' }, to: { id: 'b' } };
 
     const first = createJsonResponse();
-    handler({ body } as never, first as never, vi.fn() as never);
+    handler({ body, userId: 'test-user' } as never, first as never, vi.fn() as never);
     const second = createJsonResponse();
-    handler({ body } as never, second as never, vi.fn() as never);
+    handler({ body, userId: 'test-user' } as never, second as never, vi.fn() as never);
 
     const firstRequestId = (first.body as { requestId: string }).requestId;
     const secondRequestId = (second.body as { requestId: string }).requestId;
@@ -161,7 +169,7 @@ describe('segue trigger handler', () => {
     const res = createJsonResponse();
 
     handler(
-      { body: { from: { id: 'same' }, to: { id: 'same' } } } as never,
+      { body: { from: { id: 'same' }, to: { id: 'same' } }, userId: 'test-user' } as never,
       res as never,
       vi.fn() as never
     );
@@ -171,7 +179,7 @@ describe('segue trigger handler', () => {
 
   it('broadcasts a degraded terminal event when the LLM segue job times out', async () => {
     vi.useFakeTimers();
-    vi.mocked(llmConfigModule.resolveLlmConfig).mockReturnValue({
+    vi.spyOn(llmConfigModule, 'resolveLlmConfig').mockReturnValue({
       baseUrl: 'https://llm.example/v1',
       apiKey: 'test-key',
       model: 'test-model'
@@ -217,7 +225,7 @@ describe('segue trigger handler', () => {
     const res = createJsonResponse();
 
     handler(
-      { body: { clientRequestId: 'cid-timeout', from: { id: '1' }, to: { id: '2' } } } as never,
+      { body: { clientRequestId: 'cid-timeout', from: { id: '1' }, to: { id: '2' } }, userId: 'test-user' } as never,
       res as never,
       vi.fn() as never
     );

@@ -10,7 +10,6 @@ import type { NcmClient } from '../../ncm/client.js';
 type AuthedRequest = Request & { userId: string; ncmClient: NcmClient };
 import type { NcmPlaylistDetail, NcmPlaylistTrack } from '../../../shared/schema.js';
 import { resolveTrackQuery } from '../../ncm/resolver.js';
-import type { SecretStore } from '../../security.js';
 import { loadLatestPlan, savePlan, todayDateStr } from '../../store/plan.js';
 import { getRecentPlays } from '../../store/plays.js';
 import { loadLikedTracksForPlanning } from '../../user-corpus/ncm-liked.js';
@@ -27,14 +26,14 @@ function sampleN<T>(arr: T[], n: number): T[] {
 }
 
 type PlanRouteOptions = {
-  secrets: SecretStore;
+  secrets: any;
   ncmClient: NcmClient;
 };
 
 // ─── Shared helpers ───────────────────────────────────────────────────────────
 
 export async function buildPlanFragments(userId: string, date: string, ncmClient: NcmClient): Promise<Fragments> {
-  const corpus = loadUserCorpus();
+  const corpus = loadUserCorpus(userId);
   const weather = await fetchWeather();
   const recentPlays = getRecentPlays(userId, 50);
   const likedTracks = await loadLikedTracksForPlanning(ncmClient);
@@ -62,9 +61,9 @@ export async function buildPlanFragments(userId: string, date: string, ncmClient
   };
 }
 
-async function generatePlan(userId: string, date: string, secrets: SecretStore, ncmClient: NcmClient) {
+async function generatePlan(userId: string, date: string, secrets: any, ncmClient: NcmClient) {
   const llmConfig = resolveLlmConfig();
-  const corpus = loadUserCorpus();
+  const corpus = loadUserCorpus(userId);
 
   if (!llmConfig) {
     return buildFallbackPlan(date, corpus.playlists);
@@ -149,7 +148,7 @@ export function createReplanSegmentHandler(opts: PlanRouteOptions) {
       let plan = loadLatestPlan(userId, date) ?? (await generatePlan(userId, date, opts.secrets, opts.ncmClient));
 
       const { segmentId } = parsed.data;
-      const corpus = loadUserCorpus();
+      const corpus = loadUserCorpus(userId);
       const llmConfig = resolveLlmConfig();
 
       if (llmConfig) {
@@ -218,7 +217,7 @@ export function createGapFillHandler(opts: PlanRouteOptions) {
     try {
       const { segmentId, count, mood } = parsed.data;
       const userId = (req as AuthedRequest).userId;
-      const corpus = loadUserCorpus();
+      const corpus = loadUserCorpus(userId);
 
       // Pick best playlist for this segment and resolve track IDs
       const segMoods: Record<string, string[]> = {

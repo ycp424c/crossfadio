@@ -32,6 +32,12 @@ export function resolveUserCorpusDir(): string {
   return userDir;
 }
 
+export function resolveUserDir(ncmId: string): string {
+  const userDir = path.join(resolveAppDataDir(), 'users', ncmId);
+  fs.mkdirSync(userDir, { recursive: true });
+  return userDir;
+}
+
 export function resolveUserTemplateDir(): string {
   return path.resolve(process.cwd(), 'user-template');
 }

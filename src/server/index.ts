@@ -3,7 +3,8 @@ import { fileURLToPath } from 'node:url';
 import { startLocalServer, type LocalServer } from './http/index.js';
 import { initDb } from './store/db.js';
 import { getLogger } from './logger.js';
-import { ensureUserCorpus } from './user-corpus/bootstrap.js';
+import { loadConfig } from './config.js';
+import { loadAllowlist } from './allowlist.js';
 import { NcmProcessManager } from './ncm/spawn.js';
 import { NcmClient } from './ncm/client.js';
 import { NcmAuthService } from './ncm/auth.js';
@@ -19,7 +20,8 @@ async function bootstrap(): Promise<void> {
   const logger = getLogger();
 
   try {
-    ensureUserCorpus();
+    loadConfig();
+    loadAllowlist();
     initDb();
 
     ncm = new NcmProcessManager();
@@ -35,7 +37,8 @@ async function bootstrap(): Promise<void> {
       ncm,
       ncmAuth: authRef,
       ncmClient,
-      ncmBaseUrl: ncm.getStatus().baseUrl,      host: '127.0.0.1',
+      ncmBaseUrl: ncm.getStatus().baseUrl,
+      host: resolveHost(),
       port: resolveServerPort(),
       staticDir: resolveStaticDir()
     });
@@ -71,6 +74,10 @@ async function shutdown(): Promise<void> {
       localServer = null;
     }
   }
+}
+
+function resolveHost(): string {
+  return process.env.CROSSFADIO_HOST?.trim() || '127.0.0.1';
 }
 
 function resolveServerPort(): number {

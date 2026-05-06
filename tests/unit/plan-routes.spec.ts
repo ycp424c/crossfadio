@@ -18,7 +18,7 @@ beforeEach(() => {
   }));
   dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'crossfadio-plan-routes-'));
   process.env.CROSSFADIO_DATA_DIR = dataDir;
-  fs.mkdirSync(path.join(dataDir, 'user'), { recursive: true });
+  fs.mkdirSync(path.join(dataDir, 'users', 'test-user'), { recursive: true });
   initDb();
 });
 
@@ -33,7 +33,7 @@ afterEach(() => {
 
 function writePlaylists(): void {
   fs.writeFileSync(
-    path.join(dataDir, 'user', 'playlists.json'),
+    path.join(dataDir, 'users', 'test-user', 'playlists.json'),
     JSON.stringify([
       {
         id: '12345',
@@ -68,7 +68,7 @@ function createJsonResponse() {
 describe('plan routes', () => {
   it('plan fragments include user taste and NCM liked tracks', async () => {
     writePlaylists();
-    fs.writeFileSync(path.join(dataDir, 'user', 'taste.md'), '偏好：dream pop 和女声', 'utf-8');
+    fs.writeFileSync(path.join(dataDir, 'users', 'test-user', 'taste.md'), '偏好：dream pop 和女声', 'utf-8');
     const ncmClient = {
       getLikedSongIds: vi.fn().mockResolvedValue(['101']),
       getSongDetails: vi.fn().mockResolvedValue([
@@ -98,7 +98,7 @@ describe('plan routes', () => {
     const handler = createGapFillHandler({ secrets: {} as never, ncmClient: ncmClient as never });
     const res = createJsonResponse();
 
-    await handler({ body: { segmentId: 'morning', count: 1 } } as never, res as never);
+    await handler({ body: { segmentId: 'morning', count: 1 }, userId: 'test-user' } as never, res as never);
 
     expect(res.statusCode).toBe(200);
     expect(res.body).toEqual({
@@ -129,7 +129,7 @@ describe('plan routes', () => {
     const handler = createGapFillHandler({ secrets: {} as never, ncmClient: ncmClient as never });
     const res = createJsonResponse();
 
-    await handler({ body: { segmentId: 'morning', count: 2 } } as never, res as never);
+    await handler({ body: { segmentId: 'morning', count: 2 }, userId: 'test-user' } as never, res as never);
 
     expect(res.statusCode).toBe(200);
     expect(ncmClient.getPlaylistDetail).toHaveBeenCalledWith('12345');

@@ -9,7 +9,6 @@ import type { Fragments } from '../../agent/schema.js';
 import { buildSegueTrackContext } from '../../agent/segue-context.js';
 import { resolveLlmConfig } from '../../llm/config.js';
 import type { NcmClient } from '../../ncm/client.js';
-import type { SecretStore } from '../../security.js';
 import { loadUserCorpus } from '../../user-corpus/loader.js';
 import { loadLikedTracksForPlanning } from '../../user-corpus/ncm-liked.js';
 import { getRecentPlays } from '../../store/plays.js';
@@ -41,7 +40,7 @@ const triggerBodySchema = z.object({
 type AuthedRequest = Request & { userId: string; ncmClient: NcmClient };
 
 type SegueRouteOptions = {
-  secrets: SecretStore;
+  secrets: any;
   ncmClient: NcmClient;
 };
 
@@ -138,7 +137,7 @@ async function runSegueJob(
       return;
     }
 
-    const corpus = loadUserCorpus();
+    const corpus = loadUserCorpus(userId);
     const likedTracks = await loadLikedTracksForPlanning(opts.ncmClient);
     if (signal.aborted) return;
     const trackContext = await loadSegueContext(from, to, opts.ncmClient, logger);

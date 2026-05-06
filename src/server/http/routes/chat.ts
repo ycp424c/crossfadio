@@ -8,7 +8,6 @@ import { resolveLlmConfig } from '../../llm/config.js';
 import { LlmClient } from '../../llm/client.js';
 import type { LlmConfig } from '../../llm/client.js';
 import type { NcmClient } from '../../ncm/client.js';
-import type { SecretStore } from '../../security.js';
 import { loadUserCorpus } from '../../user-corpus/loader.js';
 import { loadLikedTracksForPlanning } from '../../user-corpus/ncm-liked.js';
 import { getRecentPlays } from '../../store/plays.js';
@@ -25,7 +24,7 @@ type AuthedRequest = Request & { userId: string; ncmClient: NcmClient };
 
 type ChatHandlerOptions = {
   userId: string;
-  secrets: SecretStore;
+  secrets: any;
   ncmClient: NcmClient;
 };
 
@@ -88,7 +87,7 @@ async function handleChatMessage(
       return;
     }
 
-    const corpus = loadUserCorpus();
+    const corpus = loadUserCorpus(userId);
     const likedTracks = await loadLikedTracksForPlanning(opts.ncmClient);
     const weather = await fetchWeather();
     const now = new Date();

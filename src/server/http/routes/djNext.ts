@@ -3,7 +3,6 @@ import type { Track } from '../../agent/schema.js';
 import { LlmClient } from '../../llm/client.js';
 import { resolveLlmConfig } from '../../llm/config.js';
 import type { NcmClient } from '../../ncm/client.js';
-import type { SecretStore } from '../../security.js';
 import { loadUserCorpus } from '../../user-corpus/loader.js';
 import { getRecentPlays } from '../../store/plays.js';
 import { getRecentMessages } from '../../store/messages.js';
@@ -17,7 +16,7 @@ import { getLogger } from '../../logger.js';
 type AuthedRequest = Request & { userId: string; ncmClient: NcmClient };
 
 type DjNextOptions = {
-  secrets: SecretStore;
+  secrets: any;
   ncmClient: NcmClient;
 };
 
@@ -219,7 +218,7 @@ async function doPickNext(opts: DjNextOptions, userId: string): Promise<void> {
 
   if (llmConfig && allLikedIds.length > 0) {
     try {
-      const corpus = loadUserCorpus();
+      const corpus = loadUserCorpus(userId);
       const [weather] = await Promise.all([withTimeout(fetchWeather(), 4_000, null)]);
       const nowDate = new Date();
       const weekdays = ['日', '一', '二', '三', '四', '五', '六'];
