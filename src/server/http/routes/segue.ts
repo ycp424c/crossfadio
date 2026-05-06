@@ -25,7 +25,7 @@ import {
   synthesizeTtsWithFallback
 } from '../../tts/fallback.js';
 import { getDjPickReason } from './djNext.js';
-import { broadcast } from '../broadcast.js';
+import { broadcastToUser } from '../broadcast.js';
 import { getLogger } from '../../logger.js';
 
 const SEGUE_LLM_TIMEOUT_MS = 60_000;
@@ -41,7 +41,7 @@ type AuthedRequest = Request & { userId: string; ncmClient: NcmClient };
 
 type SegueRouteOptions = {
   secrets: any;
-  ncmClient: NcmClient;
+  ncmClient?: NcmClient;
 };
 
 type ActiveSegueJob = {
@@ -104,7 +104,8 @@ export function createSegueTriggerHandler(opts: SegueRouteOptions) {
     res.json({ ok: true, requestId, clientRequestId });
 
     const userId = (req as AuthedRequest).userId;
-    void runSegueJob(job, parsed.data.from, parsed.data.to, opts, userId).finally(() => {
+    const ncmClient = getScopedNcmClient(req, opts.ncmClient);
+    void runSegueJob(job, parsed.data.from, parsed.data.to, opts, userId, ncmClient).finally(() => {
       if (activeJob === job) activeJob = null;
     });
   };
@@ -115,7 +116,8 @@ async function runSegueJob(
   from: z.infer<typeof trackSchema>,
   to: z.infer<typeof trackSchema>,
   opts: SegueRouteOptions,
-  userId: string
+  userId: string,
+  ncmClient: NcmClient
 ): Promise<void> {
   const logger = getLogger();
   const { requestId, clientRequestId, controller } = job;
@@ -123,7 +125,7 @@ async function runSegueJob(
 
   const emit = (payload: Record<string, unknown>, options: { allowAborted?: boolean } = {}): void => {
     if (signal.aborted && !options.allowAborted) return;
-    broadcast({ ...payload, requestId, clientRequestId });
+    broadcastToUser(userId, { ...payload, requestId, clientRequestId });
   };
 
   // Wire LLM/TTS hard timeouts to the same controller — abort cascades to all in-flight fetches.
@@ -138,9 +140,9 @@ async function runSegueJob(
     }
 
     const corpus = loadUserCorpus(userId);
-    const likedTracks = await loadLikedTracksForPlanning(opts.ncmClient);
+    const likedTracks = await loadLikedTracksForPlanning(ncmClient);
     if (signal.aborted) return;
-    const trackContext = await loadSegueContext(from, to, opts.ncmClient, logger);
+    const trackContext = await loadSegueContext(from, to, ncmClient, logger);
     if (signal.aborted) return;
     const weather = await fetchWeather();
     if (signal.aborted) return;
@@ -324,6 +326,14 @@ export function buildSegueAudioUrl(filePath: string): string {
 function isSafeTtsRelativePath(value: string | undefined): value is string {
   if (!value) return false;
   return !path.isAbsolute(value) && !value.includes('..') && !value.includes('\\');
+}
+
+function getScopedNcmClient(req: Request, fallback?: NcmClient): NcmClient {
+  const ncmClient = (req as Partial<AuthedRequest>).ncmClient ?? fallback;
+  if (!ncmClient) {
+    throw new Error('NCM client missing from request scope');
+  }
+  return ncmClient;
 }
 
 async function loadSegueContext(

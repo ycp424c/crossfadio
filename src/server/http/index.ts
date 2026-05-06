@@ -9,7 +9,6 @@ import { setupWsServer } from './ws.js';
 import type { NcmProcessManager } from '../ncm/spawn.js';
 import { createNcmStatusHandler } from './routes/ncm.js';
 import type { NcmAuthService } from '../ncm/auth.js';
-import type { NcmClient } from '../ncm/client.js';
 import {
   createNcmLogoutHandler,
   createNcmQrHandler,
@@ -53,7 +52,6 @@ export type LocalServer = {
 type StartLocalServerOptions = {
   ncm: NcmProcessManager;
   ncmAuth: NcmAuthService;
-  ncmClient: NcmClient;
   ncmBaseUrl: string;
   host: string;
   port: number;
@@ -94,22 +92,22 @@ export async function startLocalServer(options: StartLocalServerOptions): Promis
   app.get('/api/ncm/login/session', protect, createNcmSessionHandler());
   app.post('/api/ncm/login/logout', protect, createNcmLogoutHandler());
   app.post('/api/ncm/logout', protect, createNcmLogoutHandler());
-  app.get('/api/now', protect, createNowHandler(options.ncmClient));
-  app.get('/api/next', protect, createNextHandler(options.ncmClient));
+  app.get('/api/now', protect, createNowHandler());
+  app.get('/api/next', protect, createNextHandler());
   app.post('/api/plays', protect, createStartPlayHandler());
   app.patch('/api/plays/:id', protect, createEndPlayHandler());
   app.get('/api/settings', protect, createGetSettingsHandler());
   app.put('/api/settings', protect, createSaveSettingsHandler());
-  app.get('/api/plan/today', protect, createGetTodayPlanHandler({ secrets: null as any, ncmClient: options.ncmClient }));
-  app.post('/api/plan/regenerate', protect, createRegeneratePlanHandler({ secrets: null as any, ncmClient: options.ncmClient }));
-  app.post('/api/plan/replan-segment', protect, createReplanSegmentHandler({ secrets: null as any, ncmClient: options.ncmClient }));
-  app.post('/api/plan/gap-fill', protect, createGapFillHandler({ secrets: null as any, ncmClient: options.ncmClient }));
+  app.get('/api/plan/today', protect, createGetTodayPlanHandler({ secrets: null as any }));
+  app.post('/api/plan/regenerate', protect, createRegeneratePlanHandler({ secrets: null as any }));
+  app.post('/api/plan/replan-segment', protect, createReplanSegmentHandler({ secrets: null as any }));
+  app.post('/api/plan/gap-fill', protect, createGapFillHandler({ secrets: null as any }));
   app.get('/api/queue/liked/ids', protect, createGetLikedIdsHandler());
   app.get('/api/queue/liked', protect, createGetLikedQueueHandler());
   app.post('/api/queue/like', protect, createLikeTrackHandler());
   app.put('/api/queue/state', protect, createSetQueueStateHandler());
-  app.post('/api/segue/trigger', protect, createSegueTriggerHandler({ secrets: null as any, ncmClient: options.ncmClient }));
-  app.post('/api/dj/pick-next', protect, createDjPickNextHandler({ secrets: null as any, ncmClient: options.ncmClient }));
+  app.post('/api/segue/trigger', protect, createSegueTriggerHandler({ secrets: null as any }));
+  app.post('/api/dj/pick-next', protect, createDjPickNextHandler({ secrets: null as any }));
   app.get('/api/messages/recent', protect, createGetRecentMessagesHandler());
   app.post('/api/location', protect, createSetLocationHandler());
 
@@ -126,7 +124,7 @@ export async function startLocalServer(options: StartLocalServerOptions): Promis
   });
 
   const server = createServer(app);
-  const chatHandler = createChatMessageHandler({ secrets: null as any, ncmClient: options.ncmClient, userId: '__legacy__' });
+  const chatHandler = createChatMessageHandler();
   setupWsServer(server, { ncmBaseUrl: options.ncmBaseUrl, onChatMessage: chatHandler, onCancelRecommend: cancelChatRecommend });
 
   const port = await listen(server, options.host, options.port);

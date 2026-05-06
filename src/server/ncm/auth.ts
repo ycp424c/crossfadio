@@ -42,8 +42,9 @@ export class NcmAuthService {
       };
     }
 
-    // QR authorized — get NCM user ID
-    const loginStatus = await this.client.getLoginStatus();
+    // QR authorized — get NCM user ID with the just-issued cookie.
+    const authedClient = this.client.withCookie(result.cookie);
+    const loginStatus = await authedClient.getLoginStatus();
     const profile = (loginStatus as any)?.data?.profile ?? null;
     const ncmId = String((profile as any)?.userId ?? '');
 
@@ -74,7 +75,7 @@ export class NcmAuthService {
     const encryptedCookie = encrypt(result.cookie, keyDerived);
     const profileJson = profile ? JSON.stringify(profile) : null;
     upsertUser({ ncmId, encryptedCookie, profileJson });
-    ensureUserCorpus();
+    ensureUserCorpus(ncmId);
 
     // Sign JWT
     const secret = new TextEncoder().encode(config.jwtSecret);

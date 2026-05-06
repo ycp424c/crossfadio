@@ -10,14 +10,14 @@ import { getRecentSegues } from '../../store/segues.js';
 import { getPreferenceContext } from '../../store/chat-preferences.js';
 import { fetchWeather } from '../../weather.js';
 import { getQueue, addToQueue } from '../../store/queue.js';
-import { broadcast } from '../broadcast.js';
+import { broadcastToUser } from '../broadcast.js';
 import { getLogger } from '../../logger.js';
 
 type AuthedRequest = Request & { userId: string; ncmClient: NcmClient };
 
 type DjNextOptions = {
   secrets: any;
-  ncmClient: NcmClient;
+  ncmClient?: NcmClient;
 };
 
 const JOB_TIMEOUT_MS = 180_000;
@@ -163,15 +163,16 @@ export function parseDjCandidatePicks(raw: string, candidates: Track[]): ParsedD
 
 export function createDjPickNextHandler(opts: DjNextOptions): RequestHandler {
   return (req, res) => {
-    const uid = (req as AuthedRequest).userId;
-    res.json({ ok: true, running: isRunning.get(uid) ?? false });
-    if (!(isRunning.get(uid) ?? false)) {
-      void runPickNextJob(opts, uid);
+    const userId = (req as AuthedRequest).userId;
+    const ncmClient = getScopedNcmClient(req, opts.ncmClient);
+    res.json({ ok: true, running: isRunning.get(userId) ?? false });
+    if (!(isRunning.get(userId) ?? false)) {
+      void runPickNextJob(userId, ncmClient);
     }
   };
 }
 
-async function runPickNextJob(opts: DjNextOptions, userId: string): Promise<void> {
+async function runPickNextJob(userId: string, ncmClient: NcmClient): Promise<void> {
   if (isRunning.get(userId)) return;
   isRunning.set(userId, true);
   const logger = getLogger();
@@ -180,17 +181,17 @@ async function runPickNextJob(opts: DjNextOptions, userId: string): Promise<void
     setTimeout(() => resolve('timeout'), JOB_TIMEOUT_MS)
   );
 
-  const jobResult = await Promise.race([doPickNext(opts, userId).then(() => 'done' as const), jobTimer]);
+  const jobResult = await Promise.race([doPickNext(userId, ncmClient).then(() => 'done' as const), jobTimer]);
 
   if (jobResult === 'timeout') {
     logger.warn('DJ pick-next job timed out after %dms', JOB_TIMEOUT_MS);
-    broadcast({ type: 'dj.pick-next.done', added: false, reason: 'timeout' });
+    broadcastToUser(userId, { type: 'dj.pick-next.done', added: false, reason: 'timeout' });
   }
 
   isRunning.set(userId, false);
 }
 
-async function doPickNext(opts: DjNextOptions, userId: string): Promise<void> {
+async function doPickNext(userId: string, ncmClient: NcmClient): Promise<void> {
   const logger = getLogger();
   let debugBroadcastSent = false;
 
@@ -199,7 +200,7 @@ async function doPickNext(opts: DjNextOptions, userId: string): Promise<void> {
   const cached = likedIdsCache.get(userId);
   if (!cached || now - cached.fetchedAt > LIKED_IDS_CACHE_TTL_MS) {
     const freshIds = await withTimeout(
-      opts.ncmClient.getLikedSongIds().catch(() => [] as string[]),
+      ncmClient.getLikedSongIds().catch(() => [] as string[]),
       LIKED_IDS_TIMEOUT_MS,
       [] as string[]
     );
@@ -244,7 +245,7 @@ async function doPickNext(opts: DjNextOptions, userId: string): Promise<void> {
       const candidateIds = allLikedIds.filter((id) => !excludeIds.has(id));
       const sampledIds = sampleN(candidateIds, LIKED_SAMPLE_SIZE);
       const sampledDetails = await withTimeout(
-        opts.ncmClient.getSongDetails(sampledIds).catch(() => []),
+        ncmClient.getSongDetails(sampledIds).catch(() => []),
         LIKED_DETAILS_TIMEOUT_MS,
         []
       );
@@ -308,7 +309,7 @@ async function doPickNext(opts: DjNextOptions, userId: string): Promise<void> {
       // ── Phase 3: search NCM, collect up to 20 candidates ─────────────────
       const searchedTracks = await searchCandidates(
         searchQueries,
-        opts.ncmClient,
+        ncmClient,
         excludeIds,
         SEARCH_RESULT_SIZE
       );
@@ -422,7 +423,7 @@ ${candidateList}
               djPickReasonCache.set(track.ncmId, pickSay.trim());
             }
           }
-          broadcast({ type: 'dj.debug', ...phase3Debug, selectedSay: pickSay });
+          broadcastToUser(userId, { type: 'dj.debug', ...phase3Debug, selectedSay: pickSay });
           debugBroadcastSent = true;
           broadcastAppended(userId, prevQueueLength);
           return;
@@ -433,7 +434,7 @@ ${candidateList}
       }
 
       // Phase 4 failed — still broadcast Phase 3 data so the debug panel reflects what was searched
-      broadcast({ type: 'dj.debug', ...phase3Debug, selectedSay: '选歌失败，使用随机降级' });
+      broadcastToUser(userId, { type: 'dj.debug', ...phase3Debug, selectedSay: '选歌失败，使用随机降级' });
       debugBroadcastSent = true;
     } catch (err) {
       logger.warn(
@@ -460,12 +461,12 @@ ${candidateList}
 
   if (fallbackIds.length === 0) {
     logger.warn('DJ pick-next fallback: no candidates');
-    broadcast({ type: 'dj.pick-next.done', added: false, reason: 'no-candidates' });
+    broadcastToUser(userId, { type: 'dj.pick-next.done', added: false, reason: 'no-candidates' });
     return;
   }
 
   if (!debugBroadcastSent) {
-    broadcast({
+    broadcastToUser(userId, {
       type: 'dj.debug',
       likedSample: [],
       sqRaw: '',
@@ -478,14 +479,14 @@ ${candidateList}
 
   const pickedIds = sampleN(fallbackIds, Math.min(2, fallbackIds.length));
   const pickedDetails = (await withTimeout(
-    opts.ncmClient.getSongDetails(pickedIds).catch(() => []),
+    ncmClient.getSongDetails(pickedIds).catch(() => []),
     LIKED_DETAILS_TIMEOUT_MS,
     []
   )).filter((t) => t.artists.length > 0);
 
   if (pickedDetails.length === 0) {
     logger.warn('DJ pick-next fallback: failed to fetch track details');
-    broadcast({ type: 'dj.pick-next.done', added: false, reason: 'no-candidates' });
+    broadcastToUser(userId, { type: 'dj.pick-next.done', added: false, reason: 'no-candidates' });
     return;
   }
 
@@ -500,10 +501,10 @@ function broadcastAppended(userId: string, prevQueueLength: number): void {
   const q = getQueue(userId);
   const newTracks = q.slice(prevQueueLength);
   for (const track of newTracks) {
-    broadcast({ type: 'queue-appended', track });
+    broadcastToUser(userId, { type: 'queue-appended', track });
   }
   const names = newTracks.map((t) => t.name).filter((n): n is string => Boolean(n));
-  broadcast({
+  broadcastToUser(userId, {
     type: 'dj.pick-next.done',
     added: newTracks.length > 0,
     trackName: names.join('、') || undefined
@@ -545,4 +546,12 @@ export function serializeDjPickNextErrorForLog(error: unknown): unknown {
   }
 
   return payload;
+}
+
+function getScopedNcmClient(req: Request, fallback?: NcmClient): NcmClient {
+  const ncmClient = (req as Partial<AuthedRequest>).ncmClient ?? fallback;
+  if (!ncmClient) {
+    throw new Error('NCM client missing from request scope');
+  }
+  return ncmClient;
 }

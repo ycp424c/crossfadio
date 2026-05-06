@@ -191,6 +191,7 @@ describe('segue trigger handler', () => {
         {
           readyState: 1,
           authenticated: true,
+          userId: 'test-user',
           send: vi.fn((message: string) => {
             sent.push(message);
           })

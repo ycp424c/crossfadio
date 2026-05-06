@@ -27,7 +27,7 @@ function sampleN<T>(arr: T[], n: number): T[] {
 
 type PlanRouteOptions = {
   secrets: any;
-  ncmClient: NcmClient;
+  ncmClient?: NcmClient;
 };
 
 // ─── Shared helpers ───────────────────────────────────────────────────────────
@@ -86,10 +86,11 @@ export function createGetTodayPlanHandler(opts: PlanRouteOptions) {
     try {
       const date = todayDateStr();
       const userId = (req as AuthedRequest).userId;
+      const ncmClient = getScopedNcmClient(req, opts.ncmClient);
       let plan = loadLatestPlan(userId, date);
 
       if (!plan) {
-        plan = await generatePlan(userId, date, opts.secrets, opts.ncmClient);
+        plan = await generatePlan(userId, date, opts.secrets, ncmClient);
         savePlan(userId, plan);
       }
 
@@ -108,7 +109,8 @@ export function createRegeneratePlanHandler(opts: PlanRouteOptions) {
     try {
       const date = todayDateStr();
       const userId = (req as AuthedRequest).userId;
-      const plan = await generatePlan(userId, date, opts.secrets, opts.ncmClient);
+      const ncmClient = getScopedNcmClient(req, opts.ncmClient);
+      const plan = await generatePlan(userId, date, opts.secrets, ncmClient);
       savePlan(userId, plan);
       res.json({ ok: true, plan });
     } catch (err) {
@@ -145,7 +147,8 @@ export function createReplanSegmentHandler(opts: PlanRouteOptions) {
     try {
       const date = todayDateStr();
       const userId = (req as AuthedRequest).userId;
-      let plan = loadLatestPlan(userId, date) ?? (await generatePlan(userId, date, opts.secrets, opts.ncmClient));
+      const ncmClient = getScopedNcmClient(req, opts.ncmClient);
+      let plan = loadLatestPlan(userId, date) ?? (await generatePlan(userId, date, opts.secrets, ncmClient));
 
       const { segmentId } = parsed.data;
       const corpus = loadUserCorpus(userId);
@@ -153,7 +156,7 @@ export function createReplanSegmentHandler(opts: PlanRouteOptions) {
 
       if (llmConfig) {
         // Re-generate just this segment by creating a fresh full plan with a hint
-        const fragments = await buildPlanFragments(userId, date, opts.ncmClient);
+        const fragments = await buildPlanFragments(userId, date, ncmClient);
         const hintText = parsed.data.hint
           ? ` 重点要求：${JSON.stringify(parsed.data.hint)}`
           : '';
@@ -217,6 +220,7 @@ export function createGapFillHandler(opts: PlanRouteOptions) {
     try {
       const { segmentId, count, mood } = parsed.data;
       const userId = (req as AuthedRequest).userId;
+      const ncmClient = getScopedNcmClient(req, opts.ncmClient);
       const corpus = loadUserCorpus(userId);
 
       // Pick best playlist for this segment and resolve track IDs
@@ -240,9 +244,9 @@ export function createGapFillHandler(opts: PlanRouteOptions) {
         .sort((a, b) => a.priority - b.priority);
 
       // Sample randomly from the full liked list instead of always taking the first N
-      const allLikedIds = await opts.ncmClient.getLikedSongIds().catch(() => [] as string[]);
+      const allLikedIds = await ncmClient.getLikedSongIds().catch(() => [] as string[]);
       const sampledIds = sampleN(allLikedIds, count);
-      const sampledDetails = await opts.ncmClient.getSongDetails(sampledIds).catch(() => []);
+      const sampledDetails = await ncmClient.getSongDetails(sampledIds).catch(() => []);
       const likedTracks = sampledDetails.map((t) => ({
         id: String(t.id),
         name: t.name,
@@ -264,7 +268,7 @@ export function createGapFillHandler(opts: PlanRouteOptions) {
         const playlist = relevant[i % Math.max(relevant.length, 1)];
 
         if (playlist) {
-          const detail = await getCachedPlaylistDetail(playlist.id, opts.ncmClient, playlistDetails);
+          const detail = await getCachedPlaylistDetail(playlist.id, ncmClient, playlistDetails);
           const track = detail?.tracks[i % Math.max(detail.tracks.length, 1)];
           if (track) {
             tracks.push({ query: formatTrackQuery(track), ncmId: String(track.id) });
@@ -273,7 +277,7 @@ export function createGapFillHandler(opts: PlanRouteOptions) {
         }
 
         const query = `${mood ?? segmentId} music ${i + 1}`;
-        const resolved = await resolveTrackQuery(query, opts.ncmClient).catch(() => null);
+        const resolved = await resolveTrackQuery(query, ncmClient).catch(() => null);
 
         tracks.push({ query, ncmId: resolved?.ncmId ?? null });
       }
@@ -294,6 +298,14 @@ function formatLocalTime(date: Date): string {
   const hh = String(date.getHours()).padStart(2, '0');
   const mm = String(date.getMinutes()).padStart(2, '0');
   return `周${day} ${hh}:${mm}`;
+}
+
+function getScopedNcmClient(req: Request, fallback?: NcmClient): NcmClient {
+  const ncmClient = (req as Partial<AuthedRequest>).ncmClient ?? fallback;
+  if (!ncmClient) {
+    throw new Error('NCM client missing from request scope');
+  }
+  return ncmClient;
 }
 
 async function getCachedPlaylistDetail(

@@ -16,7 +16,7 @@ import { getPreferenceContext } from '../../store/chat-preferences.js';
 import { fetchWeather } from '../../weather.js';
 import { executeActions } from '../../agent/actions.js';
 import { getCurrentIndex, getQueue, addToQueue, swapNext } from '../../store/queue.js';
-import { broadcast } from '../broadcast.js';
+import { broadcastToUser } from '../broadcast.js';
 import { getLogger } from '../../logger.js';
 import { searchCandidates } from './djNext.js';
 
@@ -56,7 +56,7 @@ function sampleN<T>(arr: T[], n: number): T[] {
   return copy.slice(0, n);
 }
 
-export function createChatMessageHandler(_opts?: ChatHandlerOptions) {
+export function createChatMessageHandler() {
   return (ws: WebSocket & { userId?: string; ncmClient?: NcmClient }, text: string): void => {
     void handleChatMessage(ws, text, { userId: ws.userId ?? '__legacy__', ncmClient: ws.ncmClient!, secrets: null as any });
   };
@@ -184,7 +184,7 @@ async function handleChatMessage(
         }
 
         if (added > 0) {
-          broadcast({ type: 'queue-updated', queue: getQueue(userId), currentIndex: getCurrentIndex(userId) });
+          broadcastToUser(userId, { type: 'queue-updated', queue: getQueue(userId), currentIndex: getCurrentIndex(userId) });
         }
 
         // Still execute any non-song actions (skip, ban, etc.)
@@ -197,7 +197,7 @@ async function handleChatMessage(
       } else {
         const result = await executeActions(chatOutput.actions, { userId, ncmClient: opts.ncmClient });
         if (result.queueChanged) {
-          broadcast({ type: 'queue-updated', queue: getQueue(userId), currentIndex: getCurrentIndex(userId) });
+          broadcastToUser(userId, { type: 'queue-updated', queue: getQueue(userId), currentIndex: getCurrentIndex(userId) });
         }
       }
     }

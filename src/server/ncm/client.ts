@@ -51,6 +51,13 @@ export class NcmClient {
     this.fetchTimeoutMs = options?.fetchTimeoutMs ?? 8_000;
   }
 
+  withCookie(cookie: string): NcmClient {
+    return new NcmClient(this.baseUrl, {
+      fetchTimeoutMs: this.fetchTimeoutMs,
+      getCookie: () => cookie
+    });
+  }
+
   async health(): Promise<boolean> {
     try {
       const response = await this.rawFetch('/', {});

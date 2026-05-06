@@ -36,7 +36,6 @@ async function bootstrap(): Promise<void> {
     localServer = await startLocalServer({
       ncm,
       ncmAuth: authRef,
-      ncmClient,
       ncmBaseUrl: ncm.getStatus().baseUrl,
       host: resolveHost(),
       port: resolveServerPort(),

@@ -14,16 +14,20 @@ type ClientMock = {
   checkLoginQr: ReturnType<typeof vi.fn>;
   getLoginStatus: ReturnType<typeof vi.fn>;
   logout: ReturnType<typeof vi.fn>;
+  withCookie: ReturnType<typeof vi.fn>;
 };
 
 function makeClient(overrides: Partial<ClientMock> = {}): ClientMock {
-  return {
+  const client = {
     createLoginQr: vi.fn(),
     checkLoginQr: vi.fn(),
     getLoginStatus: vi.fn(),
     logout: vi.fn(),
+    withCookie: vi.fn(),
     ...overrides
   };
+  client.withCookie.mockReturnValue(client);
+  return client;
 }
 
 beforeEach(async () => {
@@ -152,6 +156,7 @@ describe('NcmAuthService.checkQr', () => {
     expect(result.token).toBeDefined();
     expect(typeof result.token).toBe('string');
     expect(result.token!.length).toBeGreaterThan(10);
+    expect(client.withCookie).toHaveBeenCalledWith('MUSIC_U=abc;');
   });
 
   it('returns forbidden when ncmId not in allowlist', async () => {

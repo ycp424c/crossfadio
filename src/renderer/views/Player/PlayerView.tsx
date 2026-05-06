@@ -26,7 +26,7 @@ import { NowPlayingHero } from '@renderer/components/player/NowPlayingHero';
 import { PlaybackTimeline } from '@renderer/components/player/PlaybackTimeline';
 import { QueuePanel } from '@renderer/components/player/QueuePanel';
 import { TransportControls } from '@renderer/components/player/TransportControls';
-import { onWsMessage } from '@renderer/ws/client';
+import { initWsClient, onWsMessage } from '@renderer/ws/client';
 import type { NextTrackResponse, NowPlayingResponse, QueueTrackDto } from '@shared/schema';
 import appMark from '@renderer/assets/image2/crossfadio-mark.svg';
 
@@ -751,6 +751,9 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
                         try {
                           const status = await checkNcmQr(qrPayload.key);
                           setTrackStatusText(`扫码状态: ${status.hint}`);
+                          if (status.token) {
+                            initWsClient(status.token);
+                          }
                           await refreshSession();
                         } catch (err) {
                           setError(err instanceof Error ? err.message : '扫码状态查询失败');

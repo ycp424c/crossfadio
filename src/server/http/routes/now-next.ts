@@ -26,7 +26,7 @@ const nextQuerySchema = z.object({
   current: z.string().min(1).optional()
 });
 
-export function createNowHandler(ncmClient: NcmClient): RequestHandler {
+export function createNowHandler(fallbackNcmClient?: NcmClient): RequestHandler {
   return async (req, res) => {
     const parsed = nowQuerySchema.safeParse(req.query);
     if (!parsed.success) {
@@ -37,6 +37,7 @@ export function createNowHandler(ncmClient: NcmClient): RequestHandler {
     }
 
     try {
+      const ncmClient = getScopedNcmClient(req, fallbackNcmClient);
       const ncmId = parsed.data.ncmId;
       const [songUrl, lyric] = await Promise.all([
         ncmClient.getSongUrl(ncmId),
@@ -73,7 +74,7 @@ export function createNowHandler(ncmClient: NcmClient): RequestHandler {
   };
 }
 
-export function createNextHandler(ncmClient: NcmClient): RequestHandler {
+export function createNextHandler(fallbackNcmClient?: NcmClient): RequestHandler {
   return async (req, res) => {
     const parsed = nextQuerySchema.safeParse(req.query);
     if (!parsed.success) {
@@ -95,6 +96,7 @@ export function createNextHandler(ncmClient: NcmClient): RequestHandler {
     }
 
     try {
+      const ncmClient = getScopedNcmClient(req, fallbackNcmClient);
       const songUrl = await ncmClient.getSongUrl(nextId);
       if (!songUrl?.url) {
         throw new NcmApiError(
@@ -171,6 +173,14 @@ function defaultTiming() {
 function sendNcmError(res: Response, error: unknown): void {
   const { code, message } = classifyError(error);
   res.status(httpStatusFor(code)).json({ ok: false, error: code, message });
+}
+
+function getScopedNcmClient(req: Request, fallback?: NcmClient): NcmClient {
+  const ncmClient = (req as Partial<AuthedRequest>).ncmClient ?? fallback;
+  if (!ncmClient) {
+    throw new Error('NCM client missing from request scope');
+  }
+  return ncmClient;
 }
 
 function classifyError(error: unknown): { code: NcmErrorCode; message: string } {
