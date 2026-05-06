@@ -5,7 +5,7 @@ import { SettingsView } from '@renderer/views/Settings/SettingsView';
 import { PlanView } from '@renderer/views/Plan/PlanView';
 import { ChatPanel } from '@renderer/components/player/ChatPanel';
 import { RecommendOverlay } from '@renderer/components/player/RecommendOverlay';
-import { getRuntimeInfo } from '@renderer/api';
+import { getRuntimeInfo, getStoredToken } from '@renderer/api';
 import { initWsClient } from '@renderer/ws/client';
 
 type Tab = 'player' | 'plan' | 'chat' | 'settings';
@@ -14,11 +14,12 @@ export function App(): JSX.Element {
   const [tab, setTab] = useState<Tab>('player');
 
   useEffect(() => {
-    void getRuntimeInfo()
-      .then((runtime) => initWsClient(runtime.sessionToken))
-      .catch(() => {
-        // The rest of the app can still work against HTTP endpoints.
-      });
+    const token = getStoredToken();
+    if (token) {
+      initWsClient(token);
+    }
+    // Ping runtime to check service health
+    void getRuntimeInfo().catch(() => {});
   }, []);
 
   return (

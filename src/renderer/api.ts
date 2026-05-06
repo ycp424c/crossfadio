@@ -14,8 +14,23 @@ type RuntimeConfig = {
 
 type RuntimeInfo = {
   ok: boolean;
-  sessionToken: string;
 };
+
+// ── JWT storage ────────────────────────────────────────────────────────────────
+
+const JWT_KEY = 'crossfadio_jwt';
+
+export function getStoredToken(): string | null {
+  return localStorage.getItem(JWT_KEY);
+}
+
+export function storeToken(token: string): void {
+  localStorage.setItem(JWT_KEY, token);
+}
+
+export function clearToken(): void {
+  localStorage.removeItem(JWT_KEY);
+}
 
 type NcmQrPayload = {
   key: string;
@@ -31,6 +46,7 @@ type NcmSession = {
 
 async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
   const runtime = resolveRuntimeConfig();
+  const token = getStoredToken();
 
   let response: Response;
   try {
@@ -38,6 +54,7 @@ async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
       ...init,
       headers: {
         Accept: 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
         ...(init?.headers ?? {})
       }
     });
@@ -74,11 +91,16 @@ export async function createNcmQr(): Promise<NcmQrPayload> {
 
 export async function checkNcmQr(key: string) {
   const payload = await requestJson<unknown>(`/api/ncm/login/status?key=${encodeURIComponent(key)}`);
-  return ncmQrStatusSchema.parse(payload);
+  const result = ncmQrStatusSchema.parse(payload);
+  if (result.hint === 'authorized' && result.token) {
+    storeToken(result.token);
+  }
+  return result;
 }
 
 export async function logoutNcm(): Promise<void> {
   const payload = await requestJson<{ ok?: boolean }>('/api/ncm/login/logout', { method: 'POST' });
+  clearToken();
   if (!payload.ok) {
     throw new Error('logout failed');
   }
@@ -197,54 +219,20 @@ export type LlmSettings = {
 };
 
 export type TtsSettings = {
-  provider?: 'openai-compatible' | 'aliyun-qwen';
   baseUrl: string;
-  model: string;
-  voice: string;
-  speed: number;
-  format: string;
   hasApiKey: boolean;
+  voice: string;
+  voiceDefault: string | null;
 };
 
 export type SettingsResponse = {
   ok: boolean;
-  llm: LlmSettings | null;
-  tts: TtsSettings | null;
+  llm: LlmSettings;
+  tts: TtsSettings;
 };
 
 export type SaveSettingsPayload = {
-  llm?: { baseUrl: string; model: string; apiKey?: string };
-  tts?: {
-    provider: 'openai-compatible' | 'aliyun-qwen';
-    baseUrl: string;
-    model: string;
-    voice: string;
-    speed: number;
-    format: string;
-    apiKey?: string;
-  };
-};
-
-export type TestLlmPayload = {
-  llm?: Partial<SaveSettingsPayload['llm']>;
-};
-
-export type TestTtsPayload = {
-  tts?: Partial<SaveSettingsPayload['tts']>;
-};
-
-export type TestLlmResponse = {
-  ok: boolean;
-  model: string;
-  preview: string;
-  message: string;
-};
-
-export type TestTtsResponse = {
-  ok: boolean;
-  cached: boolean;
-  audioUrl: string;
-  message: string;
+  tts?: { voice: string };
 };
 
 export async function getSettings(): Promise<SettingsResponse> {
@@ -258,22 +246,6 @@ export async function saveSettings(payload: SaveSettingsPayload): Promise<void> 
     body: JSON.stringify(payload)
   });
   if (!result.ok) throw new Error('Failed to save settings');
-}
-
-export async function testLlmSettings(payload: TestLlmPayload): Promise<TestLlmResponse> {
-  return requestJson<TestLlmResponse>('/api/settings/test-llm', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload)
-  });
-}
-
-export async function testTtsSettings(payload: TestTtsPayload): Promise<TestTtsResponse> {
-  return requestJson<TestTtsResponse>('/api/settings/test-tts', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload)
-  });
 }
 
 export type PlanTrack = {
