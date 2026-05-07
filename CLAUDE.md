@@ -42,6 +42,7 @@ src/
   renderer/
     App.tsx         # 4-tab layout: Player / Plan / Chat / Settings
     api.ts          # HTTP client for /api endpoints
+    lib-hooks.ts    # useMediaQuery hook (md=768px breakpoint)
     views/          # Player/, Plan/, Settings/
     components/     # player/ (8 components), ui-button
     audio/          # engine, crossfade, prefetch, timeline, lyrics
@@ -177,3 +178,4 @@ Live deployment runbook (instance, paths, restart, allowlist edits, persona upda
 - **NCM auth**: QR code login → JWT token (HS256 via `jose`). Cookie encrypted with AES-256-GCM in `users` table. `authMiddleware` + `userScopeMiddleware` on all protected routes.
 - **Whitelist**: `allowlist.json` in app data dir controls which NCM user IDs can log in.
 - **Per-user isolation**: All DB tables have `user_id` column. Queue/location are per-user `Map`s. User corpus files under `users/<ncmId>/`.
+- **Responsive layout**: `md` = 768px breakpoint, single-column mobile (grid-cols-1), desktop preserves 12-col grid. NCM auth uses full-screen sheet on mobile via `useMediaQuery`. Status panel collapsed to one-line summary on mobile. `viewport-fit=cover` for iPhone safe areas.

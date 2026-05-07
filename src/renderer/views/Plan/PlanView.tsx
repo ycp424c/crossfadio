@@ -56,7 +56,7 @@ export function PlanView(): JSX.Element {
   return (
     <div className="flex h-full flex-col bg-zinc-950 text-zinc-100">
       {/* Header */}
-      <div className="flex items-center justify-between border-b border-zinc-800 px-6 py-4">
+      <div className="flex items-center justify-between border-b border-zinc-800 px-4 md:px-6 py-4">
         <div className="flex items-center gap-2">
           <CalendarDays className="h-5 w-5 text-zinc-400" />
           <h1 className="text-lg font-semibold">今日电台</h1>
@@ -76,7 +76,7 @@ export function PlanView(): JSX.Element {
           ) : (
             <RefreshCw className="h-4 w-4" />
           )}
-          重新规划
+          <span className="hidden sm:inline">重新规划</span>
         </button>
       </div>
 

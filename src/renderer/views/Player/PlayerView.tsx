@@ -4,7 +4,8 @@ import {
   LogOut,
   QrCode,
   ScanSearch,
-  Settings2
+  Settings2,
+  X
 } from 'lucide-react';
 import {
   checkNcmQr,
@@ -27,6 +28,7 @@ import { PlaybackTimeline } from '@renderer/components/player/PlaybackTimeline';
 import { QueuePanel } from '@renderer/components/player/QueuePanel';
 import { TransportControls } from '@renderer/components/player/TransportControls';
 import { initWsClient, onWsMessage } from '@renderer/ws/client';
+import { useMediaQuery } from '@renderer/lib-hooks';
 import type { NextTrackResponse, NowPlayingResponse, QueueTrackDto } from '@shared/schema';
 import appMark from '@renderer/assets/image2/crossfadio-mark.svg';
 
@@ -95,10 +97,31 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
   const [segueScriptExpanded, setSegueScriptExpanded] = useState(false);
   const [djPickLog, setDjPickLog] = useState<DjPickLog | null>(null);
   const [djPickLogExpanded, setDjPickLogExpanded] = useState(false);
+  const isDesktop = useMediaQuery('(min-width: 768px)');
+  const [statusExpanded, setStatusExpanded] = useState(isDesktop);
+  useEffect(() => { setStatusExpanded(isDesktop); }, [isDesktop]);
   const [error, setError] = useState('');
   const [session, setSession] = useState<NcmSessionState>({ hasCookie: false, profile: null });
   const [qrPayload, setQrPayload] = useState<{ key: string; qrimg: string } | null>(null);
   const [showNcmDropdown, setShowNcmDropdown] = useState(false);
+  const [showNcmSheet, setShowNcmSheet] = useState(false);
+
+  // Body scroll lock when mobile NCM sheet is open
+  useEffect(() => {
+    if (!showNcmSheet) return;
+    document.body.style.overflow = 'hidden';
+    return () => { document.body.style.overflow = ''; };
+  }, [showNcmSheet]);
+
+  // ESC key closes mobile NCM sheet
+  useEffect(() => {
+    if (!showNcmSheet) return;
+    function handleKey(e: KeyboardEvent): void {
+      if (e.key === 'Escape') setShowNcmSheet(false);
+    }
+    document.addEventListener('keydown', handleKey);
+    return () => document.removeEventListener('keydown', handleKey);
+  }, [showNcmSheet]);
 
   const ncmDropdownRef = useRef<HTMLDivElement>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -723,18 +746,18 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
   const isLiked = currentTrackId ? likedTrackIds.includes(currentTrackId) : false;
 
   return (
-    <main className="bg-[radial-gradient(circle_at_top_left,#1f2b5e_0%,#080b14_35%,#070a12_100%)] p-6 text-zinc-100">
-      <div className="mx-auto grid max-w-[1480px] grid-cols-12 gap-4">
+    <main className="bg-[radial-gradient(circle_at_top_left,#1f2b5e_0%,#080b14_35%,#070a12_100%)] p-4 md:p-6 text-zinc-100">
+      <div className="mx-auto grid max-w-[1480px] grid-cols-1 md:grid-cols-12 gap-4">
 
         {/* Header */}
-        <header className="col-span-12 flex items-center justify-between gap-4 rounded-2xl border border-zinc-800/80 bg-zinc-950/60 px-5 py-3">
+        <header className="col-span-1 md:col-span-12 flex items-center justify-between gap-4 rounded-2xl border border-zinc-800/80 bg-zinc-950/60 px-5 py-3">
           <div className="flex items-center gap-2.5">
             <img alt="Crossfadio 应用图标" className="h-7 w-7 rounded-lg" src={appMark} />
             <span className="text-lg font-semibold tracking-tight text-violet-200">Crossfadio</span>
           </div>
           <div className="flex items-center gap-2">
             <button
-              className="inline-flex items-center gap-2 rounded-xl border border-zinc-800 bg-zinc-900/60 px-3 py-2 text-sm text-zinc-300 transition hover:border-zinc-700 hover:bg-zinc-900 hover:text-zinc-100"
+              className="hidden md:inline-flex items-center gap-2 rounded-xl border border-zinc-800 bg-zinc-900/60 px-3 py-2 text-sm text-zinc-300 transition hover:border-zinc-700 hover:bg-zinc-900 hover:text-zinc-100"
               onClick={() => onNavigate?.('plan')}
               type="button"
             >
@@ -742,7 +765,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
               今日计划
             </button>
             <button
-              className="inline-flex items-center gap-2 rounded-xl border border-zinc-800 bg-zinc-900/60 px-3 py-2 text-sm text-zinc-300 transition hover:border-zinc-700 hover:bg-zinc-900 hover:text-zinc-100"
+              className="hidden md:inline-flex items-center gap-2 rounded-xl border border-zinc-800 bg-zinc-900/60 px-3 py-2 text-sm text-zinc-300 transition hover:border-zinc-700 hover:bg-zinc-900 hover:text-zinc-100"
               onClick={() => onNavigate?.('settings')}
               type="button"
             >
@@ -752,7 +775,10 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
             <div className="relative" ref={ncmDropdownRef}>
               <button
                 className="inline-flex items-center gap-2 rounded-xl border border-zinc-800 bg-zinc-900/60 px-3 py-2 text-xs text-zinc-300 transition hover:border-zinc-700 hover:bg-zinc-900"
-                onClick={() => setShowNcmDropdown((v) => !v)}
+                onClick={() => {
+                  if (isDesktop) setShowNcmDropdown((v) => !v);
+                  else setShowNcmSheet(true);
+                }}
                 type="button"
               >
                 <span
@@ -760,7 +786,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
                 />
                 {session.hasCookie ? '已登录' : '未登录'}
               </button>
-              {showNcmDropdown ? (
+              {isDesktop && showNcmDropdown ? (
                 <div className="absolute right-0 top-[calc(100%+8px)] z-20 w-56 rounded-xl border border-zinc-700 bg-zinc-950/95 p-3 shadow-xl">
                   <div className="flex flex-col gap-1.5 text-xs text-zinc-300">
                     <button
@@ -834,12 +860,104 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
                   </div>
                 </div>
               ) : null}
+              {showNcmSheet ? (
+                <div
+                  className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
+                  onClick={() => setShowNcmSheet(false)}
+                >
+                  <div
+                    className="w-[320px] max-w-[90vw] rounded-2xl border border-zinc-700 bg-zinc-950 p-5 shadow-2xl"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <div className="flex items-center justify-between mb-4">
+                      <span className="text-sm font-medium text-zinc-200">网易云登录</span>
+                      <button
+                        className="rounded-lg p-1 text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800 transition"
+                        onClick={() => setShowNcmSheet(false)}
+                        type="button"
+                      >
+                        <X className="h-5 w-5" />
+                      </button>
+                    </div>
+                    <div className="flex flex-col gap-2 text-sm">
+                      <button
+                        className="inline-flex w-full items-center justify-center gap-2 rounded-lg border border-zinc-600 bg-zinc-900 px-4 py-2.5 hover:border-zinc-400 transition"
+                        onClick={async () => {
+                          try {
+                            const qr = await createNcmQr();
+                            setQrPayload({ key: qr.key, qrimg: qr.qrimg });
+                            setError('');
+                          } catch (err) {
+                            setError(err instanceof Error ? err.message : '创建二维码失败');
+                          }
+                        }}
+                        type="button"
+                      >
+                        <QrCode className="h-4 w-4" />
+                        二维码登录
+                      </button>
+                      <button
+                        className="inline-flex w-full items-center justify-center gap-2 rounded-lg border border-zinc-600 bg-zinc-900 px-4 py-2.5 hover:border-zinc-400 transition"
+                        onClick={async () => {
+                          if (!qrPayload?.key) return;
+                          try {
+                            const status = await checkNcmQr(qrPayload.key);
+                            if (status.hint === 'forbidden') {
+                              setError(status.message || '您没有访问权限，请联系管理员');
+                              setTrackStatusText('登录失败：无访问权限');
+                              setQrPayload(null);
+                            } else if (status.hint === 'expired') {
+                              setTrackStatusText('二维码已过期，请刷新');
+                              setQrPayload(null);
+                            } else {
+                              setTrackStatusText(`扫码状态: ${status.hint}`);
+                            }
+                            if (status.token) {
+                              initWsClient(status.token);
+                            }
+                            await refreshSession();
+                          } catch (err) {
+                            setError(err instanceof Error ? err.message : '扫码状态查询失败');
+                          }
+                        }}
+                        type="button"
+                      >
+                        <ScanSearch className="h-4 w-4" />
+                        检查状态
+                      </button>
+                      <button
+                        className="inline-flex w-full items-center justify-center gap-2 rounded-lg border border-zinc-600 bg-zinc-900 px-4 py-2.5 hover:border-zinc-400 transition"
+                        onClick={async () => {
+                          try {
+                            await logoutNcm();
+                            await refreshSession();
+                            setTrackStatusText('已登出 NCM');
+                          } catch (err) {
+                            setError(err instanceof Error ? err.message : '登出失败');
+                          }
+                        }}
+                        type="button"
+                      >
+                        <LogOut className="h-4 w-4" />
+                        登出
+                      </button>
+                      {qrPayload ? (
+                        <img
+                          alt="ncm login qr"
+                          className="mt-2 w-56 h-56 self-center rounded-lg border border-zinc-600 bg-white p-1.5"
+                          src={qrPayload.qrimg}
+                        />
+                      ) : null}
+                    </div>
+                  </div>
+                </div>
+              ) : null}
             </div>
           </div>
         </header>
 
         {/* Left column — player */}
-        <section className="col-span-6 space-y-4">
+        <section className="col-span-1 md:col-span-6 space-y-4">
           <NowPlayingHero
             isLiked={isLiked}
             lyric={nowPlaying?.lyric ?? ''}
@@ -880,7 +998,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
         </section>
 
         {/* Right column — queue + status */}
-        <section className="col-span-6 flex flex-col gap-4">
+        <section className="col-span-1 md:col-span-6 flex flex-col gap-4">
           <QueuePanel
             currentIndex={currentIndex}
             nextId={nextTrack?.track.id ?? null}
@@ -890,126 +1008,147 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
           />
 
           <div className="rounded-2xl border border-zinc-800/80 bg-zinc-950/60 p-3">
-            <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
-              <StatusChip label="曲目" text={trackStatusText || '—'} />
-              <StatusChip color="cyan" label="DJ选歌" text={djStatusText || '空闲'} />
-              {djPickLog ? (
-                <button
-                  className="inline-flex items-center gap-0.5 text-xs text-cyan-300/70 hover:text-cyan-200 transition"
-                  onClick={() => setDjPickLogExpanded((v) => !v)}
-                  type="button"
-                >
-                  <span>{djPickLogExpanded ? '收起' : '日志'}</span>
-                  <svg
-                    className={`w-3 h-3 transition-transform ${djPickLogExpanded ? 'rotate-180' : ''}`}
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth={2}
-                  >
-                    <path d="M6 9l6 6 6-6" />
-                  </svg>
-                </button>
-              ) : null}
-              <StatusChip color="violet" label="过渡文案" text={segueStatusText || '空闲'} />
-              {segueScriptText ? (
-                <button
-                  className="inline-flex items-center gap-0.5 text-xs text-violet-300/70 hover:text-violet-200 transition"
-                  onClick={() => setSegueScriptExpanded((v) => !v)}
-                  type="button"
-                >
-                  <span>{segueScriptExpanded ? '收起' : '展开'}</span>
-                  <svg
-                    className={`w-3 h-3 transition-transform ${segueScriptExpanded ? 'rotate-180' : ''}`}
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth={2}
-                  >
-                    <path d="M6 9l6 6 6-6" />
-                  </svg>
-                </button>
-              ) : null}
-              {error ? <span className="text-xs text-red-300">{error}</span> : null}
-            </div>
-            {segueScriptText && segueScriptExpanded ? (
-              <div className="mt-2 rounded-lg border border-violet-800/40 bg-violet-950/20 px-3 py-2">
-                <p className="text-xs text-violet-200/80 leading-relaxed whitespace-pre-wrap">{segueScriptText}</p>
-              </div>
-            ) : null}
-            {djPickLog && djPickLogExpanded ? (
-              <div className="mt-2 rounded-lg border border-cyan-800/40 bg-cyan-950/10 px-3 py-2 space-y-2">
-                {/* Say / reasoning */}
-                {djPickLog.selectedSay ? (
-                  <p className="text-xs text-cyan-200/80 leading-relaxed">{djPickLog.selectedSay}</p>
-                ) : null}
-                {/* Search queries — now artist names from the new pipeline */}
-                {djPickLog.searchQueries.length > 0 ? (
-                  <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
-                    <span className="text-[10px] text-zinc-500 shrink-0">搜索词</span>
-                    <span className="text-xs text-zinc-300">
-                      {djPickLog.searchQueries.map((q, i) => (
-                        <span key={q}>
-                          {i > 0 ? '、' : ''}
-                          <span className="text-cyan-300/80">{q}</span>
-                        </span>
-                      ))}
-                    </span>
-                  </div>
-                ) : null}
-                {/* Stats */}
-                <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-                  <span className="text-[10px] text-zinc-500">
-                    红心采样 <span className="text-zinc-300">{djPickLog.likedSample.length}</span> 首
-                  </span>
-                  <span className="text-[10px] text-zinc-500">
-                    搜索命中 <span className="text-zinc-300">{djPickLog.searchedTracks.length}</span> 首
-                  </span>
-                  <span className="text-[10px] text-zinc-500">
-                    候选池 <span className="text-cyan-300">{djPickLog.totalCandidates}</span> 首
-                  </span>
+            {statusExpanded ? (
+              <>
+                <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+                  <StatusChip label="曲目" text={trackStatusText || '—'} />
+                  <StatusChip color="cyan" label="DJ选歌" text={djStatusText || '空闲'} />
+                  {djPickLog ? (
+                    <button
+                      className="inline-flex items-center gap-0.5 text-xs text-cyan-300/70 hover:text-cyan-200 transition"
+                      onClick={() => setDjPickLogExpanded((v) => !v)}
+                      type="button"
+                    >
+                      <span>{djPickLogExpanded ? '收起' : '日志'}</span>
+                      <svg
+                        className={`w-3 h-3 transition-transform ${djPickLogExpanded ? 'rotate-180' : ''}`}
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth={2}
+                      >
+                        <path d="M6 9l6 6 6-6" />
+                      </svg>
+                    </button>
+                  ) : null}
+                  <StatusChip color="violet" label="过渡文案" text={segueStatusText || '空闲'} />
+                  {segueScriptText ? (
+                    <button
+                      className="inline-flex items-center gap-0.5 text-xs text-violet-300/70 hover:text-violet-200 transition"
+                      onClick={() => setSegueScriptExpanded((v) => !v)}
+                      type="button"
+                    >
+                      <span>{segueScriptExpanded ? '收起' : '展开'}</span>
+                      <svg
+                        className={`w-3 h-3 transition-transform ${segueScriptExpanded ? 'rotate-180' : ''}`}
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth={2}
+                      >
+                        <path d="M6 9l6 6 6-6" />
+                      </svg>
+                    </button>
+                  ) : null}
+                  {error ? <span className="text-xs text-red-300">{error}</span> : null}
+                  {!isDesktop ? (
+                    <button
+                      className="inline-flex items-center gap-0.5 text-xs text-zinc-500 hover:text-zinc-300 transition"
+                      onClick={() => setStatusExpanded(false)}
+                      type="button"
+                    >
+                      收起
+                    </button>
+                  ) : null}
                 </div>
-                {/* Searched tracks — compact list */}
-                {djPickLog.searchedTracks.length > 0 ? (
-                  <div className="space-y-0.5">
-                    <span className="text-[10px] text-zinc-500">搜索命中曲目</span>
-                    <div className="text-[10px] text-zinc-400 leading-relaxed">
-                      {djPickLog.searchedTracks.slice(0, 8).map((t) => (
-                        <span key={t.id} className="mr-3 inline-block">
-                          {t.name} <span className="text-zinc-600">— {t.artist}</span>
-                        </span>
-                      ))}
-                      {djPickLog.searchedTracks.length > 8 ? (
-                        <span className="text-zinc-600">… +{djPickLog.searchedTracks.length - 8}</span>
-                      ) : null}
-                    </div>
+                {segueScriptText && segueScriptExpanded ? (
+                  <div className="mt-2 rounded-lg border border-violet-800/40 bg-violet-950/20 px-3 py-2">
+                    <p className="text-xs text-violet-200/80 leading-relaxed whitespace-pre-wrap">{segueScriptText}</p>
                   </div>
                 ) : null}
-                {/* Liked sample names */}
-                {djPickLog.likedSample.length > 0 ? (
-                  <div className="space-y-0.5">
-                    <span className="text-[10px] text-zinc-500">红心采样</span>
-                    <div className="text-[10px] text-zinc-500 leading-relaxed">
-                      {djPickLog.likedSample.slice(0, 6).map((t) => (
-                        <span key={t.id} className="mr-2 inline-block">
-                          {t.name}
+                {djPickLog && djPickLogExpanded ? (
+                  <div className="mt-2 rounded-lg border border-cyan-800/40 bg-cyan-950/10 px-3 py-2 space-y-2">
+                    {djPickLog.selectedSay ? (
+                      <p className="text-xs text-cyan-200/80 leading-relaxed">{djPickLog.selectedSay}</p>
+                    ) : null}
+                    {djPickLog.searchQueries.length > 0 ? (
+                      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+                        <span className="text-[10px] text-zinc-500 shrink-0">搜索词</span>
+                        <span className="text-xs text-zinc-300">
+                          {djPickLog.searchQueries.map((q, i) => (
+                            <span key={q}>
+                              {i > 0 ? '、' : ''}
+                              <span className="text-cyan-300/80">{q}</span>
+                            </span>
+                          ))}
                         </span>
-                      ))}
-                      {djPickLog.likedSample.length > 6 ? (
-                        <span className="text-zinc-600">… +{djPickLog.likedSample.length - 6}</span>
-                      ) : null}
+                      </div>
+                    ) : null}
+                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                      <span className="text-[10px] text-zinc-500">
+                        红心采样 <span className="text-zinc-300">{djPickLog.likedSample.length}</span> 首
+                      </span>
+                      <span className="text-[10px] text-zinc-500">
+                        搜索命中 <span className="text-zinc-300">{djPickLog.searchedTracks.length}</span> 首
+                      </span>
+                      <span className="text-[10px] text-zinc-500">
+                        候选池 <span className="text-cyan-300">{djPickLog.totalCandidates}</span> 首
+                      </span>
                     </div>
+                    {djPickLog.searchedTracks.length > 0 ? (
+                      <div className="space-y-0.5">
+                        <span className="text-[10px] text-zinc-500">搜索命中曲目</span>
+                        <div className="text-[10px] text-zinc-400 leading-relaxed">
+                          {djPickLog.searchedTracks.slice(0, 8).map((t) => (
+                            <span key={t.id} className="mr-3 inline-block">
+                              {t.name} <span className="text-zinc-600">— {t.artist}</span>
+                            </span>
+                          ))}
+                          {djPickLog.searchedTracks.length > 8 ? (
+                            <span className="text-zinc-600">… +{djPickLog.searchedTracks.length - 8}</span>
+                          ) : null}
+                        </div>
+                      </div>
+                    ) : null}
+                    {djPickLog.likedSample.length > 0 ? (
+                      <div className="space-y-0.5">
+                        <span className="text-[10px] text-zinc-500">红心采样</span>
+                        <div className="text-[10px] text-zinc-500 leading-relaxed">
+                          {djPickLog.likedSample.slice(0, 6).map((t) => (
+                            <span key={t.id} className="mr-2 inline-block">
+                              {t.name}
+                            </span>
+                          ))}
+                          {djPickLog.likedSample.length > 6 ? (
+                            <span className="text-zinc-600">… +{djPickLog.likedSample.length - 6}</span>
+                          ) : null}
+                        </div>
+                      </div>
+                    ) : null}
                   </div>
                 ) : null}
-              </div>
-            ) : null}
-            <button
-              className="mt-2 rounded-lg border border-zinc-800 bg-zinc-900/60 px-2.5 py-1.5 text-xs text-zinc-400 transition hover:border-zinc-700 hover:text-zinc-200"
-              onClick={() => void loadLikedQueue()}
-              type="button"
-            >
-              重新开始 DJ 模式
-            </button>
+                <button
+                  className="mt-2 rounded-lg border border-zinc-800 bg-zinc-900/60 px-2.5 py-1.5 text-xs text-zinc-400 transition hover:border-zinc-700 hover:text-zinc-200"
+                  onClick={() => void loadLikedQueue()}
+                  type="button"
+                >
+                  重新开始 DJ 模式
+                </button>
+              </>
+            ) : (
+              <button
+                className="w-full flex items-center gap-2 text-xs text-zinc-400 hover:text-zinc-200 transition"
+                onClick={() => setStatusExpanded(true)}
+                type="button"
+              >
+                <span className="text-zinc-500">DJ：</span>
+                <span className="text-cyan-300">{djStatusText || '空闲'}</span>
+                <span className="text-zinc-600">　</span>
+                <span className="text-zinc-500">过渡：</span>
+                <span className="text-violet-200">{segueStatusText || '空闲'}</span>
+                <span className="ml-auto text-zinc-600">展开</span>
+              </button>
+            )}
           </div>
         </section>
 

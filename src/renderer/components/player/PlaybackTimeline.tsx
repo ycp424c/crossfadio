@@ -57,11 +57,11 @@ export function PlaybackTimeline(props: PlaybackTimelineProps): JSX.Element {
       {/* A→B transition line */}
       {props.nextTrackId ? (
         <div className="mt-1.5 flex items-center gap-1.5 overflow-hidden text-xs text-zinc-500">
-          <span className="max-w-[160px] truncate text-amber-400/70">
+          <span className="max-w-[40vw] md:max-w-[160px] truncate text-amber-400/70">
             {props.currentTrackName ?? props.currentTrackId ?? 'A'}
           </span>
           <span className="shrink-0">——×——</span>
-          <span className="max-w-[160px] truncate text-violet-400/70">
+          <span className="max-w-[40vw] md:max-w-[160px] truncate text-violet-400/70">
             {props.nextTrackName ?? props.nextTrackId}
           </span>
           <span className="shrink-0">· {Math.round(timeToSegueSec)}s 后切换</span>

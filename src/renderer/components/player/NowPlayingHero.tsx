@@ -22,7 +22,7 @@ export function NowPlayingHero(props: NowPlayingHeroProps): JSX.Element {
             src={coverPlaceholder}
           />
           <div className="min-w-0">
-            <h2 className="text-xl font-semibold leading-tight text-zinc-100">{props.title}</h2>
+            <h2 className="text-lg md:text-xl font-semibold leading-tight text-zinc-100">{props.title}</h2>
             <p className="mt-1 truncate text-sm text-zinc-400">{props.subtitle}</p>
           </div>
         </div>

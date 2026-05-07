@@ -41,7 +41,7 @@ export function App(): JSX.Element {
       </div>
 
       {/* Bottom tab bar */}
-      <nav className="flex border-t border-zinc-800 bg-zinc-900">
+      <nav className="flex border-t border-zinc-800 bg-zinc-900 pb-[env(safe-area-inset-bottom)]">
         <TabButton active={tab === 'player'} onClick={() => setTab('player')} icon={<Radio className="h-4 w-4" />} label="播放" />
         <TabButton active={tab === 'plan'} onClick={() => setTab('plan')} icon={<CalendarDays className="h-4 w-4" />} label="计划" />
         <TabButton active={tab === 'chat'} onClick={() => setTab('chat')} icon={<MessageCircle className="h-4 w-4" />} label="聊天" />

@@ -1,7 +1,7 @@
 # Mobile UI Adaptation Design
 
 **Date**: 2026-05-07
-**Status**: Approved (pending implementation)
+**Status**: Implemented (2026-05-07, deployed to production)
 **Scope**: Web frontend (`src/renderer/`) only — no server / API changes
 
 ## Goal

@@ -45,12 +45,12 @@ export function SettingsView(): JSX.Element {
 
   return (
     <div className="flex h-full flex-col overflow-y-auto bg-zinc-950 text-zinc-100">
-      <div className="flex items-center gap-2 border-b border-zinc-800 px-6 py-4">
+      <div className="flex items-center gap-2 border-b border-zinc-800 px-4 md:px-6 py-4">
         <Settings2 className="h-5 w-5 text-zinc-400" />
         <h1 className="text-lg font-semibold">设置</h1>
       </div>
 
-      <div className="flex-1 space-y-8 px-6 py-6">
+      <div className="flex-1 space-y-8 px-4 py-4 md:px-6 md:py-6">
         {/* LLM section — read-only */}
         <section>
           <h2 className="mb-4 text-sm font-medium uppercase tracking-wider text-zinc-400">
@@ -95,7 +95,7 @@ export function SettingsView(): JSX.Element {
       </div>
 
       {/* Footer save bar */}
-      <div className="sticky bottom-0 flex items-center justify-between border-t border-zinc-800 bg-zinc-950 px-6 py-4">
+      <div className="sticky bottom-0 flex items-center justify-between border-t border-zinc-800 bg-zinc-950 px-4 md:px-6 py-4">
         <StatusIndicator status={saveStatus} />
         <button
           onClick={handleSave}
@@ -112,7 +112,7 @@ export function SettingsView(): JSX.Element {
 
 function Field({ label, children }: { label: string; children: React.ReactNode }): JSX.Element {
   return (
-    <div className="grid grid-cols-[120px_1fr] items-center gap-3">
+    <div className="grid grid-cols-[100px_1fr] md:grid-cols-[120px_1fr] items-center gap-3">
       <label className="text-sm text-zinc-400">{label}</label>
       {children}
     </div>
@@ -129,7 +129,7 @@ function ReadOnlyField({
   valueClass?: string;
 }): JSX.Element {
   return (
-    <div className="grid grid-cols-[120px_1fr] items-center gap-3">
+    <div className="grid grid-cols-[100px_1fr] md:grid-cols-[120px_1fr] items-center gap-3">
       <label className="text-sm text-zinc-400">{label}</label>
       <span className={`text-sm ${valueClass ?? 'text-zinc-100'}`}>{value}</span>
     </div>

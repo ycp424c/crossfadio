@@ -136,7 +136,7 @@ export function ChatPanel(): JSX.Element {
             className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
           >
             <div
-              className={`max-w-[80%] rounded-2xl px-3 py-2 text-sm leading-relaxed ${
+              className={`max-w-[85%] md:max-w-[80%] rounded-2xl px-3 py-2 text-sm leading-relaxed ${
                 msg.role === 'user'
                   ? 'bg-indigo-600 text-white'
                   : 'bg-zinc-800 text-zinc-100'
