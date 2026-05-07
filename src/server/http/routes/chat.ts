@@ -89,7 +89,7 @@ async function handleChatMessage(
 
     const corpus = loadUserCorpus(userId);
     const likedTracks = await loadLikedTracksForPlanning(opts.ncmClient);
-    const weather = await fetchWeather();
+    const weather = await fetchWeather(userId);
     const now = new Date();
 
     const fragments: Fragments = {

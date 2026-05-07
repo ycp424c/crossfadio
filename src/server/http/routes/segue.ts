@@ -144,7 +144,7 @@ async function runSegueJob(
     if (signal.aborted) return;
     const trackContext = await loadSegueContext(from, to, ncmClient, logger);
     if (signal.aborted) return;
-    const weather = await fetchWeather();
+    const weather = await fetchWeather(userId);
     if (signal.aborted) return;
     const now = new Date();
 

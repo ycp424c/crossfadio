@@ -1,9 +1,6 @@
 import { getLogger } from './logger.js';
 import { getLocation } from './store/location.js';
 
-// TODO: get userId from request context in multi-user mode
-const FALLBACK_USER_ID = '__legacy__';
-
 export type WeatherResult = {
   tempC: number;
   desc: string;
@@ -14,11 +11,11 @@ const TIMEOUT_MS = 5000;
 /**
  * Fetches current weather from wttr.in.
  * Uses browser-reported coordinates if available (set via POST /api/location),
- * otherwise falls back to wttr.in auto-detection.
+ * otherwise falls back to wttr.in auto-detection based on server IP.
  * Returns null on any failure — callers must handle the null case gracefully.
  */
-export async function fetchWeather(): Promise<WeatherResult | null> {
-  const loc = getLocation(FALLBACK_USER_ID);
+export async function fetchWeather(userId?: string): Promise<WeatherResult | null> {
+  const loc = userId ? getLocation(userId) : null;
   const locationStr = loc ? `${loc.lat.toFixed(4)},${loc.lon.toFixed(4)}` : 'auto';
   const url = `https://wttr.in/${encodeURIComponent(locationStr)}?format=j1`;
 

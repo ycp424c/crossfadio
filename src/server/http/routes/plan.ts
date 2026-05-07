@@ -34,7 +34,7 @@ type PlanRouteOptions = {
 
 export async function buildPlanFragments(userId: string, date: string, ncmClient: NcmClient): Promise<Fragments> {
   const corpus = loadUserCorpus(userId);
-  const weather = await fetchWeather();
+  const weather = await fetchWeather(userId);
   const recentPlays = getRecentPlays(userId, 50);
   const likedTracks = await loadLikedTracksForPlanning(ncmClient);
   const now = new Date();

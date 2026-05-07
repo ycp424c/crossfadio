@@ -221,7 +221,7 @@ async function doPickNext(userId: string, ncmClient: NcmClient): Promise<void> {
   if (llmConfig && allLikedIds.length > 0) {
     try {
       const corpus = loadUserCorpus(userId);
-      const [weather] = await Promise.all([withTimeout(fetchWeather(), 4_000, null)]);
+      const [weather] = await Promise.all([withTimeout(fetchWeather(userId), 4_000, null)]);
       const nowDate = new Date();
       const weekdays = ['日', '一', '二', '三', '四', '五', '六'];
       const day = weekdays[nowDate.getDay()];
