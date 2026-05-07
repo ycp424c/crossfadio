@@ -27,7 +27,7 @@ const LIKED_IDS_TIMEOUT_MS = 8_000;
 const LIKED_DETAILS_TIMEOUT_MS = 8_000;
 const LIKED_IDS_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 1 day
 const LIKED_SAMPLE_SIZE = 20;
-const SEARCH_RESULT_SIZE = 20;
+const SEARCH_RESULT_SIZE = 40;
 
 let isRunning = false;
 
@@ -68,7 +68,7 @@ export async function searchCandidates(
 ): Promise<Track[]> {
   if (queries.length === 0) return [];
   if (signal?.aborted) return [];
-  const perQuery = Math.ceil((limit + 5) / queries.length);
+  const perQuery = Math.max(3, Math.ceil((limit + 5) / queries.length));
   const results = await Promise.all(
     queries.map((q) => signal?.aborted ? [] : ncmClient.searchSongs(q, perQuery).catch(() => []))
   );
@@ -345,19 +345,19 @@ async function doPickNext(opts: DjNextOptions): Promise<void> {
         logger.info({ webArtistCount: webArtists.length }, 'DJ pick-next: Wikipedia found additional artists');
       }
 
-      // Merge: LLM artists first (higher quality), then Wikipedia finds (for variety)
+      // Merge: LLM artists first (higher quality), then web discoveries (for variety), cap at 10
       const mergedQueries = new Set<string>();
       const searchQueries: string[] = [];
       for (const a of llmArtists) {
         const lower = a.toLowerCase();
-        if (!mergedQueries.has(lower)) {
+        if (!mergedQueries.has(lower) && searchQueries.length < 10) {
           mergedQueries.add(lower);
           searchQueries.push(a);
         }
       }
       for (const a of webArtists) {
         const lower = a.toLowerCase();
-        if (!mergedQueries.has(lower)) {
+        if (!mergedQueries.has(lower) && searchQueries.length < 10) {
           mergedQueries.add(lower);
           searchQueries.push(a);
         }
@@ -372,7 +372,7 @@ async function doPickNext(opts: DjNextOptions): Promise<void> {
 
       logger.info({ searchQueries, llmCount: llmArtists.length, webCount: webArtists.length }, 'DJ pick-next: final search queries for NCM');
 
-      // ── Phase 3: search NCM, collect up to 20 candidates ─────────────────
+      // ── Phase 3: search NCM, collect up to SEARCH_RESULT_SIZE candidates ─
       const searchedTracks = await searchCandidates(
         searchQueries,
         opts.ncmClient,
