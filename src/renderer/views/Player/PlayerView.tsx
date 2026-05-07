@@ -750,7 +750,16 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
                         if (!qrPayload?.key) return;
                         try {
                           const status = await checkNcmQr(qrPayload.key);
-                          setTrackStatusText(`扫码状态: ${status.hint}`);
+                          if (status.hint === 'forbidden') {
+                            setError(status.message || '您没有访问权限，请联系管理员');
+                            setTrackStatusText('登录失败：无访问权限');
+                            setQrPayload(null);
+                          } else if (status.hint === 'expired') {
+                            setTrackStatusText('二维码已过期，请刷新');
+                            setQrPayload(null);
+                          } else {
+                            setTrackStatusText(`扫码状态: ${status.hint}`);
+                          }
                           if (status.token) {
                             initWsClient(status.token);
                           }
