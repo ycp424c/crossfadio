@@ -268,10 +268,11 @@ async function doPickNext(opts: DjNextOptions): Promise<void> {
       const stylePrompt =
         `当前时间：${localTime}\n天气：${weatherStr}\n最近播放：\n${recentPlayNames}\n\n` +
         `请根据以上信息，推荐 2-3 个适合当下情境的音乐风格方向。` +
-        `对每个风格，列出 3-5 位可以在网易云音乐搜到的代表艺人（优先华人艺人，搜歌手名比搜风格关键词效果更好）。` +
+        `对每个风格，列出 3-5 位可以在网易云音乐搜到的代表艺人（华人艺人和海外艺人各半，保证多样性）。` +
+        `style 字段用英文关键词方便检索，artists 里同时包含中外艺人。` +
         `直接返回 JSON 对象，格式如下：\n` +
-        `{"styles":[{"style":"ambient folk 温暖治愈","artists":["Bon Iver","Sufjan Stevens","Iron & Wine"]},` +
-        `{"style":"jazz piano 夜晚","artists":["Bill Evans","Keith Jarrett","上原广美"]}]}`;
+        `{"styles":[{"style":"indie folk","artists":["万能青年旅店","Bon Iver","张玮玮","Sufjan Stevens"]},` +
+        `{"style":"jazz piano","artists":["Bill Evans","上原广美","Keith Jarrett","罗宁"]}]}`;
 
       let llmArtists: string[] = [];
       let styleConcepts: string[] = [];
@@ -345,19 +346,21 @@ async function doPickNext(opts: DjNextOptions): Promise<void> {
         logger.info({ webArtistCount: webArtists.length }, 'DJ pick-next: Wikipedia found additional artists');
       }
 
-      // Merge: LLM artists first (higher quality), then web discoveries (for variety), cap at 10
+      // Merge: LLM artists first (up to 6), then web discoveries (up to 4), cap at 10
+      const QUERY_CAP = 10;
+      const LLM_QUOTA = 6;
       const mergedQueries = new Set<string>();
       const searchQueries: string[] = [];
       for (const a of llmArtists) {
         const lower = a.toLowerCase();
-        if (!mergedQueries.has(lower) && searchQueries.length < 10) {
+        if (!mergedQueries.has(lower) && searchQueries.length < LLM_QUOTA) {
           mergedQueries.add(lower);
           searchQueries.push(a);
         }
       }
       for (const a of webArtists) {
         const lower = a.toLowerCase();
-        if (!mergedQueries.has(lower) && searchQueries.length < 10) {
+        if (!mergedQueries.has(lower) && searchQueries.length < QUERY_CAP) {
           mergedQueries.add(lower);
           searchQueries.push(a);
         }
