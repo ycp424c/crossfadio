@@ -69,6 +69,16 @@ type PendingSegueAudio = {
   started: boolean;
 };
 
+type DjTrackSample = { id: string; name: string; artist: string };
+
+type DjPickLog = {
+  likedSample: DjTrackSample[];
+  searchQueries: string[];
+  searchedTracks: DjTrackSample[];
+  totalCandidates: number;
+  selectedSay: string;
+};
+
 export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
   const [queue, setQueue] = useState<QueueTrackDto[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
@@ -83,6 +93,8 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
   const [segueStatusText, setSegueStatusText] = useState('');
   const [segueScriptText, setSegueScriptText] = useState('');
   const [segueScriptExpanded, setSegueScriptExpanded] = useState(false);
+  const [djPickLog, setDjPickLog] = useState<DjPickLog | null>(null);
+  const [djPickLogExpanded, setDjPickLogExpanded] = useState(false);
   const [error, setError] = useState('');
   const [session, setSession] = useState<NcmSessionState>({ hasCookie: false, profile: null });
   const [qrPayload, setQrPayload] = useState<{ key: string; qrimg: string } | null>(null);
@@ -337,12 +349,12 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
         segueClientRequestIdRef.current = null;
         setSegueStatusText(`过渡语音暂不可用（${reason}）`);
       } else if (msg.type === 'dj.debug') {
-        console.log('[DJ] 候选歌曲', {
-          liked: msg.likedSample,
-          searchQueries: msg.searchQueries,
-          searched: msg.searchedTracks,
-          total: msg.totalCandidates,
-          say: msg.selectedSay
+        setDjPickLog({
+          likedSample: Array.isArray(msg.likedSample) ? msg.likedSample as DjTrackSample[] : [],
+          searchQueries: Array.isArray(msg.searchQueries) ? msg.searchQueries as string[] : [],
+          searchedTracks: Array.isArray(msg.searchedTracks) ? msg.searchedTracks as DjTrackSample[] : [],
+          totalCandidates: typeof msg.totalCandidates === 'number' ? msg.totalCandidates : 0,
+          selectedSay: typeof msg.selectedSay === 'string' ? msg.selectedSay : '',
         });
       } else if (msg.type === 'dj.pick-next.done') {
         if (msg.added) {
@@ -382,10 +394,12 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
   useEffect(() => {
     if (!currentTrackId) {
       setNowPlaying(null);
+      resetTrackMedia();
       return;
     }
 
     disposeSegueAudio();
+    resetTrackMedia();
     prefetchTriggeredRef.current = false;
     segueClientRequestIdRef.current = null;
     segueExpectedFromTrackIdRef.current = null;
@@ -446,6 +460,9 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
         name: trackMeta?.name,
         artist: trackMeta?.artists?.join(' / ')
       });
+      if (currentTrackIdRef.current !== trackId) {
+        return;
+      }
       setNowPlaying(payload);
       setError('');
 
@@ -462,10 +479,28 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
 
       setTrackStatusText(`已加载 ${trackId}`);
     } catch (err) {
+      if (currentTrackIdRef.current !== trackId) {
+        return;
+      }
       setNowPlaying(null);
       setTrackStatusText('加载失败');
       setError(err instanceof Error ? err.message : 'now 请求失败');
     }
+  }
+
+  function resetTrackMedia(): void {
+    setNowPlaying(null);
+    setPositionSec(0);
+    setDurationSec(0);
+
+    const audio = audioRef.current;
+    if (!audio) {
+      return;
+    }
+
+    audio.pause();
+    audio.removeAttribute('src');
+    audio.load();
   }
 
   async function refreshNextTrack(trackId: string): Promise<void> {
@@ -858,6 +893,24 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
             <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
               <StatusChip label="曲目" text={trackStatusText || '—'} />
               <StatusChip color="cyan" label="DJ选歌" text={djStatusText || '空闲'} />
+              {djPickLog ? (
+                <button
+                  className="inline-flex items-center gap-0.5 text-xs text-cyan-300/70 hover:text-cyan-200 transition"
+                  onClick={() => setDjPickLogExpanded((v) => !v)}
+                  type="button"
+                >
+                  <span>{djPickLogExpanded ? '收起' : '日志'}</span>
+                  <svg
+                    className={`w-3 h-3 transition-transform ${djPickLogExpanded ? 'rotate-180' : ''}`}
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth={2}
+                  >
+                    <path d="M6 9l6 6 6-6" />
+                  </svg>
+                </button>
+              ) : null}
               <StatusChip color="violet" label="过渡文案" text={segueStatusText || '空闲'} />
               {segueScriptText ? (
                 <button
@@ -882,6 +935,72 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
             {segueScriptText && segueScriptExpanded ? (
               <div className="mt-2 rounded-lg border border-violet-800/40 bg-violet-950/20 px-3 py-2">
                 <p className="text-xs text-violet-200/80 leading-relaxed whitespace-pre-wrap">{segueScriptText}</p>
+              </div>
+            ) : null}
+            {djPickLog && djPickLogExpanded ? (
+              <div className="mt-2 rounded-lg border border-cyan-800/40 bg-cyan-950/10 px-3 py-2 space-y-2">
+                {/* Say / reasoning */}
+                {djPickLog.selectedSay ? (
+                  <p className="text-xs text-cyan-200/80 leading-relaxed">{djPickLog.selectedSay}</p>
+                ) : null}
+                {/* Search queries — now artist names from the new pipeline */}
+                {djPickLog.searchQueries.length > 0 ? (
+                  <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+                    <span className="text-[10px] text-zinc-500 shrink-0">搜索词</span>
+                    <span className="text-xs text-zinc-300">
+                      {djPickLog.searchQueries.map((q, i) => (
+                        <span key={q}>
+                          {i > 0 ? '、' : ''}
+                          <span className="text-cyan-300/80">{q}</span>
+                        </span>
+                      ))}
+                    </span>
+                  </div>
+                ) : null}
+                {/* Stats */}
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                  <span className="text-[10px] text-zinc-500">
+                    红心采样 <span className="text-zinc-300">{djPickLog.likedSample.length}</span> 首
+                  </span>
+                  <span className="text-[10px] text-zinc-500">
+                    搜索命中 <span className="text-zinc-300">{djPickLog.searchedTracks.length}</span> 首
+                  </span>
+                  <span className="text-[10px] text-zinc-500">
+                    候选池 <span className="text-cyan-300">{djPickLog.totalCandidates}</span> 首
+                  </span>
+                </div>
+                {/* Searched tracks — compact list */}
+                {djPickLog.searchedTracks.length > 0 ? (
+                  <div className="space-y-0.5">
+                    <span className="text-[10px] text-zinc-500">搜索命中曲目</span>
+                    <div className="text-[10px] text-zinc-400 leading-relaxed">
+                      {djPickLog.searchedTracks.slice(0, 8).map((t) => (
+                        <span key={t.id} className="mr-3 inline-block">
+                          {t.name} <span className="text-zinc-600">— {t.artist}</span>
+                        </span>
+                      ))}
+                      {djPickLog.searchedTracks.length > 8 ? (
+                        <span className="text-zinc-600">… +{djPickLog.searchedTracks.length - 8}</span>
+                      ) : null}
+                    </div>
+                  </div>
+                ) : null}
+                {/* Liked sample names */}
+                {djPickLog.likedSample.length > 0 ? (
+                  <div className="space-y-0.5">
+                    <span className="text-[10px] text-zinc-500">红心采样</span>
+                    <div className="text-[10px] text-zinc-500 leading-relaxed">
+                      {djPickLog.likedSample.slice(0, 6).map((t) => (
+                        <span key={t.id} className="mr-2 inline-block">
+                          {t.name}
+                        </span>
+                      ))}
+                      {djPickLog.likedSample.length > 6 ? (
+                        <span className="text-zinc-600">… +{djPickLog.likedSample.length - 6}</span>
+                      ) : null}
+                    </div>
+                  </div>
+                ) : null}
               </div>
             ) : null}
             <button

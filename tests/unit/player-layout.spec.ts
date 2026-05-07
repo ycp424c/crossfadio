@@ -36,6 +36,28 @@ describe('player layout', () => {
     expect(source).toContain("setSegueStatusText('下一首与当前相同，跳过')");
   });
 
+  it('clears stale track media immediately when the current track changes', () => {
+    const source = fs.readFileSync(path.join(root, 'src/renderer/views/Player/PlayerView.tsx'), 'utf-8');
+
+    expect(source).toContain('function resetTrackMedia(): void');
+    expect(source).toContain('setNowPlaying(null)');
+    expect(source).toContain("audio.removeAttribute('src')");
+    expect(source).toContain('resetTrackMedia();');
+  });
+
+  it('ignores stale now-playing responses from a previous current track', () => {
+    const source = fs.readFileSync(path.join(root, 'src/renderer/views/Player/PlayerView.tsx'), 'utf-8');
+    const loadNowPlayingStart = source.indexOf('async function loadNowPlaying');
+    const refreshNextTrackStart = source.indexOf('async function refreshNextTrack');
+    const loadNowPlayingBody = source.slice(loadNowPlayingStart, refreshNextTrackStart);
+
+    expect(loadNowPlayingBody).toContain('if (currentTrackIdRef.current !== trackId)');
+    expect(loadNowPlayingBody).toContain('setNowPlaying(payload)');
+    expect(loadNowPlayingBody.indexOf('if (currentTrackIdRef.current !== trackId)')).toBeLessThan(
+      loadNowPlayingBody.indexOf('setNowPlaying(payload)')
+    );
+  });
+
   it('shows segue request failures directly in the player status area', () => {
     const source = fs.readFileSync(path.join(root, 'src/renderer/views/Player/PlayerView.tsx'), 'utf-8');
 

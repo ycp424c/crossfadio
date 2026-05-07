@@ -9,6 +9,7 @@ import { getRecentMessages } from '../../store/messages.js';
 import { getRecentSegues } from '../../store/segues.js';
 import { getPreferenceContext } from '../../store/chat-preferences.js';
 import { fetchWeather } from '../../weather.js';
+import { searchArtistsForStyle } from '../../web-search.js';
 import { getQueue, addToQueue } from '../../store/queue.js';
 import { broadcastToUser } from '../broadcast.js';
 import { getLogger } from '../../logger.js';
@@ -27,7 +28,7 @@ const LIKED_IDS_TIMEOUT_MS = 8_000;
 const LIKED_DETAILS_TIMEOUT_MS = 8_000;
 const LIKED_IDS_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 1 day
 const LIKED_SAMPLE_SIZE = 20;
-const SEARCH_RESULT_SIZE = 20;
+const SEARCH_RESULT_SIZE = 40;
 
 const isRunning = new Map<string, boolean>();
 
@@ -68,7 +69,7 @@ export async function searchCandidates(
 ): Promise<Track[]> {
   if (queries.length === 0) return [];
   if (signal?.aborted) return [];
-  const perQuery = Math.ceil((limit + 5) / queries.length);
+  const perQuery = Math.max(3, Math.ceil((limit + 5) / queries.length));
   const results = await Promise.all(
     queries.map((q) => signal?.aborted ? [] : ncmClient.searchSongs(q, perQuery).catch(() => []))
   );
@@ -262,24 +263,29 @@ async function doPickNext(userId: string, ncmClient: NcmClient): Promise<void> {
         'DJ pick-next: sampled liked tracks from full list'
       );
 
-      // ── Phase 2: LLM generates search queries (raw call, no schema) ─────
+      // ── Phase 2: LLM suggests styles + artists → Wikipedia enrichment → NCM search queries ─
       const recentPlayNames = recentPlays
         .slice(0, 10)
         .map((p) => `${p.song_name ?? '?'} — ${p.artist_name ?? '?'}`)
         .join('\n');
       const weatherStr = weather ? `${weather.tempC}°C，${weather.desc}` : '未知';
-      const searchQueryPrompt =
+      const stylePrompt =
         `当前时间：${localTime}\n天气：${weatherStr}\n最近播放：\n${recentPlayNames}\n\n` +
-        `请根据以上信息，生成 2-3 个适合当前情境的网易云音乐搜索词（艺人名、风格关键词等）。` +
-        `直接返回 JSON 数组，例如：["赵雷","民谣 安静","爵士 夜晚"]`;
+        `请根据以上信息，推荐 2-3 个适合当下情境的音乐风格方向。` +
+        `对每个风格，列出 3-5 位可以在网易云音乐搜到的代表艺人（华人艺人和海外艺人各半，保证多样性）。` +
+        `style 字段用英文关键词方便检索，artists 里同时包含中外艺人。` +
+        `直接返回 JSON 对象，格式如下：\n` +
+        `{"styles":[{"style":"indie folk","artists":["万能青年旅店","Bon Iver","张玮玮","Sufjan Stevens"]},` +
+        `{"style":"jazz piano","artists":["Bill Evans","上原广美","Keith Jarrett","罗宁"]}]}`;
 
-      let searchQueries: string[] = [];
+      let llmArtists: string[] = [];
+      let styleConcepts: string[] = [];
       let sqRawSay = '';
       try {
         const sqResp = await new LlmClient(llmConfig).complete(
           [
             { role: 'system', content: corpus.djPersona || 'You are a DJ.' },
-            { role: 'user', content: searchQueryPrompt }
+            { role: 'user', content: stylePrompt }
           ],
           { signal: AbortSignal.timeout(SEARCH_QUERY_LLM_TIMEOUT_MS) }
         );
@@ -288,25 +294,92 @@ async function doPickNext(userId: string, ncmClient: NcmClient): Promise<void> {
           .replace(/^```(?:json)?\s*/i, '')
           .replace(/\s*```\s*$/, '')
           .trim();
-        const match = cleaned.match(/\[[\s\S]*?\]/);
+        const match = cleaned.match(/\{[\s\S]*\}/);
         if (match) {
           const parsed: unknown = JSON.parse(match[0]);
-          if (Array.isArray(parsed)) {
-            searchQueries = parsed
-              .filter((s): s is string => typeof s === 'string' && s.trim().length > 0)
-              .slice(0, 3);
+          if (parsed && typeof parsed === 'object') {
+            const obj = parsed as Record<string, unknown>;
+            const styles = Array.isArray(obj.styles) ? obj.styles : [];
+            const seen = new Set<string>();
+            for (const s of styles) {
+              if (!s || typeof s !== 'object') continue;
+              const style = s as Record<string, unknown>;
+              if (typeof style.style === 'string' && style.style.trim()) {
+                styleConcepts.push(style.style.trim());
+              }
+              const artists = Array.isArray(style.artists) ? style.artists : [];
+              for (const a of artists) {
+                if (typeof a === 'string' && a.trim() && a.trim().length < 50) {
+                  const lower = a.trim().toLowerCase();
+                  if (!seen.has(lower)) {
+                    seen.add(lower);
+                    llmArtists.push(a.trim());
+                  }
+                }
+              }
+            }
           }
         }
-        if (searchQueries.length === 0) {
-          logger.warn({ raw: sqResp.content.slice(0, 200) }, 'DJ pick-next: failed to parse search queries from LLM response');
+        if (llmArtists.length === 0) {
+          logger.warn({ raw: sqResp.content.slice(0, 200) }, 'DJ pick-next: failed to parse style+artists from LLM response');
         }
       } catch (err) {
-        logger.warn({ err }, 'DJ pick-next: search query generation failed');
+        logger.warn({ err }, 'DJ pick-next: style + artist generation failed');
       }
 
-      logger.info({ searchQueries }, 'DJ pick-next: generated search queries');
+      logger.info({ styleConcepts, llmArtistCount: llmArtists.length }, 'DJ pick-next: LLM suggested styles and artists');
 
-      // ── Phase 3: search NCM, collect up to 20 candidates ─────────────────
+      // Web search (Wikipedia) each style concept to find additional artists
+      let webArtists: string[] = [];
+      if (styleConcepts.length > 0) {
+        const allWebArtists = new Set<string>();
+        const webResults = await Promise.all(
+          styleConcepts.map((style) =>
+            searchArtistsForStyle(style).catch(() => [] as string[])
+          )
+        );
+        for (const artists of webResults) {
+          for (const name of artists) {
+            const lower = name.toLowerCase();
+            if (!allWebArtists.has(lower)) {
+              allWebArtists.add(lower);
+              webArtists.push(name);
+            }
+          }
+        }
+        logger.info({ webArtistCount: webArtists.length }, 'DJ pick-next: Wikipedia found additional artists');
+      }
+
+      // Merge: LLM artists first (up to 6), then web discoveries (up to 4), cap at 10
+      const QUERY_CAP = 10;
+      const LLM_QUOTA = 6;
+      const mergedQueries = new Set<string>();
+      const searchQueries: string[] = [];
+      for (const a of llmArtists) {
+        const lower = a.toLowerCase();
+        if (!mergedQueries.has(lower) && searchQueries.length < LLM_QUOTA) {
+          mergedQueries.add(lower);
+          searchQueries.push(a);
+        }
+      }
+      for (const a of webArtists) {
+        const lower = a.toLowerCase();
+        if (!mergedQueries.has(lower) && searchQueries.length < QUERY_CAP) {
+          mergedQueries.add(lower);
+          searchQueries.push(a);
+        }
+      }
+
+      // Fallback: if we don't have enough search queries, use style keywords directly
+      if (searchQueries.length < 2 && styleConcepts.length > 0) {
+        logger.warn({ searchQueries, styleConcepts }, 'DJ pick-next: too few artist names, falling back to style keywords');
+        searchQueries.length = 0;
+        searchQueries.push(...styleConcepts.slice(0, 3));
+      }
+
+      logger.info({ searchQueries, llmCount: llmArtists.length, webCount: webArtists.length }, 'DJ pick-next: final search queries for NCM');
+
+      // ── Phase 3: search NCM, collect up to SEARCH_RESULT_SIZE candidates ─
       const searchedTracks = await searchCandidates(
         searchQueries,
         ncmClient,
