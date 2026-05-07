@@ -72,8 +72,20 @@ pnpm build
 pnpm start
 ```
 
-- 服务默认监听 `http://127.0.0.1:4318`
-- 仅允许本机 `localhost/127.0.0.1` 访问
+默认配置（单机本地使用）：
+
+- 服务监听 `http://127.0.0.1:4318`，仅本机访问
+- 也可以不设白名单和 JWT，单用户跑
+
+多用户在线部署（公网暴露）需要额外配置：
+
+- `CROSSFADIO_HOST=0.0.0.0` 公开绑定
+- `CROSSFADIO_JWT_SECRET` HS256 签名密钥（必须）
+- `CROSSFADIO_LLM_*` / `CROSSFADIO_TTS_*` 完整配置
+- 数据目录下放 `allowlist.json`（数组，允许登录的 NCM 用户 ID）
+- 受保护路由要求 `Authorization: Bearer <jwt>`，扫码登录后从 `/api/ncm/login/status` 拿到 token
+
+实际线上部署、重启、加白名单、改 persona 等操作流程见 [`docs/ops-runbook.md`](docs/ops-runbook.md)。
 
 ## 数据目录
 

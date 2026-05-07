@@ -163,6 +163,10 @@ pnpm build            # Production build
 pnpm start            # Start production server
 ```
 
+## Production
+
+Live deployment runbook (instance, paths, restart, allowlist edits, persona updates) is at [`docs/ops-runbook.md`](docs/ops-runbook.md). Read it before doing anything on the box.
+
 ## Architecture Notes
 
 - **4 tabs**: Player, Plan, Chat, Settings — all mounted, visibility toggled via `display:none`
