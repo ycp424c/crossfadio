@@ -1,6 +1,17 @@
-import { useEffect, useState } from 'react';
-import { Settings2, Check, AlertCircle, Loader2 } from 'lucide-react';
-import { getSettings, saveSettings, type LlmSettings, type TtsSettings } from '@renderer/api';
+import { useCallback, useEffect, useState } from 'react';
+import { Settings2, Check, AlertCircle, Loader2, Trash2, UserPlus, Shield } from 'lucide-react';
+import {
+  getSettings,
+  saveSettings,
+  getWhitelist,
+  getBlockedAttempts,
+  addToWhitelist,
+  removeFromWhitelist,
+  unblockUser,
+  type LlmSettings,
+  type TtsSettings,
+  type BlockedAttempt
+} from '@renderer/api';
 
 type SaveStatus = { type: 'idle' } | { type: 'saving' } | { type: 'ok' } | { type: 'error'; message: string };
 
@@ -10,17 +21,40 @@ export function SettingsView(): JSX.Element {
   const [voice, setVoice] = useState('');
   const [saveStatus, setSaveStatus] = useState<SaveStatus>({ type: 'idle' });
   const [loading, setLoading] = useState(true);
+  const [whitelist, setWhitelist] = useState<string[]>([]);
+  const [blocked, setBlocked] = useState<BlockedAttempt[]>([]);
+  const [newNcmId, setNewNcmId] = useState('');
 
   useEffect(() => {
-    getSettings()
-      .then((s) => {
-        setLlm(s.llm);
-        setTts(s.tts);
-        setVoice(s.tts.voice);
-      })
+    Promise.all([
+      getSettings()
+        .then((s) => {
+          setLlm(s.llm);
+          setTts(s.tts);
+          setVoice(s.tts.voice);
+        }),
+      getWhitelist().then((w) => setWhitelist(w.entries)).catch(() => {}),
+      getBlockedAttempts().then((b) => setBlocked(b.blocked)).catch(() => {})
+    ])
       .catch(() => {/* first launch, no config yet */})
       .finally(() => setLoading(false));
   }, []);
+
+  const refreshWhitelist = useCallback(async () => {
+    const [w, b] = await Promise.all([getWhitelist(), getBlockedAttempts()]);
+    setWhitelist(w.entries);
+    setBlocked(b.blocked);
+  }, []);
+
+  function parseProfile(profileJson: string | null): string | null {
+    if (!profileJson) return null;
+    try {
+      const profile = JSON.parse(profileJson) as Record<string, unknown>;
+      return typeof profile?.nickname === 'string' ? profile.nickname : null;
+    } catch {
+      return null;
+    }
+  }
 
   async function handleSave(): Promise<void> {
     setSaveStatus({ type: 'saving' });
@@ -90,6 +124,116 @@ export function SettingsView(): JSX.Element {
                 ))}
               </select>
             </Field>
+          </div>
+        </section>
+
+        {/* Whitelist management */}
+        <section>
+          <h2 className="mb-4 text-sm font-medium uppercase tracking-wider text-zinc-400">
+            白名单管理
+          </h2>
+          <div className="space-y-4 rounded-xl border border-zinc-800 bg-zinc-900 p-4">
+            {/* Manual add */}
+            <div className="flex items-center gap-2">
+              <input
+                type="text"
+                value={newNcmId}
+                onChange={(e) => setNewNcmId(e.target.value)}
+                placeholder="输入网易云用户 ID"
+                className={inputClass}
+              />
+              <button
+                onClick={async () => {
+                  if (!newNcmId.trim()) return;
+                  await addToWhitelist(newNcmId.trim());
+                  setNewNcmId('');
+                  await refreshWhitelist();
+                }}
+                disabled={!newNcmId.trim()}
+                className="flex items-center gap-1.5 rounded-lg bg-indigo-600 px-4 py-1.5 text-sm font-medium text-white transition hover:bg-indigo-500 disabled:opacity-50 shrink-0"
+              >
+                <UserPlus className="h-4 w-4" />
+                添加
+              </button>
+            </div>
+
+            {/* Current whitelist */}
+            <div>
+              <h3 className="mb-2 text-xs font-medium uppercase tracking-wider text-zinc-500">
+                当前白名单
+                {whitelist.length > 0 && (
+                  <span className="ml-1.5 text-zinc-600">({whitelist.length})</span>
+                )}
+              </h3>
+              {whitelist.length === 0 ? (
+                <p className="text-sm text-zinc-600">暂无用户</p>
+              ) : (
+                <ul className="space-y-0.5">
+                  {whitelist.map((id) => (
+                    <li
+                      key={id}
+                      className="flex items-center justify-between rounded-lg px-2 py-1.5 hover:bg-zinc-800/50"
+                    >
+                      <span className="text-sm text-zinc-300 font-mono">{id}</span>
+                      <button
+                        onClick={async () => {
+                          await removeFromWhitelist(id);
+                          await refreshWhitelist();
+                        }}
+                        className="rounded p-1 text-zinc-600 transition hover:bg-zinc-700 hover:text-red-400"
+                        title="移除"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+
+            {/* Blocked attempts */}
+            <div>
+              <h3 className="mb-2 text-xs font-medium uppercase tracking-wider text-zinc-500">
+                被阻止的登录
+                {blocked.length > 0 && (
+                  <span className="ml-1.5 text-zinc-600">({blocked.length})</span>
+                )}
+              </h3>
+              {blocked.length === 0 ? (
+                <p className="text-sm text-zinc-600">暂无被阻止的用户</p>
+              ) : (
+                <ul className="space-y-1">
+                  {blocked.map((b) => {
+                    const nickname = parseProfile(b.profile_json);
+                    return (
+                      <li
+                        key={b.id}
+                        className="flex items-center justify-between rounded-lg px-2 py-1.5 hover:bg-zinc-800/50"
+                      >
+                        <div className="min-w-0 flex-1">
+                          <span className="text-sm text-zinc-300 font-mono">{b.ncm_id}</span>
+                          <div className="flex items-center gap-2 text-xs text-zinc-500">
+                            {nickname && <span>{nickname}</span>}
+                            <span>{new Date(b.attempted_at).toLocaleString()}</span>
+                          </div>
+                        </div>
+                        <button
+                          onClick={async () => {
+                            await unblockUser(b.id);
+                            await refreshWhitelist();
+                          }}
+                          className="flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-emerald-500 transition hover:bg-emerald-500/10 shrink-0"
+                          title="加入白名单"
+                        >
+                          <Shield className="h-3.5 w-3.5" />
+                          放行
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </div>
           </div>
         </section>
       </div>

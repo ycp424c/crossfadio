@@ -248,6 +248,47 @@ export async function saveSettings(payload: SaveSettingsPayload): Promise<void> 
   if (!result.ok) throw new Error('Failed to save settings');
 }
 
+// ── Whitelist ───────────────────────────────────────────────────────────────────
+
+export type BlockedAttempt = {
+  id: number;
+  ncm_id: string;
+  profile_json: string | null;
+  attempted_at: string;
+};
+
+export async function getWhitelist(): Promise<{ ok: boolean; entries: string[] }> {
+  return requestJson<{ ok: boolean; entries: string[] }>('/api/whitelist');
+}
+
+export async function getBlockedAttempts(): Promise<{ ok: boolean; blocked: BlockedAttempt[] }> {
+  return requestJson<{ ok: boolean; blocked: BlockedAttempt[] }>('/api/whitelist/blocked');
+}
+
+export async function addToWhitelist(ncmId: string): Promise<void> {
+  const result = await requestJson<{ ok: boolean }>('/api/whitelist', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ncmId })
+  });
+  if (!result.ok) throw new Error('Failed to add to whitelist');
+}
+
+export async function removeFromWhitelist(ncmId: string): Promise<void> {
+  const result = await requestJson<{ ok: boolean }>(
+    `/api/whitelist/${encodeURIComponent(ncmId)}`,
+    { method: 'DELETE' }
+  );
+  if (!result.ok) throw new Error('Failed to remove from whitelist');
+}
+
+export async function unblockUser(id: number): Promise<{ ok: boolean; ncmId: string }> {
+  return requestJson<{ ok: boolean; ncmId: string }>(
+    `/api/whitelist/unblock/${encodeURIComponent(String(id))}`,
+    { method: 'POST' }
+  );
+}
+
 export type PlanTrack = {
   query: string;
   reason?: string;

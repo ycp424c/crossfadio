@@ -32,6 +32,13 @@ import { createChatMessageHandler, cancelChatRecommend } from './routes/chat.js'
 import { createDjPickNextHandler } from './routes/djNext.js';
 import { createGetRecentMessagesHandler } from './routes/messages.js';
 import { createSetLocationHandler } from './routes/location.js';
+import {
+  createGetWhitelistHandler,
+  createGetBlockedHandler,
+  createAddToWhitelistHandler,
+  createRemoveFromWhitelistHandler,
+  createUnblockHandler
+} from './routes/whitelist.js';
 import { createRuntimeHandler } from './routes/runtime.js';
 import {
   createGetLikedIdsHandler,
@@ -110,6 +117,11 @@ export async function startLocalServer(options: StartLocalServerOptions): Promis
   app.post('/api/dj/pick-next', protect, createDjPickNextHandler({ secrets: null as any }));
   app.get('/api/messages/recent', protect, createGetRecentMessagesHandler());
   app.post('/api/location', protect, createSetLocationHandler());
+  app.get('/api/whitelist', protect, createGetWhitelistHandler());
+  app.get('/api/whitelist/blocked', protect, createGetBlockedHandler());
+  app.post('/api/whitelist', protect, createAddToWhitelistHandler());
+  app.delete('/api/whitelist/:ncmId', protect, createRemoveFromWhitelistHandler());
+  app.post('/api/whitelist/unblock/:id', protect, createUnblockHandler());
 
   if (options.staticDir && fs.existsSync(options.staticDir)) {
     app.use(express.static(options.staticDir));

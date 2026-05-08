@@ -51,3 +51,28 @@ export function recordBlockedAttempt(params: {
     )
     .run(params.ncmId, params.profileJson);
 }
+
+export type BlockedAttempt = {
+  id: number;
+  ncm_id: string;
+  profile_json: string | null;
+  attempted_at: string;
+};
+
+export function getBlockedAttempts(): BlockedAttempt[] {
+  return getDb()
+    .prepare<[], BlockedAttempt>(
+      'SELECT * FROM blocked_login_attempts ORDER BY attempted_at DESC'
+    )
+    .all();
+}
+
+export function deleteBlockedAttempt(id: number): void {
+  getDb().prepare('DELETE FROM blocked_login_attempts WHERE id = ?').run(id);
+}
+
+export function deleteBlockedAttemptsByNcmId(ncmId: string): void {
+  getDb()
+    .prepare('DELETE FROM blocked_login_attempts WHERE ncm_id = ?')
+    .run(ncmId);
+}
