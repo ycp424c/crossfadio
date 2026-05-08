@@ -31,7 +31,7 @@ src/
       index.ts      # Express app setup, all route registration
       ws.ts         # WebSocket server (auth + chat)
       routes/       # One file per feature domain
-      middleware/   # Auth middleware (JWT + userScope) (multi-user)
+      middleware/   # Auth middleware (JWT + userScope + admin) (multi-user)
     agent/          # compute() + fragments + modes + schema
     llm/            # OpenAI-compatible client (streaming/non-streaming)
     tts/            # TTS client + SHA-256 cache
@@ -85,6 +85,7 @@ src/
 | `CROSSFADIO_TTS_VOICE_DEFAULT` | (none) | Default TTS voice, falls back to 'Cherry' |
 | `CROSSFADIO_HOST` | `127.0.0.1` | Server bind address |
 | `CROSSFADIO_ALLOWED_ORIGINS` | (none) | Comma-separated CORS origins beyond localhost |
+| `CROSSFADIO_ADMIN_NCM_ID` | (none) | NCM user ID with whitelist admin privileges |
 
 ## HTTP API Routes
 
@@ -136,6 +137,16 @@ src/
 | GET | `/api/segue/audio/*` | Serve cached segue audio |
 | GET | `/api/messages/recent` | Recent chat messages |
 
+
+### Whitelist (admin only)
+| Method | Path | Auth | Purpose |
+|--------|------|------|---------|
+| GET | `/api/whitelist` | JWT+admin | List allowlist entries |
+| GET | `/api/whitelist/blocked` | JWT+admin | List blocked login attempts |
+| POST | `/api/whitelist` | JWT+admin | Add user to allowlist |
+| DELETE | `/api/whitelist/:ncmId` | JWT+admin | Remove user from allowlist (also deletes user session) |
+| POST | `/api/whitelist/unblock/:id` | JWT+admin | Unblock a login attempt (adds to allowlist) |
+
 ### Settings & Location
 | Method | Path | Auth | Purpose |
 |--------|------|------|---------|
@@ -175,7 +186,7 @@ Live deployment runbook (instance, paths, restart, allowlist edits, persona upda
 - **Dual-deck audio**: `AudioContext` with A/B deck rotation, equal-energy crossfade (cos/sin curves), BiquadFilter lowpass sweep
 - **Segue timing**: d-12s trigger → d-10s prefetch → d-8s crossfade start → d-7s TTS ducking
 - **Agent**: Single-agent, 3 modes (plan/segue/chat), 6-fragment prompt assembly, zod output validation with retry
-- **NCM auth**: QR code login → JWT token (HS256 via `jose`). Cookie encrypted with AES-256-GCM in `users` table. `authMiddleware` + `userScopeMiddleware` on all protected routes.
-- **Whitelist**: `allowlist.json` in app data dir controls which NCM user IDs can log in.
+- **NCM auth**: QR code login → JWT token (HS256 via `jose`). Cookie encrypted with AES-256-GCM in `users` table. `authMiddleware` + `userScopeMiddleware` on all protected routes. Whitelist management routes additionally require `adminMiddleware` (checks `CROSSFADIO_ADMIN_NCM_ID`).
+- **Whitelist**: `allowlist.json` in app data dir controls which NCM user IDs can log in. Admin can manage via Settings UI. Removal also deletes `users` record to immediately revoke existing sessions. `userScopeMiddleware` double-checks `isAllowed()` on every request.
 - **Per-user isolation**: All DB tables have `user_id` column. Queue/location are per-user `Map`s. User corpus files under `users/<ncmId>/`.
 - **Responsive layout**: `md` = 768px breakpoint, single-column mobile (grid-cols-1), desktop preserves 12-col grid. NCM auth uses full-screen sheet on mobile via `useMediaQuery`. Status panel collapsed to one-line summary on mobile. `viewport-fit=cover` for iPhone safe areas.

@@ -11,7 +11,7 @@ Crossfadio 是一个本地运行的 AI DJ Web App（Node.js + React + TypeScript
 - SQLite（better-sqlite3）：messages、plays、plan、prefs、segues、chat_preferences、users、blocked_login_attempts
 - 每用户数据隔离（`user_id` 列 + per-user Map）
 - NCM 接入（子进程管理 + 客户端封装 + 扫码登录 + JWT 签发）
-- 白名单控制（`allowlist.json`）
+- 白名单控制（`allowlist.json` + 管理员 Web UI，移除即撤销会话）
 - Web Audio 双 Deck 播放引擎（等能量 crossfade + filter sweep）
 - AI Agent（plan/segue/chat 三模式，OpenAI 兼容 LLM，env var 配置）
 - TTS 串场口播（cache-first，底铺式插入，阿里云 Qwen TTS）
@@ -45,8 +45,9 @@ Crossfadio 是一个本地运行的 AI DJ Web App（Node.js + React + TypeScript
 - `CROSSFADIO_JWT_SECRET`: JWT HS256 签名密钥
 - `CROSSFADIO_LLM_BASE_URL` / `CROSSFADIO_LLM_API_KEY` / `CROSSFADIO_LLM_MODEL`
 - `CROSSFADIO_TTS_BASE_URL` / `CROSSFADIO_TTS_API_KEY`
+- `CROSSFADIO_ADMIN_NCM_ID`（可选，白名单管理员 NCM 用户 ID）
 
-白名单：在数据目录下创建 `allowlist.json`，内容为允许登录的 NCM 用户 ID 数组，如 `["12345"]`。
+白名单：在数据目录下创建 `allowlist.json`（数组），或配置 `CROSSFADIO_ADMIN_NCM_ID` 后通过 Web UI「设置 → 白名单管理」页面操作。
 
 重启策略：
 
