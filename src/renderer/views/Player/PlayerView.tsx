@@ -16,10 +16,9 @@ import {
   getNextTrack,
   getNowPlaying,
   logoutNcm,
-  pickNextTrack,
+  getStoredToken,
   saveQueueState,
   toggleLikeTrack,
-  triggerSegue,
   updateLocation
 } from '@renderer/api';
 import { getPrefetchDecision } from '@renderer/audio/prefetch';
@@ -27,7 +26,7 @@ import { NowPlayingHero } from '@renderer/components/player/NowPlayingHero';
 import { PlaybackTimeline } from '@renderer/components/player/PlaybackTimeline';
 import { QueuePanel } from '@renderer/components/player/QueuePanel';
 import { TransportControls } from '@renderer/components/player/TransportControls';
-import { initWsClient, onWsMessage } from '@renderer/ws/client';
+import { initSseEvents, addSseListener, closeSseEvents, streamSegue, streamPickNext } from '@renderer/sse/client';
 import { useMediaQuery } from '@renderer/lib-hooks';
 import type { NextTrackResponse, NowPlayingResponse, QueueTrackDto } from '@shared/schema';
 import appMark from '@renderer/assets/image2/crossfadio-mark.svg';
@@ -105,6 +104,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
   const [qrPayload, setQrPayload] = useState<{ key: string; qrimg: string } | null>(null);
   const [showNcmDropdown, setShowNcmDropdown] = useState(false);
   const [showNcmSheet, setShowNcmSheet] = useState(false);
+  const [sseToken, setSseToken] = useState<string | null>(() => getStoredToken());
 
   // Body scroll lock when mobile NCM sheet is open
   useEffect(() => {
@@ -243,36 +243,30 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
   }, []);
 
   useEffect(() => {
-    const unsub = onWsMessage((msg) => {
-      if (msg.type === 'queue-updated') {
-        const nextQueue: QueueTrackDto[] = Array.isArray(msg.queue)
-          ? msg.queue
-              .map((track) =>
-                track && typeof track === 'object' && 'ncmId' in track
-                  ? {
-                      id: String((track as { ncmId: unknown }).ncmId),
-                      name:
-                        typeof (track as { name?: unknown }).name === 'string'
-                          ? String((track as { name: unknown }).name)
-                          : `Track ${(track as { ncmId: unknown }).ncmId}`,
-                      artists: Array.isArray((track as { artists?: unknown }).artists)
-                        ? (track as { artists: string[] }).artists
-                        : [],
-                      durationMs:
-                        typeof (track as { durationMs?: unknown }).durationMs === 'number'
-                          ? (track as { durationMs: number }).durationMs
-                          : 0
-                    }
-                  : null
-              )
-              .filter((track): track is QueueTrackDto => track !== null)
+    if (!sseToken) return;
+    initSseEvents(sseToken);
+    const unsub = addSseListener((event, data) => {
+      if (event === 'queue-updated') {
+        const d = data as Record<string, unknown>;
+        const nextQueue: QueueTrackDto[] = Array.isArray(d.queue)
+          ? (d.queue as unknown[]).map((track) => {
+              if (!track || typeof track !== 'object' || !('ncmId' in track)) return null;
+              const t = track as unknown as Record<string, unknown>;
+              return {
+                id: String(t.ncmId),
+                name: typeof t.name === 'string' ? t.name : `Track ${t.ncmId}`,
+                artists: Array.isArray(t.artists) ? (t.artists as string[]) : [],
+                durationMs: typeof t.durationMs === 'number' ? t.durationMs : 0
+              };
+            })
+            .filter((track): track is QueueTrackDto => track !== null)
           : [];
-        const nextIndex = typeof msg.currentIndex === 'number' ? msg.currentIndex : 0;
+        const nextIndex = typeof d.currentIndex === 'number' ? d.currentIndex : 0;
         applyingRemoteQueueRef.current = true;
         setQueue(nextQueue);
         setCurrentIndex(nextIndex);
-      } else if (msg.type === 'queue-appended') {
-        const t = msg.track as { ncmId?: unknown; name?: unknown; artists?: unknown; durationMs?: unknown } | null;
+      } else if (event === 'queue-appended') {
+        const t = (data as Record<string, unknown>).track as { ncmId?: unknown; name?: unknown; artists?: unknown; durationMs?: unknown } | null;
         if (t && typeof t === 'object' && t.ncmId) {
           const appended: QueueTrackDto = {
             id: String(t.ncmId),
@@ -282,117 +276,10 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
           };
           setQueue((prev) => [...prev, appended]);
         }
-      } else if (msg.type === 'segue.delta') {
-        if (!isActiveSegueMessage(msg, segueClientRequestIdRef.current)) return;
-        const say = String(msg.say ?? '').trim();
-        if (say) {
-          setSegueStatusText('生成中…接收文案 token');
-        }
-      } else if (msg.type === 'segue.tts-ready') {
-        if (!isActiveSegueMessage(msg, segueClientRequestIdRef.current)) return;
-        // Final guard: the tts is only useful while we're still on the from-track that triggered it.
-        if (
-          segueExpectedFromTrackIdRef.current &&
-          segueExpectedFromTrackIdRef.current !== currentTrackIdRef.current
-        ) {
-          return;
-        }
-        segueClientRequestIdRef.current = null;
-        if (currentTrackIdRef.current) {
-          segueSatisfiedForTrackIdRef.current = currentTrackIdRef.current;
-        }
-
-        const ttsHintSec =
-          msg.segue && typeof msg.segue === 'object' && 'duckingHintSec' in msg.segue
-            ? Number((msg.segue as { duckingHintSec: unknown }).duckingHintSec)
-            : NaN;
-        const speechDurationSec =
-          typeof msg.speechDurationSec === 'number' && msg.speechDurationSec > 0 ? msg.speechDurationSec : NaN;
-        const dynamicHintSec = Number.isFinite(speechDurationSec)
-          ? Math.max(1, speechDurationSec)
-          : Number.isFinite(ttsHintSec) && ttsHintSec > 0
-            ? ttsHintSec
-            : DEFAULT_DUCKING_HINT_SEC;
-
-        const sayText =
-          msg.segue && typeof msg.segue === 'object' && 'say' in msg.segue
-            ? String((msg.segue as { say: unknown }).say).trim()
-            : '';
-        if (sayText) setSegueScriptText(sayText);
-
-        const audioUrl = typeof msg.audioUrl === 'string' ? msg.audioUrl : null;
-        if (!audioUrl) {
-          setSegueStatusText('过渡文案已生成（未配置 TTS）');
-          return;
-        }
-
-        disposeSegueAudio(true);
-        const audio = new Audio(audioUrl);
-        audio.preload = 'auto';
-        audio.volume = 1;
-        const pending: PendingSegueAudio = {
-          audio,
-          estimatedDurationSec: dynamicHintSec,
-          actualDurationSec: null,
-          started: false
-        };
-
-        audio.onloadedmetadata = () => {
-          const duration = audio.duration;
-          if (pendingSegueRef.current?.audio !== audio) return;
-          if (Number.isFinite(duration) && duration > 0) {
-            pending.actualDurationSec = duration;
-          }
-        };
-        audio.onended = () => {
-          if (pendingSegueRef.current?.audio === audio) {
-            pendingSegueRef.current = null;
-            segueAudioRef.current = null;
-          }
-          restoreTrackVolume();
-        };
-        audio.onerror = () => {
-          if (pendingSegueRef.current?.audio === audio) {
-            pendingSegueRef.current = null;
-            segueAudioRef.current = null;
-          }
-          restoreTrackVolume();
-          setSegueStatusText('过渡语音播放失败');
-        };
-
-        pendingSegueRef.current = pending;
-        segueAudioRef.current = audio;
-        setSegueStatusText(`过渡语音已就绪（约 ${Math.round(dynamicHintSec)} 秒）`);
-        maybeStartSegueAudio();
-      } else if (msg.type === 'segue.degraded') {
-        if (!isActiveSegueMessage(msg, segueClientRequestIdRef.current)) return;
-        const reason =
-          typeof msg.reason === 'string' && msg.reason.length > 0 ? msg.reason : 'unknown';
-        // Clear active id so the next tick can retry once cooldown elapses.
-        segueClientRequestIdRef.current = null;
-        setSegueStatusText(`过渡语音暂不可用（${reason}）`);
-      } else if (msg.type === 'dj.debug') {
-        setDjPickLog({
-          likedSample: Array.isArray(msg.likedSample) ? msg.likedSample as DjTrackSample[] : [],
-          searchQueries: Array.isArray(msg.searchQueries) ? msg.searchQueries as string[] : [],
-          searchedTracks: Array.isArray(msg.searchedTracks) ? msg.searchedTracks as DjTrackSample[] : [],
-          totalCandidates: typeof msg.totalCandidates === 'number' ? msg.totalCandidates : 0,
-          selectedSay: typeof msg.selectedSay === 'string' ? msg.selectedSay : '',
-        });
-      } else if (msg.type === 'dj.pick-next.done') {
-        if (msg.added) {
-          const name = typeof msg.trackName === 'string' ? msg.trackName : '';
-          setDjStatusText(name ? `已加入「${name}」` : '已补充一首');
-        } else {
-          // Failed — reset cooldown immediately so next onTimeUpdate retries sooner
-          djPickNextLastCallRef.current = 0;
-          const reason = typeof msg.reason === 'string' && msg.reason.length > 0 ? msg.reason : '稍后重试';
-          setDjStatusText(`补歌失败（${reason}）`);
-        }
       }
     });
-    return unsub;
-  }, [disposeSegueAudio, maybeStartSegueAudio, restoreTrackVolume]);
+    return () => { unsub(); closeSseEvents(); };
+  }, [sseToken]);
 
   useEffect(() => {
     if (applyingRemoteQueueRef.current) {
@@ -572,19 +459,111 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
     segueExpectedFromTrackIdRef.current = currentTrackId;
     segueLastAttemptAtRef.current = Date.now();
     setSegueStatusText(`生成中：${currentTrackId} → ${nextTrackId}`);
-    void triggerSegue(
-      { id: currentTrackId, name: currentTrack?.name, artists: currentTrack?.artists },
-      { id: nextTrackId, name: nextQueueTrack?.name ?? nextTrack?.track.name, artists: nextQueueTrack?.artists ?? nextTrack?.track.artists },
-      clientRequestId
-    ).catch((err) => {
-      // Allow the cooldown to elapse and retry; clear the active id so a stale tts-ready can't sneak in.
-      if (segueClientRequestIdRef.current === clientRequestId) {
-        segueClientRequestIdRef.current = null;
+    void (async () => {
+      try {
+        for await (const { type, data } of streamSegue({
+          clientRequestId,
+          from: { id: currentTrackId, name: currentTrack?.name, artist: currentTrack?.artists?.[0] },
+          to: { id: nextTrackId, name: nextQueueTrack?.name ?? nextTrack?.track.name, artist: nextQueueTrack?.artists?.[0] ?? nextTrack?.track.artists?.[0] }
+        })) {
+          if (type === 'segue.delta') {
+            if (!isActiveSegueMessage(data, segueClientRequestIdRef.current)) continue;
+            const say = String(data.say ?? '').trim();
+            if (say) {
+              setSegueStatusText('生成中…接收文案 token');
+            }
+          } else if (type === 'segue.tts-ready') {
+            if (!isActiveSegueMessage(data, segueClientRequestIdRef.current)) continue;
+            if (
+              segueExpectedFromTrackIdRef.current &&
+              segueExpectedFromTrackIdRef.current !== currentTrackIdRef.current
+            ) {
+              continue;
+            }
+            segueClientRequestIdRef.current = null;
+            if (currentTrackIdRef.current) {
+              segueSatisfiedForTrackIdRef.current = currentTrackIdRef.current;
+            }
+
+            const ttsHintSec =
+              data.segue && typeof data.segue === 'object' && 'duckingHintSec' in data.segue
+                ? Number((data.segue as { duckingHintSec: unknown }).duckingHintSec)
+                : NaN;
+            const speechDurationSec =
+              typeof data.speechDurationSec === 'number' && data.speechDurationSec > 0 ? data.speechDurationSec : NaN;
+            const dynamicHintSec = Number.isFinite(speechDurationSec)
+              ? Math.max(1, speechDurationSec)
+              : Number.isFinite(ttsHintSec) && ttsHintSec > 0
+                ? ttsHintSec
+                : DEFAULT_DUCKING_HINT_SEC;
+
+            const sayText =
+              data.segue && typeof data.segue === 'object' && 'say' in data.segue
+                ? String((data.segue as { say: unknown }).say).trim()
+                : '';
+            if (sayText) setSegueScriptText(sayText);
+
+            const audioUrl = typeof data.audioUrl === 'string' ? data.audioUrl : null;
+            if (!audioUrl) {
+              setSegueStatusText('过渡文案已生成（未配置 TTS）');
+              continue;
+            }
+
+            disposeSegueAudio(true);
+            const audio = new Audio(audioUrl);
+            audio.preload = 'auto';
+            audio.volume = 1;
+            const pending: PendingSegueAudio = {
+              audio,
+              estimatedDurationSec: dynamicHintSec,
+              actualDurationSec: null,
+              started: false
+            };
+
+            audio.onloadedmetadata = () => {
+              const duration = audio.duration;
+              if (pendingSegueRef.current?.audio !== audio) return;
+              if (Number.isFinite(duration) && duration > 0) {
+                pending.actualDurationSec = duration;
+              }
+            };
+            audio.onended = () => {
+              if (pendingSegueRef.current?.audio === audio) {
+                pendingSegueRef.current = null;
+                segueAudioRef.current = null;
+              }
+              restoreTrackVolume();
+            };
+            audio.onerror = () => {
+              if (pendingSegueRef.current?.audio === audio) {
+                pendingSegueRef.current = null;
+                segueAudioRef.current = null;
+              }
+              restoreTrackVolume();
+              setSegueStatusText('过渡语音播放失败');
+            };
+
+            pendingSegueRef.current = pending;
+            segueAudioRef.current = audio;
+            setSegueStatusText(`过渡语音已就绪（约 ${Math.round(dynamicHintSec)} 秒）`);
+            maybeStartSegueAudio();
+          } else if (type === 'segue.degraded') {
+            if (!isActiveSegueMessage(data, segueClientRequestIdRef.current)) continue;
+            const reason =
+              typeof data.reason === 'string' && data.reason.length > 0 ? data.reason : 'unknown';
+            segueClientRequestIdRef.current = null;
+            setSegueStatusText(`过渡语音暂不可用（${reason}）`);
+          }
+        }
+      } catch (err) {
+        if (segueClientRequestIdRef.current === clientRequestId) {
+          segueClientRequestIdRef.current = null;
+        }
+        const message = err instanceof Error ? err.message : 'segue 请求失败';
+        setSegueStatusText(`请求失败：${message}`);
+        setError(message);
       }
-      const message = err instanceof Error ? err.message : 'segue 请求失败';
-      setSegueStatusText(`请求失败：${message}`);
-      setError(message);
-    });
+    })();
   }, [currentTrack, currentTrackId, nextTrack, queue]);
 
   useEffect(() => {
@@ -714,7 +693,33 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
       if (now - djPickNextLastCallRef.current >= DJ_PICK_COOLDOWN_MS) {
         djPickNextLastCallRef.current = now;
         setDjStatusText('正在挑选下一首…');
-        void pickNextTrack().catch(() => {});
+        void (async () => {
+          try {
+            for await (const { type, data } of streamPickNext()) {
+              if (type === 'dj.debug') {
+                setDjPickLog({
+                  likedSample: Array.isArray(data.likedSample) ? data.likedSample as DjTrackSample[] : [],
+                  searchQueries: Array.isArray(data.searchQueries) ? data.searchQueries as string[] : [],
+                  searchedTracks: Array.isArray(data.searchedTracks) ? data.searchedTracks as DjTrackSample[] : [],
+                  totalCandidates: typeof data.totalCandidates === 'number' ? data.totalCandidates : 0,
+                  selectedSay: typeof data.selectedSay === 'string' ? data.selectedSay : '',
+                });
+              } else if (type === 'dj.pick-next.done') {
+                if (data.added) {
+                  const name = typeof data.trackName === 'string' ? data.trackName : '';
+                  setDjStatusText(name ? `已加入「${name}」` : '已补充一首');
+                } else {
+                  djPickNextLastCallRef.current = 0;
+                  const reason = typeof data.reason === 'string' && data.reason.length > 0 ? data.reason : '稍后重试';
+                  setDjStatusText(`补歌失败（${reason}）`);
+                }
+              }
+            }
+          } catch {
+            djPickNextLastCallRef.current = 0;
+            setDjStatusText('补歌请求失败');
+          }
+        })();
       }
     }
 
@@ -822,7 +827,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
                             setTrackStatusText(`扫码状态: ${status.hint}`);
                           }
                           if (status.token) {
-                            initWsClient(status.token);
+                            setSseToken(status.token);
                           }
                           await refreshSession();
                         } catch (err) {
@@ -913,7 +918,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
                               setTrackStatusText(`扫码状态: ${status.hint}`);
                             }
                             if (status.token) {
-                              initWsClient(status.token);
+                              setSseToken(status.token);
                             }
                             await refreshSession();
                           } catch (err) {

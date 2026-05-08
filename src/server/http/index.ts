@@ -5,7 +5,6 @@ import express from 'express';
 import cors from 'cors';
 import { getConfig } from '../config.js';
 import { getHealthHandler } from './routes/health.js';
-import { setupWsServer } from './ws.js';
 import type { NcmProcessManager } from '../ncm/spawn.js';
 import { createNcmStatusHandler } from './routes/ncm.js';
 import type { NcmAuthService } from '../ncm/auth.js';
@@ -27,9 +26,8 @@ import {
   createReplanSegmentHandler,
   createGapFillHandler
 } from './routes/plan.js';
-import { createSegueTriggerHandler, createSegueAudioHandler } from './routes/segue.js';
-import { createChatMessageHandler, cancelChatRecommend } from './routes/chat.js';
-import { createDjPickNextHandler } from './routes/djNext.js';
+import { createSegueTriggerHandler, createSegueAudioHandler, createSseSegueHandler } from './routes/segue.js';
+import { createDjPickNextHandler, createSseDjPickNextHandler } from './routes/djNext.js';
 import { createGetRecentMessagesHandler } from './routes/messages.js';
 import { createSetLocationHandler } from './routes/location.js';
 import {
@@ -49,11 +47,11 @@ import {
 import { authMiddleware } from './middleware/auth.js';
 import { userScopeMiddleware } from './middleware/userScope.js';
 import { adminMiddleware } from './middleware/admin.js';
+import { createSseEventsHandler, createSseChatHandler, createSseCancelRecommendHandler } from './routes/sse-events.js';
 
 export type LocalServer = {
   port: number;
   baseUrl: string;
-  wsUrl: string;
   close: () => Promise<void>;
 };
 
@@ -125,6 +123,13 @@ export async function startLocalServer(options: StartLocalServerOptions): Promis
   app.delete('/api/whitelist/:ncmId', adminProtect, createRemoveFromWhitelistHandler());
   app.post('/api/whitelist/unblock/:id', adminProtect, createUnblockHandler());
 
+  // ── SSE routes ───────────────────────────────────────────────────────────
+  app.get('/api/sse/events', protect, createSseEventsHandler());
+  app.post('/api/sse/chat', protect, createSseChatHandler());
+  app.post('/api/sse/chat/cancel', protect, createSseCancelRecommendHandler());
+  app.post('/api/sse/segue', protect, createSseSegueHandler({ secrets: null as any }));
+  app.post('/api/sse/pick-next', protect, createSseDjPickNextHandler({ secrets: null as any }));
+
   if (options.staticDir && fs.existsSync(options.staticDir)) {
     app.use(express.static(options.staticDir));
     app.get(/^(?!\/api(?:\/|$)|\/ws(?:\/|$)).*/, (_req, res) => {
@@ -138,17 +143,12 @@ export async function startLocalServer(options: StartLocalServerOptions): Promis
   });
 
   const server = createServer(app);
-  const chatHandler = createChatMessageHandler();
-  setupWsServer(server, { ncmBaseUrl: options.ncmBaseUrl, onChatMessage: chatHandler, onCancelRecommend: cancelChatRecommend });
 
   const port = await listen(server, options.host, options.port);
   const baseUrl = `http://${options.host}:${port}`;
-  const wsUrl = `ws://${options.host}:${port}/ws`;
-
   return {
     port,
     baseUrl,
-    wsUrl,
     close: async () => closeServer(server)
   };
 }

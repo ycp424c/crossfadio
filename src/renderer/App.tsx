@@ -6,17 +6,19 @@ import { PlanView } from '@renderer/views/Plan/PlanView';
 import { ChatPanel } from '@renderer/components/player/ChatPanel';
 import { RecommendOverlay } from '@renderer/components/player/RecommendOverlay';
 import { getRuntimeInfo, getStoredToken } from '@renderer/api';
-import { initWsClient } from '@renderer/ws/client';
+import { initSseEvents } from '@renderer/sse/client';
 
 type Tab = 'player' | 'plan' | 'chat' | 'settings';
+type RecommendEvent = { type: string; data: Record<string, unknown> };
 
 export function App(): JSX.Element {
   const [tab, setTab] = useState<Tab>('player');
+  const [recommendEvent, setRecommendEvent] = useState<RecommendEvent | null>(null);
 
   useEffect(() => {
     const token = getStoredToken();
     if (token) {
-      initWsClient(token);
+      initSseEvents(token);
     }
     // Ping runtime to check service health
     void getRuntimeInfo().catch(() => {});
@@ -33,7 +35,7 @@ export function App(): JSX.Element {
           <PlanView />
         </div>
         <div style={{ display: tab === 'chat' ? 'flex' : 'none' }} className="h-full flex-col">
-          <ChatPanel />
+          <ChatPanel onRecommendEvent={setRecommendEvent} />
         </div>
         <div style={{ display: tab === 'settings' ? 'block' : 'none' }}>
           <SettingsView />
@@ -48,7 +50,7 @@ export function App(): JSX.Element {
         <TabButton active={tab === 'settings'} onClick={() => setTab('settings')} icon={<Settings2 className="h-4 w-4" />} label="设置" />
       </nav>
 
-      <RecommendOverlay />
+      <RecommendOverlay recommendEvent={recommendEvent} />
     </div>
   );
 }

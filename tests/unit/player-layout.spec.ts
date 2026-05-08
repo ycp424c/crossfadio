@@ -67,8 +67,8 @@ describe('player layout', () => {
 
   it('releases the active segue request after tts-ready so DJ refill can resume', () => {
     const source = fs.readFileSync(path.join(root, 'src/renderer/views/Player/PlayerView.tsx'), 'utf-8');
-    const ttsReadyStart = source.indexOf("msg.type === 'segue.tts-ready'");
-    const degradedStart = source.indexOf("msg.type === 'segue.degraded'");
+    const ttsReadyStart = source.indexOf("type === 'segue.tts-ready'");
+    const degradedStart = source.indexOf("type === 'segue.degraded'");
     const ttsReadyBlock = source.slice(ttsReadyStart, degradedStart);
 
     expect(ttsReadyBlock).toContain('segueClientRequestIdRef.current = null');

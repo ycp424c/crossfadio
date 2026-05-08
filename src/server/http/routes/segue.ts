@@ -27,6 +27,7 @@ import {
 import { getDjPickReason } from './djNext.js';
 import { broadcastToUser } from '../broadcast.js';
 import { getLogger } from '../../logger.js';
+import { initSseRes, writeSseEvent, endSse } from '../sse.js';
 
 const SEGUE_LLM_TIMEOUT_MS = 60_000;
 const SEGUE_TTS_TIMEOUT_MS = 30_000;
@@ -35,6 +36,12 @@ const triggerBodySchema = z.object({
   clientRequestId: z.string().min(1).max(128).optional(),
   from: trackSchema,
   to: trackSchema
+});
+
+const sseSegueBodySchema = z.object({
+  clientRequestId: z.string().min(1),
+  from: z.object({ id: z.string().min(1), name: z.string().optional(), artist: z.string().optional() }),
+  to: z.object({ id: z.string().min(1), name: z.string().optional(), artist: z.string().optional() })
 });
 
 type AuthedRequest = Request & { userId: string; ncmClient: NcmClient };
@@ -117,16 +124,17 @@ async function runSegueJob(
   to: z.infer<typeof trackSchema>,
   opts: SegueRouteOptions,
   userId: string,
-  ncmClient: NcmClient
+  ncmClient: NcmClient,
+  sendEmit?: (payload: Record<string, unknown>, options?: { allowAborted?: boolean }) => void
 ): Promise<void> {
   const logger = getLogger();
   const { requestId, clientRequestId, controller } = job;
   const signal = controller.signal;
 
-  const emit = (payload: Record<string, unknown>, options: { allowAborted?: boolean } = {}): void => {
+  const emit = sendEmit ?? ((payload: Record<string, unknown>, options: { allowAborted?: boolean } = {}): void => {
     if (signal.aborted && !options.allowAborted) return;
     broadcastToUser(userId, { ...payload, requestId, clientRequestId });
-  };
+  });
 
   // Wire LLM/TTS hard timeouts to the same controller — abort cascades to all in-flight fetches.
   const llmTimeout = setTimeout(() => controller.abort(makeAbortReason('llm-timeout')), SEGUE_LLM_TIMEOUT_MS);
@@ -300,6 +308,54 @@ function formatLocalTime(date: Date): string {
   const hh = String(date.getHours()).padStart(2, '0');
   const mm = String(date.getMinutes()).padStart(2, '0');
   return `周${day} ${hh}:${mm}`;
+}
+
+export function createSseSegueHandler(opts: SegueRouteOptions) {
+  return (req: Request, res: Response): void => {
+    const parsed = sseSegueBodySchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ ok: false, error: 'invalid body' });
+      return;
+    }
+
+    if (parsed.data.from.id === parsed.data.to.id) {
+      res.status(400).json({ ok: false, error: 'from and to must be different tracks' });
+      return;
+    }
+
+    const userId = (req as AuthedRequest).userId;
+    const ncmClient = getScopedNcmClient(req, opts.ncmClient);
+
+    initSseRes(res);
+
+    const controller = new AbortController();
+    req.on('close', () => controller.abort());
+
+    const clientRequestId = parsed.data.clientRequestId;
+    const requestId = randomBytes(8).toString('hex');
+
+    const sendSse = (payload: Record<string, unknown>): void => {
+      writeSseEvent(res, payload.type as string, payload);
+    };
+
+    const job: ActiveSegueJob = {
+      requestId,
+      clientRequestId,
+      fromId: parsed.data.from.id,
+      toId: parsed.data.to.id,
+      controller
+    };
+
+    runSegueJob(job, parsed.data.from, parsed.data.to, opts, userId, ncmClient, sendSse)
+      .then(() => {
+        endSse(res, 'segue.done', { requestId, clientRequestId });
+      })
+      .catch((err) => {
+        const logger = getLogger();
+        logger.warn({ err, requestId, clientRequestId }, 'SSE segue job failed');
+        endSse(res, 'segue.degraded', { requestId, clientRequestId, reason: 'error' });
+      });
+  };
 }
 
 export function createSegueAudioHandler() {

@@ -15,7 +15,7 @@ import {
 } from '../../src/server/http/routes/segue';
 import * as llmConfigModule from '../../src/server/llm/config';
 import { getTtsCacheDir } from '../../src/server/tts/cache';
-import { registerWss } from '../../src/server/http/broadcast';
+import { _addEventClientForTests, _resetEventClientsForTests } from '../../src/server/http/routes/sse-events';
 import { initDb } from '../../src/server/store/db';
 
 const originalDataDir = process.env.CROSSFADIO_DATA_DIR;
@@ -38,7 +38,7 @@ beforeEach(async () => {
 
 afterEach(() => {
   _resetActiveSegueJobForTests();
-  registerWss({ clients: new Set() } as never);
+  _resetEventClientsForTests();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
   vi.useRealTimers();
@@ -186,17 +186,11 @@ describe('segue trigger handler', () => {
     });
 
     const sent: string[] = [];
-    registerWss({
-      clients: new Set([
-        {
-          readyState: 1,
-          authenticated: true,
-          userId: 'test-user',
-          send: vi.fn((message: string) => {
-            sent.push(message);
-          })
-        }
-      ])
+    _addEventClientForTests('test-user', {
+      write: vi.fn((chunk: string) => {
+        const match = chunk.match(/^data: (.+)$/m);
+        if (match) sent.push(match[1]);
+      })
     } as never);
 
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {

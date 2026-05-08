@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Send, Loader2, MessageCircle } from 'lucide-react';
-import { sendChatMessage, onWsMessage } from '@renderer/ws/client';
+import { streamChat } from '@renderer/sse/client';
 import { getRecentChatMessages } from '@renderer/api';
 
 type Message = {
@@ -10,6 +10,7 @@ type Message = {
   pending?: boolean;
   phase?: 'thinking' | 'streaming';
 };
+type RecommendEvent = { type: string; data: Record<string, unknown> };
 
 const MAX_MESSAGES = 200;
 let msgId = 0;
@@ -19,7 +20,7 @@ function appendMessages(prev: Message[], next: Message[]): Message[] {
   return combined.length > MAX_MESSAGES ? combined.slice(combined.length - MAX_MESSAGES) : combined;
 }
 
-export function ChatPanel(): JSX.Element {
+export function ChatPanel({ onRecommendEvent }: { onRecommendEvent?: (evt: RecommendEvent) => void }): JSX.Element {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [sending, setSending] = useState(false);
@@ -46,57 +47,10 @@ export function ChatPanel(): JSX.Element {
   }, []);
 
   useEffect(() => {
-    const unsub = onWsMessage((msg) => {
-      if (msg.type === 'chat.delta') {
-        const delta = String(msg.say ?? '');
-        setMessages((prev) => {
-          const last = prev[prev.length - 1];
-          if (last?.pending) {
-            return [
-              ...prev.slice(0, -1),
-              { ...last, text: last.phase === 'thinking' ? delta : last.text + delta, phase: 'streaming' }
-            ];
-          }
-          const id = ++msgId;
-          return [...prev, { id, role: 'dj', text: delta, pending: true, phase: 'streaming' }];
-        });
-      } else if (msg.type === 'chat.done') {
-        setMessages((prev) => {
-          const last = prev[prev.length - 1];
-          if (last?.pending) {
-            return [
-              ...prev.slice(0, -1),
-              { ...last, text: String(msg.say ?? last.text), pending: false, phase: undefined }
-            ];
-          }
-          return [...prev, { id: ++msgId, role: 'dj', text: String(msg.say ?? ''), pending: false }];
-        });
-        setSending(false);
-      } else if (msg.type === 'chat.error') {
-        setMessages((prev) => {
-          const last = prev[prev.length - 1];
-          if (last?.pending) {
-            return [
-              ...prev.slice(0, -1),
-              { ...last, text: '出错了，请稍后再试。', pending: false, phase: undefined }
-            ];
-          }
-          return [
-            ...prev,
-            { id: ++msgId, role: 'dj', text: '出错了，请稍后再试。', pending: false }
-          ];
-        });
-        setSending(false);
-      }
-    });
-    return unsub;
-  }, []);
-
-  useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  function handleSend(): void {
+  async function handleSend(): Promise<void> {
     const text = input.trim();
     if (!text || sending) return;
     const thinkingId = ++msgId;
@@ -106,11 +60,67 @@ export function ChatPanel(): JSX.Element {
     ]));
     setInput('');
     setSending(true);
-    if (!sendChatMessage(text)) {
-      setMessages((prev) => [
-        ...prev.slice(0, -1),
-        { id: thinkingId, role: 'dj', text: '聊天连接还没准备好，请稍后再试。', pending: false }
-      ]);
+
+    try {
+      for await (const { type, data } of streamChat(text)) {
+        if (type === 'chat.delta') {
+          const delta = String(data.say ?? '');
+          setMessages((prev) => {
+            const last = prev[prev.length - 1];
+            if (last?.pending) {
+              return [
+                ...prev.slice(0, -1),
+                { ...last, text: last.phase === 'thinking' ? delta : last.text + delta, phase: 'streaming' }
+              ];
+            }
+            return [...prev, { id: ++msgId, role: 'dj', text: delta, pending: true, phase: 'streaming' }];
+          });
+        } else if (type === 'chat.done') {
+          setMessages((prev) => {
+            const last = prev[prev.length - 1];
+            if (last?.pending) {
+              return [
+                ...prev.slice(0, -1),
+                { ...last, text: String(data.say ?? last.text), pending: false, phase: undefined }
+              ];
+            }
+            return [...prev, { id: ++msgId, role: 'dj', text: String(data.say ?? ''), pending: false }];
+          });
+          break;
+        } else if (type === 'chat.error') {
+          setMessages((prev) => {
+            const last = prev[prev.length - 1];
+            if (last?.pending) {
+              return [
+                ...prev.slice(0, -1),
+                { ...last, text: '出错了，请稍后再试。', pending: false, phase: undefined }
+              ];
+            }
+            return [
+              ...prev,
+              { id: ++msgId, role: 'dj', text: '出错了，请稍后再试。', pending: false }
+            ];
+          });
+          break;
+        } else if (type.startsWith('chat.recommend.')) {
+          onRecommendEvent?.({ type, data });
+        }
+      }
+    } catch {
+      setMessages((prev) => {
+        const last = prev[prev.length - 1];
+        if (last?.pending) {
+          return [
+            ...prev.slice(0, -1),
+            { ...last, text: '出错了，请稍后再试。', pending: false, phase: undefined }
+          ];
+        }
+        return [
+          ...prev,
+          { id: ++msgId, role: 'dj', text: '出错了，请稍后再试。', pending: false }
+        ];
+      });
+    } finally {
       setSending(false);
     }
   }

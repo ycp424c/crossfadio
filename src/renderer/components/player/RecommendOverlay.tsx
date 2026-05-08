@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from 'react';
 import { Loader2, Search, Check, X, ChevronDown } from 'lucide-react';
-import { onWsMessage, sendCancelRecommend } from '@renderer/ws/client';
+import { cancelRecommend } from '@renderer/sse/client';
 
 type Phase = 'idle' | 'searching' | 'picking' | 'done' | 'error' | 'cancelled';
 
@@ -12,33 +12,33 @@ type JobState = {
   reason?: string;
 };
 
-export function RecommendOverlay(): JSX.Element {
+type RecommendEvent = { type: string; data: Record<string, unknown> };
+
+export function RecommendOverlay({ recommendEvent }: { recommendEvent: RecommendEvent | null }): JSX.Element {
   const [job, setJob] = useState<JobState | null>(null);
 
   useEffect(() => {
-    const unsub = onWsMessage((msg) => {
-      if (msg.type === 'chat.recommend.started') {
-        setJob({ jobId: String(msg.jobId ?? ''), phase: 'searching' });
-      } else if (msg.type === 'chat.recommend.progress') {
-        const phase = String(msg.phase ?? '') as Phase;
-        setJob((prev) => {
-          if (!prev || prev.jobId !== String(msg.jobId ?? '')) return prev;
-          return {
-            ...prev,
-            phase,
-            candidateCount: typeof msg.candidateCount === 'number' ? msg.candidateCount : prev.candidateCount,
-            tracks: Array.isArray(msg.tracks) ? (msg.tracks as Array<{ name: string; artist: string }>) : prev.tracks,
-            reason: typeof msg.reason === 'string' ? msg.reason : prev.reason
-          };
-        });
-      }
-    });
-    return unsub;
-  }, []);
+    if (!recommendEvent) return;
+    if (recommendEvent.type === 'chat.recommend.started') {
+      setJob({ jobId: String(recommendEvent.data.jobId ?? ''), phase: 'searching' });
+    } else if (recommendEvent.type === 'chat.recommend.progress') {
+      const phase = String(recommendEvent.data.phase ?? '') as Phase;
+      setJob((prev) => {
+        if (!prev || prev.jobId !== String(recommendEvent.data.jobId ?? '')) return prev;
+        return {
+          ...prev,
+          phase,
+          candidateCount: typeof recommendEvent.data.candidateCount === 'number' ? recommendEvent.data.candidateCount : prev.candidateCount,
+          tracks: Array.isArray(recommendEvent.data.tracks) ? (recommendEvent.data.tracks as Array<{ name: string; artist: string }>) : prev.tracks,
+          reason: typeof recommendEvent.data.reason === 'string' ? recommendEvent.data.reason : prev.reason
+        };
+      });
+    }
+  }, [recommendEvent]);
 
   const handleCancel = useCallback(() => {
     if (job) {
-      sendCancelRecommend(job.jobId);
+      cancelRecommend(job.jobId);
       setJob((prev) => prev ? { ...prev, phase: 'cancelled' } : null);
     }
   }, [job]);

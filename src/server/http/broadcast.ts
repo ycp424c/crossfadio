@@ -1,33 +1,10 @@
-import type { WebSocketServer, WebSocket } from 'ws';
+import { broadcastSse } from './routes/sse-events.js';
 
-type BroadcastClient = WebSocket & { authenticated?: boolean; userId?: string };
-
-let wss: WebSocketServer | null = null;
-
-export function registerWss(instance: WebSocketServer): void {
-  wss = instance;
-}
-
-export function broadcast(payload: unknown): void {
-  if (!wss) return;
-  const data = JSON.stringify(payload);
-  for (const client of wss.clients as Set<BroadcastClient>) {
-    if (client.readyState === 1 /* OPEN */ && client.authenticated) {
-      client.send(data);
-    }
-  }
-}
+// registerWss kept for backward compat during migration
+export function registerWss(_instance: unknown): void { /* noop during SSE migration */ }
 
 export function broadcastToUser(userId: string, payload: unknown): void {
-  if (!wss) return;
-  const data = JSON.stringify(payload);
-  for (const client of wss.clients as Set<BroadcastClient>) {
-    if (
-      client.readyState === 1 /* OPEN */ &&
-      client.authenticated &&
-      client.userId === userId
-    ) {
-      client.send(data);
-    }
-  }
+  const data = payload as Record<string, unknown>;
+  const type = typeof data.type === 'string' ? data.type : 'unknown';
+  broadcastSse(userId, type, data);
 }

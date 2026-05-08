@@ -4,13 +4,20 @@ import { getConfig } from '../../config.js';
 import { getLogger } from '../../logger.js';
 
 export async function authMiddleware(req: Request, res: Response, next: NextFunction): Promise<void> {
-  const header = req.headers.authorization;
-  if (!header?.startsWith('Bearer ')) {
+  // EventSource 不支持自定义 header，query param 作为备选
+  let token = typeof req.query.token === 'string' ? (req.query.token as string) : null;
+
+  if (!token) {
+    const header = req.headers.authorization;
+    if (header?.startsWith('Bearer ')) {
+      token = header.slice(7);
+    }
+  }
+
+  if (!token) {
     res.status(401).json({ ok: false, error: 'unauthorized', message: '缺少认证令牌' });
     return;
   }
-
-  const token = header.slice(7);
   try {
     const config = getConfig();
     const secret = new TextEncoder().encode(config.jwtSecret);

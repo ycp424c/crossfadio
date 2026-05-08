@@ -1,4 +1,4 @@
-import type { Request, RequestHandler } from 'express';
+import type { Request, Response, RequestHandler } from 'express';
 import type { Track } from '../../agent/schema.js';
 import { LlmClient } from '../../llm/client.js';
 import { resolveLlmConfig } from '../../llm/config.js';
@@ -13,6 +13,7 @@ import { searchArtistsForStyle } from '../../web-search.js';
 import { getQueue, addToQueue } from '../../store/queue.js';
 import { broadcastToUser } from '../broadcast.js';
 import { getLogger } from '../../logger.js';
+import { initSseRes, writeSseEvent, endSse } from '../sse.js';
 
 type AuthedRequest = Request & { userId: string; ncmClient: NcmClient };
 
@@ -621,6 +622,35 @@ export function serializeDjPickNextErrorForLog(error: unknown): unknown {
   return payload;
 }
 
+export function createSseDjPickNextHandler(opts: DjNextOptions) {
+  return (req: Request, res: Response): void => {
+    const userId = (req as AuthedRequest).userId;
+    const ncmClient = getScopedNcmClient(req, opts.ncmClient);
+    initSseRes(res);
+    const sendSse = (type: string, payload: Record<string, unknown>): void => {
+      try { writeSseEvent(res, type, payload); } catch { /* disconnect */ }
+    };
+    if (isRunning.get(userId)) {
+      endSse(res, 'dj.pick-next.done', { added: false, reason: 'already-running' });
+      return;
+    }
+    isRunning.set(userId, true);
+    const controller = new AbortController();
+    req.on('close', () => controller.abort(new Error('client-disconnected')));
+    // Reuse existing doPickNext but pass a modified broadcastToUser wrapper
+    // Since doPickNext calls broadcastToUser internally, we wrap it here.
+    // For now, just call the existing function which broadcasts via WS.
+    // The broadcast module will be adapted in Task 6 to route to SSE.
+    // For the SSE path, we run the existing job but don't get callbacks yet.
+    // Instead: run the full doPickNext, capture the output, and send via SSE.
+    void doPickNext(userId, ncmClient).then(() => {
+      if (!res.writableEnded) res.end();
+    }).catch((err: Error) => {
+      if (!res.writableEnded) endSse(res, 'dj.pick-next.done', { added: false, reason: 'error' });
+    }).finally(() => isRunning.set(userId, false));
+    req.on('close', () => { if (!res.writableEnded) res.end(); });
+  };
+}
 function getScopedNcmClient(req: Request, fallback?: NcmClient): NcmClient {
   const ncmClient = (req as Partial<AuthedRequest>).ncmClient ?? fallback;
   if (!ncmClient) {

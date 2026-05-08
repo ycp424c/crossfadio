@@ -29,7 +29,7 @@ src/
     weather.ts      # wttr.in / openweather
     http/
       index.ts      # Express app setup, all route registration
-      ws.ts         # WebSocket server (auth + chat)
+      sse.ts        # SSE utility (writeSseEvent, initSseRes, endSse)
       routes/       # One file per feature domain
       middleware/   # Auth middleware (JWT + userScope + admin) (multi-user)
     agent/          # compute() + fragments + modes + schema
@@ -147,21 +147,23 @@ src/
 | DELETE | `/api/whitelist/:ncmId` | JWT+admin | Remove user from allowlist (also deletes user session) |
 | POST | `/api/whitelist/unblock/:id` | JWT+admin | Unblock a login attempt (adds to allowlist) |
 
-### Settings & Location
+### SSE
 | Method | Path | Auth | Purpose |
 |--------|------|------|---------|
-| GET | `/api/settings` | JWT | Read LLM/TTS config + TTS voice pref |
+| GET | `/api/sse/events` | JWT | Persistent EventSource stream (queue/plan events) |
+| POST | `/api/sse/chat` | JWT | Chat message + SSE stream response |
+| POST | `/api/sse/chat/cancel` | JWT | Cancel active recommendation |
+| POST | `/api/sse/segue` | JWT | Segue trigger + SSE stream response |
+| POST | `/api/sse/pick-next` | JWT | DJ pick-next + SSE stream response |
+
+### Settings & Location
 | PUT | `/api/settings` | JWT | Save TTS voice preference |
 | POST | `/api/location` | JWT | Set browser geolocation |
 
 > **Note:** LLM/TTS `baseUrl`, `model`, and `apiKey` come from env vars (`CROSSFADIO_LLM_*`, `CROSSFADIO_TTS_*`), not from the Settings UI. The Settings UI only exposes TTS voice selection.
 
-### WebSocket `/ws`
 
-Client connects and sends JWT token as first message (`{ type: "auth", token: "<jwt>" }`). Events:
-- **C→S**: `auth`, `chat`, `chat.cancel-recommend`
-- **S→C**: `auth.ok`, `chat.delta`, `chat.done`, `chat.recommend.started`, `chat.recommend.progress`, `segue.tts-ready`, `plan-updated`, `queue-updated`, `queue-appended`, `dj.debug`, `dj.pick-next.done`
-
+## Commands
 ## Commands
 
 ```bash
@@ -186,6 +188,7 @@ Live deployment runbook (instance, paths, restart, allowlist edits, persona upda
 - **Dual-deck audio**: `AudioContext` with A/B deck rotation, equal-energy crossfade (cos/sin curves), BiquadFilter lowpass sweep
 - **Segue timing**: d-12s trigger → d-10s prefetch → d-8s crossfade start → d-7s TTS ducking
 - **Agent**: Single-agent, 3 modes (plan/segue/chat), 6-fragment prompt assembly, zod output validation with retry
+- **Real-time push**: SSE replaces WebSocket. `GET /api/sse/events` (EventSource) for persistent queue/plan events. `POST /api/sse/{chat,segue,pick-next}` (fetch+ReadableStream) for one-shot streaming tasks with AbortController on client disconnect.
 - **NCM auth**: QR code login → JWT token (HS256 via `jose`). Cookie encrypted with AES-256-GCM in `users` table. `authMiddleware` + `userScopeMiddleware` on all protected routes. Whitelist management routes additionally require `adminMiddleware` (checks `CROSSFADIO_ADMIN_NCM_ID`).
 - **Whitelist**: `allowlist.json` in app data dir controls which NCM user IDs can log in. Admin can manage via Settings UI. Removal also deletes `users` record to immediately revoke existing sessions. `userScopeMiddleware` double-checks `isAllowed()` on every request.
 - **Per-user isolation**: All DB tables have `user_id` column. Queue/location are per-user `Map`s. User corpus files under `users/<ncmId>/`.
