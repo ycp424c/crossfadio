@@ -310,7 +310,16 @@ export function createSegueAudioHandler() {
       return;
     }
     res.sendFile(relativePath, { root: getTtsCacheDir() }, (err) => {
-      if (err) res.status(404).json({ ok: false, error: 'not found' });
+      // sendFile may invoke the callback even after headers were sent
+      // (e.g. client disconnect mid-stream). Only respond if headers
+      // haven't been sent yet; otherwise the error would crash the process.
+      if (err && !res.headersSent) {
+        try {
+          res.status(404).json({ ok: false, error: 'not found' });
+        } catch {
+          // best-effort: if headers were sent between check and send, don't crash
+        }
+      }
     });
   };
 }
