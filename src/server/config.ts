@@ -5,6 +5,7 @@ export type ServerConfig = {
   tts: { baseUrl: string; apiKey: string; voiceDefault: string | null };
   host: string;
   allowedOrigins: string[];
+  adminNcmId: string | null;
 };
 
 let _config: ServerConfig | null = null;
@@ -33,7 +34,8 @@ export function loadConfig(): ServerConfig {
     allowedOrigins: (process.env.CROSSFADIO_ALLOWED_ORIGINS ?? '')
       .split(',')
       .map((s) => s.trim())
-      .filter(Boolean)
+      .filter(Boolean),
+    adminNcmId: process.env.CROSSFADIO_ADMIN_NCM_ID?.trim() || null
   };
 
   return _config;

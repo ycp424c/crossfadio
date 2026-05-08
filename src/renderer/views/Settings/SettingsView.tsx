@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Settings2, Check, AlertCircle, Loader2, Trash2, UserPlus, Shield } from 'lucide-react';
 import {
   getSettings,
@@ -14,6 +14,7 @@ import {
 } from '@renderer/api';
 
 type SaveStatus = { type: 'idle' } | { type: 'saving' } | { type: 'ok' } | { type: 'error'; message: string };
+type WhitelistOpStatus = { type: 'idle' } | { type: 'saving' } | { type: 'ok' } | { type: 'error'; message: string };
 
 export function SettingsView(): JSX.Element {
   const [llm, setLlm] = useState<LlmSettings | null>(null);
@@ -24,6 +25,9 @@ export function SettingsView(): JSX.Element {
   const [whitelist, setWhitelist] = useState<string[]>([]);
   const [blocked, setBlocked] = useState<BlockedAttempt[]>([]);
   const [newNcmId, setNewNcmId] = useState('');
+  const [whitelistStatus, setWhitelistStatus] = useState<WhitelistOpStatus>({ type: 'idle' });
+  const [isAdmin, setIsAdmin] = useState(true);
+  const statusTimerRef = useRef<ReturnType<typeof setTimeout>>();
 
   useEffect(() => {
     Promise.all([
@@ -33,13 +37,18 @@ export function SettingsView(): JSX.Element {
           setTts(s.tts);
           setVoice(s.tts.voice);
         }),
-      getWhitelist().then((w) => setWhitelist(w.entries)).catch(() => {}),
-      getBlockedAttempts().then((b) => setBlocked(b.blocked)).catch(() => {})
+      getWhitelist()
+        .then((w) => setWhitelist(w.entries))
+        .catch(() => setIsAdmin(false)),
+      getBlockedAttempts()
+        .then((b) => setBlocked(b.blocked))
+        .catch(() => {})
     ])
       .catch(() => {/* first launch, no config yet */})
       .finally(() => setLoading(false));
-  }, []);
 
+    return () => clearTimeout(statusTimerRef.current);
+  }, []);
   const refreshWhitelist = useCallback(async () => {
     const [w, b] = await Promise.all([getWhitelist(), getBlockedAttempts()]);
     setWhitelist(w.entries);
@@ -128,10 +137,12 @@ export function SettingsView(): JSX.Element {
         </section>
 
         {/* Whitelist management */}
+        {isAdmin ? (
         <section>
           <h2 className="mb-4 text-sm font-medium uppercase tracking-wider text-zinc-400">
             白名单管理
           </h2>
+          <WhitelistStatusIndicator status={whitelistStatus} />
           <div className="space-y-4 rounded-xl border border-zinc-800 bg-zinc-900 p-4">
             {/* Manual add */}
             <div className="flex items-center gap-2">
@@ -145,11 +156,19 @@ export function SettingsView(): JSX.Element {
               <button
                 onClick={async () => {
                   if (!newNcmId.trim()) return;
-                  await addToWhitelist(newNcmId.trim());
-                  setNewNcmId('');
-                  await refreshWhitelist();
+                  setWhitelistStatus({ type: 'saving' });
+                  try {
+                    await addToWhitelist(newNcmId.trim());
+                    setWhitelistStatus({ type: 'ok' });
+                    setNewNcmId('');
+                    await refreshWhitelist();
+                  } catch (err) {
+                    setWhitelistStatus({ type: 'error', message: err instanceof Error ? err.message : '添加失败' });
+                  }
+                  clearTimeout(statusTimerRef.current);
+                  statusTimerRef.current = setTimeout(() => setWhitelistStatus({ type: 'idle' }), 3000);
                 }}
-                disabled={!newNcmId.trim()}
+                disabled={!newNcmId.trim() || whitelistStatus.type === 'saving'}
                 className="flex items-center gap-1.5 rounded-lg bg-indigo-600 px-4 py-1.5 text-sm font-medium text-white transition hover:bg-indigo-500 disabled:opacity-50 shrink-0"
               >
                 <UserPlus className="h-4 w-4" />
@@ -177,9 +196,18 @@ export function SettingsView(): JSX.Element {
                       <span className="text-sm text-zinc-300 font-mono">{id}</span>
                       <button
                         onClick={async () => {
-                          await removeFromWhitelist(id);
-                          await refreshWhitelist();
+                          setWhitelistStatus({ type: 'saving' });
+                          try {
+                            await removeFromWhitelist(id);
+                            setWhitelistStatus({ type: 'ok' });
+                            await refreshWhitelist();
+                          } catch (err) {
+                            setWhitelistStatus({ type: 'error', message: err instanceof Error ? err.message : '移除失败' });
+                          }
+                          clearTimeout(statusTimerRef.current);
+                          statusTimerRef.current = setTimeout(() => setWhitelistStatus({ type: 'idle' }), 3000);
                         }}
+                        disabled={whitelistStatus.type === 'saving'}
                         className="rounded p-1 text-zinc-600 transition hover:bg-zinc-700 hover:text-red-400"
                         title="移除"
                       >
@@ -219,9 +247,18 @@ export function SettingsView(): JSX.Element {
                         </div>
                         <button
                           onClick={async () => {
-                            await unblockUser(b.id);
-                            await refreshWhitelist();
+                            setWhitelistStatus({ type: 'saving' });
+                            try {
+                              await unblockUser(b.id);
+                              setWhitelistStatus({ type: 'ok' });
+                              await refreshWhitelist();
+                            } catch (err) {
+                              setWhitelistStatus({ type: 'error', message: err instanceof Error ? err.message : '放行失败' });
+                            }
+                            clearTimeout(statusTimerRef.current);
+                            statusTimerRef.current = setTimeout(() => setWhitelistStatus({ type: 'idle' }), 3000);
                           }}
+                          disabled={whitelistStatus.type === 'saving'}
                           className="flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-emerald-500 transition hover:bg-emerald-500/10 shrink-0"
                           title="加入白名单"
                         >
@@ -236,6 +273,16 @@ export function SettingsView(): JSX.Element {
             </div>
           </div>
         </section>
+        ) : (
+        <section>
+          <h2 className="mb-4 text-sm font-medium uppercase tracking-wider text-zinc-400">
+            白名单管理
+          </h2>
+          <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-4">
+            <p className="text-sm text-zinc-500">需要管理员权限才能管理白名单。当前账号不是管理员。</p>
+          </div>
+        </section>
+        )}
       </div>
 
       {/* Footer save bar */}
@@ -285,6 +332,31 @@ function StatusIndicator({ status }: { status: SaveStatus }): JSX.Element {
     return (
       <span className="flex items-center gap-1.5 text-sm text-emerald-400">
         <Check className="h-4 w-4" /> 已保存
+      </span>
+    );
+  }
+  if (status.type === 'error') {
+    return (
+      <span className="flex items-center gap-1.5 text-sm text-red-400">
+        <AlertCircle className="h-4 w-4" /> {status.message}
+      </span>
+    );
+  }
+  return <span />;
+}
+
+function WhitelistStatusIndicator({ status }: { status: WhitelistOpStatus }): JSX.Element {
+  if (status.type === 'saving') {
+    return (
+      <span className="flex items-center gap-1.5 text-sm text-zinc-400">
+        <Loader2 className="h-4 w-4 animate-spin" /> 处理中...
+      </span>
+    );
+  }
+  if (status.type === 'ok') {
+    return (
+      <span className="flex items-center gap-1.5 text-sm text-emerald-400">
+        <Check className="h-4 w-4" /> 操作成功
       </span>
     );
   }

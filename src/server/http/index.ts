@@ -48,6 +48,7 @@ import {
 } from './routes/queue.js';
 import { authMiddleware } from './middleware/auth.js';
 import { userScopeMiddleware } from './middleware/userScope.js';
+import { adminMiddleware } from './middleware/admin.js';
 
 export type LocalServer = {
   port: number;
@@ -95,6 +96,7 @@ export async function startLocalServer(options: StartLocalServerOptions): Promis
 
   // ── Protected routes ──────────────────────────────────────────────────────
   const protect = [authMiddleware, userScopeMiddleware];
+  const adminProtect = [authMiddleware, userScopeMiddleware, adminMiddleware];
 
   app.get('/api/ncm/login/session', protect, createNcmSessionHandler());
   app.post('/api/ncm/login/logout', protect, createNcmLogoutHandler());
@@ -117,11 +119,11 @@ export async function startLocalServer(options: StartLocalServerOptions): Promis
   app.post('/api/dj/pick-next', protect, createDjPickNextHandler({ secrets: null as any }));
   app.get('/api/messages/recent', protect, createGetRecentMessagesHandler());
   app.post('/api/location', protect, createSetLocationHandler());
-  app.get('/api/whitelist', protect, createGetWhitelistHandler());
-  app.get('/api/whitelist/blocked', protect, createGetBlockedHandler());
-  app.post('/api/whitelist', protect, createAddToWhitelistHandler());
-  app.delete('/api/whitelist/:ncmId', protect, createRemoveFromWhitelistHandler());
-  app.post('/api/whitelist/unblock/:id', protect, createUnblockHandler());
+  app.get('/api/whitelist', adminProtect, createGetWhitelistHandler());
+  app.get('/api/whitelist/blocked', adminProtect, createGetBlockedHandler());
+  app.post('/api/whitelist', adminProtect, createAddToWhitelistHandler());
+  app.delete('/api/whitelist/:ncmId', adminProtect, createRemoveFromWhitelistHandler());
+  app.post('/api/whitelist/unblock/:id', adminProtect, createUnblockHandler());
 
   if (options.staticDir && fs.existsSync(options.staticDir)) {
     app.use(express.static(options.staticDir));

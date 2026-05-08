@@ -1,6 +1,5 @@
 import type { Request, Response } from 'express';
 import { z } from 'zod';
-import type { NcmClient } from '../../ncm/client.js';
 import {
   getAllowlist,
   addToAllowlist,
@@ -9,10 +8,9 @@ import {
 import {
   getBlockedAttempts,
   deleteBlockedAttempt,
-  deleteBlockedAttemptsByNcmId
+  deleteBlockedAttemptsByNcmId,
+  deleteUser
 } from '../../store/users.js';
-
-type AuthedRequest = Request & { userId: string; ncmClient: NcmClient };
 
 // ── GET /api/whitelist ──────────────────────────────────────────────────────────
 
@@ -34,8 +32,8 @@ export function createGetBlockedHandler() {
 
 // ── POST /api/whitelist ─────────────────────────────────────────────────────────
 
-const addToWhitelistBodySchema = z.object({
-  ncmId: z.string().min(1, 'ncmId is required')
+export const addToWhitelistBodySchema = z.object({
+  ncmId: z.string().trim().regex(/^\d+$/, 'ncmId must be a numeric string')
 });
 
 export function createAddToWhitelistHandler() {
@@ -61,6 +59,12 @@ export function createRemoveFromWhitelistHandler() {
       res.status(400).json({ ok: false, error: 'ncmId is required' });
       return;
     }
+    // Revoke active session first: delete user record so userScopeMiddleware
+    // rejects this ncmId on the next request even if the user holds a valid JWT.
+    // If deletion succeeds but allowlist removal later fails, the user can still
+    // re-authenticate (they're in the allowlist) and the admin can retry — safer
+    // than the reverse where the session stays alive after removal appears to succeed.
+    deleteUser(ncmId);
     removeFromAllowlist(ncmId);
     res.json({ ok: true });
   };

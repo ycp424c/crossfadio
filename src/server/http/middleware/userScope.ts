@@ -4,6 +4,7 @@ import { NcmClient } from '../../ncm/client.js';
 import { getUserById } from '../../store/users.js';
 import { deriveKey, decrypt } from '../../crypto.js';
 import { getConfig } from '../../config.js';
+import { isAllowed } from '../../allowlist.js';
 import { getLogger } from '../../logger.js';
 
 export async function userScopeMiddleware(
@@ -14,6 +15,14 @@ export async function userScopeMiddleware(
   const userId = (req as Request & { userId?: string }).userId;
   if (!userId) {
     res.status(401).json({ ok: false, error: 'unauthorized' });
+    return;
+  }
+
+  // Re-check allowlist membership — a user removed from the allowlist must lose
+  // access immediately, not only when their JWT expires.
+  if (!isAllowed(userId)) {
+    getLogger().warn({ userId }, 'User not in allowlist');
+    res.status(403).json({ ok: false, error: 'forbidden', message: '没有访问权限' });
     return;
   }
 
