@@ -66,7 +66,11 @@ async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
   const json = await parseJsonResponse(response, path);
 
   if (!response.ok) {
-    const message = typeof json?.message === 'string' ? json.message : `Request failed: ${path}`;
+    const message = typeof json?.message === 'string'
+      ? json.message
+      : typeof json?.error === 'string'
+        ? json.error
+        : `Request failed: ${path}`;
     throw new Error(message);
   }
 

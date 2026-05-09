@@ -1,4 +1,4 @@
-import { getDailyTheme } from '../../daily-theme.js';
+import { getOrGenerateDailyThemeWithin } from '../../daily-theme.js';
 import { loadCorpusFile } from '../../user-corpus/loader.js';
 import type { Request, Response } from 'express';
 import { z } from 'zod';
@@ -57,9 +57,9 @@ export function createSaveSettingsHandler() {
 // ── GET /api/settings/player-context ──────────────────────────────────────────
 
 export function createGetPlayerContextHandler() {
-  return (req: Request, res: Response): void => {
+  return async (req: Request, res: Response): Promise<void> => {
     const { userId } = req as AuthedRequest;
-    const theme = getDailyTheme();
+    const theme = await getOrGenerateDailyThemeWithin(3_000);
     const taste = loadCorpusFile(userId, 'taste.md');
 
     res.json({

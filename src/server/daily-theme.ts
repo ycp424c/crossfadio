@@ -16,6 +16,8 @@ export type DailyTheme = {
 let themeCache: DailyTheme | null = null;
 let generatingPromise: Promise<DailyTheme | null> | null = null;
 
+const DEFAULT_GENERATION_TIMEOUT_MS = 15_000;
+
 export function _resetForTest(): void {
   themeCache = null;
   generatingPromise = null;
@@ -59,6 +61,10 @@ export async function getOrGenerateDailyTheme(): Promise<DailyTheme | null> {
   return generatingPromise;
 }
 
+export async function getOrGenerateDailyThemeWithin(timeoutMs: number): Promise<DailyTheme | null> {
+  return withTimeout(getOrGenerateDailyTheme(), timeoutMs, getDailyTheme());
+}
+
 // ── Theme generation ─────────────────────────────────────────────────────────
 
 async function generateTheme(today: string): Promise<DailyTheme | null> {
@@ -66,7 +72,9 @@ async function generateTheme(today: string): Promise<DailyTheme | null> {
   const llmConfig = resolveLlmConfig();
   if (!llmConfig) {
     logger.warn('Daily theme: LLM not configured, using static fallback');
-    return buildStaticFallback(today);
+    const fallback = buildStaticFallback(today);
+    themeCache = fallback;
+    return fallback;
   }
 
   const date = new Date(today + 'T00:00:00+08:00');
@@ -83,7 +91,8 @@ async function generateTheme(today: string): Promise<DailyTheme | null> {
 
     const result = await client.complete(messages, {
       temperature: 0.8,
-      maxTokens: 600
+      maxTokens: 600,
+      signal: AbortSignal.timeout(getGenerationTimeoutMs())
     });
 
     const parsed = parseThemeResponse(result.content, today);
@@ -101,6 +110,19 @@ async function generateTheme(today: string): Promise<DailyTheme | null> {
   const fallback = buildStaticFallback(today);
   if (fallback) themeCache = fallback;
   return fallback;
+}
+
+function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
+  if (ms <= 0) return Promise.resolve(fallback);
+  return Promise.race([
+    promise,
+    new Promise<T>((resolve) => setTimeout(() => resolve(fallback), ms))
+  ]);
+}
+
+function getGenerationTimeoutMs(): number {
+  const raw = Number(process.env.CROSSFADIO_DAILY_THEME_TIMEOUT_MS);
+  return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_GENERATION_TIMEOUT_MS;
 }
 
 // ── Prompt building ──────────────────────────────────────────────────────────

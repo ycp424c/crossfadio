@@ -13,7 +13,7 @@ import { searchArtistsForStyle } from '../../web-search.js';
 import { getQueue, addToQueue } from '../../store/queue.js';
 import { broadcastToUser } from '../broadcast.js';
 import { getLogger } from '../../logger.js';
-import { getOrGenerateDailyTheme } from '../../daily-theme.js';
+import { getOrGenerateDailyThemeWithin } from '../../daily-theme.js';
 
 type AuthedRequest = Request & { userId: string; ncmClient: NcmClient };
 
@@ -30,6 +30,7 @@ const LIKED_DETAILS_TIMEOUT_MS = 8_000;
 const LIKED_IDS_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 1 day
 const LIKED_SAMPLE_SIZE = 20;
 const SEARCH_RESULT_SIZE = 40;
+const DAILY_THEME_CONTEXT_TIMEOUT_MS = 1_500;
 
 const isRunning = new Map<string, boolean>();
 
@@ -196,8 +197,7 @@ async function runPickNextJob(userId: string, ncmClient: NcmClient): Promise<voi
 async function doPickNext(userId: string, ncmClient: NcmClient): Promise<void> {
   const logger = getLogger();
   let debugBroadcastSent = false;
-  // Trigger daily theme generation if not already cached (non-blocking for this request)
-  const dailyThemePromise = getOrGenerateDailyTheme();
+  const dailyThemePromise = getOrGenerateDailyThemeWithin(DAILY_THEME_CONTEXT_TIMEOUT_MS);
 
 
   // Refresh full liked-song ID list at most once per day

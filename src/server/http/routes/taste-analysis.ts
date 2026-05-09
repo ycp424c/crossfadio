@@ -10,6 +10,7 @@ import { getLogger } from '../../logger.js';
 type AuthedRequest = Request & { userId: string; ncmClient: NcmClient };
 
 const LIKED_SAMPLE_LIMIT = 200;
+const DEFAULT_TASTE_ANALYSIS_TIMEOUT_MS = 60_000;
 
 const SYSTEM_PROMPT = `你是一个音乐品味分析师。根据用户的红心（收藏）歌曲列表，分析用户音乐偏好并输出一份结构化的品味档案。
 
@@ -41,7 +42,7 @@ export function createAnalyzeTasteHandler() {
       ids = await ncmClient.getLikedSongIds();
     } catch (err) {
       getLogger().error({ err, userId }, 'Failed to fetch liked song IDs');
-      res.status(502).json({ ok: false, error: '无法获取红心歌单，请确认网易云已登录' });
+      res.status(502).json({ ok: false, message: '无法获取红心歌单，请确认网易云已登录' });
       return;
     }
 
@@ -63,7 +64,7 @@ export function createAnalyzeTasteHandler() {
       }));
     } catch (err) {
       getLogger().error({ err, userId }, 'Failed to fetch song details');
-      res.status(502).json({ ok: false, error: '无法获取歌曲详情' });
+      res.status(502).json({ ok: false, message: '无法获取歌曲详情' });
       return;
     }
 
@@ -82,7 +83,7 @@ export function createAnalyzeTasteHandler() {
     // 5. Call LLM
     const llmConfig = resolveLlmConfig();
     if (!llmConfig) {
-      res.status(503).json({ ok: false, error: 'LLM 未配置，无法分析' });
+      res.status(503).json({ ok: false, message: 'LLM 未配置，无法分析' });
       return;
     }
 
@@ -93,7 +94,11 @@ export function createAnalyzeTasteHandler() {
     ];
 
     try {
-      const result = await client.complete(messages, { temperature: 0.7, maxTokens: 1000 });
+      const result = await client.complete(messages, {
+        temperature: 0.7,
+        maxTokens: 1000,
+        signal: AbortSignal.timeout(getTasteAnalysisTimeoutMs())
+      });
       const taste = result.content.trim();
 
       // 6. Save to user corpus taste.md
@@ -108,8 +113,28 @@ export function createAnalyzeTasteHandler() {
 
       res.json({ ok: true, taste });
     } catch (err) {
+      if (isAbortError(err)) {
+        getLogger().warn({ err, userId }, 'LLM taste analysis timed out');
+        res.status(504).json({ ok: false, message: '品味分析超时，请稍后重试' });
+        return;
+      }
       getLogger().error({ err, userId }, 'LLM taste analysis failed');
-      res.status(502).json({ ok: false, error: '品味分析失败，请稍后重试' });
+      res.status(502).json({ ok: false, message: '品味分析失败，请稍后重试' });
     }
   };
+}
+
+function getTasteAnalysisTimeoutMs(): number {
+  const raw = Number(process.env.CROSSFADIO_TASTE_ANALYSIS_TIMEOUT_MS);
+  return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_TASTE_ANALYSIS_TIMEOUT_MS;
+}
+
+function isAbortError(err: unknown): boolean {
+  if (err instanceof DOMException) {
+    return err.name === 'AbortError' || err.name === 'TimeoutError';
+  }
+  if (err instanceof Error) {
+    return err.name === 'AbortError' || err.name === 'TimeoutError';
+  }
+  return false;
 }
