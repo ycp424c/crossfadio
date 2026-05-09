@@ -142,6 +142,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
   const segueSatisfiedForTrackIdRef = useRef<string | null>(null);
   const segueLastAttemptAtRef = useRef<number>(0);
   const djPickNextLastCallRef = useRef<number>(0);
+  const djPickNextInFlightRef = useRef(false);
   const applyingRemoteQueueRef = useRef(false);
 
   useEffect(() => {
@@ -371,6 +372,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
       const randomIdx = Math.floor(Math.random() * payload.tracks.length);
       const startTrack = payload.tracks[randomIdx];
       djPickNextLastCallRef.current = 0;
+      djPickNextInFlightRef.current = false;
       setQueue([startTrack]);
       setCurrentIndex(0);
       setTrackStatusText(`DJ 模式启动：随机选中「${startTrack.name ?? startTrack.id}」`);
@@ -705,10 +707,11 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
     // Defer while a segue request is in flight so both jobs don't compete for LLM bandwidth —
     // segue has a hard timing constraint, DJ pick-next does not.
     const segueInFlight = segueClientRequestIdRef.current !== null;
-    if (isPlaying && !segueInFlight && queueIds.length < DJ_TARGET_QUEUE) {
+    if (isPlaying && !segueInFlight && !djPickNextInFlightRef.current && queueIds.length < DJ_TARGET_QUEUE) {
       const now = Date.now();
       if (now - djPickNextLastCallRef.current >= DJ_PICK_COOLDOWN_MS) {
         djPickNextLastCallRef.current = now;
+        djPickNextInFlightRef.current = true;
         setDjStatusText('正在挑选下一首…');
         void (async () => {
           try {
@@ -735,6 +738,8 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
           } catch {
             djPickNextLastCallRef.current = 0;
             setDjStatusText('补歌请求失败');
+          } finally {
+            djPickNextInFlightRef.current = false;
           }
         })();
       }

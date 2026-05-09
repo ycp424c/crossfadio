@@ -95,6 +95,18 @@ describe('player layout', () => {
     expect(sseHandlerBody).toContain('doPickNext(userId, ncmClient, emit)');
   });
 
+  it('does not start another DJ pick-next SSE stream while one is already in flight', () => {
+    const source = fs.readFileSync(path.join(root, 'src/renderer/views/Player/PlayerView.tsx'), 'utf-8');
+    const triggerStart = source.indexOf('// DJ mode: keep queue at DJ_TARGET_QUEUE songs');
+    const startSegueAudioStart = source.indexOf('maybeStartSegueAudio();', triggerStart);
+    const triggerBlock = source.slice(triggerStart, startSegueAudioStart);
+
+    expect(source).toContain('const djPickNextInFlightRef = useRef(false)');
+    expect(triggerBlock).toContain('!djPickNextInFlightRef.current');
+    expect(triggerBlock).toContain('djPickNextInFlightRef.current = true');
+    expect(triggerBlock).toContain('djPickNextInFlightRef.current = false');
+  });
+
   it('includes clientRequestId in direct SSE segue payloads before the player filters them', () => {
     const source = fs.readFileSync(path.join(root, 'src/server/http/routes/segue.ts'), 'utf-8');
     const sseHandlerStart = source.indexOf('export function createSseSegueHandler');
