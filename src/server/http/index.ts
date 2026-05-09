@@ -18,8 +18,10 @@ import { createNextHandler, createNowHandler } from './routes/now-next.js';
 import { createStartPlayHandler, createEndPlayHandler } from './routes/plays.js';
 import {
   createGetSettingsHandler,
-  createSaveSettingsHandler
+  createSaveSettingsHandler,
+  createGetPlayerContextHandler
 } from './routes/settings.js';
+import { createAnalyzeTasteHandler } from './routes/taste-analysis.js';
 import {
   createGetTodayPlanHandler,
   createRegeneratePlanHandler,
@@ -105,6 +107,8 @@ export async function startLocalServer(options: StartLocalServerOptions): Promis
   app.patch('/api/plays/:id', protect, createEndPlayHandler());
   app.get('/api/settings', protect, createGetSettingsHandler());
   app.put('/api/settings', protect, createSaveSettingsHandler());
+  app.post('/api/settings/analyze-taste', protect, createAnalyzeTasteHandler());
+  app.get('/api/settings/player-context', protect, createGetPlayerContextHandler());
   app.get('/api/plan/today', protect, createGetTodayPlanHandler({ secrets: null as any }));
   app.post('/api/plan/regenerate', protect, createRegeneratePlanHandler({ secrets: null as any }));
   app.post('/api/plan/replan-segment', protect, createReplanSegmentHandler({ secrets: null as any }));

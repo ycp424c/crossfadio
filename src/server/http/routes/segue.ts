@@ -28,6 +28,7 @@ import { getDjPickReason } from './djNext.js';
 import { broadcastToUser } from '../broadcast.js';
 import { getLogger } from '../../logger.js';
 import { initSseRes, writeSseEvent, endSse } from '../sse.js';
+import { getDailyTheme } from '../../daily-theme.js';
 
 const SEGUE_LLM_TIMEOUT_MS = 60_000;
 const SEGUE_TTS_TIMEOUT_MS = 30_000;
@@ -156,6 +157,11 @@ async function runSegueJob(
     if (signal.aborted) return;
     const now = new Date();
 
+    const dailyTheme = getDailyTheme();
+    const dailyThemeStr = dailyTheme
+      ? `今日主题：${dailyTheme.theme}（关键词：${dailyTheme.keywords.join('、')}）`
+      : undefined;
+
     const djPickReason = getDjPickReason(to.id);
 
     const fragments: Fragments = {
@@ -177,7 +183,8 @@ async function runSegueJob(
           name: trackContext.fromTrack.name ?? '',
           artist: trackContext.fromTrack.artist ?? '',
           durationMs: null
-        }
+        },
+        dailyTheme: dailyThemeStr
       },
       memory: { recentPlays: getRecentPlays(userId, 50), recentChat: getRecentMessages(userId, 20), recentSegues: getRecentSegues(userId, 10) },
       input: {

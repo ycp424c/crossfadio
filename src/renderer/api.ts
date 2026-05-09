@@ -66,7 +66,11 @@ async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
   const json = await parseJsonResponse(response, path);
 
   if (!response.ok) {
-    const message = typeof json?.message === 'string' ? json.message : `Request failed: ${path}`;
+    const message = typeof json?.message === 'string'
+      ? json.message
+      : typeof json?.error === 'string'
+        ? json.error
+        : `Request failed: ${path}`;
     throw new Error(message);
   }
 
@@ -247,6 +251,21 @@ export async function saveSettings(payload: SaveSettingsPayload): Promise<void> 
   });
   if (!result.ok) throw new Error('Failed to save settings');
 }
+
+export async function analyzeTaste(): Promise<{ ok: boolean; taste: string; message?: string }> {
+  return requestJson<{ ok: boolean; taste: string; message?: string }>('/api/settings/analyze-taste', { method: 'POST' });
+}
+
+export type PlayerContextResponse = {
+  ok: boolean;
+  theme: { theme: string; keywords: string[] } | null;
+  taste: string;
+};
+
+export async function getPlayerContext(): Promise<PlayerContextResponse> {
+  return requestJson<PlayerContextResponse>('/api/settings/player-context');
+}
+
 
 // ── Whitelist ───────────────────────────────────────────────────────────────────
 

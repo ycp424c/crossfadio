@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Settings2, Check, AlertCircle, Loader2, Trash2, UserPlus, Shield } from 'lucide-react';
+import { Settings2, Check, AlertCircle, Loader2, Trash2, UserPlus, Shield, Sparkles } from 'lucide-react';
 import {
   getSettings,
   saveSettings,
@@ -8,6 +8,7 @@ import {
   addToWhitelist,
   removeFromWhitelist,
   unblockUser,
+  analyzeTaste,
   type LlmSettings,
   type TtsSettings,
   type BlockedAttempt
@@ -28,6 +29,27 @@ export function SettingsView(): JSX.Element {
   const [whitelistStatus, setWhitelistStatus] = useState<WhitelistOpStatus>({ type: 'idle' });
   const [isAdmin, setIsAdmin] = useState(true);
   const statusTimerRef = useRef<ReturnType<typeof setTimeout>>();
+type TasteStatus = { type: 'idle' } | { type: 'analyzing' } | { type: 'ok'; taste: string } | { type: 'error'; message: string };
+
+  const [tasteStatus, setTasteStatus] = useState<TasteStatus>({ type: 'idle' });
+
+  async function handleAnalyzeTaste(): Promise<void> {
+    setTasteStatus({ type: 'analyzing' });
+    try {
+      const result = await analyzeTaste();
+      if (!result.ok) {
+        setTasteStatus({ type: 'error', message: result.message ?? result.taste ?? '分析失败' });
+        return;
+      }
+      if (!result.taste) {
+        setTasteStatus({ type: 'ok', taste: result.message ?? '分析完成，但未生成品味数据' });
+        return;
+      }
+      setTasteStatus({ type: 'ok', taste: result.taste });
+    } catch (err) {
+      setTasteStatus({ type: 'error', message: err instanceof Error ? err.message : '分析失败' });
+    }
+  }
 
   useEffect(() => {
     Promise.all([
@@ -133,6 +155,44 @@ export function SettingsView(): JSX.Element {
                 ))}
               </select>
             </Field>
+          </div>
+        </section>
+        {/* Taste Analysis */}
+        <section>
+          <h2 className="mb-4 text-sm font-medium uppercase tracking-wider text-zinc-400">
+            音乐品味分析
+          </h2>
+          <div className="space-y-3 rounded-xl border border-zinc-800 bg-zinc-900 p-4">
+            <p className="text-sm text-zinc-400">
+              基于你的网易云红心歌单，由 AI 分析音乐偏好并更新个人品味档案。
+            </p>
+            <button
+              onClick={handleAnalyzeTaste}
+              disabled={tasteStatus.type === 'analyzing'}
+              className="flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-indigo-500 disabled:opacity-50"
+            >
+              {tasteStatus.type === 'analyzing' ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Sparkles className="h-4 w-4" />
+              )}
+              {tasteStatus.type === 'analyzing' ? '分析中…' : '分析我的音乐品味'}
+            </button>
+            {tasteStatus.type === 'ok' && (
+              <div className="rounded-lg border border-emerald-800 bg-emerald-900/30 p-3">
+                <div className="mb-1 flex items-center gap-1.5 text-xs font-medium text-emerald-400">
+                  <Check className="h-3.5 w-3.5" />
+                  分析完成
+                </div>
+                <pre className="whitespace-pre-wrap text-xs text-emerald-200/80 leading-relaxed">{tasteStatus.taste}</pre>
+              </div>
+            )}
+            {tasteStatus.type === 'error' && (
+              <div className="flex items-center gap-2 rounded-lg border border-red-800 bg-red-900/30 px-3 py-2 text-sm text-red-400">
+                <AlertCircle className="h-4 w-4 shrink-0" />
+                {tasteStatus.message}
+              </div>
+            )}
           </div>
         </section>
 

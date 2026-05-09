@@ -1,3 +1,5 @@
+import { getOrGenerateDailyThemeWithin } from '../../daily-theme.js';
+import { loadCorpusFile } from '../../user-corpus/loader.js';
 import type { Request, Response } from 'express';
 import { z } from 'zod';
 import type { NcmClient } from '../../ncm/client.js';
@@ -49,5 +51,21 @@ export function createSaveSettingsHandler() {
       setPref(userId, 'tts.voice', parsed.data.tts.voice);
     }
     res.json({ ok: true });
+  };
+}
+
+// ── GET /api/settings/player-context ──────────────────────────────────────────
+
+export function createGetPlayerContextHandler() {
+  return async (req: Request, res: Response): Promise<void> => {
+    const { userId } = req as AuthedRequest;
+    const theme = await getOrGenerateDailyThemeWithin(3_000);
+    const taste = loadCorpusFile(userId, 'taste.md');
+
+    res.json({
+      ok: true,
+      theme: theme ? { theme: theme.theme, keywords: theme.keywords } : null,
+      taste
+    });
   };
 }

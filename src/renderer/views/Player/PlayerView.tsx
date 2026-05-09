@@ -1,10 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   CalendarDays,
+  ChevronDown,
+  ChevronUp,
   LogOut,
+  Palette,
   QrCode,
   ScanSearch,
   Settings2,
+  Sparkles,
   X
 } from 'lucide-react';
 import {
@@ -15,6 +19,7 @@ import {
   getNcmSession,
   getNextTrack,
   getNowPlaying,
+  getPlayerContext,
   logoutNcm,
   getStoredToken,
   saveQueueState,
@@ -105,6 +110,9 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
   const [showNcmDropdown, setShowNcmDropdown] = useState(false);
   const [showNcmSheet, setShowNcmSheet] = useState(false);
   const [sseToken, setSseToken] = useState<string | null>(() => getStoredToken());
+  const [dailyTheme, setDailyTheme] = useState<{ theme: string; keywords: string[] } | null>(null);
+  const [userTaste, setUserTaste] = useState('');
+  const [tasteExpanded, setTasteExpanded] = useState(false);
 
   // Body scroll lock when mobile NCM sheet is open
   useEffect(() => {
@@ -231,6 +239,15 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
 
   useEffect(() => {
     void refreshSession();
+    void getPlayerContext()
+      .then((ctx) => {
+        if (ctx.ok) {
+          setDailyTheme(ctx.theme);
+          setUserTaste(ctx.taste);
+        }
+      })
+      .catch(() => {});
+
     void loadLikedQueue();
     if ('geolocation' in navigator) {
       navigator.geolocation.getCurrentPosition(
@@ -991,6 +1008,53 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
             onPrev={handlePrev}
             onSkip={handleSkip}
           />
+
+          {/* Daily Theme Banner */}
+          {dailyTheme && (
+            <div className="rounded-xl border border-indigo-800/40 bg-indigo-950/30 px-4 py-3">
+              <div className="flex items-center gap-2 mb-1">
+                <Sparkles className="h-3.5 w-3.5 text-indigo-400" />
+                <span className="text-xs font-medium uppercase tracking-wider text-indigo-400">今日主题</span>
+              </div>
+              <p className="text-sm text-indigo-200/80">{dailyTheme.theme}</p>
+              {dailyTheme.keywords.length > 0 && (
+                <div className="flex flex-wrap gap-1 mt-2">
+                  {dailyTheme.keywords.map((kw) => (
+                    <span key={kw} className="rounded-full bg-indigo-800/30 px-2 py-0.5 text-xs text-indigo-300/70">
+                      {kw}
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* User Taste — collapsible */}
+          {userTaste && (
+            <div className="rounded-xl border border-zinc-800/60 bg-zinc-900/40">
+              <button
+                className="flex w-full items-center justify-between px-4 py-2.5 text-left hover:bg-zinc-800/30 transition rounded-xl"
+                onClick={() => setTasteExpanded((v) => !v)}
+                type="button"
+              >
+                <div className="flex items-center gap-2">
+                  <Palette className="h-3.5 w-3.5 text-zinc-500" />
+                  <span className="text-xs font-medium uppercase tracking-wider text-zinc-500">我的品味</span>
+                </div>
+                {tasteExpanded ? (
+                  <ChevronUp className="h-4 w-4 text-zinc-600" />
+                ) : (
+                  <ChevronDown className="h-4 w-4 text-zinc-600" />
+                )}
+              </button>
+              {tasteExpanded && (
+                <div className="px-4 pb-3 pt-0">
+                  <pre className="whitespace-pre-wrap text-xs text-zinc-400 leading-relaxed">{userTaste}</pre>
+                </div>
+              )}
+            </div>
+          )}
+
 
           <audio
             onEnded={onEnded}

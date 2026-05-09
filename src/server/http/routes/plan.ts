@@ -15,6 +15,7 @@ import { getRecentPlays } from '../../store/plays.js';
 import { loadLikedTracksForPlanning } from '../../user-corpus/ncm-liked.js';
 import { loadUserCorpus } from '../../user-corpus/loader.js';
 import { fetchWeather } from '../../weather.js';
+import { getDailyTheme } from '../../daily-theme.js';
 
 function sampleN<T>(arr: T[], n: number): T[] {
   const copy = [...arr];
@@ -53,7 +54,11 @@ export async function buildPlanFragments(userId: string, date: string, ncmClient
       nowIso: now.toISOString(),
       localTime: formatLocalTime(now),
       weather,
-      nowPlaying: null
+      nowPlaying: null,
+      dailyTheme: (() => {
+        const t = getDailyTheme();
+        return t ? `今日主题：${t.theme}（关键词：${t.keywords.join('、')}）` : undefined;
+      })()
     },
     memory: { recentPlays, recentChat: [] },
     input: { kind: 'planRequest', date },
