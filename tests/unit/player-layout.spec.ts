@@ -75,6 +75,37 @@ describe('player layout', () => {
     expect(ttsReadyBlock).toContain('segueSatisfiedForTrackIdRef.current = currentTrackIdRef.current');
   });
 
+  it('keeps reading chat SSE after chat.done so recommendation progress can arrive', () => {
+    const source = fs.readFileSync(path.join(root, 'src/renderer/components/player/ChatPanel.tsx'), 'utf-8');
+    const doneStart = source.indexOf("type === 'chat.done'");
+    const errorStart = source.indexOf("type === 'chat.error'");
+    const doneBlock = source.slice(doneStart, errorStart);
+
+    expect(doneBlock).toContain('setSending(false)');
+    expect(doneBlock).not.toContain('break;');
+  });
+
+  it('handles DJ pick-next completion from the one-shot SSE stream', () => {
+    const source = fs.readFileSync(path.join(root, 'src/server/http/routes/djNext.ts'), 'utf-8');
+    const sseHandlerStart = source.indexOf('export function createSseDjPickNextHandler');
+    const scopedClientStart = source.indexOf('function getScopedNcmClient');
+    const sseHandlerBody = source.slice(sseHandlerStart, scopedClientStart);
+
+    expect(sseHandlerBody).toContain('writeSseEvent(res, type, payload)');
+    expect(sseHandlerBody).toContain('doPickNext(userId, ncmClient, emit)');
+  });
+
+  it('includes clientRequestId in direct SSE segue payloads before the player filters them', () => {
+    const source = fs.readFileSync(path.join(root, 'src/server/http/routes/segue.ts'), 'utf-8');
+    const sseHandlerStart = source.indexOf('export function createSseSegueHandler');
+    const audioHandlerStart = source.indexOf('export function createSegueAudioHandler');
+    const sseHandlerBody = source.slice(sseHandlerStart, audioHandlerStart);
+
+    expect(sseHandlerBody).toContain('clientRequestId');
+    expect(sseHandlerBody).toContain('requestId');
+    expect(sseHandlerBody).toContain('{ ...payload, requestId, clientRequestId }');
+  });
+
   it('triggers segue as soon as playback is running and a next track is known', () => {
     const source = fs.readFileSync(path.join(root, 'src/renderer/views/Player/PlayerView.tsx'), 'utf-8');
 

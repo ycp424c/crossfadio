@@ -86,7 +86,7 @@ export function ChatPanel({ onRecommendEvent }: { onRecommendEvent?: (evt: Recom
             }
             return [...prev, { id: ++msgId, role: 'dj', text: String(data.say ?? ''), pending: false }];
           });
-          break;
+          setSending(false);
         } else if (type === 'chat.error') {
           setMessages((prev) => {
             const last = prev[prev.length - 1];
@@ -101,6 +101,7 @@ export function ChatPanel({ onRecommendEvent }: { onRecommendEvent?: (evt: Recom
               { id: ++msgId, role: 'dj', text: '出错了，请稍后再试。', pending: false }
             ];
           });
+          setSending(false);
           break;
         } else if (type.startsWith('chat.recommend.')) {
           onRecommendEvent?.({ type, data });

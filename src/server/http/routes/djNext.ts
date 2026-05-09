@@ -32,6 +32,7 @@ const LIKED_SAMPLE_SIZE = 20;
 const SEARCH_RESULT_SIZE = 40;
 
 const isRunning = new Map<string, boolean>();
+type DjEventSink = (payload: Record<string, unknown>) => void;
 
 type LikedIdsCache = { ids: string[]; fetchedAt: number };
 const likedIdsCache = new Map<string, LikedIdsCache>();
@@ -193,7 +194,11 @@ async function runPickNextJob(userId: string, ncmClient: NcmClient): Promise<voi
   isRunning.set(userId, false);
 }
 
-async function doPickNext(userId: string, ncmClient: NcmClient): Promise<void> {
+async function doPickNext(
+  userId: string,
+  ncmClient: NcmClient,
+  emit: DjEventSink = (payload) => broadcastToUser(userId, payload)
+): Promise<void> {
   const logger = getLogger();
   let debugBroadcastSent = false;
 
@@ -497,9 +502,9 @@ ${candidateList}
               djPickReasonCache.set(track.ncmId, pickSay.trim());
             }
           }
-          broadcastToUser(userId, { type: 'dj.debug', ...phase3Debug, selectedSay: pickSay });
+          emit({ type: 'dj.debug', ...phase3Debug, selectedSay: pickSay });
           debugBroadcastSent = true;
-          broadcastAppended(userId, prevQueueLength);
+          broadcastAppended(userId, prevQueueLength, emit);
           return;
         }
         logger.warn('DJ pick-next: whitelisted picks did not change queue, using random fallback');
@@ -508,7 +513,7 @@ ${candidateList}
       }
 
       // Phase 4 failed — still broadcast Phase 3 data so the debug panel reflects what was searched
-      broadcastToUser(userId, { type: 'dj.debug', ...phase3Debug, selectedSay: '选歌失败，使用随机降级' });
+      emit({ type: 'dj.debug', ...phase3Debug, selectedSay: '选歌失败，使用随机降级' });
       debugBroadcastSent = true;
     } catch (err) {
       logger.warn(
@@ -535,12 +540,12 @@ ${candidateList}
 
   if (fallbackIds.length === 0) {
     logger.warn('DJ pick-next fallback: no candidates');
-    broadcastToUser(userId, { type: 'dj.pick-next.done', added: false, reason: 'no-candidates' });
+    emit({ type: 'dj.pick-next.done', added: false, reason: 'no-candidates' });
     return;
   }
 
   if (!debugBroadcastSent) {
-    broadcastToUser(userId, {
+    emit({
       type: 'dj.debug',
       likedSample: [],
       sqRaw: '',
@@ -560,7 +565,7 @@ ${candidateList}
 
   if (pickedDetails.length === 0) {
     logger.warn('DJ pick-next fallback: failed to fetch track details');
-    broadcastToUser(userId, { type: 'dj.pick-next.done', added: false, reason: 'no-candidates' });
+    emit({ type: 'dj.pick-next.done', added: false, reason: 'no-candidates' });
     return;
   }
 
@@ -568,17 +573,17 @@ ${candidateList}
   for (const pick of pickedDetails) {
     addToQueue(userId, { ncmId: String(pick.id), name: pick.name, artists: pick.artists }, 'end');
   }
-  broadcastAppended(userId, prevQueueLength);
+  broadcastAppended(userId, prevQueueLength, emit);
 }
 
-function broadcastAppended(userId: string, prevQueueLength: number): void {
+function broadcastAppended(userId: string, prevQueueLength: number, emit: DjEventSink): void {
   const q = getQueue(userId);
   const newTracks = q.slice(prevQueueLength);
   for (const track of newTracks) {
-    broadcastToUser(userId, { type: 'queue-appended', track });
+    emit({ type: 'queue-appended', track });
   }
   const names = newTracks.map((t) => t.name).filter((n): n is string => Boolean(n));
-  broadcastToUser(userId, {
+  emit({
     type: 'dj.pick-next.done',
     added: newTracks.length > 0,
     trackName: names.join('、') || undefined
@@ -627,7 +632,9 @@ export function createSseDjPickNextHandler(opts: DjNextOptions) {
     const userId = (req as AuthedRequest).userId;
     const ncmClient = getScopedNcmClient(req, opts.ncmClient);
     initSseRes(res);
-    const sendSse = (type: string, payload: Record<string, unknown>): void => {
+    const emit = (payload: Record<string, unknown>): void => {
+      const type = typeof payload.type === 'string' ? payload.type : 'message';
+      broadcastToUser(userId, payload);
       try { writeSseEvent(res, type, payload); } catch { /* disconnect */ }
     };
     if (isRunning.get(userId)) {
@@ -637,13 +644,14 @@ export function createSseDjPickNextHandler(opts: DjNextOptions) {
     isRunning.set(userId, true);
     const controller = new AbortController();
     req.on('close', () => controller.abort(new Error('client-disconnected')));
-    // Reuse existing doPickNext but pass a modified broadcastToUser wrapper
-    // Since doPickNext calls broadcastToUser internally, we wrap it here.
-    // For now, just call the existing function which broadcasts via WS.
-    // The broadcast module will be adapted in Task 6 to route to SSE.
-    // For the SSE path, we run the existing job but don't get callbacks yet.
-    // Instead: run the full doPickNext, capture the output, and send via SSE.
-    void doPickNext(userId, ncmClient).then(() => {
+    const jobTimer = new Promise<'timeout'>((resolve) =>
+      setTimeout(() => resolve('timeout'), JOB_TIMEOUT_MS)
+    );
+    void Promise.race([doPickNext(userId, ncmClient, emit).then(() => 'done' as const), jobTimer]).then((result) => {
+      if (result === 'timeout' && !res.writableEnded) {
+        endSse(res, 'dj.pick-next.done', { added: false, reason: 'timeout' });
+        return;
+      }
       if (!res.writableEnded) res.end();
     }).catch((err: Error) => {
       if (!res.writableEnded) endSse(res, 'dj.pick-next.done', { added: false, reason: 'error' });

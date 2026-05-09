@@ -335,7 +335,9 @@ export function createSseSegueHandler(opts: SegueRouteOptions) {
     const requestId = randomBytes(8).toString('hex');
 
     const sendSse = (payload: Record<string, unknown>): void => {
-      writeSseEvent(res, payload.type as string, payload);
+      const eventPayload = { ...payload, requestId, clientRequestId };
+      const eventType = typeof payload.type === 'string' ? payload.type : 'message';
+      writeSseEvent(res, eventType, eventPayload);
     };
 
     const job: ActiveSegueJob = {
