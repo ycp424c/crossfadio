@@ -7,7 +7,7 @@ Crossfadio 是一个本地运行的 AI DJ Web App（Node.js + React + TypeScript
 多用户在线 AI DJ 服务，支持 JWT 认证、按用户隔离的数据存储：
 
 - Vite + React + Tailwind 前端，4 Tab（播放 / 计划 / 聊天 / 设置）
-- Node.js + Express HTTP/WS 服务，JWT 认证，公开/受保护路由分离
+- Node.js + Express HTTP/SSE 服务，JWT 认证，公开/受保护路由分离
 - SQLite（better-sqlite3）：messages、plays、plan、prefs、segues、chat_preferences、users、blocked_login_attempts
 - 每用户数据隔离（`user_id` 列 + per-user Map）
 - NCM 接入（子进程管理 + 客户端封装 + 扫码登录 + JWT 签发）
@@ -17,7 +17,7 @@ Crossfadio 是一个本地运行的 AI DJ Web App（Node.js + React + TypeScript
 - TTS 串场口播（cache-first，底铺式插入，阿里云 Qwen TTS）
 - 每日电台计划（4 时段自动生成 + 手动调整）
 - 聊天动态调整（自然语言换歌/加歌/切段）
-- DJ 自动选歌（红心歌单采样 + LLM 搜索推荐）
+- DJ 自动选歌（红心歌单采样 + LLM 搜索推荐；pick-next 通过一次性 SSE stream 返回进度与结果）
 
 ## NCM 本地 API 启动配置（开发阶段）
 

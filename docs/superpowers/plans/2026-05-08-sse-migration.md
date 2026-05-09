@@ -1,5 +1,7 @@
 # SSE Migration — 移除 WebSocket，全面迁移到 SSE
 
+**Status:** Implemented in code as of 2026-05-09. This file is a historical execution plan; unchecked task boxes below are not the live backlog. Current realtime architecture is documented in `CLAUDE.md`, and production deployment details are in `docs/ops-runbook.md`.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 将全部服务端→客户端实时推送从 WebSocket 迁移到 SSE（Server-Sent Events），同时将客户端→服务端通信改为纯 HTTP POST，彻底移除 WebSocket 依赖。

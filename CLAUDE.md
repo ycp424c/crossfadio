@@ -8,7 +8,7 @@ Multi-user AI DJ Web App. Node.js + Express BFF (JWT auth, per-user SQLite), Rea
 |-------|------|
 | Language | TypeScript (full-stack, shared zod schemas) |
 | Frontend | Vite + React 18 + Tailwind CSS 3 + zustand |
-| Backend | Node.js + Express + WebSocket (127.0.0.1) |
+| Backend | Node.js + Express HTTP + SSE (127.0.0.1) |
 | Database | better-sqlite3 (`state.db`) |
 | Audio | Web Audio API (dual-deck + GainNode + BiquadFilter) |
 | Music | NeteaseCloudMusicApi (spawned subprocess) |
@@ -46,9 +46,9 @@ src/
     views/          # Player/, Plan/, Settings/
     components/     # player/ (8 components), ui-button
     audio/          # engine, crossfade, prefetch, timeline, lyrics
-    ws/client.ts    # WebSocket client
+    sse/client.ts   # SSE client: EventSource for broadcasts, fetch streams for one-shot jobs
   shared/
-    schema.ts       # Zod schemas (DTOs, WS events, agent I/O)
+    schema.ts       # Zod schemas (DTOs, agent I/O; a few legacy WS auth types remain unused)
     types.ts
 ```
 
@@ -132,8 +132,8 @@ src/
 ### DJ / Segue / Chat
 | Method | Path | Purpose |
 |--------|------|---------|
-| POST | `/api/dj/pick-next` | DJ picks next track |
-| POST | `/api/segue/trigger` | Trigger segue generation |
+| POST | `/api/dj/pick-next` | Legacy DJ pick-next trigger (kept for compatibility; player uses `/api/sse/pick-next`) |
+| POST | `/api/segue/trigger` | Legacy segue trigger (kept for compatibility; player uses `/api/sse/segue`) |
 | GET | `/api/segue/audio/*` | Serve cached segue audio |
 | GET | `/api/messages/recent` | Recent chat messages |
 
@@ -164,7 +164,6 @@ src/
 
 
 ## Commands
-## Commands
 
 ```bash
 pnpm install          # Install dependencies
@@ -181,6 +180,8 @@ pnpm start            # Start production server
 
 Live deployment runbook (instance, paths, restart, allowlist edits, persona updates) is at [`docs/ops-runbook.md`](docs/ops-runbook.md). Read it before doing anything on the box.
 
+Production-specific topology and access details belong only in the ignored local runbook.
+
 ## Architecture Notes
 
 - **4 tabs**: Player, Plan, Chat, Settings — all mounted, visibility toggled via `display:none`
@@ -188,7 +189,7 @@ Live deployment runbook (instance, paths, restart, allowlist edits, persona upda
 - **Dual-deck audio**: `AudioContext` with A/B deck rotation, equal-energy crossfade (cos/sin curves), BiquadFilter lowpass sweep
 - **Segue timing**: d-12s trigger → d-10s prefetch → d-8s crossfade start → d-7s TTS ducking
 - **Agent**: Single-agent, 3 modes (plan/segue/chat), 6-fragment prompt assembly, zod output validation with retry
-- **Real-time push**: SSE replaces WebSocket. `GET /api/sse/events` (EventSource) for persistent queue/plan events. `POST /api/sse/{chat,segue,pick-next}` (fetch+ReadableStream) for one-shot streaming tasks with AbortController on client disconnect.
+- **Real-time push**: SSE replaces WebSocket. `GET /api/sse/events` (EventSource) for persistent queue/plan events. `POST /api/sse/{chat,segue,pick-next}` (fetch+ReadableStream) for one-shot streaming tasks with AbortController on client disconnect. The player guards `pick-next` with a local in-flight ref so long-running selection opens only one SSE stream at a time.
 - **NCM auth**: QR code login → JWT token (HS256 via `jose`). Cookie encrypted with AES-256-GCM in `users` table. `authMiddleware` + `userScopeMiddleware` on all protected routes. Whitelist management routes additionally require `adminMiddleware` (checks `CROSSFADIO_ADMIN_NCM_ID`).
 - **Whitelist**: `allowlist.json` in app data dir controls which NCM user IDs can log in. Admin can manage via Settings UI. Removal also deletes `users` record to immediately revoke existing sessions. `userScopeMiddleware` double-checks `isAllowed()` on every request.
 - **Per-user isolation**: All DB tables have `user_id` column. Queue/location are per-user `Map`s. User corpus files under `users/<ncmId>/`.
