@@ -62,6 +62,7 @@ ${likedTracks || '（暂无红心歌曲）'}
 当前时间：${f.env.localTime}（${f.env.nowIso}）
 天气：${weather}
 正在播放：${nowPlaying}
+${f.env.dailyTheme ? `<daily_theme>${f.env.dailyTheme}</daily_theme>\n` : ''}
 </env>`;
 }
 

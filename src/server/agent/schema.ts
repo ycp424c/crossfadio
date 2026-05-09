@@ -91,7 +91,8 @@ export const fragmentsSchema = z.object({
     nowIso: z.string(),
     localTime: z.string(),
     weather: z.object({ tempC: z.number(), desc: z.string() }).nullable(),
-    nowPlaying: nowPlayingSchema.nullable()
+    nowPlaying: nowPlayingSchema.nullable(),
+    dailyTheme: z.string().optional(),
   }),
 
   // ④ memory

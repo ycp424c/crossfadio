@@ -13,6 +13,7 @@ import { searchArtistsForStyle } from '../../web-search.js';
 import { getQueue, addToQueue } from '../../store/queue.js';
 import { broadcastToUser } from '../broadcast.js';
 import { getLogger } from '../../logger.js';
+import { getOrGenerateDailyTheme } from '../../daily-theme.js';
 
 type AuthedRequest = Request & { userId: string; ncmClient: NcmClient };
 
@@ -195,6 +196,9 @@ async function runPickNextJob(userId: string, ncmClient: NcmClient): Promise<voi
 async function doPickNext(userId: string, ncmClient: NcmClient): Promise<void> {
   const logger = getLogger();
   let debugBroadcastSent = false;
+  // Trigger daily theme generation if not already cached (non-blocking for this request)
+  const dailyThemePromise = getOrGenerateDailyTheme();
+
 
   // Refresh full liked-song ID list at most once per day
   const now = Date.now();
@@ -269,9 +273,16 @@ async function doPickNext(userId: string, ncmClient: NcmClient): Promise<void> {
         .map((p) => `${p.song_name ?? '?'} — ${p.artist_name ?? '?'}`)
         .join('\n');
       const weatherStr = weather ? `${weather.tempC}°C，${weather.desc}` : '未知';
+      // Resolve daily theme — either cached or freshly generated
+      const dailyTheme = await dailyThemePromise;
+      const themeContext = dailyTheme
+        ? `\n今日主题：${dailyTheme.theme}\n主题关键词：${dailyTheme.keywords.join('、')}\n`
+        : '';
+
       const stylePrompt =
-        `当前时间：${localTime}\n天气：${weatherStr}\n最近播放：\n${recentPlayNames}\n\n` +
-        `请根据以上信息，推荐 2-3 个适合当下情境的音乐风格方向。` +
+        `当前时间：${localTime}\n天气：${weatherStr}\n最近播放：\n${recentPlayNames}\n` +
+        themeContext +
+        `\n请根据以上信息（包括今日主题），推荐 2-3 个适合当下情境的音乐风格方向。` +
         `对每个风格，列出 3-5 位可以在网易云音乐搜到的代表艺人（华人艺人和海外艺人各半，保证多样性）。` +
         `style 字段用英文关键词方便检索，artists 里同时包含中外艺人。` +
         `直接返回 JSON 对象，格式如下：\n` +
@@ -369,6 +380,26 @@ async function doPickNext(userId: string, ncmClient: NcmClient): Promise<void> {
           searchQueries.push(a);
         }
       }
+      // Mix 1-2 daily theme keywords into search queries (probabilistic, ~50% per keyword)
+      if (dailyTheme && dailyTheme.keywords.length > 0 && searchQueries.length < QUERY_CAP) {
+        const themeCandidates = dailyTheme.keywords.filter(
+          (k) => !mergedQueries.has(k.toLowerCase())
+        );
+        let themeAdded = 0;
+        const THEME_QUOTA = 2;
+        for (const k of themeCandidates) {
+          if (searchQueries.length >= QUERY_CAP || themeAdded >= THEME_QUOTA) break;
+          if (Math.random() < 0.5) {
+            mergedQueries.add(k.toLowerCase());
+            searchQueries.push(k);
+            themeAdded++;
+          }
+        }
+        if (themeAdded > 0) {
+          logger.info({ themeKeywordsAdded: themeAdded }, 'DJ pick-next: mixed daily theme keywords into search queries');
+        }
+      }
+
 
       // Fallback: if we don't have enough search queries, use style keywords directly
       if (searchQueries.length < 2 && styleConcepts.length > 0) {
@@ -422,10 +453,14 @@ async function doPickNext(userId: string, ncmClient: NcmClient): Promise<void> {
         .join('\n');
       const weatherStr2 = weather ? `${weather.tempC}°C，${weather.desc}` : '未知';
 
+      const themePickNote = dailyTheme
+        ? `\n## 今日主题\n${dailyTheme.theme}\n\n选曲时可以优先考虑契合今日主题氛围的歌曲，但不必强求。主题只是参考方向。\n`
+        : '';
+
       const pickSystemPrompt = `${corpus.djPersona || 'You are a DJ.'}
 
 ## 当前任务：DJ 自动选曲
-
+${themePickNote}
 从候选歌曲列表中挑选最适合当前情境的 2 首，返回它们的候选歌曲 id。
 不要重复最近刚播过的歌曲。say 字段用一句话中文说明选曲理由。
 优先选择艺人名像真实人名或乐队的歌曲，避开艺人名明显是厂牌、合集、影视原声、或自动生成的选项（如"群星""Various Artists""佚名""原声带"等）。
@@ -437,10 +472,14 @@ async function doPickNext(userId: string, ncmClient: NcmClient): Promise<void> {
   "pickIds": ["候选歌曲id1", "候选歌曲id2"]
 }`;
 
+      const themeContextUser = dailyTheme
+        ? `今日主题：${dailyTheme.theme}\n`
+        : '';
+
       const pickUserPrompt = `<context>
 当前时间：${localTime}
 天气：${weatherStr2}
-</context>
+${themeContextUser}</context>
 
 <候选歌曲列表>
 ${candidateList}

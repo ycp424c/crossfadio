@@ -248,6 +248,21 @@ export async function saveSettings(payload: SaveSettingsPayload): Promise<void> 
   if (!result.ok) throw new Error('Failed to save settings');
 }
 
+export async function analyzeTaste(): Promise<{ ok: boolean; taste: string; message?: string }> {
+  return requestJson<{ ok: boolean; taste: string; message?: string }>('/api/settings/analyze-taste', { method: 'POST' });
+}
+
+export type PlayerContextResponse = {
+  ok: boolean;
+  theme: { theme: string; keywords: string[] } | null;
+  taste: string;
+};
+
+export async function getPlayerContext(): Promise<PlayerContextResponse> {
+  return requestJson<PlayerContextResponse>('/api/settings/player-context');
+}
+
+
 // ── Whitelist ───────────────────────────────────────────────────────────────────
 
 export type BlockedAttempt = {
