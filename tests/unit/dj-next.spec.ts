@@ -42,6 +42,13 @@ describe('DJ pick-next diagnostics', () => {
       responseBody: '{"error":{"message":"bad schema"}}'
     });
   });
+
+  it('includes exclusion lists in DJ debug events for browser diagnostics', () => {
+    const source = fs.readFileSync(path.join(root, 'src/server/http/routes/djNext.ts'), 'utf-8');
+
+    expect(source).toContain('excludedIds: Array.from(excludeState.ids)');
+    expect(source).toContain('excludedDedupeKeys: Array.from(excludeState.dedupeKeys)');
+  });
 });
 
 describe('chat queue directives', () => {

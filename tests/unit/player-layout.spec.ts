@@ -123,6 +123,18 @@ describe('player layout', () => {
     expect(triggerBlock).toContain('djPickNextInFlightRef.current = false');
   });
 
+  it('logs DJ pick-next exclusion lists from debug events to the browser console', () => {
+    const source = fs.readFileSync(path.join(root, 'src/renderer/views/Player/PlayerView.tsx'), 'utf-8');
+    const debugStart = source.indexOf("type === 'dj.debug'");
+    const doneStart = source.indexOf("type === 'dj.pick-next.done'", debugStart);
+    const debugBlock = source.slice(debugStart, doneStart);
+
+    expect(debugBlock).toContain('console.info');
+    expect(debugBlock).toContain('DJ pick-next exclusion list');
+    expect(debugBlock).toContain('data.excludedIds');
+    expect(debugBlock).toContain('data.excludedDedupeKeys');
+  });
+
   it('includes clientRequestId in direct SSE segue payloads before the player filters them', () => {
     const source = fs.readFileSync(path.join(root, 'src/server/http/routes/segue.ts'), 'utf-8');
     const sseHandlerStart = source.indexOf('export function createSseSegueHandler');

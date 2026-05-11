@@ -498,6 +498,8 @@ async function doPickNext(
         sqRaw: sqRawSay,
         searchQueries,
         searchedTracks: searchedTracks.map((t) => ({ id: t.id, name: t.name, artist: t.artist })),
+        excludedIds: Array.from(excludeState.ids),
+        excludedDedupeKeys: Array.from(excludeState.dedupeKeys),
         totalCandidates: allCandidates.length
       };
 
@@ -650,6 +652,8 @@ ${candidateList}
       sqRaw: '',
       searchQueries: [],
       searchedTracks: [],
+      excludedIds: Array.from(excludeState.ids),
+      excludedDedupeKeys: Array.from(excludeState.dedupeKeys),
       totalCandidates: fallbackIds.length,
       selectedSay: '随机 fallback（LLM 未配置或选歌失败）'
     });

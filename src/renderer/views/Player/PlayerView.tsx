@@ -855,6 +855,14 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
           try {
             for await (const { type, data } of streamPickNext({ queue, currentIndex })) {
               if (type === 'dj.debug') {
+                const excludedIds = Array.isArray(data.excludedIds) ? data.excludedIds as string[] : [];
+                const excludedDedupeKeys = Array.isArray(data.excludedDedupeKeys) ? data.excludedDedupeKeys as string[] : [];
+                console.info('[Crossfadio] DJ pick-next exclusion list', {
+                  excludedIds,
+                  excludedDedupeKeys,
+                  excludedIdCount: excludedIds.length,
+                  excludedDedupeKeyCount: excludedDedupeKeys.length
+                });
                 setDjPickLog({
                   likedSample: Array.isArray(data.likedSample) ? data.likedSample as DjTrackSample[] : [],
                   searchQueries: Array.isArray(data.searchQueries) ? data.searchQueries as string[] : [],
