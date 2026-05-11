@@ -8,7 +8,7 @@ Multi-user AI DJ Web App. Node.js + Express BFF (JWT auth, per-user SQLite), Rea
 |-------|------|
 | Language | TypeScript (full-stack, shared zod schemas) |
 | Frontend | Vite + React 18 + Tailwind CSS 3 + zustand |
-| Backend | Node.js + Express + WebSocket (127.0.0.1) |
+| Backend | Node.js + Express + SSE (real-time push) |
 | Database | better-sqlite3 (`state.db`) |
 | Audio | Web Audio API (dual-deck + GainNode + BiquadFilter) |
 | Music | NeteaseCloudMusicApi (spawned subprocess) |
@@ -46,9 +46,8 @@ src/
     views/          # Player/, Plan/, Settings/
     components/     # player/ (8 components), ui-button
     audio/          # engine, crossfade, prefetch, timeline, lyrics
-    ws/client.ts    # WebSocket client
   shared/
-    schema.ts       # Zod schemas (DTOs, WS events, agent I/O)
+    schema.ts       # Zod schemas (DTOs, SSE events, agent I/O)
     types.ts
 ```
 
@@ -85,6 +84,7 @@ src/
 | `CROSSFADIO_TTS_VOICE_DEFAULT` | (none) | Default TTS voice, falls back to 'Cherry' |
 | `CROSSFADIO_HOST` | `127.0.0.1` | Server bind address |
 | `CROSSFADIO_ALLOWED_ORIGINS` | (none) | Comma-separated CORS origins beyond localhost |
+| `CROSSFADIO_DAILY_THEME_TIMEOUT_MS` | `15000` | Daily theme LLM generation timeout (ms) |
 | `CROSSFADIO_ADMIN_NCM_ID` | (none) | NCM user ID with whitelist admin privileges |
 
 ## HTTP API Routes
@@ -157,13 +157,16 @@ src/
 | POST | `/api/sse/pick-next` | JWT | DJ pick-next + SSE stream response |
 
 ### Settings & Location
-| PUT | `/api/settings` | JWT | Save TTS voice preference |
+| Method | Path | Auth | Purpose |
+|--------|------|------|---------|
+| GET | `/api/settings` | JWT | Get settings (LLM/TTS config + dailyThemeEnabled) |
+| PUT | `/api/settings` | JWT | Save preferences (TTS voice, dailyThemeEnabled) |
+| GET | `/api/settings/player-context` | JWT | Player context (daily theme + taste) |
+| POST | `/api/settings/analyze-taste` | JWT | Analyze music taste from liked songs |
 | POST | `/api/location` | JWT | Set browser geolocation |
 
-> **Note:** LLM/TTS `baseUrl`, `model`, and `apiKey` come from env vars (`CROSSFADIO_LLM_*`, `CROSSFADIO_TTS_*`), not from the Settings UI. The Settings UI only exposes TTS voice selection.
+> **Note:** LLM/TTS `baseUrl`, `model`, and `apiKey` come from env vars (`CROSSFADIO_LLM_*`, `CROSSFADIO_TTS_*`), not from the Settings UI. The Settings UI exposes TTS voice selection and daily theme toggle.
 
-
-## Commands
 ## Commands
 
 ```bash
@@ -179,7 +182,7 @@ pnpm start            # Start production server
 
 ## Production
 
-Live deployment runbook (instance, paths, restart, allowlist edits, persona updates) is at [`docs/ops-runbook.md`](docs/ops-runbook.md). Read it before doing anything on the box.
+Live deployment runbook (instance, paths, restart, allowlist edits, persona updates) is at [`docs/ops-runbook.md`](docs/ops-runbook.md). Deploy with `./scripts/deploy.sh` (build → OSS → ECS → restart). Read it before doing anything on the box.
 
 ## Architecture Notes
 
@@ -188,8 +191,9 @@ Live deployment runbook (instance, paths, restart, allowlist edits, persona upda
 - **Dual-deck audio**: `AudioContext` with A/B deck rotation, equal-energy crossfade (cos/sin curves), BiquadFilter lowpass sweep
 - **Segue timing**: d-12s trigger → d-10s prefetch → d-8s crossfade start → d-7s TTS ducking
 - **Agent**: Single-agent, 3 modes (plan/segue/chat), 6-fragment prompt assembly, zod output validation with retry
-- **Real-time push**: SSE replaces WebSocket. `GET /api/sse/events` (EventSource) for persistent queue/plan events. `POST /api/sse/{chat,segue,pick-next}` (fetch+ReadableStream) for one-shot streaming tasks with AbortController on client disconnect.
+- **Real-time push**: SSE via `GET /api/sse/events` (EventSource) for persistent queue/plan events. `POST /api/sse/{chat,segue,pick-next}` (fetch+ReadableStream) for one-shot streaming tasks with AbortController on client disconnect.
 - **NCM auth**: QR code login → JWT token (HS256 via `jose`). Cookie encrypted with AES-256-GCM in `users` table. `authMiddleware` + `userScopeMiddleware` on all protected routes. Whitelist management routes additionally require `adminMiddleware` (checks `CROSSFADIO_ADMIN_NCM_ID`).
 - **Whitelist**: `allowlist.json` in app data dir controls which NCM user IDs can log in. Admin can manage via Settings UI. Removal also deletes `users` record to immediately revoke existing sessions. `userScopeMiddleware` double-checks `isAllowed()` on every request.
 - **Per-user isolation**: All DB tables have `user_id` column. Queue/location are per-user `Map`s. User corpus files under `users/<ncmId>/`.
+- **Daily theme**: LLM-generated daily radio theme (holidays, solar terms, artist anniversaries). Per-user toggle in Settings (pref `dailyTheme.enabled`). When disabled, DJ pick-next, plan, and segue skip theme context. Timeout controlled by `CROSSFADIO_DAILY_THEME_TIMEOUT_MS` (default 15s).
 - **Responsive layout**: `md` = 768px breakpoint, single-column mobile (grid-cols-1), desktop preserves 12-col grid. NCM auth uses full-screen sheet on mobile via `useMediaQuery`. Status panel collapsed to one-line summary on mobile. `viewport-fit=cover` for iPhone safe areas.

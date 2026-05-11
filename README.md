@@ -16,6 +16,7 @@ Crossfadio 是一个本地运行的 AI DJ Web App（Node.js + React + TypeScript
 - AI Agent（plan/segue/chat 三模式，OpenAI 兼容 LLM，env var 配置）
 - TTS 串场口播（cache-first，底铺式插入，阿里云 Qwen TTS）
 - 每日电台计划（4 时段自动生成 + 手动调整）
+- 每日主题系统（LLM 生成，可单独开关）
 - 聊天动态调整（自然语言换歌/加歌/切段）
 - DJ 自动选歌（红心歌单采样 + LLM 搜索推荐）
 
@@ -86,7 +87,7 @@ pnpm start
 - 数据目录下放 `allowlist.json`（数组，允许登录的 NCM 用户 ID）
 - 受保护路由要求 `Authorization: Bearer <jwt>`，扫码登录后从 `/api/ncm/login/status` 拿到 token
 
-实际线上部署、重启、加白名单、改 persona 等操作流程见 [`docs/ops-runbook.md`](docs/ops-runbook.md)。
+实际线上部署、重启、加白名单、改 persona 等操作流程见 [`docs/ops-runbook.md`](docs/ops-runbook.md)。日常部署使用 `./scripts/deploy.sh`（构建 → OSS 中转 → ECS 部署）。
 
 ## 数据目录
 
