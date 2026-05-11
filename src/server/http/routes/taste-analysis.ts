@@ -6,6 +6,7 @@ import { resolveLlmConfig } from '../../llm/config.js';
 import { LlmClient, type LlmMessage } from '../../llm/client.js';
 import type { NcmClient } from '../../ncm/client.js';
 import { getLogger } from '../../logger.js';
+import { getPref, setPref } from '../../store/prefs.js';
 
 type AuthedRequest = Request & { userId: string; ncmClient: NcmClient };
 
@@ -32,94 +33,118 @@ const SYSTEM_PROMPT = `你是一个音乐品味分析师。根据用户的红心
 - 喜欢：xxx
 - 不想听：xxx`;
 
+/**
+ * Core taste analysis logic. Reusable by both the HTTP handler and background scheduler.
+ * @returns The taste text on success, null on failure (errors are logged internally).
+ */
+export async function runTasteAnalysis(userId: string, ncmClient: NcmClient): Promise<string | null> {
+  const logger = getLogger();
+
+  // 1. Fetch liked song IDs
+  let ids: string[];
+  try {
+    ids = await ncmClient.getLikedSongIds();
+  } catch (err) {
+    logger.error({ err, userId }, 'Failed to fetch liked song IDs for taste analysis');
+    return null;
+  }
+
+  if (ids.length === 0) {
+    logger.info({ userId }, 'Taste analysis skipped: no liked songs');
+    return null;
+  }
+
+  // 2. Sample up to LIKED_SAMPLE_LIMIT
+  const sampledIds = ids.slice(0, LIKED_SAMPLE_LIMIT);
+
+  // 3. Fetch song details
+  let songs: Array<{ name: string; artists: string[] }>;
+  try {
+    const details = await ncmClient.getSongDetails(sampledIds);
+    songs = details.map((t) => ({
+      name: t.name,
+      artists: (t as { name: string; artists: string[] }).artists ?? []
+    }));
+  } catch (err) {
+    logger.error({ err, userId }, 'Failed to fetch song details for taste analysis');
+    return null;
+  }
+
+  if (songs.length === 0) {
+    logger.warn({ userId }, 'Taste analysis: no song details available');
+    return null;
+  }
+
+  // 4. Build LLM prompt
+  const songListText = songs
+    .map((s, i) => `${i + 1}. ${s.name} - ${s.artists.join(' / ') || '未知艺人'}`)
+    .join('\n');
+
+  const userMessage = `以下用户收藏了 ${ids.length} 首歌曲（以下是前 ${songs.length} 首样本）：\n\n${songListText}\n\n请分析该用户的音乐品味。`;
+
+  // 5. Call LLM
+  const llmConfig = resolveLlmConfig();
+  if (!llmConfig) {
+    logger.warn({ userId }, 'Taste analysis skipped: LLM not configured');
+    return null;
+  }
+
+  const client = new LlmClient(llmConfig);
+  const messages: LlmMessage[] = [
+    { role: 'system', content: SYSTEM_PROMPT },
+    { role: 'user', content: userMessage }
+  ];
+
+  try {
+    const result = await client.complete(messages, {
+      temperature: 0.7,
+      maxTokens: 1000,
+      signal: AbortSignal.timeout(getTasteAnalysisTimeoutMs())
+    });
+    const taste = result.content.trim();
+
+    // 6. Save to user corpus taste.md
+    const userDir = resolveUserDir(userId);
+    if (!fs.existsSync(userDir)) {
+      fs.mkdirSync(userDir, { recursive: true });
+    }
+    fs.writeFileSync(path.join(userDir, 'taste.md'), taste, 'utf-8');
+
+    logger.info({ userId, likedCount: ids.length, sampledCount: songs.length }, 'Taste analysis completed and saved');
+    return taste;
+  } catch (err) {
+    // Throw abort/timeout errors so callers can distinguish (504 vs 502)
+    if (isAbortError(err)) throw err;
+    logger.error({ err, userId }, 'Taste analysis failed');
+    return null;
+  }
+}
+
 export function createAnalyzeTasteHandler() {
   return async (req: Request, res: Response): Promise<void> => {
     const { userId, ncmClient } = req as AuthedRequest;
 
-    // 1. Fetch liked song IDs
-    let ids: string[];
     try {
-      ids = await ncmClient.getLikedSongIds();
-    } catch (err) {
-      getLogger().error({ err, userId }, 'Failed to fetch liked song IDs');
-      res.status(502).json({ ok: false, message: '无法获取红心歌单，请确认网易云已登录' });
-      return;
-    }
+      const taste = await runTasteAnalysis(userId, ncmClient);
 
-    if (ids.length === 0) {
-      res.json({ ok: true, taste: '', message: '红心歌单为空，无法分析' });
-      return;
-    }
-
-    // 2. Sample up to LIKED_SAMPLE_LIMIT songs
-    const sampledIds = ids.slice(0, LIKED_SAMPLE_LIMIT);
-
-    // 3. Fetch song details
-    let songs: Array<{ name: string; artists: string[] }>;
-    try {
-      const details = await ncmClient.getSongDetails(sampledIds);
-      songs = details.map((t) => ({
-        name: t.name,
-        artists: (t as { name: string; artists: string[] }).artists ?? []
-      }));
-    } catch (err) {
-      getLogger().error({ err, userId }, 'Failed to fetch song details');
-      res.status(502).json({ ok: false, message: '无法获取歌曲详情' });
-      return;
-    }
-
-    if (songs.length === 0) {
-      res.json({ ok: true, taste: '', message: '无法获取歌曲信息' });
-      return;
-    }
-
-    // 4. Build LLM prompt
-    const songListText = songs
-      .map((s, i) => `${i + 1}. ${s.name} - ${s.artists.join(' / ') || '未知艺人'}`)
-      .join('\n');
-
-    const userMessage = `以下用户收藏了 ${ids.length} 首歌曲（以下是前 ${songs.length} 首样本）：\n\n${songListText}\n\n请分析该用户的音乐品味。`;
-
-    // 5. Call LLM
-    const llmConfig = resolveLlmConfig();
-    if (!llmConfig) {
-      res.status(503).json({ ok: false, message: 'LLM 未配置，无法分析' });
-      return;
-    }
-
-    const client = new LlmClient(llmConfig);
-    const messages: LlmMessage[] = [
-      { role: 'system', content: SYSTEM_PROMPT },
-      { role: 'user', content: userMessage }
-    ];
-
-    try {
-      const result = await client.complete(messages, {
-        temperature: 0.7,
-        maxTokens: 1000,
-        signal: AbortSignal.timeout(getTasteAnalysisTimeoutMs())
-      });
-      const taste = result.content.trim();
-
-      // 6. Save to user corpus taste.md
-      const userDir = resolveUserDir(userId);
-      if (!fs.existsSync(userDir)) {
-        fs.mkdirSync(userDir, { recursive: true });
+      if (taste === null) {
+        res.status(502).json({ ok: false, message: '品味分析失败，请稍后重试' });
+        return;
       }
-      const tastePath = path.join(userDir, 'taste.md');
-      fs.writeFileSync(tastePath, taste, 'utf-8');
 
-      getLogger().info({ userId, likedCount: ids.length, sampledCount: songs.length }, 'Taste analysis saved');
+      if (taste === '') {
+        res.json({ ok: true, taste: '', message: '红心歌单为空，无法分析' });
+        return;
+      }
 
       res.json({ ok: true, taste });
     } catch (err) {
       if (isAbortError(err)) {
-        getLogger().warn({ err, userId }, 'LLM taste analysis timed out');
+        getLogger().warn({ err, userId }, 'Taste analysis timed out');
         res.status(504).json({ ok: false, message: '品味分析超时，请稍后重试' });
-        return;
+      } else {
+        throw err;
       }
-      getLogger().error({ err, userId }, 'LLM taste analysis failed');
-      res.status(502).json({ ok: false, message: '品味分析失败，请稍后重试' });
     }
   };
 }
@@ -127,6 +152,47 @@ export function createAnalyzeTasteHandler() {
 function getTasteAnalysisTimeoutMs(): number {
   const raw = Number(process.env.CROSSFADIO_TASTE_ANALYSIS_TIMEOUT_MS);
   return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_TASTE_ANALYSIS_TIMEOUT_MS;
+}
+
+// ── Scheduled taste analysis ──────────────────────────────────────────────────
+
+/** Per-user in-flight task set to prevent duplicate concurrent analyses. */
+const inFlightTaste = new Set<string>();
+
+const TASTE_REFRESH_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+
+/**
+ * Fire-and-forget: if taste analysis hasn't been run for this user, or was
+ * last run > 7 days ago, spawn an async analysis. Does not block or throw.
+ */
+export function scheduleTasteAnalysisIfDue(userId: string, ncmClient: NcmClient): void {
+  // Prevent duplicate concurrent runs for the same user
+  if (inFlightTaste.has(userId)) return;
+
+  const lastRunStr = getPref<string>(userId, 'tasteAnalysis.lastRun');
+  if (lastRunStr) {
+    const lastRun = new Date(lastRunStr).getTime();
+    if (Number.isFinite(lastRun) && (Date.now() - lastRun) < TASTE_REFRESH_INTERVAL_MS) {
+      return; // not due yet
+    }
+  }
+
+  inFlightTaste.add(userId);
+  getLogger().info({ userId, lastRun: lastRunStr ?? 'never' }, 'Scheduling background taste analysis');
+
+  runTasteAnalysis(userId, ncmClient)
+    .then((taste) => {
+      // Only record timestamp if analysis actually produced a result
+      if (taste !== null) {
+        setPref(userId, 'tasteAnalysis.lastRun', new Date().toISOString());
+      }
+    })
+    .catch((err) => {
+      getLogger().error({ err, userId }, 'Background taste analysis crashed');
+    })
+    .finally(() => {
+      inFlightTaste.delete(userId);
+    });
 }
 
 function isAbortError(err: unknown): boolean {
