@@ -321,18 +321,6 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
     } else {
       void loadLikedQueue();
     }
-    if ('geolocation' in navigator) {
-      navigator.geolocation.getCurrentPosition(
-        (pos) => {
-          void updateLocation(pos.coords.latitude, pos.coords.longitude)
-            .then(() => {
-              if (sseToken) void refreshPlayerContext().catch(() => {});
-            })
-            .catch(() => {});
-        },
-        () => {} // permission denied or unavailable — weather falls back to auto
-      );
-    }
   }, []);
 
   useEffect(() => {
@@ -354,6 +342,23 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
         setDailyThemeEnabled(settings.dailyThemeEnabled);
       })
       .catch(() => {});
+  }, [sseToken]);
+
+  useEffect(() => {
+    if (!sseToken || !('geolocation' in navigator)) {
+      return;
+    }
+
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        void updateLocation(pos.coords.latitude, pos.coords.longitude)
+          .then(() => {
+            void refreshPlayerContext().catch(() => {});
+          })
+          .catch(() => {});
+      },
+      () => {} // permission denied or unavailable — weather falls back to auto
+    );
   }, [sseToken]);
 
   useEffect(() => {

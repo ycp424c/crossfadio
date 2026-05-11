@@ -160,6 +160,23 @@ describe('player layout', () => {
     expect(source).not.toContain('void refreshSession();\n    void getPlayerContext()');
   });
 
+  it('reports browser location only after auth token is available and then refreshes player context', () => {
+    const source = fs.readFileSync(path.join(root, 'src/renderer/views/Player/PlayerView.tsx'), 'utf-8');
+    const locationCall = source.indexOf('navigator.geolocation.getCurrentPosition');
+    const locationEffectStart = source.lastIndexOf('useEffect(() => {', locationCall);
+    const locationEffectEnd = source.indexOf('  }, [sseToken]);', locationCall);
+    const locationEffect = source.slice(locationEffectStart, locationEffectEnd) + '  }, [sseToken]);';
+
+    expect(locationCall).toBeGreaterThan(-1);
+    expect(locationEffectStart).toBeGreaterThan(-1);
+    expect(locationEffect).toContain('if (!sseToken');
+    expect(locationEffect).toContain('updateLocation(pos.coords.latitude, pos.coords.longitude)');
+    expect(locationEffect).toContain('.then(() => {');
+    expect(locationEffect).toContain('void refreshPlayerContext().catch(() => {});');
+    expect(locationEffect).toContain('  }, [sseToken]);');
+    expect(source.slice(locationCall, locationEffectEnd)).not.toContain('  }, []);');
+  });
+
   it('places the daily theme recommendation toggle in the player theme banner', () => {
     const source = fs.readFileSync(path.join(root, 'src/renderer/views/Player/PlayerView.tsx'), 'utf-8');
     const bannerStart = source.indexOf('{/* Daily Theme Banner */}');
