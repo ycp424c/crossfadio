@@ -268,6 +268,7 @@ export async function analyzeTaste(): Promise<{ ok: boolean; taste: string; mess
 export type PlayerContextResponse = {
   ok: boolean;
   theme: { theme: string; keywords: string[] } | null;
+  weather: { location: string; tempC: number; desc: string } | null;
   taste: string;
 };
 

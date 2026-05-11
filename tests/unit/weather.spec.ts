@@ -31,6 +31,6 @@ describe('fetchWeather', () => {
     }));
     const { fetchWeather } = await import('../../src/server/weather');
     const result = await fetchWeather();
-    expect(result).not.toBeNull();
+    expect(result).toMatchObject({ tempC: 20, desc: 'Sunny', location: 'auto' });
   });
 });

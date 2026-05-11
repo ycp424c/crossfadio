@@ -4,6 +4,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { resetConfigForTest } from '../../src/server/config';
 import { _resetForTest as resetDailyThemeForTest } from '../../src/server/daily-theme';
+import { setLocation } from '../../src/server/store/location';
 import { initDb, _resetDbForTest } from '../../src/server/store/db';
 import {
   createGetSettingsHandler,
@@ -90,6 +91,32 @@ describe('settings routes', () => {
 });
 
 describe('settings player context route', () => {
+  it('includes the weather location and current weather in player context', async () => {
+    setLocation('test-user', 31.2304, 121.4737);
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).includes('wttr.in')) {
+        return new Response(JSON.stringify({
+          current_condition: [{ temp_C: '18', weatherDesc: [{ value: 'Partly cloudy' }] }]
+        }), { status: 200 });
+      }
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: JSON.stringify({ theme: '雨后城市漫步', keywords: ['city pop'] }) } }],
+        model: 'test-model'
+      }), { status: 200 });
+    }));
+
+    const handler = createGetPlayerContextHandler();
+    const res = createJsonResponse();
+
+    await handler({ userId: 'test-user' } as never, res as never);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toMatchObject({
+      ok: true,
+      weather: { location: '31.2304,121.4737', tempC: 18, desc: 'Partly cloudy' }
+    });
+  });
+
   it('generates today theme when player context is requested before DJ pick-next warms the cache', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
       choices: [{ message: { content: JSON.stringify({ theme: '雨后城市漫步', keywords: ['city pop', '雨天'] }) } }],

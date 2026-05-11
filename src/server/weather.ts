@@ -2,6 +2,7 @@ import { getLogger } from './logger.js';
 import { getLocation } from './store/location.js';
 
 export type WeatherResult = {
+  location: string;
   tempC: number;
   desc: string;
 };
@@ -39,7 +40,7 @@ export async function fetchWeather(userId?: string): Promise<WeatherResult | nul
     const tempC = parseFloat(current.temp_C ?? '0');
     const desc = current.weatherDesc?.[0]?.value ?? '';
 
-    return { tempC, desc };
+    return { location: locationStr, tempC, desc };
   } catch (err) {
     getLogger().debug({ err }, 'Weather fetch failed, degrading to null');
     return null;

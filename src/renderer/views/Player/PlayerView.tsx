@@ -3,7 +3,9 @@ import {
   CalendarDays,
   ChevronDown,
   ChevronUp,
+  CloudSun,
   LogOut,
+  MapPin,
   Palette,
   QrCode,
   ScanSearch,
@@ -113,6 +115,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
   const [showNcmSheet, setShowNcmSheet] = useState(false);
   const [sseToken, setSseToken] = useState<string | null>(() => getStoredToken());
   const [dailyTheme, setDailyTheme] = useState<{ theme: string; keywords: string[] } | null>(null);
+  const [weatherContext, setWeatherContext] = useState<{ location: string; tempC: number; desc: string } | null>(null);
   const [dailyThemeEnabled, setDailyThemeEnabled] = useState(true);
   const [userTaste, setUserTaste] = useState('');
   const [tasteExpanded, setTasteExpanded] = useState(false);
@@ -248,7 +251,11 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
     if ('geolocation' in navigator) {
       navigator.geolocation.getCurrentPosition(
         (pos) => {
-          void updateLocation(pos.coords.latitude, pos.coords.longitude).catch(() => {});
+          void updateLocation(pos.coords.latitude, pos.coords.longitude)
+            .then(() => {
+              if (sseToken) void refreshPlayerContext().catch(() => {});
+            })
+            .catch(() => {});
         },
         () => {} // permission denied or unavailable — weather falls back to auto
       );
@@ -258,6 +265,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
   useEffect(() => {
     if (!sseToken) {
       setDailyTheme(null);
+      setWeatherContext(null);
       setDailyThemeEnabled(true);
       setUserTaste('');
       return;
@@ -267,6 +275,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
       .then(([ctx, settings]) => {
         if (ctx.ok) {
           setDailyTheme(ctx.theme);
+          setWeatherContext(ctx.weather);
           setUserTaste(ctx.taste);
         }
         setDailyThemeEnabled(settings.dailyThemeEnabled);
@@ -376,6 +385,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
     const ctx = await getPlayerContext();
     if (ctx.ok) {
       setDailyTheme(ctx.theme);
+      setWeatherContext(ctx.weather);
       setUserTaste(ctx.taste);
     }
   }
@@ -822,12 +832,25 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
       <div className="mx-auto grid max-w-[1480px] grid-cols-1 md:grid-cols-12 gap-4">
 
         {/* Header */}
-        <header className="col-span-1 md:col-span-12 flex items-center justify-between gap-4 rounded-2xl border border-zinc-800/80 bg-zinc-950/60 px-5 py-3">
+        <header className="col-span-1 md:col-span-12 flex flex-col items-stretch justify-between gap-3 rounded-2xl border border-zinc-800/80 bg-zinc-950/60 px-5 py-3 md:flex-row md:items-center">
           <div className="flex items-center gap-2.5">
             <img alt="Crossfadio 应用图标" className="h-7 w-7 rounded-lg" src={appMark} />
             <span className="text-lg font-semibold tracking-tight text-violet-200">Crossfadio</span>
           </div>
-          <div className="flex items-center gap-2">
+          {weatherContext ? (
+            <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-3 gap-y-1 rounded-xl border border-sky-500/15 bg-sky-950/20 px-3 py-2 text-xs text-zinc-300 md:max-w-[520px]">
+              <span className="inline-flex min-w-0 items-center gap-1.5">
+                <MapPin className="h-3.5 w-3.5 shrink-0 text-sky-300" />
+                <span className="truncate text-zinc-400">{weatherContext.location}</span>
+              </span>
+              <span className="inline-flex items-center gap-1.5 text-sky-100">
+                <CloudSun className="h-3.5 w-3.5 shrink-0 text-amber-200" />
+                <span>{weatherContext.tempC}°C</span>
+                <span className="text-zinc-400">{weatherContext.desc}</span>
+              </span>
+            </div>
+          ) : null}
+          <div className="flex shrink-0 items-center gap-2">
             <button
               className="hidden md:inline-flex items-center gap-2 rounded-xl border border-zinc-800 bg-zinc-900/60 px-3 py-2 text-sm text-zinc-300 transition hover:border-zinc-700 hover:bg-zinc-900 hover:text-zinc-100"
               onClick={() => onNavigate?.('plan')}

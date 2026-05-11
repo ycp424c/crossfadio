@@ -1,4 +1,5 @@
 import { getOrGenerateDailyThemeWithin } from '../../daily-theme.js';
+import { fetchWeather } from '../../weather.js';
 import { loadCorpusFile } from '../../user-corpus/loader.js';
 import type { Request, Response } from 'express';
 import { z } from 'zod';
@@ -65,12 +66,16 @@ export function createGetPlayerContextHandler() {
   return async (req: Request, res: Response): Promise<void> => {
     const { userId } = req as AuthedRequest;
     const enabled = getPref<boolean>(userId, 'dailyTheme.enabled') !== false;
-    const theme = enabled ? await getOrGenerateDailyThemeWithin(3_000) : null;
+    const [theme, weather] = await Promise.all([
+      enabled ? getOrGenerateDailyThemeWithin(3_000) : Promise.resolve(null),
+      fetchWeather(userId)
+    ]);
     const taste = loadCorpusFile(userId, 'taste.md');
 
     res.json({
       ok: true,
       theme: theme ? { theme: theme.theme, keywords: theme.keywords } : null,
+      weather,
       taste
     });
   };

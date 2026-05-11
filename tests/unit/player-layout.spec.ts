@@ -158,6 +158,20 @@ describe('player layout', () => {
     expect(bannerSource).toContain('aria-checked={dailyThemeEnabled}');
   });
 
+  it('shows weather location and current weather in the player header', () => {
+    const source = fs.readFileSync(path.join(root, 'src/renderer/views/Player/PlayerView.tsx'), 'utf-8');
+    const headerStart = source.indexOf('{/* Header */}');
+    const headerEnd = source.indexOf('</header>', headerStart);
+    const headerSource = source.slice(headerStart, headerEnd);
+
+    expect(source).toContain('weatherContext');
+    expect(headerSource).toContain('MapPin');
+    expect(headerSource).toContain('CloudSun');
+    expect(headerSource).toContain('weatherContext.location');
+    expect(headerSource).toContain('weatherContext.tempC');
+    expect(headerSource).toContain('weatherContext.desc');
+  });
+
   it('PlaybackTimeline does not render DeckCard or dual-deck section', () => {
     const source = fs.readFileSync(
       path.join(root, 'src/renderer/components/player/PlaybackTimeline.tsx'),
