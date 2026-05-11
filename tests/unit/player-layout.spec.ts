@@ -29,6 +29,22 @@ describe('player layout', () => {
     expect(loadLikedQueueBody).not.toContain('applyingRemoteQueueRef.current = true');
   });
 
+  it('restores the previous player queue from localStorage before falling back to liked queue', () => {
+    const source = fs.readFileSync(path.join(root, 'src/renderer/views/Player/PlayerView.tsx'), 'utf-8');
+    const initStart = source.indexOf('void refreshSession();');
+    const initEnd = source.indexOf("if ('geolocation' in navigator)", initStart);
+    const initBody = source.slice(initStart, initEnd);
+
+    expect(source).toContain('PLAYER_QUEUE_STORAGE_KEY');
+    expect(source).toContain('restorePersistedQueueSnapshot()');
+    expect(source).toContain('persistQueueSnapshot(queue, currentIndex)');
+    expect(initBody).toContain('const restoredQueue = restorePersistedQueueSnapshot();');
+    expect(initBody).toContain('if (restoredQueue)');
+    expect(initBody).toContain('setQueue(restoredQueue.queue);');
+    expect(initBody).toContain('setCurrentIndex(restoredQueue.currentIndex);');
+    expect(initBody.indexOf('if (restoredQueue)')).toBeLessThan(initBody.indexOf('void loadLikedQueue();'));
+  });
+
   it('surfaces waiting segue states instead of falling back to idle text', () => {
     const source = fs.readFileSync(path.join(root, 'src/renderer/views/Player/PlayerView.tsx'), 'utf-8');
 
