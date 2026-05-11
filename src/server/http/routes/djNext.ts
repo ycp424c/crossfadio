@@ -248,6 +248,18 @@ async function doPickNext(
       const recentSegues = getRecentSegues(userId, 10);
       const extractedPreferences = getPreferenceContext(userId, 3);
 
+      // ── Personal taste context (weighted into style and pick prompts) ──
+      const tasteHints: string[] = [];
+      if (corpus.taste && corpus.taste.trim()) {
+        tasteHints.push(`该用户的音乐品味偏好：${corpus.taste.trim()}`);
+      }
+      if (extractedPreferences) {
+        tasteHints.push(`最近聊天中提到的偏好：${extractedPreferences}`);
+      }
+      const tasteContext = tasteHints.length > 0
+        ? `\n## 个人品味参考\n${tasteHints.join('\n')}\n（选曲时优先选择符合以上品味的风格和艺人，但不必完全局限于此）\n`
+        : '';
+
       const recentIds = new Set(
         getRecentPlays(userId, 30)
           .map((p) => p.song_id)
@@ -292,8 +304,10 @@ async function doPickNext(
       const stylePrompt =
         `当前时间：${localTime}\n天气：${weatherStr}\n最近播放：\n${recentPlayNames}\n` +
         themeContext +
-        `\n请根据以上信息（包括今日主题），推荐 2-3 个适合当下情境的音乐风格方向。` +
+        tasteContext +
+        `\n请根据以上信息（包括今日主题和个人品味偏好），推荐 2-3 个适合当下情境的音乐风格方向。` +
         `对每个风格，列出 3-5 位可以在网易云音乐搜到的代表艺人（华人艺人和海外艺人各半，保证多样性）。` +
+        `优先推荐符合该用户品味偏好的风格和艺人。` +
         `style 字段用英文关键词方便检索，artists 里同时包含中外艺人。` +
         `直接返回 JSON 对象，格式如下：\n` +
         `{"styles":[{"style":"indie folk","artists":["万能青年旅店","Bon Iver","张玮玮","Sufjan Stevens"]},` +
@@ -471,7 +485,7 @@ async function doPickNext(
 
 ## 当前任务：DJ 自动选曲
 ${themePickNote}
-从候选歌曲列表中挑选最适合当前情境的 2 首，返回它们的候选歌曲 id。
+${tasteHints.length > 0 ? `## 用户品味偏好\n${tasteHints.join('\n')}\n\n优先选择符合用户品味偏好的歌曲。\n\n` : ''}从候选歌曲列表中挑选最适合当前情境的 2 首，返回它们的候选歌曲 id。
 不要重复最近刚播过的歌曲。say 字段用一句话中文说明选曲理由。
 优先选择艺人名像真实人名或乐队的歌曲，避开艺人名明显是厂牌、合集、影视原声、或自动生成的选项（如"群星""Various Artists""佚名""原声带"等）。
 只能返回候选歌曲列表中真实存在的 id，不要编造 id，不要返回歌名搜索词。
@@ -486,10 +500,14 @@ ${themePickNote}
         ? `今日主题：${dailyTheme.theme}\n`
         : '';
 
+      const tasteUserContext = tasteHints.length > 0
+        ? `用户品味偏好：${tasteHints.join('；')}\n`
+        : '';
+
       const pickUserPrompt = `<context>
 当前时间：${localTime}
 天气：${weatherStr2}
-${themeContextUser}</context>
+${themeContextUser}${tasteUserContext}</context>
 
 <候选歌曲列表>
 ${candidateList}
