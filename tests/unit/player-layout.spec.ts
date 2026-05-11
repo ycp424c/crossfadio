@@ -189,6 +189,16 @@ describe('player layout', () => {
     expect(source.slice(locationCall, locationEffectEnd)).not.toContain('  }, []);');
   });
 
+  it('logs browser location and weather refresh diagnostics to the console', () => {
+    const source = fs.readFileSync(path.join(root, 'src/renderer/views/Player/PlayerView.tsx'), 'utf-8');
+
+    expect(source).toContain('[Crossfadio] weather geolocation unavailable');
+    expect(source).toContain('[Crossfadio] weather geolocation resolved');
+    expect(source).toContain('[Crossfadio] weather location updated');
+    expect(source).toContain('[Crossfadio] weather location update failed');
+    expect(source).toContain('[Crossfadio] player context weather');
+  });
+
   it('places the daily theme recommendation toggle in the player theme banner', () => {
     const source = fs.readFileSync(path.join(root, 'src/renderer/views/Player/PlayerView.tsx'), 'utf-8');
     const bannerStart = source.indexOf('{/* Daily Theme Banner */}');

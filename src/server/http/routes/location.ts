@@ -2,6 +2,7 @@ import type { Request, Response } from 'express';
 import { z } from 'zod';
 import type { NcmClient } from '../../ncm/client.js';
 import { setLocation } from '../../store/location.js';
+import { getLogger } from '../../logger.js';
 
 type AuthedRequest = Request & { userId: string; ncmClient: NcmClient };
 
@@ -19,6 +20,10 @@ export function createSetLocationHandler() {
       return;
     }
     setLocation(userId, parsed.data.lat, parsed.data.lon);
+    getLogger().info(
+      { userId, lat: parsed.data.lat.toFixed(4), lon: parsed.data.lon.toFixed(4) },
+      'Browser location stored'
+    );
     res.json({ ok: true });
   };
 }

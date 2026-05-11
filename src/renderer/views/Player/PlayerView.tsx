@@ -337,6 +337,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
         if (ctx.ok) {
           setDailyTheme(ctx.theme);
           setWeatherContext(ctx.weather);
+          console.info('[Crossfadio] player context weather', { weather: ctx.weather });
           setUserTaste(ctx.taste);
         }
         setDailyThemeEnabled(settings.dailyThemeEnabled);
@@ -345,19 +346,43 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
   }, [sseToken]);
 
   useEffect(() => {
-    if (!sseToken || !('geolocation' in navigator)) {
+    if (!sseToken) {
+      return;
+    }
+    if (!('geolocation' in navigator)) {
+      console.warn('[Crossfadio] weather geolocation unavailable', {
+        isSecureContext: window.isSecureContext,
+        protocol: window.location.protocol
+      });
       return;
     }
 
+    console.info('[Crossfadio] weather geolocation request', {
+      isSecureContext: window.isSecureContext,
+      protocol: window.location.protocol
+    });
     navigator.geolocation.getCurrentPosition(
       (pos) => {
+        const lat = pos.coords.latitude.toFixed(4);
+        const lon = pos.coords.longitude.toFixed(4);
+        console.info('[Crossfadio] weather geolocation resolved', { lat, lon });
         void updateLocation(pos.coords.latitude, pos.coords.longitude)
           .then(() => {
+            console.info('[Crossfadio] weather location updated', { lat, lon });
             void refreshPlayerContext().catch(() => {});
           })
-          .catch(() => {});
+          .catch((err) => {
+            console.warn('[Crossfadio] weather location update failed', { err });
+          });
       },
-      () => {} // permission denied or unavailable — weather falls back to auto
+      (err) => {
+        console.warn('[Crossfadio] weather geolocation failed', {
+          code: err.code,
+          message: err.message,
+          isSecureContext: window.isSecureContext,
+          protocol: window.location.protocol
+        });
+      }
     );
   }, [sseToken]);
 
@@ -469,6 +494,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
     if (ctx.ok) {
       setDailyTheme(ctx.theme);
       setWeatherContext(ctx.weather);
+      console.info('[Crossfadio] player context weather', { weather: ctx.weather });
       setUserTaste(ctx.taste);
     }
   }
