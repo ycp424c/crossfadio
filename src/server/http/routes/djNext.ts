@@ -1,16 +1,17 @@
 import type { Request, Response, RequestHandler } from 'express';
+import { z } from 'zod';
 import type { Track } from '../../agent/schema.js';
 import { LlmClient } from '../../llm/client.js';
 import { resolveLlmConfig } from '../../llm/config.js';
 import type { NcmClient } from '../../ncm/client.js';
 import { loadUserCorpus } from '../../user-corpus/loader.js';
-import { getRecentPlays } from '../../store/plays.js';
+import { getRecentPlays, getTodayPlayedSongIds, getTodayPlays } from '../../store/plays.js';
 import { getRecentMessages } from '../../store/messages.js';
 import { getRecentSegues } from '../../store/segues.js';
 import { getPreferenceContext } from '../../store/chat-preferences.js';
 import { fetchWeather } from '../../weather.js';
 import { searchArtistsForStyle } from '../../web-search.js';
-import { getQueue, addToQueue } from '../../store/queue.js';
+import { getQueue, addToQueue, setQueueState } from '../../store/queue.js';
 import { getPref } from '../../store/prefs.js';
 import { broadcastToUser } from '../broadcast.js';
 import { getLogger } from '../../logger.js';
@@ -39,6 +40,18 @@ type DjEventSink = (payload: Record<string, unknown>) => void;
 
 type LikedIdsCache = { ids: string[]; fetchedAt: number };
 const likedIdsCache = new Map<string, LikedIdsCache>();
+
+const pickNextBodySchema = z.object({
+  queue: z.array(
+    z.object({
+      id: z.string().min(1),
+      name: z.string().optional(),
+      artists: z.array(z.string()).optional(),
+      durationMs: z.number().int().nonnegative().optional()
+    })
+  ).optional(),
+  currentIndex: z.number().int().nonnegative().optional()
+}).optional();
 
 // trackId → short DJ selection reason, populated on each successful LLM pick
 const djPickReasonCache = new Map<string, string>();
@@ -70,7 +83,8 @@ export async function searchCandidates(
   ncmClient: NcmClient,
   excludeIds: Set<string>,
   limit: number,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  excludeDedupeKeys: Set<string> = new Set()
 ): Promise<Track[]> {
   if (queries.length === 0) return [];
   if (signal?.aborted) return [];
@@ -83,9 +97,15 @@ export async function searchCandidates(
   for (const songs of results) {
     for (const song of songs) {
       const id = String(song.id);
-      if (!seen.has(id) && !excludeIds.has(id) && song.artists.length > 0) {
+      const track = { id, name: song.name, artist: song.artists.join(' / ') };
+      if (
+        !seen.has(id)
+        && !excludeIds.has(id)
+        && !excludeDedupeKeys.has(buildTrackDedupeKey(track))
+        && song.artists.length > 0
+      ) {
         seen.add(id);
-        tracks.push({ id, name: song.name, artist: song.artists.join(' / ') });
+        tracks.push(track);
         if (tracks.length >= limit) return tracks;
       }
     }
@@ -171,6 +191,7 @@ export function createDjPickNextHandler(opts: DjNextOptions): RequestHandler {
   return (req, res) => {
     const userId = (req as AuthedRequest).userId;
     const ncmClient = getScopedNcmClient(req, opts.ncmClient);
+    applyClientQueueSnapshot(req, userId);
     res.json({ ok: true, running: isRunning.get(userId) ?? false });
     if (!(isRunning.get(userId) ?? false)) {
       void runPickNextJob(userId, ncmClient);
@@ -260,13 +281,8 @@ async function doPickNext(
         ? `\n## 个人品味参考\n${tasteHints.join('\n')}\n（选曲时优先选择符合以上品味的风格和艺人，但不必完全局限于此）\n`
         : '';
 
-      const recentIds = new Set(
-        getRecentPlays(userId, 30)
-          .map((p) => p.song_id)
-          .filter((id): id is string => id !== null)
-      );
-      const currentQueueIds = new Set(getQueue(userId).map((t) => t.ncmId));
-      const excludeIds = new Set([...recentIds, ...currentQueueIds]);
+      const excludeState = getTodayAndQueueDedupeState(userId);
+      const excludeIds = excludeState.ids;
 
       // ── Phase 1: sample 20 IDs from full liked list, then fetch details ──
       const candidateIds = allLikedIds.filter((id) => !excludeIds.has(id));
@@ -282,7 +298,8 @@ async function doPickNext(
           id: String(t.id),
           name: t.name,
           artist: t.artists.join(' / ') || undefined
-        }));
+        }))
+        .filter((track) => !excludeState.dedupeKeys.has(buildTrackDedupeKey(track)));
 
       logger.info(
         { totalLikedIds: allLikedIds.length, candidateCount: candidateIds.length, sampledCount: likedSample.length },
@@ -439,7 +456,9 @@ async function doPickNext(
         searchQueries,
         ncmClient,
         excludeIds,
-        SEARCH_RESULT_SIZE
+        SEARCH_RESULT_SIZE,
+        undefined,
+        excludeState.dedupeKeys
       );
 
       // Combine 40 candidates, deduplicate by ID
@@ -541,20 +560,17 @@ ${candidateList}
           'DJ pick-next: LLM returned whitelisted candidate picks'
         );
         const prevQueueLength = getQueue(userId).length;
-        const recentPlayIds = new Set(
-          getRecentPlays(userId, 50)
-            .map((p) => p.song_id)
-            .filter((id): id is string => id !== null)
-        );
-        const currentQueueIds = new Set(getQueue(userId).map((t) => t.ncmId));
+        const excludeState = getTodayAndQueueDedupeState(userId);
         for (const track of pickedTracks) {
-          if (recentPlayIds.has(track.id) || currentQueueIds.has(track.id)) continue;
+          const dedupeKey = buildTrackDedupeKey(track);
+          if (excludeState.ids.has(track.id) || excludeState.dedupeKeys.has(dedupeKey)) continue;
           addToQueue(userId, {
             ncmId: track.id,
             name: track.name,
             artists: track.artist ? track.artist.split(' / ').filter(Boolean) : []
           }, 'end');
-          currentQueueIds.add(track.id);
+          excludeState.ids.add(track.id);
+          excludeState.dedupeKeys.add(dedupeKey);
         }
         if (getQueue(userId).length > prevQueueLength) {
           const newTracks = getQueue(userId).slice(prevQueueLength);
@@ -591,13 +607,8 @@ ${candidateList}
   }
 
   // Random fallback: sample 2 IDs from full liked list, then fetch details
-  const recentIds = new Set(
-    getRecentPlays(userId, 30)
-      .map((p) => p.song_id)
-      .filter((id): id is string => id !== null)
-  );
-  const currentQueueIds = new Set(getQueue(userId).map((t) => t.ncmId));
-  const fallbackIds = allLikedIds.filter((id) => !recentIds.has(id) && !currentQueueIds.has(id));
+  const excludeState = getTodayAndQueueDedupeState(userId);
+  const fallbackIds = allLikedIds.filter((id) => !excludeState.ids.has(id));
 
   if (fallbackIds.length === 0) {
     logger.warn('DJ pick-next fallback: no candidates');
@@ -622,7 +633,14 @@ ${candidateList}
     ncmClient.getSongDetails(pickedIds).catch(() => []),
     LIKED_DETAILS_TIMEOUT_MS,
     []
-  )).filter((t) => t.artists.length > 0);
+  )).filter((t) => {
+    if (t.artists.length === 0) return false;
+    return !excludeState.dedupeKeys.has(buildTrackDedupeKey({
+      id: String(t.id),
+      name: t.name,
+      artist: t.artists.join(' / ')
+    }));
+  });
 
   if (pickedDetails.length === 0) {
     logger.warn('DJ pick-next fallback: failed to fetch track details');
@@ -688,10 +706,84 @@ export function serializeDjPickNextErrorForLog(error: unknown): unknown {
   return payload;
 }
 
+type TrackDedupeInput = {
+  id?: string | null;
+  name?: string | null;
+  artist?: string | null;
+  artists?: string[] | null;
+};
+
+type DedupeState = {
+  ids: Set<string>;
+  dedupeKeys: Set<string>;
+};
+
+export function buildTrackDedupeKey(track: TrackDedupeInput): string {
+  const name = normalizeDedupeText(track.name ?? '');
+  const artist = normalizeDedupeText(primaryArtist(track));
+  if (!name || !artist) return '';
+  return `${name}::${artist}`;
+}
+
+function normalizeDedupeText(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/（[^）]*）|\([^)]*\)|\[[^\]]*]|\{[^}]*}/g, '')
+    .replace(/[^\p{L}\p{N}]+/gu, '');
+}
+
+function primaryArtist(track: TrackDedupeInput): string {
+  const artist = track.artist ?? track.artists?.join(' / ') ?? '';
+  return artist.split(/\s*(?:\/|,|，|、|&|feat\.?|ft\.?)\s*/i)[0]?.trim() ?? '';
+}
+
+function getTodayAndQueueDedupeState(userId: string): DedupeState {
+  const ids = new Set(getTodayPlayedSongIds(userId));
+  const dedupeKeys = new Set<string>();
+
+  for (const play of getTodayPlays(userId)) {
+    const key = buildTrackDedupeKey({
+      id: play.song_id,
+      name: play.song_name,
+      artist: play.artist_name
+    });
+    if (key) dedupeKeys.add(key);
+  }
+
+  for (const track of getQueue(userId)) {
+    ids.add(track.ncmId);
+    const key = buildTrackDedupeKey({
+      id: track.ncmId,
+      name: track.name,
+      artists: track.artists
+    });
+    if (key) dedupeKeys.add(key);
+  }
+
+  return { ids, dedupeKeys };
+}
+
+function applyClientQueueSnapshot(req: Request, userId: string): void {
+  const parsed = pickNextBodySchema.safeParse(req.body);
+  if (!parsed.success || !parsed.data?.queue) return;
+
+  setQueueState(
+    userId,
+    parsed.data.queue.map((track) => ({
+      ncmId: track.id,
+      name: track.name,
+      artists: track.artists,
+      durationMs: track.durationMs
+    })),
+    parsed.data.currentIndex ?? 0
+  );
+}
+
 export function createSseDjPickNextHandler(opts: DjNextOptions) {
   return (req: Request, res: Response): void => {
     const userId = (req as AuthedRequest).userId;
     const ncmClient = getScopedNcmClient(req, opts.ncmClient);
+    applyClientQueueSnapshot(req, userId);
     initSseRes(res);
     const emit = (payload: Record<string, unknown>): void => {
       const type = typeof payload.type === 'string' ? payload.type : 'message';

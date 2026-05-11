@@ -158,8 +158,15 @@ export async function saveQueueState(
   if (!result.ok) throw new Error('Failed to save queue state');
 }
 
-export async function pickNextTrack(): Promise<{ ok: boolean }> {
-  return requestJson<{ ok: boolean }>('/api/dj/pick-next', { method: 'POST' });
+export async function pickNextTrack(
+  queue: Array<{ id: string; name?: string; artists?: string[]; durationMs?: number }> = [],
+  currentIndex = 0
+): Promise<{ ok: boolean }> {
+  return requestJson<{ ok: boolean }>('/api/dj/pick-next', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ queue, currentIndex })
+  });
 }
 
 export async function updateLocation(lat: number, lon: number): Promise<void> {

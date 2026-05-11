@@ -48,8 +48,11 @@ export async function* streamSegue(input: {
   yield* postSseStream('/api/sse/segue', input);
 }
 
-export async function* streamPickNext(): AsyncGenerator<SseStreamEvent> {
-  yield* postSseStream('/api/sse/pick-next', {});
+export async function* streamPickNext(input: {
+  queue: Array<{ id: string; name?: string; artists?: string[]; durationMs?: number }>;
+  currentIndex: number;
+}): AsyncGenerator<SseStreamEvent> {
+  yield* postSseStream('/api/sse/pick-next', input);
 }
 
 export async function cancelRecommend(jobId: string): Promise<void> {

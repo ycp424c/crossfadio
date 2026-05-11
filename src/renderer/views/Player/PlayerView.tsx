@@ -760,7 +760,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
         setDjStatusText('正在挑选下一首…');
         void (async () => {
           try {
-            for await (const { type, data } of streamPickNext()) {
+            for await (const { type, data } of streamPickNext({ queue, currentIndex })) {
               if (type === 'dj.debug') {
                 setDjPickLog({
                   likedSample: Array.isArray(data.likedSample) ? data.likedSample as DjTrackSample[] : [],

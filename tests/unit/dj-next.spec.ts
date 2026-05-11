@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { parseDjCandidatePicks, serializeDjPickNextErrorForLog, searchCandidates } from '../../src/server/http/routes/djNext';
+import { buildTrackDedupeKey, parseDjCandidatePicks, serializeDjPickNextErrorForLog, searchCandidates } from '../../src/server/http/routes/djNext';
 import { LlmError } from '../../src/server/llm/client';
 import type { NcmClient } from '../../src/server/ncm/client';
 import type { NcmSong } from '../../src/shared/schema';
@@ -74,6 +74,30 @@ describe('searchCandidates', () => {
     const ids = result.map((t) => t.id);
     expect(ids).toHaveLength(3);
     expect(new Set(ids).size).toBe(3);
+  });
+
+  it('excludes same song by normalized title and primary artist even when NCM ids differ', async () => {
+    const ncm = mockNcmClient({
+      'Bob Marley': [
+        makeSong(25702070, 'Three Little Birds', 'Bob Marley'),
+        makeSong(100, 'Could You Be Loved', 'Bob Marley')
+      ]
+    });
+    const excludedKey = buildTrackDedupeKey({
+      name: 'Three Little Birds',
+      artist: 'Bob Marley / The Wailers'
+    });
+
+    const result = await searchCandidates(
+      ['Bob Marley'],
+      ncm as unknown as NcmClient,
+      new Set(['2066898431']),
+      20,
+      undefined,
+      new Set([excludedKey])
+    );
+
+    expect(result.map((track) => track.id)).toEqual(['100']);
   });
 
   it('respects the limit and stops collecting once reached', async () => {
