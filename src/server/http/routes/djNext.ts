@@ -41,6 +41,11 @@ type DjEventSink = (payload: Record<string, unknown>) => void;
 type LikedIdsCache = { ids: string[]; fetchedAt: number };
 const likedIdsCache = new Map<string, LikedIdsCache>();
 
+type QueueActiveDirective = {
+  text: string;
+  expiresAt: string;
+};
+
 const pickNextBodySchema = z.object({
   queue: z.array(
     z.object({
@@ -268,6 +273,7 @@ async function doPickNext(
       const recentChat = getRecentMessages(userId, 20, 60);
       const recentSegues = getRecentSegues(userId, 10);
       const extractedPreferences = getPreferenceContext(userId, 3);
+      const activeDirective = getActiveQueueDirective(userId);
 
       // ── Personal taste context (weighted into style and pick prompts) ──
       const tasteHints: string[] = [];
@@ -276,6 +282,9 @@ async function doPickNext(
       }
       if (extractedPreferences) {
         tasteHints.push(`最近聊天中提到的偏好：${extractedPreferences}`);
+      }
+      if (activeDirective) {
+        tasteHints.unshift(`当前短期选歌指令：${activeDirective}`);
       }
       const tasteContext = tasteHints.length > 0
         ? `\n## 个人品味参考\n${tasteHints.join('\n')}\n（选曲时优先选择符合以上品味的风格和艺人，但不必完全局限于此）\n`
@@ -441,6 +450,21 @@ async function doPickNext(
         }
       }
 
+      if (activeDirective) {
+        const directiveQueries = buildDirectiveSearchQueries(activeDirective);
+        for (const query of [...directiveQueries].reverse()) {
+          const lower = query.toLowerCase();
+          if (!mergedQueries.has(lower)) {
+            mergedQueries.add(lower);
+            searchQueries.unshift(query);
+            if (searchQueries.length > QUERY_CAP) {
+              const removed = searchQueries.pop();
+              if (removed) mergedQueries.delete(removed.toLowerCase());
+            }
+          }
+        }
+      }
+
 
       // Fallback: if we don't have enough search queries, use style keywords directly
       if (searchQueries.length < 2 && styleConcepts.length > 0) {
@@ -504,7 +528,7 @@ async function doPickNext(
 
 ## 当前任务：DJ 自动选曲
 ${themePickNote}
-${tasteHints.length > 0 ? `## 用户品味偏好\n${tasteHints.join('\n')}\n\n优先选择符合用户品味偏好的歌曲。\n\n` : ''}从候选歌曲列表中挑选最适合当前情境的 2 首，返回它们的候选歌曲 id。
+${activeDirective ? `## 必须优先遵循的短期选歌指令\n${activeDirective}\n\n如果候选池里有符合该指令的歌曲，应优先选择；只有候选池明显不足时才放宽。\n\n` : ''}${tasteHints.length > 0 ? `## 用户品味偏好\n${tasteHints.join('\n')}\n\n优先选择符合用户品味偏好的歌曲。\n\n` : ''}从候选歌曲列表中挑选最适合当前情境的 2 首，返回它们的候选歌曲 id。
 不要重复最近刚播过的歌曲。say 字段用一句话中文说明选曲理由。
 优先选择艺人名像真实人名或乐队的歌曲，避开艺人名明显是厂牌、合集、影视原声、或自动生成的选项（如"群星""Various Artists""佚名""原声带"等）。
 只能返回候选歌曲列表中真实存在的 id，不要编造 id，不要返回歌名搜索词。
@@ -522,11 +546,14 @@ ${tasteHints.length > 0 ? `## 用户品味偏好\n${tasteHints.join('\n')}\n\n�
       const tasteUserContext = tasteHints.length > 0
         ? `用户品味偏好：${tasteHints.join('；')}\n`
         : '';
+      const directiveUserContext = activeDirective
+        ? `短期选歌指令：${activeDirective}\n`
+        : '';
 
       const pickUserPrompt = `<context>
 当前时间：${localTime}
 天气：${weatherStr2}
-${themeContextUser}${tasteUserContext}</context>
+${themeContextUser}${directiveUserContext}${tasteUserContext}</context>
 
 <候选歌曲列表>
 ${candidateList}
@@ -777,6 +804,25 @@ function applyClientQueueSnapshot(req: Request, userId: string): void {
     })),
     parsed.data.currentIndex ?? 0
   );
+}
+
+function getActiveQueueDirective(userId: string, now = new Date()): string {
+  const directive = getPref<QueueActiveDirective>(userId, 'queue.activeDirective');
+  if (!directive || typeof directive.text !== 'string' || typeof directive.expiresAt !== 'string') {
+    return '';
+  }
+  const expiresAtMs = Date.parse(directive.expiresAt);
+  if (!Number.isFinite(expiresAtMs) || expiresAtMs <= now.getTime()) {
+    return '';
+  }
+  return directive.text.trim();
+}
+
+function buildDirectiveSearchQueries(directive: string): string[] {
+  if (/女声|女歌手|女性|女vocal|female/i.test(directive)) {
+    return ['女声', '女歌手', '粤语 女声', 'female vocalist'];
+  }
+  return [];
 }
 
 export function createSseDjPickNextHandler(opts: DjNextOptions) {

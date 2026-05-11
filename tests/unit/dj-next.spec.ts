@@ -1,10 +1,15 @@
 import { describe, expect, it, vi } from 'vitest';
+import fs from 'node:fs';
+import path from 'node:path';
+import { extractQueueDirectiveFromText } from '../../src/server/http/chat-sse-worker';
 import { buildTrackDedupeKey, parseDjCandidatePicks, serializeDjPickNextErrorForLog, searchCandidates } from '../../src/server/http/routes/djNext';
 import { LlmError } from '../../src/server/llm/client';
 import type { NcmClient } from '../../src/server/ncm/client';
 import type { NcmSong } from '../../src/shared/schema';
 
 // ── Helpers ────────────────────────────────────────────────────────────────
+
+const root = process.cwd();
 
 function makeSong(id: number, name: string, artist: string): NcmSong {
   return { id, name, artists: [artist] };
@@ -36,6 +41,33 @@ describe('DJ pick-next diagnostics', () => {
       statusText: 'Bad Request',
       responseBody: '{"error":{"message":"bad schema"}}'
     });
+  });
+});
+
+describe('chat queue directives', () => {
+  it('documents queue.activeDirective as a set_pref action in the chat intent prompt', () => {
+    const source = fs.readFileSync(path.join(root, 'src/server/agent/modes.ts'), 'utf-8');
+
+    expect(source).toContain('queue.activeDirective');
+    expect(source).toContain('"ttlHours": 6');
+    expect(source).toContain('{ "type": "set_pref", "key": "queue.activeDirective", "value": null }');
+  });
+
+  it('extracts a short-lived female-vocal directive from casual chat text', () => {
+    const directive = extractQueueDirectiveFromText(
+      '这个下午多来点女歌手吧，才休息一天就上班有点累了',
+      new Date('2026-05-11T06:00:00.000Z')
+    );
+
+    expect(directive?.text).toContain('女声');
+    expect(directive?.text).toContain('女歌手');
+    expect(directive?.expiresAt).toBe('2026-05-11T12:00:00.000Z');
+  });
+
+  it('treats explicit negative wording as clearing the female-vocal directive', () => {
+    const directive = extractQueueDirectiveFromText('先不要女声了', new Date('2026-05-11T06:00:00.000Z'));
+
+    expect(directive).toEqual({ text: '', expiresAt: '2026-05-11T06:00:00.000Z' });
   });
 });
 

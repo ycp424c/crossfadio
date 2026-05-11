@@ -11,6 +11,7 @@ import { loadLikedTracksForPlanning } from '../user-corpus/ncm-liked.js';
 import { getRecentPlays } from '../store/plays.js';
 import { getRecentMessages, saveMessage } from '../store/messages.js';
 import { getPreferenceContext } from '../store/chat-preferences.js';
+import { getPref, deletePref, setPref } from '../store/prefs.js';
 import { fetchWeather } from '../weather.js';
 import { executeActions } from '../agent/actions.js';
 import { getCurrentIndex, getQueue, addToQueue, swapNext } from '../store/queue.js';
@@ -20,6 +21,7 @@ import { searchCandidates } from './routes/djNext.js';
 
 const RECOMMEND_CANDIDATE_LIMIT = 20;
 const RECOMMEND_PICK_LLM_TIMEOUT_MS = 30_000;
+const ACTIVE_DIRECTIVE_TTL_MS = 6 * 60 * 60 * 1000;
 
 const activeRecommendJobs = new Map<string, AbortController>();
 
@@ -41,6 +43,7 @@ export async function handleChatMessage(
 
   try {
     saveMessage(userId, 'user', text);
+    applyQueueDirectiveFallbackFromText(userId, text);
 
     const llmConfig = resolveLlmConfig();
     if (!llmConfig) {
@@ -351,6 +354,38 @@ function sampleN<T>(arr: T[], n: number): T[] {
     [copy[i], copy[j]] = [copy[j], copy[i]];
   }
   return copy.slice(0, n);
+}
+
+export function extractQueueDirectiveFromText(text: string, now = new Date()): { text: string; expiresAt: string } | null {
+  const normalized = text.trim().toLowerCase();
+  if (!normalized) return null;
+
+  const mentionsFemaleVocals = /女声|女歌手|女生唱|女嗓|女vocal|female\s*(vocal|singer|artist)/i.test(normalized);
+  if (!mentionsFemaleVocals) return null;
+
+  const cancelsFemaleVocals = /不要|别|不用|取消|停止|不想/.test(normalized);
+  if (cancelsFemaleVocals) return {
+    text: '',
+    expiresAt: now.toISOString()
+  };
+
+  return {
+    text: '接下来的自动选歌优先选择女声、女歌手或女性主唱作品；除非候选池明显不足，否则保持这个方向。',
+    expiresAt: new Date(now.getTime() + ACTIVE_DIRECTIVE_TTL_MS).toISOString()
+  };
+}
+
+function applyQueueDirectiveFallbackFromText(userId: string, text: string): void {
+  const directive = extractQueueDirectiveFromText(text);
+  if (!directive) return;
+
+  if (!directive.text) {
+    deletePref(userId, 'queue.activeDirective');
+    return;
+  }
+
+  if (getPref(userId, 'queue.activeDirective')) return;
+  setPref(userId, 'queue.activeDirective', directive);
 }
 
 function formatLocalTime(date: Date): string {

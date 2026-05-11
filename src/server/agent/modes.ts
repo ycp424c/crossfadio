@@ -87,6 +87,15 @@ actions 数组仅在 adjust_queue / replan / control 意图时填充，chitchat 
 - "replan_segment"
 - "set_pref"
 
+短期播放偏好：
+- 当用户表达接下来一段时间的选歌方向（例如"下午多来点女歌手""接下来安静一点""后面别太吵"），除了必要的加歌/换歌动作外，还应输出 set_pref，把偏好写入 queue.activeDirective。
+- queue.activeDirective 的 value 格式：
+  { "text": "明确、可执行的短期选歌指令", "ttlHours": 6 }
+- text 要写成给后续 DJ 自动选歌看的指令，例如："接下来的自动选歌优先选择女声、女歌手或女性主唱作品；除非候选池明显不足，否则保持这个方向。"
+- 当用户明确取消这类短期偏好（例如"不要女声了""恢复正常""取消刚才的要求"），输出：
+  { "type": "set_pref", "key": "queue.activeDirective", "value": null }
+- 这是短期上下文，不要写入长期品味；除非用户明确说"以后都这样"。
+
 不要输出未定义的动作类型，例如 "play"、"pause_music"、"queue_song"。
 `.trim();
 

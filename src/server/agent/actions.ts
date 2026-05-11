@@ -1,5 +1,5 @@
 import { getLogger } from '../logger.js';
-import { setPref } from '../store/prefs.js';
+import { deletePref, setPref } from '../store/prefs.js';
 import { swapNext, addToQueue, skipCurrent, banNcmId } from '../store/queue.js';
 import { getRecentPlays } from '../store/plays.js';
 import { resolveTrackQuery } from '../ncm/resolver.js';
@@ -83,7 +83,7 @@ export async function executeActions(
           setPref(ctx.userId, 'plan.replanHint', action.hint);
           break;
         case 'set_pref':
-          setPref(ctx.userId, action.key, action.value);
+          applySetPrefAction(ctx.userId, action.key, action.value);
           break;
         default:
           logger.warn({ action }, 'Unknown action type');
@@ -94,4 +94,36 @@ export async function executeActions(
   }
 
   return { queueChanged };
+}
+
+function applySetPrefAction(userId: string, key: string, value: unknown): void {
+  if (key === 'queue.activeDirective') {
+    const directive = normalizeQueueActiveDirective(value);
+    if (!directive) {
+      deletePref(userId, key);
+      return;
+    }
+    setPref(userId, key, directive);
+    return;
+  }
+
+  setPref(userId, key, value);
+}
+
+function normalizeQueueActiveDirective(value: unknown): { text: string; expiresAt: string } | null {
+  if (value === null || value === false) return null;
+  if (!value || typeof value !== 'object') return null;
+
+  const obj = value as Record<string, unknown>;
+  const text = typeof obj.text === 'string' ? obj.text.trim() : '';
+  if (!text) return null;
+
+  const ttlHours = typeof obj.ttlHours === 'number' && Number.isFinite(obj.ttlHours)
+    ? Math.min(Math.max(obj.ttlHours, 0.25), 24)
+    : 6;
+  const expiresAt = typeof obj.expiresAt === 'string' && Number.isFinite(Date.parse(obj.expiresAt))
+    ? obj.expiresAt
+    : new Date(Date.now() + ttlHours * 60 * 60 * 1000).toISOString();
+
+  return { text, expiresAt };
 }
