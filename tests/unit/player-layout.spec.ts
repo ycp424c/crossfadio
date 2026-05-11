@@ -227,6 +227,20 @@ describe('player layout', () => {
     expect(headerSource).toContain('weatherContext.desc');
   });
 
+  it('shows a tooltip warning when browser location is blocked by insecure origin', () => {
+    const source = fs.readFileSync(path.join(root, 'src/renderer/views/Player/PlayerView.tsx'), 'utf-8');
+    const headerStart = source.indexOf('{/* Header */}');
+    const headerEnd = source.indexOf('</header>', headerStart);
+    const headerSource = source.slice(headerStart, headerEnd);
+
+    expect(source).toContain('AlertTriangle');
+    expect(source).toContain('geolocationIssue');
+    expect(source).toContain('Only secure origins are allowed');
+    expect(source).toContain('chrome://flags/#unsafely-treat-insecure-origin-as-secure');
+    expect(headerSource).toContain('title={geolocationIssue}');
+    expect(headerSource).toContain('<AlertTriangle');
+  });
+
   it('PlaybackTimeline does not render DeckCard or dual-deck section', () => {
     const source = fs.readFileSync(
       path.join(root, 'src/renderer/components/player/PlaybackTimeline.tsx'),

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  AlertTriangle,
   CalendarDays,
   ChevronDown,
   ChevronUp,
@@ -180,6 +181,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
   const [sseToken, setSseToken] = useState<string | null>(() => getStoredToken());
   const [dailyTheme, setDailyTheme] = useState<{ theme: string; keywords: string[] } | null>(null);
   const [weatherContext, setWeatherContext] = useState<{ location: string; tempC: number; desc: string } | null>(null);
+  const [geolocationIssue, setGeolocationIssue] = useState<string | null>(null);
   const [dailyThemeEnabled, setDailyThemeEnabled] = useState(true);
   const [userTaste, setUserTaste] = useState('');
   const [tasteExpanded, setTasteExpanded] = useState(false);
@@ -350,6 +352,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
       return;
     }
     if (!('geolocation' in navigator)) {
+      setGeolocationIssue('当前浏览器不支持定位，天气会使用 auto。');
       console.warn('[Crossfadio] weather geolocation unavailable', {
         isSecureContext: window.isSecureContext,
         protocol: window.location.protocol
@@ -365,6 +368,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
       (pos) => {
         const lat = pos.coords.latitude.toFixed(4);
         const lon = pos.coords.longitude.toFixed(4);
+        setGeolocationIssue(null);
         console.info('[Crossfadio] weather geolocation resolved', { lat, lon });
         void updateLocation(pos.coords.latitude, pos.coords.longitude)
           .then(() => {
@@ -376,6 +380,13 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
           });
       },
       (err) => {
+        const insecureOriginBlocked =
+          err.code === 1 && (!window.isSecureContext || err.message.includes('Only secure origins are allowed'));
+        setGeolocationIssue(
+          insecureOriginBlocked
+            ? `浏览器安全策略阻止定位：${err.message || 'Only secure origins are allowed'}。解决方案1：在 Chrome 打开 chrome://flags/#unsafely-treat-insecure-origin-as-secure，把当前 http://IP:4318 加入白名单后重启浏览器。`
+            : `浏览器定位失败：${err.message || `code=${err.code}`}。天气会使用 auto。`
+        );
         console.warn('[Crossfadio] weather geolocation failed', {
           code: err.code,
           message: err.message,
@@ -965,6 +976,15 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
                 <span>{weatherContext.tempC}°C</span>
                 <span className="text-zinc-400">{weatherContext.desc}</span>
               </span>
+              {geolocationIssue ? (
+                <span
+                  aria-label="天气定位提示"
+                  className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-amber-300/30 bg-amber-400/10 text-amber-200"
+                  title={geolocationIssue}
+                >
+                  <AlertTriangle className="h-3.5 w-3.5" />
+                </span>
+              ) : null}
             </div>
           ) : null}
           <div className="flex shrink-0 items-center gap-2">
