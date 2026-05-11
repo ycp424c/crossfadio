@@ -20,8 +20,10 @@ import {
   getNextTrack,
   getNowPlaying,
   getPlayerContext,
+  getSettings,
   logoutNcm,
   getStoredToken,
+  saveSettings,
   saveQueueState,
   toggleLikeTrack,
   updateLocation
@@ -111,6 +113,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
   const [showNcmSheet, setShowNcmSheet] = useState(false);
   const [sseToken, setSseToken] = useState<string | null>(() => getStoredToken());
   const [dailyTheme, setDailyTheme] = useState<{ theme: string; keywords: string[] } | null>(null);
+  const [dailyThemeEnabled, setDailyThemeEnabled] = useState(true);
   const [userTaste, setUserTaste] = useState('');
   const [tasteExpanded, setTasteExpanded] = useState(false);
 
@@ -240,14 +243,6 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
 
   useEffect(() => {
     void refreshSession();
-    void getPlayerContext()
-      .then((ctx) => {
-        if (ctx.ok) {
-          setDailyTheme(ctx.theme);
-          setUserTaste(ctx.taste);
-        }
-      })
-      .catch(() => {});
 
     void loadLikedQueue();
     if ('geolocation' in navigator) {
@@ -259,6 +254,25 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
       );
     }
   }, []);
+
+  useEffect(() => {
+    if (!sseToken) {
+      setDailyTheme(null);
+      setDailyThemeEnabled(true);
+      setUserTaste('');
+      return;
+    }
+
+    void Promise.all([getPlayerContext(), getSettings()])
+      .then(([ctx, settings]) => {
+        if (ctx.ok) {
+          setDailyTheme(ctx.theme);
+          setUserTaste(ctx.taste);
+        }
+        setDailyThemeEnabled(settings.dailyThemeEnabled);
+      })
+      .catch(() => {});
+  }, [sseToken]);
 
   useEffect(() => {
     if (!sseToken) return;
@@ -355,6 +369,37 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
       setSession({ hasCookie: payload.hasCookie, profile: payload.profile });
     } catch (err) {
       setError(err instanceof Error ? err.message : 'session 请求失败');
+    }
+  }
+
+  async function refreshPlayerContext(): Promise<void> {
+    const ctx = await getPlayerContext();
+    if (ctx.ok) {
+      setDailyTheme(ctx.theme);
+      setUserTaste(ctx.taste);
+    }
+  }
+
+  async function handleDailyThemeToggle(): Promise<void> {
+    const next = !dailyThemeEnabled;
+    setDailyThemeEnabled(next);
+    if (!next) {
+      setDailyTheme(null);
+    }
+
+    try {
+      await saveSettings({ dailyThemeEnabled: next });
+      if (next) {
+        await refreshPlayerContext();
+      }
+    } catch (err) {
+      setDailyThemeEnabled(!next);
+      if (next) {
+        setDailyTheme(null);
+      } else {
+        void refreshPlayerContext().catch(() => {});
+      }
+      setError(err instanceof Error ? err.message : '每日主题设置保存失败');
     }
   }
 
@@ -866,6 +911,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
                       onClick={async () => {
                         try {
                           await logoutNcm();
+                          setSseToken(null);
                           await refreshSession();
                           setTrackStatusText('已登出 NCM');
                         } catch (err) {
@@ -957,6 +1003,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
                         onClick={async () => {
                           try {
                             await logoutNcm();
+                            setSseToken(null);
                             await refreshSession();
                             setTrackStatusText('已登出 NCM');
                           } catch (err) {
@@ -1015,14 +1062,36 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
           />
 
           {/* Daily Theme Banner */}
-          {dailyTheme && (
+          {sseToken && (
             <div className="rounded-xl border border-indigo-800/40 bg-indigo-950/30 px-4 py-3">
-              <div className="flex items-center gap-2 mb-1">
-                <Sparkles className="h-3.5 w-3.5 text-indigo-400" />
-                <span className="text-xs font-medium uppercase tracking-wider text-indigo-400">今日主题</span>
+              <div className="mb-2 flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2">
+                  <Sparkles className="h-3.5 w-3.5 text-indigo-400" />
+                  <span className="text-xs font-medium uppercase tracking-wider text-indigo-400">今日主题</span>
+                </div>
+                <button
+                  aria-checked={dailyThemeEnabled}
+                  aria-label="启用每日主题推荐"
+                  className={`relative inline-flex h-5 w-9 shrink-0 rounded-full transition-colors ${
+                    dailyThemeEnabled ? 'bg-indigo-500' : 'bg-zinc-700'
+                  }`}
+                  onClick={() => void handleDailyThemeToggle()}
+                  role="switch"
+                  type="button"
+                >
+                  <span
+                    className={`pointer-events-none inline-block h-5 w-5 rounded-full bg-white shadow transition-transform ${
+                      dailyThemeEnabled ? 'translate-x-4' : 'translate-x-0'
+                    }`}
+                  />
+                </button>
               </div>
-              <p className="text-sm text-indigo-200/80">{dailyTheme.theme}</p>
-              {dailyTheme.keywords.length > 0 && (
+              <p className="text-sm text-indigo-200/80">
+                {dailyThemeEnabled
+                  ? dailyTheme?.theme ?? '正在准备今日主题'
+                  : '主题推荐已关闭，DJ 选曲和转场不会参考每日主题'}
+              </p>
+              {dailyThemeEnabled && dailyTheme && dailyTheme.keywords.length > 0 && (
                 <div className="flex flex-wrap gap-1 mt-2">
                   {dailyTheme.keywords.map((kw) => (
                     <span key={kw} className="rounded-full bg-indigo-800/30 px-2 py-0.5 text-xs text-indigo-300/70">

@@ -128,6 +128,36 @@ describe('player layout', () => {
     expect(source).not.toContain('decision.shouldTriggerSegue &&');
   });
 
+  it('reloads player context after auth token changes so daily theme appears after login', () => {
+    const source = fs.readFileSync(path.join(root, 'src/renderer/views/Player/PlayerView.tsx'), 'utf-8');
+    const contextLoadStart = source.indexOf('getPlayerContext()');
+    const contextEffectStart = source.lastIndexOf('useEffect(() => {', contextLoadStart);
+    const contextEffectEnd = source.indexOf('  }, [sseToken]);', contextLoadStart);
+    const contextLoadEffect = source.slice(contextEffectStart, contextEffectEnd) + '  }, [sseToken]);';
+
+    expect(contextLoadStart).toBeGreaterThan(-1);
+    expect(contextEffectStart).toBeGreaterThan(-1);
+    expect(contextEffectEnd).toBeGreaterThan(contextLoadStart);
+    expect(contextLoadEffect).toContain('if (!sseToken)');
+    expect(contextLoadEffect).toContain('setDailyTheme(ctx.theme)');
+    expect(contextLoadEffect).toContain('  }, [sseToken]);');
+    expect(source).not.toContain('void refreshSession();\n    void getPlayerContext()');
+  });
+
+  it('places the daily theme recommendation toggle in the player theme banner', () => {
+    const source = fs.readFileSync(path.join(root, 'src/renderer/views/Player/PlayerView.tsx'), 'utf-8');
+    const bannerStart = source.indexOf('{/* Daily Theme Banner */}');
+    const bannerEnd = source.indexOf('{/* User Taste', bannerStart);
+    const bannerSource = source.slice(bannerStart, bannerEnd);
+
+    expect(source).toContain('saveSettings');
+    expect(source).toContain('dailyThemeEnabled');
+    expect(source).toContain('handleDailyThemeToggle');
+    expect(source).toContain('saveSettings({ dailyThemeEnabled: next })');
+    expect(bannerSource).toContain('role="switch"');
+    expect(bannerSource).toContain('aria-checked={dailyThemeEnabled}');
+  });
+
   it('PlaybackTimeline does not render DeckCard or dual-deck section', () => {
     const source = fs.readFileSync(
       path.join(root, 'src/renderer/components/player/PlaybackTimeline.tsx'),
