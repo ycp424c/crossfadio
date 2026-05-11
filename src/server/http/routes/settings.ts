@@ -15,6 +15,7 @@ export function createGetSettingsHandler() {
     const { userId } = req as AuthedRequest;
     const config = getConfig();
     const userVoice = getPref<string>(userId, 'tts.voice');
+    const dailyThemeEnabled = getPref<boolean>(userId, 'dailyTheme.enabled') !== false;
 
     res.json({
       ok: true,
@@ -28,7 +29,8 @@ export function createGetSettingsHandler() {
         hasApiKey: Boolean(config.tts.apiKey),
         voice: userVoice ?? config.tts.voiceDefault ?? 'Cherry',
         voiceDefault: config.tts.voiceDefault
-      }
+      },
+      dailyThemeEnabled
     });
   };
 }
@@ -36,9 +38,9 @@ export function createGetSettingsHandler() {
 // ── PUT /api/settings ─────────────────────────────────────────────────────────
 
 const settingsBodySchema = z.object({
-  tts: z.object({ voice: z.string().min(1) }).optional()
+  tts: z.object({ voice: z.string().min(1) }).optional(),
+  dailyThemeEnabled: z.boolean().optional()
 });
-
 export function createSaveSettingsHandler() {
   return (req: Request, res: Response): void => {
     const { userId } = req as AuthedRequest;
@@ -50,6 +52,9 @@ export function createSaveSettingsHandler() {
     if (parsed.data.tts?.voice) {
       setPref(userId, 'tts.voice', parsed.data.tts.voice);
     }
+    if (parsed.data.dailyThemeEnabled !== undefined) {
+      setPref(userId, 'dailyTheme.enabled', parsed.data.dailyThemeEnabled);
+    }
     res.json({ ok: true });
   };
 }
@@ -59,7 +64,8 @@ export function createSaveSettingsHandler() {
 export function createGetPlayerContextHandler() {
   return async (req: Request, res: Response): Promise<void> => {
     const { userId } = req as AuthedRequest;
-    const theme = await getOrGenerateDailyThemeWithin(3_000);
+    const enabled = getPref<boolean>(userId, 'dailyTheme.enabled') !== false;
+    const theme = enabled ? await getOrGenerateDailyThemeWithin(3_000) : null;
     const taste = loadCorpusFile(userId, 'taste.md');
 
     res.json({

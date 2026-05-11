@@ -2,7 +2,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { initDb } from '../../src/server/store/db';
+import { initDb, _resetDbForTest } from '../../src/server/store/db';
+import { setPref } from '../../src/server/store/prefs';
 import { buildPlanFragments, createGapFillHandler } from '../../src/server/http/routes/plan';
 
 const originalDataDir = process.env.CROSSFADIO_DATA_DIR;
@@ -29,6 +30,7 @@ afterEach(() => {
   } else {
     process.env.CROSSFADIO_DATA_DIR = originalDataDir;
   }
+  _resetDbForTest();
 });
 
 function writePlaylists(): void {
@@ -83,6 +85,22 @@ describe('plan routes', () => {
     expect(fragments.corpus.likedTracks).toEqual([
       { id: '101', name: 'Sweet Disposition', artist: 'The Temper Trap' }
     ]);
+  });
+
+  it('excludes daily theme from plan fragments when preference is disabled', async () => {
+    writePlaylists();
+    setPref('test-user', 'dailyTheme.enabled', false);
+
+    const ncmClient = {
+      getLikedSongIds: vi.fn().mockResolvedValue(['101']),
+      getSongDetails: vi.fn().mockResolvedValue([
+        { id: 101, name: 'Test Song', artists: ['Test Artist'], durationMs: 180_000 }
+      ])
+    };
+
+    const fragments = await buildPlanFragments('test-user', '2026-04-24', ncmClient as never);
+
+    expect(fragments.env.dailyTheme).toBeUndefined();
   });
 
   it('gap-fill prefers liked tracks before generic playlist picks', async () => {

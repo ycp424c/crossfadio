@@ -28,3 +28,7 @@ export function getDb(): Database.Database {
 
   return dbInstance;
 }
+
+export function _resetDbForTest(): void {
+  dbInstance = null;
+}

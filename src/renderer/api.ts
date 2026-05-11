@@ -233,10 +233,12 @@ export type SettingsResponse = {
   ok: boolean;
   llm: LlmSettings;
   tts: TtsSettings;
+  dailyThemeEnabled: boolean;
 };
 
 export type SaveSettingsPayload = {
   tts?: { voice: string };
+  dailyThemeEnabled?: boolean;
 };
 
 export async function getSettings(): Promise<SettingsResponse> {

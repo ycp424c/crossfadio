@@ -21,6 +21,7 @@ export function SettingsView(): JSX.Element {
   const [llm, setLlm] = useState<LlmSettings | null>(null);
   const [tts, setTts] = useState<TtsSettings | null>(null);
   const [voice, setVoice] = useState('');
+  const [dailyThemeEnabled, setDailyThemeEnabled] = useState(true);
   const [saveStatus, setSaveStatus] = useState<SaveStatus>({ type: 'idle' });
   const [loading, setLoading] = useState(true);
   const [whitelist, setWhitelist] = useState<string[]>([]);
@@ -58,6 +59,7 @@ type TasteStatus = { type: 'idle' } | { type: 'analyzing' } | { type: 'ok'; tast
           setLlm(s.llm);
           setTts(s.tts);
           setVoice(s.tts.voice);
+          setDailyThemeEnabled(s.dailyThemeEnabled);
         }),
       getWhitelist()
         .then((w) => setWhitelist(w.entries))
@@ -95,6 +97,16 @@ type TasteStatus = { type: 'idle' } | { type: 'analyzing' } | { type: 'ok'; tast
       setTimeout(() => setSaveStatus({ type: 'idle' }), 2000);
     } catch (err) {
       setSaveStatus({ type: 'error', message: err instanceof Error ? err.message : '保存失败' });
+    }
+  }
+
+  async function handleDailyThemeToggle(): Promise<void> {
+    const next = !dailyThemeEnabled;
+    setDailyThemeEnabled(next);
+    try {
+      await saveSettings({ dailyThemeEnabled: next });
+    } catch {
+      setDailyThemeEnabled(!next); // revert on failure
     }
   }
 
@@ -157,6 +169,38 @@ type TasteStatus = { type: 'idle' } | { type: 'analyzing' } | { type: 'ok'; tast
             </Field>
           </div>
         </section>
+
+        {/* Daily Theme */}
+        <section>
+          <h2 className="mb-4 text-sm font-medium uppercase tracking-wider text-zinc-400">
+            每日主题
+          </h2>
+          <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm text-zinc-200">启用每日主题</p>
+                <p className="mt-0.5 text-xs text-zinc-500">
+                  关闭后，DJ 选曲和转场将不再参考每日主题
+                </p>
+              </div>
+              <button
+                onClick={handleDailyThemeToggle}
+                className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+                  dailyThemeEnabled ? 'bg-indigo-600' : 'bg-zinc-700'
+                }`}
+                role="switch"
+                aria-checked={dailyThemeEnabled}
+              >
+                <span
+                  className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
+                    dailyThemeEnabled ? 'translate-x-5' : 'translate-x-0'
+                  }`}
+                />
+              </button>
+            </div>
+          </div>
+        </section>
+
         {/* Taste Analysis */}
         <section>
           <h2 className="mb-4 text-sm font-medium uppercase tracking-wider text-zinc-400">

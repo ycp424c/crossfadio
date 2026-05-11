@@ -29,6 +29,7 @@ import { broadcastToUser } from '../broadcast.js';
 import { getLogger } from '../../logger.js';
 import { initSseRes, writeSseEvent, endSse } from '../sse.js';
 import { getDailyTheme } from '../../daily-theme.js';
+import { getPref } from '../../store/prefs.js';
 
 const SEGUE_LLM_TIMEOUT_MS = 60_000;
 const SEGUE_TTS_TIMEOUT_MS = 30_000;
@@ -157,7 +158,8 @@ async function runSegueJob(
     if (signal.aborted) return;
     const now = new Date();
 
-    const dailyTheme = getDailyTheme();
+    const dailyThemeEnabled = getPref<boolean>(userId, 'dailyTheme.enabled') !== false;
+    const dailyTheme = dailyThemeEnabled ? getDailyTheme() : null;
     const dailyThemeStr = dailyTheme
       ? `今日主题：${dailyTheme.theme}（关键词：${dailyTheme.keywords.join('、')}）`
       : undefined;

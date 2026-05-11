@@ -4,7 +4,12 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { resetConfigForTest } from '../../src/server/config';
 import { _resetForTest as resetDailyThemeForTest } from '../../src/server/daily-theme';
-import { createGetPlayerContextHandler } from '../../src/server/http/routes/settings';
+import { initDb, _resetDbForTest } from '../../src/server/store/db';
+import {
+  createGetSettingsHandler,
+  createSaveSettingsHandler,
+  createGetPlayerContextHandler
+} from '../../src/server/http/routes/settings';
 import { createAnalyzeTasteHandler } from '../../src/server/http/routes/taste-analysis';
 
 const originalEnv = { ...process.env };
@@ -24,6 +29,7 @@ beforeEach(() => {
   process.env.CROSSFADIO_TASTE_ANALYSIS_TIMEOUT_MS = '25';
   resetConfigForTest();
   resetDailyThemeForTest();
+  initDb();
 });
 
 afterEach(() => {
@@ -32,6 +38,7 @@ afterEach(() => {
   process.env = { ...originalEnv };
   resetConfigForTest();
   resetDailyThemeForTest();
+  _resetDbForTest();
 });
 
 function createJsonResponse() {
@@ -50,6 +57,38 @@ function createJsonResponse() {
   return res;
 }
 
+
+describe('settings routes', () => {
+  it('GET returns dailyThemeEnabled true by default', () => {
+    const handler = createGetSettingsHandler();
+    const res = createJsonResponse();
+
+    handler({ userId: 'test-user' } as never, res as never);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toMatchObject({
+      ok: true,
+      dailyThemeEnabled: true
+    });
+  });
+
+  it('PUT saves dailyThemeEnabled and GET reflects it', () => {
+    const saveHandler = createSaveSettingsHandler();
+    const saveRes = createJsonResponse();
+    saveHandler(
+      { userId: 'test-user', body: { dailyThemeEnabled: false } } as never,
+      saveRes as never
+    );
+    expect(saveRes.statusCode).toBe(200);
+    expect(saveRes.body).toEqual({ ok: true });
+
+    const getHandler = createGetSettingsHandler();
+    const getRes = createJsonResponse();
+    getHandler({ userId: 'test-user' } as never, getRes as never);
+    expect(getRes.body).toMatchObject({ dailyThemeEnabled: false });
+  });
+});
+
 describe('settings player context route', () => {
   it('generates today theme when player context is requested before DJ pick-next warms the cache', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
@@ -66,6 +105,23 @@ describe('settings player context route', () => {
     expect(res.body).toMatchObject({
       ok: true,
       theme: { theme: '雨后城市漫步', keywords: ['city pop', '雨天'] },
+      taste: ''
+    });
+  });
+
+  it('skips daily theme generation when preference is disabled', async () => {
+    const { setPref } = await import('../../src/server/store/prefs.js');
+    setPref('test-user', 'dailyTheme.enabled', false);
+
+    const handler = createGetPlayerContextHandler();
+    const res = createJsonResponse();
+
+    await handler({ userId: 'test-user' } as never, res as never);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toMatchObject({
+      ok: true,
+      theme: null,
       taste: ''
     });
   });

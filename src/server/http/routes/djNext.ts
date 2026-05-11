@@ -11,6 +11,7 @@ import { getPreferenceContext } from '../../store/chat-preferences.js';
 import { fetchWeather } from '../../weather.js';
 import { searchArtistsForStyle } from '../../web-search.js';
 import { getQueue, addToQueue } from '../../store/queue.js';
+import { getPref } from '../../store/prefs.js';
 import { broadcastToUser } from '../broadcast.js';
 import { getLogger } from '../../logger.js';
 import { initSseRes, writeSseEvent, endSse } from '../sse.js';
@@ -203,7 +204,10 @@ async function doPickNext(
 ): Promise<void> {
   const logger = getLogger();
   let debugBroadcastSent = false;
-  const dailyThemePromise = getOrGenerateDailyThemeWithin(DAILY_THEME_CONTEXT_TIMEOUT_MS);
+  const dailyThemeEnabled = getPref<boolean>(userId, 'dailyTheme.enabled') !== false;
+  const dailyThemePromise = dailyThemeEnabled
+    ? getOrGenerateDailyThemeWithin(DAILY_THEME_CONTEXT_TIMEOUT_MS)
+    : Promise.resolve(null);
 
 
   // Refresh full liked-song ID list at most once per day
