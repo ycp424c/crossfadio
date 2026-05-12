@@ -15,6 +15,7 @@ type PlaybackTimelineProps = {
 export function PlaybackTimeline(props: PlaybackTimelineProps): JSX.Element {
   const progressPct =
     props.durationSec > 0 ? (props.positionSec / props.durationSec) * 100 : 0;
+  const waveformBarCount = 96;
 
   const timeline = props.timing
     ? buildPlaybackTimeline(props.durationSec, {
@@ -36,13 +37,16 @@ export function PlaybackTimeline(props: PlaybackTimelineProps): JSX.Element {
           {formatClock(props.positionSec)}
         </span>
         <div className="relative h-8 flex-1">
-          <div className="absolute inset-x-0 top-1/2 flex -translate-y-1/2 items-center gap-[3px] overflow-hidden">
-            {Array.from({ length: 96 }).map((_, index) => {
-              const active = (index / 95) * 100 <= progressPct;
+          <div
+            className="absolute inset-x-0 top-1/2 grid w-full -translate-y-1/2 items-center gap-[3px] overflow-hidden"
+            style={{ gridTemplateColumns: `repeat(${waveformBarCount}, minmax(0, 1fr))` }}
+          >
+            {Array.from({ length: waveformBarCount }).map((_, index) => {
+              const active = (index / (waveformBarCount - 1)) * 100 <= progressPct;
               const height = 6 + ((index * 7) % 18);
               return (
                 <span
-                  className={`w-0.5 shrink-0 rounded-full ${active ? 'bg-cyan-300' : 'bg-zinc-700/80'}`}
+                  className={`h-full min-w-0 rounded-full ${active ? 'bg-cyan-300' : 'bg-zinc-700/80'}`}
                   key={index}
                   style={{ height }}
                 />

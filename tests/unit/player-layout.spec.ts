@@ -282,6 +282,21 @@ describe('player layout', () => {
     expect(source).toContain('A→B');
   });
 
+  it('PlaybackTimeline distributes waveform bars across the full progress track', () => {
+    const source = fs.readFileSync(
+      path.join(root, 'src/renderer/components/player/PlaybackTimeline.tsx'),
+      'utf-8'
+    );
+
+    const waveformStart = source.indexOf('{Array.from({ length:');
+    const waveformEnd = source.indexOf('<input', waveformStart);
+    const waveformSource = source.slice(waveformStart, waveformEnd);
+
+    expect(source).toContain('grid w-full');
+    expect(source).toContain('gridTemplateColumns');
+    expect(waveformSource).not.toContain('shrink-0');
+  });
+
   it('NowPlayingHero does not show DJ Deck A badge or NCM ID', () => {
     const source = fs.readFileSync(
       path.join(root, 'src/renderer/components/player/NowPlayingHero.tsx'),
