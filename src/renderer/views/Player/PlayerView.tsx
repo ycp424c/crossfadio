@@ -1294,7 +1294,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
         </section>
 
         {/* Left column — player */}
-        <section className={`col-span-1 space-y-4 md:col-span-12 ${discoveryMode === 'comfort' ? 'xl:col-span-8' : 'xl:col-span-12'}`}>
+        <section className="col-span-1 space-y-4 md:col-span-12 xl:col-span-8">
           <NowPlayingHero
             coverImgUrl={currentTrack?.coverImgUrl ?? nowPlaying?.coverImgUrl ?? null}
             isLiked={isLiked}
@@ -1345,7 +1345,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
             ) : null}
           </div>
 
-          <div className={discoveryMode === 'comfort' ? 'xl:hidden' : ''}>
+          <div className="xl:hidden">
             <DjStatusDock
               djPickLog={djPickLog}
               djPickLogExpanded={djPickLogExpanded}
@@ -1378,9 +1378,10 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
         </section>
 
         {/* Right column — queue + status */}
-        <section className={`col-span-1 flex-col gap-4 md:col-span-12 xl:col-span-4 ${discoveryMode === 'comfort' ? 'flex' : 'hidden xl:hidden'}`}>
+        <section className="col-span-1 flex flex-col gap-4 md:col-span-12 xl:col-span-4">
           <QueuePanel
             currentIndex={currentIndex}
+            mode={discoveryMode}
             nextId={nextTrack?.track.id ?? null}
             onDeleteIndex={handleDeleteTrack}
             onSelectIndex={handleSelectIndex}
