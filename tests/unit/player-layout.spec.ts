@@ -31,11 +31,13 @@ describe('player layout', () => {
 
   it('restores the previous player queue from localStorage before falling back to liked queue', () => {
     const source = fs.readFileSync(path.join(root, 'src/renderer/views/Player/PlayerView.tsx'), 'utf-8');
+    const cacheSource = fs.readFileSync(path.join(root, 'src/renderer/playerQueueCache.ts'), 'utf-8');
     const initStart = source.indexOf('void refreshSession();');
     const initEnd = source.indexOf("if ('geolocation' in navigator)", initStart);
     const initBody = source.slice(initStart, initEnd);
 
-    expect(source).toContain('PLAYER_QUEUE_STORAGE_KEY');
+    expect(source).toContain('@renderer/playerQueueCache');
+    expect(cacheSource).toContain('PLAYER_QUEUE_STORAGE_KEY');
     expect(source).toContain('restorePersistedQueueSnapshot()');
     expect(source).toContain('persistQueueSnapshot(queue, currentIndex)');
     expect(initBody).toContain('const restoredQueue = restorePersistedQueueSnapshot();');

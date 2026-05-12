@@ -41,6 +41,7 @@ import { QueuePanel } from '@renderer/components/player/QueuePanel';
 import { TransportControls } from '@renderer/components/player/TransportControls';
 import { initSseEvents, addSseListener, closeSseEvents, streamSegue, streamPickNext } from '@renderer/sse/client';
 import { useMediaQuery } from '@renderer/lib-hooks';
+import { persistQueueSnapshot, restorePersistedQueueSnapshot } from '@renderer/playerQueueCache';
 import type { NextTrackResponse, NowPlayingResponse, QueueTrackDto } from '@shared/schema';
 import appMark from '@renderer/assets/image2/crossfadio-mark.svg';
 
@@ -60,12 +61,6 @@ const TRACK_DUCKING_VOLUME = 0.2;
 const DJ_TARGET_QUEUE = 3;       // keep this many songs in queue at all times
 const DJ_PICK_COOLDOWN_MS = 3000; // min ms between pick-next calls
 const SEGUE_RETRY_COOLDOWN_MS = 6000; // min ms between segue trigger retries within the same track
-const PLAYER_QUEUE_STORAGE_KEY = 'crossfadio.player.queue.v1';
-
-type PersistedQueueSnapshot = {
-  queue: QueueTrackDto[];
-  currentIndex: number;
-};
 
 type DiscoveryMode = 'explore' | 'comfort';
 
@@ -82,65 +77,6 @@ function isActiveSegueMessage(
 ): boolean {
   if (!activeId) return false;
   return typeof msg.clientRequestId === 'string' && msg.clientRequestId === activeId;
-}
-
-function restorePersistedQueueSnapshot(): PersistedQueueSnapshot | null {
-  try {
-    const raw = localStorage.getItem(PLAYER_QUEUE_STORAGE_KEY);
-    if (!raw) return null;
-
-    const parsed = JSON.parse(raw) as Partial<PersistedQueueSnapshot>;
-    const queue = Array.isArray(parsed.queue)
-      ? parsed.queue
-          .map((track) => normalizePersistedTrack(track))
-          .filter((track): track is QueueTrackDto => track !== null)
-      : [];
-
-    if (queue.length === 0) {
-      localStorage.removeItem(PLAYER_QUEUE_STORAGE_KEY);
-      return null;
-    }
-
-    const requestedIndex = typeof parsed.currentIndex === 'number' ? parsed.currentIndex : 0;
-    const currentIndex = Math.max(0, Math.min(queue.length - 1, Math.floor(requestedIndex)));
-
-    return { queue, currentIndex };
-  } catch {
-    localStorage.removeItem(PLAYER_QUEUE_STORAGE_KEY);
-    return null;
-  }
-}
-
-function persistQueueSnapshot(queue: QueueTrackDto[], currentIndex: number): void {
-  try {
-    if (queue.length === 0) {
-      localStorage.removeItem(PLAYER_QUEUE_STORAGE_KEY);
-      return;
-    }
-
-    const safeIndex = Math.max(0, Math.min(queue.length - 1, currentIndex));
-    localStorage.setItem(PLAYER_QUEUE_STORAGE_KEY, JSON.stringify({ queue, currentIndex: safeIndex }));
-  } catch {
-    // localStorage may be unavailable or full; playback should continue normally.
-  }
-}
-
-function normalizePersistedTrack(track: unknown): QueueTrackDto | null {
-  if (!track || typeof track !== 'object') return null;
-  const t = track as Record<string, unknown>;
-  if (typeof t.id !== 'string' || t.id.length === 0 || typeof t.name !== 'string') {
-    return null;
-  }
-
-  return {
-    id: t.id,
-    name: t.name,
-    artists: Array.isArray(t.artists) ? t.artists.filter((artist): artist is string => typeof artist === 'string') : [],
-    durationMs: typeof t.durationMs === 'number' && Number.isFinite(t.durationMs) && t.durationMs >= 0
-      ? Math.floor(t.durationMs)
-      : 0,
-    coverImgUrl: typeof t.coverImgUrl === 'string' && t.coverImgUrl.length > 0 ? t.coverImgUrl : null
-  };
 }
 
 type PendingSegueAudio = {
