@@ -159,13 +159,13 @@ src/
 ### Settings & Location
 | Method | Path | Auth | Purpose |
 |--------|------|------|---------|
-| GET | `/api/settings` | JWT | Get settings (LLM/TTS config + dailyThemeEnabled) |
-| PUT | `/api/settings` | JWT | Save preferences (TTS voice, dailyThemeEnabled) |
-| GET | `/api/settings/player-context` | JWT | Player context (daily theme + taste) |
+| GET | `/api/settings` | JWT | Get settings (LLM/TTS config + dailyThemeEnabled + discoveryMode) |
+| PUT | `/api/settings` | JWT | Save preferences (TTS voice, dailyThemeEnabled, discoveryMode) |
+| GET | `/api/settings/player-context` | JWT | Player context (daily theme + taste + discoveryMode) |
 | POST | `/api/settings/analyze-taste` | JWT | Analyze music taste from liked songs |
 | POST | `/api/location` | JWT | Set browser geolocation |
 
-> **Note:** LLM/TTS `baseUrl`, `model`, and `apiKey` come from env vars (`CROSSFADIO_LLM_*`, `CROSSFADIO_TTS_*`), not from the Settings UI. The Settings UI exposes TTS voice selection and daily theme toggle.
+> **Note:** LLM/TTS `baseUrl`, `model`, and `apiKey` come from env vars (`CROSSFADIO_LLM_*`, `CROSSFADIO_TTS_*`), not from the Settings UI. The Settings UI exposes TTS voice selection, daily theme toggle, and player-side discovery mode.
 
 ## Commands
 
@@ -187,11 +187,13 @@ Live deployment runbook (instance, paths, restart, allowlist edits, persona upda
 ## Architecture Notes
 
 - **4 tabs**: Player, Plan, Chat, Settings — all mounted, visibility toggled via `display:none`
-- **Player layout**: Header (logo + nav buttons + NCM chip) + left col (hero + lyrics + timeline + controls) + right col (queue + status)
+- **Player layout**: Header (logo + nav buttons + NCM chip) + full-width discovery mode rail + main player column (cover-backed hero + lyrics + timeline + controls + context panels) + queue/status column
+- **Discovery mode**: User pref `discovery.mode` is `explore` (default) or `comfort`. Explore treats taste as an expansion seed and blends daily theme, time, weather, and DJ persona; comfort treats taste as a stronger anchor.
+- **NCM cover art**: `NcmClient.getSongDetails()` maps `/song/detail` `al.picUrl` to `coverImgUrl`; queue, now/next, and DJ appended tracks carry it to `NowPlayingHero` and `QueuePanel`.
 - **Dual-deck audio**: `AudioContext` with A/B deck rotation, equal-energy crossfade (cos/sin curves), BiquadFilter lowpass sweep
 - **Segue timing**: d-12s trigger → d-10s prefetch → d-8s crossfade start → d-7s TTS ducking
 - **Agent**: Single-agent, 3 modes (plan/segue/chat), 6-fragment prompt assembly, zod output validation with retry
-- **Real-time push**: SSE via `GET /api/sse/events` (EventSource) for persistent queue/plan events. `POST /api/sse/{chat,segue,pick-next}` (fetch+ReadableStream) for one-shot streaming tasks with AbortController on client disconnect.
+- **Real-time push**: SSE via `GET /api/sse/events` (EventSource) for persistent queue/plan events. `POST /api/sse/{chat,segue,pick-next}` (fetch+ReadableStream) for one-shot streaming tasks with AbortController on client disconnect. Renderer retries `/api/sse/segue` once-through-three-attempts on transient `502/503/504`.
 - **NCM auth**: QR code login → JWT token (HS256 via `jose`). Cookie encrypted with AES-256-GCM in `users` table. `authMiddleware` + `userScopeMiddleware` on all protected routes. Whitelist management routes additionally require `adminMiddleware` (checks `CROSSFADIO_ADMIN_NCM_ID`).
 - **Whitelist**: `allowlist.json` in app data dir controls which NCM user IDs can log in. Admin can manage via Settings UI. Removal also deletes `users` record to immediately revoke existing sessions. `userScopeMiddleware` double-checks `isAllowed()` on every request.
 - **Per-user isolation**: All DB tables have `user_id` column. Queue/location are per-user `Map`s. User corpus files under `users/<ncmId>/`.

@@ -259,8 +259,8 @@ describe('NcmClient DTO mapping', () => {
       return new Response(
         JSON.stringify({
           songs: [
-            { id: 101, name: 'Song A', dt: 210_000, ar: [{ name: 'Alice' }] },
-            { id: 102, name: 'Song B', dt: 180_000, ar: [{ name: 'Bob' }, { name: 'Carol' }] }
+            { id: 101, name: 'Song A', dt: 210_000, ar: [{ name: 'Alice' }], al: { picUrl: 'https://img/101.jpg' } },
+            { id: 102, name: 'Song B', dt: 180_000, ar: [{ name: 'Bob' }, { name: 'Carol' }], al: { picUrl: 'https://img/102.jpg' } }
           ]
         }),
         { status: 200 }
@@ -269,8 +269,8 @@ describe('NcmClient DTO mapping', () => {
     const client = new NcmClient('http://127.0.0.1:3000');
 
     expect(await client.getSongDetails(['101', '102'])).toEqual([
-      { id: 101, name: 'Song A', artists: ['Alice'], durationMs: 210_000 },
-      { id: 102, name: 'Song B', artists: ['Bob', 'Carol'], durationMs: 180_000 }
+      { id: 101, name: 'Song A', artists: ['Alice'], durationMs: 210_000, coverImgUrl: 'https://img/101.jpg' },
+      { id: 102, name: 'Song B', artists: ['Bob', 'Carol'], durationMs: 180_000, coverImgUrl: 'https://img/102.jpg' }
     ]);
   });
 

@@ -14,7 +14,8 @@ const queueStateBodySchema = z.object({
         id: z.string().min(1),
         name: z.string().optional(),
         artists: z.array(z.string()).optional(),
-        durationMs: z.number().int().nonnegative().optional()
+        durationMs: z.number().int().nonnegative().optional(),
+        coverImgUrl: z.string().nullable().optional()
       })
     ])
   ),
@@ -48,7 +49,8 @@ export function createSetQueueStateHandler() {
               ncmId: track.id,
               name: track.name,
               artists: track.artists,
-              durationMs: track.durationMs
+              durationMs: track.durationMs,
+              coverImgUrl: track.coverImgUrl
             }
       ),
       parsed.data.currentIndex
@@ -105,7 +107,8 @@ export function createGetLikedQueueHandler() {
         id: String(track.id),
         name: track.name,
         artists: track.artists,
-        durationMs: track.durationMs
+        durationMs: track.durationMs,
+        coverImgUrl: track.coverImgUrl
       }));
 
       res.json(likedQueueResponseSchema.parse({ ok: true, source: 'ncm-liked', tracks, currentIndex: 0 }));

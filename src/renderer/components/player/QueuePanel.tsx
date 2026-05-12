@@ -36,12 +36,19 @@ export function QueuePanel(props: QueuePanelProps): JSX.Element {
                 onClick={() => props.onSelectIndex(index)}
                 type="button"
               >
-                <div className="flex items-center justify-between gap-3">
-                  <span className="min-w-0 truncate">
+                <div className="flex items-center gap-3">
+                  {track.coverImgUrl ? (
+                    <img
+                      alt=""
+                      className="h-9 w-9 shrink-0 rounded-md object-cover"
+                      src={track.coverImgUrl}
+                    />
+                  ) : null}
+                  <span className="min-w-0 flex-1 truncate">
                     #{index + 1} · {track.name} - {track.artists.join(' / ') || '未知歌手'}
                   </span>
-                  {isCurrent ? <span className="text-xs text-violet-200">当前</span> : null}
-                  {isNext ? <span className="text-xs text-cyan-300">下一首</span> : null}
+                  {isCurrent ? <span className="shrink-0 text-xs text-violet-200">当前</span> : null}
+                  {isNext ? <span className="shrink-0 text-xs text-cyan-300">下一首</span> : null}
                 </div>
               </button>
               {!isCurrent ? (

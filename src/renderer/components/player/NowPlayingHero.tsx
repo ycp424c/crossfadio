@@ -6,6 +6,7 @@ type NowPlayingHeroProps = {
   title: string;
   subtitle: string;
   lyric: string;
+  coverImgUrl?: string | null;
   positionSec: number;
   isLiked: boolean;
   onToggleLike: () => void;
@@ -18,8 +19,8 @@ export function NowPlayingHero(props: NowPlayingHeroProps): JSX.Element {
         <div className="flex items-start gap-4">
           <img
             alt="当前曲目封面"
-            className="h-24 w-24 shrink-0 rounded-xl border border-zinc-700/70 object-cover"
-            src={coverPlaceholder}
+            className="h-32 w-32 shrink-0 rounded-xl border border-white/10 object-cover shadow-2xl shadow-black/40"
+            src={props.coverImgUrl ?? coverPlaceholder}
           />
           <div className="min-w-0">
             <h2 className="text-lg md:text-xl font-semibold leading-tight text-zinc-100">{props.title}</h2>

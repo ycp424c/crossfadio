@@ -49,7 +49,7 @@ export async function* streamSegue(input: {
 }
 
 export async function* streamPickNext(input: {
-  queue: Array<{ id: string; name?: string; artists?: string[]; durationMs?: number }>;
+  queue: Array<{ id: string; name?: string; artists?: string[]; durationMs?: number; coverImgUrl?: string | null }>;
   currentIndex: number;
 }): AsyncGenerator<SseStreamEvent> {
   yield* postSseStream('/api/sse/pick-next', input);
@@ -61,14 +61,8 @@ export async function cancelRecommend(jobId: string): Promise<void> {
 
 async function* postSseStream(path: string, body: unknown): AsyncGenerator<SseStreamEvent> {
   const token = getRequiredToken();
-  const response = await fetch(path, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${token}`
-    },
-    body: JSON.stringify(body)
-  });
+  const serializedBody = JSON.stringify(body);
+  const response = await fetchSseWithRetry(path, token, serializedBody);
 
   if (!response.ok) throw new Error(`SSE request failed: ${response.status}`);
   if (!response.body) throw new Error('SSE response body is empty');
@@ -92,6 +86,32 @@ async function* postSseStream(path: string, body: unknown): AsyncGenerator<SseSt
     const parsed = parseSseFrame(buffer);
     if (parsed) yield parsed;
   }
+}
+
+async function fetchSseWithRetry(path: string, token: string, body: string): Promise<Response> {
+  const maxAttempts = path === '/api/sse/segue' ? 3 : 1;
+  let lastResponse: Response | null = null;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    const response = await fetch(path, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`
+      },
+      body
+    });
+    if (response.ok || !isRetryableSseStatus(response.status) || attempt === maxAttempts) {
+      return response;
+    }
+    lastResponse = response;
+  }
+
+  return lastResponse ?? new Response(null, { status: 599 });
+}
+
+function isRetryableSseStatus(status: number): boolean {
+  return status === 502 || status === 503 || status === 504;
 }
 
 function parseSseFrame(frame: string): SseStreamEvent | null {

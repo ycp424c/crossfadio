@@ -19,6 +19,7 @@ import { initSseRes, writeSseEvent, endSse } from '../sse.js';
 import { getOrGenerateDailyThemeWithin } from '../../daily-theme.js';
 
 type AuthedRequest = Request & { userId: string; ncmClient: NcmClient };
+export type DiscoveryMode = 'explore' | 'comfort';
 
 type DjNextOptions = {
   secrets: any;
@@ -52,7 +53,8 @@ const pickNextBodySchema = z.object({
       id: z.string().min(1),
       name: z.string().optional(),
       artists: z.array(z.string()).optional(),
-      durationMs: z.number().int().nonnegative().optional()
+      durationMs: z.number().int().nonnegative().optional(),
+      coverImgUrl: z.string().nullable().optional()
     })
   ).optional(),
   currentIndex: z.number().int().nonnegative().optional()
@@ -63,6 +65,45 @@ const djPickReasonCache = new Map<string, string>();
 
 export function getDjPickReason(trackId: string): string | null {
   return djPickReasonCache.get(trackId) ?? null;
+}
+
+function getDiscoveryMode(userId: string): DiscoveryMode {
+  return getPref<DiscoveryMode>(userId, 'discovery.mode') === 'comfort' ? 'comfort' : 'explore';
+}
+
+export function buildDiscoveryModePromptParts(
+  mode: DiscoveryMode,
+  tasteHints: string[]
+): {
+  tasteContext: string;
+  styleInstruction: string;
+  pickInstruction: string;
+  userContextLabel: string;
+} {
+  if (tasteHints.length === 0) {
+    return {
+      tasteContext: '',
+      styleInstruction: '请根据今日主题、时间、天气、最近播放和 DJ 偏好，推荐 2-3 个适合当下情境的音乐风格方向。',
+      pickInstruction: '从候选歌曲列表中挑选最适合当前情境的 2 首，返回它们的候选歌曲 id。',
+      userContextLabel: ''
+    };
+  }
+
+  if (mode === 'comfort') {
+    return {
+      tasteContext: `\n## 个人品味锚点\n${tasteHints.join('\n')}\n（舒适区模式：选曲时优先选择符合以上品味的风格和艺人，允许少量相邻扩展。）\n`,
+      styleInstruction: '请根据以上信息（包括今日主题和个人品味偏好），推荐 2-3 个适合当下情境的音乐风格方向。优先推荐符合该用户品味偏好的风格和艺人。',
+      pickInstruction: '优先选择符合用户品味偏好的歌曲，同时兼顾当前时间、天气、今日主题和最近播放，返回 2 首候选歌曲 id。',
+      userContextLabel: `用户品味偏好：${tasteHints.join('；')}\n`
+    };
+  }
+
+  return {
+    tasteContext: `\n## 个人品味外延\n${tasteHints.join('\n')}\n（探索模式：把个人品味当作出发点和边界，向相邻风格、陌生艺人、今日主题、时间、天气与 DJ 偏好扩展；不要只复刻用户已知偏好。）\n`,
+    styleInstruction: '请根据今日主题、时间、天气、最近播放、DJ 偏好与个人品味外延，推荐 2-3 个适合当下情境且有新鲜感的音乐风格方向。',
+    pickInstruction: '选择与用户品味有可解释连接、但能由今日主题/时间/天气/DJ 偏好带出新鲜感的 2 首歌，返回候选歌曲 id。',
+    userContextLabel: `用户品味外延参考：${tasteHints.join('；')}\n`
+  };
 }
 
 function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
@@ -260,6 +301,7 @@ async function doPickNext(
 
   if (llmConfig && allLikedIds.length > 0) {
     try {
+      const discoveryMode = getDiscoveryMode(userId);
       const corpus = loadUserCorpus(userId);
       const [weather] = await Promise.all([withTimeout(fetchWeather(userId), 4_000, null)]);
       const nowDate = new Date();
@@ -286,9 +328,8 @@ async function doPickNext(
       if (activeDirective) {
         tasteHints.unshift(`当前短期选歌指令：${activeDirective}`);
       }
-      const tasteContext = tasteHints.length > 0
-        ? `\n## 个人品味参考\n${tasteHints.join('\n')}\n（选曲时优先选择符合以上品味的风格和艺人，但不必完全局限于此）\n`
-        : '';
+      const modePrompt = buildDiscoveryModePromptParts(discoveryMode, tasteHints);
+      const tasteContext = modePrompt.tasteContext;
 
       const excludeState = getTodayAndQueueDedupeState(userId);
       const excludeIds = excludeState.ids;
@@ -331,9 +372,8 @@ async function doPickNext(
         `当前时间：${localTime}\n天气：${weatherStr}\n最近播放：\n${recentPlayNames}\n` +
         themeContext +
         tasteContext +
-        `\n请根据以上信息（包括今日主题和个人品味偏好），推荐 2-3 个适合当下情境的音乐风格方向。` +
+        `\n${modePrompt.styleInstruction}` +
         `对每个风格，列出 3-5 位可以在网易云音乐搜到的代表艺人（华人艺人和海外艺人各半，保证多样性）。` +
-        `优先推荐符合该用户品味偏好的风格和艺人。` +
         `style 字段用英文关键词方便检索，artists 里同时包含中外艺人。` +
         `直接返回 JSON 对象，格式如下：\n` +
         `{"styles":[{"style":"indie folk","artists":["万能青年旅店","Bon Iver","张玮玮","Sufjan Stevens"]},` +
@@ -530,7 +570,7 @@ async function doPickNext(
 
 ## 当前任务：DJ 自动选曲
 ${themePickNote}
-${activeDirective ? `## 必须优先遵循的短期选歌指令\n${activeDirective}\n\n如果候选池里有符合该指令的歌曲，应优先选择；只有候选池明显不足时才放宽。\n\n` : ''}${tasteHints.length > 0 ? `## 用户品味偏好\n${tasteHints.join('\n')}\n\n优先选择符合用户品味偏好的歌曲。\n\n` : ''}从候选歌曲列表中挑选最适合当前情境的 2 首，返回它们的候选歌曲 id。
+${activeDirective ? `## 必须优先遵循的短期选歌指令\n${activeDirective}\n\n如果候选池里有符合该指令的歌曲，应优先选择；只有候选池明显不足时才放宽。\n\n` : ''}${tasteHints.length > 0 ? `## ${discoveryMode === 'comfort' ? '用户品味偏好' : '探索外延参考'}\n${tasteHints.join('\n')}\n\n${modePrompt.pickInstruction}\n\n` : ''}${tasteHints.length === 0 ? modePrompt.pickInstruction : ''}
 不要重复最近刚播过的歌曲。say 字段用一句话中文说明选曲理由。
 优先选择艺人名像真实人名或乐队的歌曲，避开艺人名明显是厂牌、合集、影视原声、或自动生成的选项（如"群星""Various Artists""佚名""原声带"等）。
 只能返回候选歌曲列表中真实存在的 id，不要编造 id，不要返回歌名搜索词。
@@ -545,9 +585,7 @@ ${activeDirective ? `## 必须优先遵循的短期选歌指令\n${activeDirecti
         ? `今日主题：${dailyTheme.theme}\n`
         : '';
 
-      const tasteUserContext = tasteHints.length > 0
-        ? `用户品味偏好：${tasteHints.join('；')}\n`
-        : '';
+      const tasteUserContext = modePrompt.userContextLabel;
       const directiveUserContext = activeDirective
         ? `短期选歌指令：${activeDirective}\n`
         : '';
@@ -555,6 +593,7 @@ ${activeDirective ? `## 必须优先遵循的短期选歌指令\n${activeDirecti
       const pickUserPrompt = `<context>
 当前时间：${localTime}
 天气：${weatherStr2}
+模式：${discoveryMode === 'comfort' ? '舒适区模式' : '探索模式'}
 ${themeContextUser}${directiveUserContext}${tasteUserContext}</context>
 
 <候选歌曲列表>
@@ -588,15 +627,24 @@ ${candidateList}
           { pickedIds: pickedTracks.map((track) => track.id), say: pickSay.slice(0, 80) },
           'DJ pick-next: LLM returned whitelisted candidate picks'
         );
+        const pickedDetailMap = new Map(
+          (await withTimeout(
+            ncmClient.getSongDetails(pickedTracks.map((track) => track.id)).catch(() => []),
+            LIKED_DETAILS_TIMEOUT_MS,
+            []
+          )).map((track) => [String(track.id), track])
+        );
         const prevQueueLength = getQueue(userId).length;
         const excludeState = getTodayAndQueueDedupeState(userId);
         for (const track of pickedTracks) {
           const dedupeKey = buildTrackDedupeKey(track);
           if (excludeState.ids.has(track.id) || excludeState.dedupeKeys.has(dedupeKey)) continue;
+          const detail = pickedDetailMap.get(track.id);
           addToQueue(userId, {
             ncmId: track.id,
-            name: track.name,
-            artists: track.artist ? track.artist.split(' / ').filter(Boolean) : []
+            name: detail?.name ?? track.name,
+            artists: detail?.artists ?? (track.artist ? track.artist.split(' / ').filter(Boolean) : []),
+            coverImgUrl: detail?.coverImgUrl
           }, 'end');
           excludeState.ids.add(track.id);
           excludeState.dedupeKeys.add(dedupeKey);
@@ -681,7 +729,12 @@ ${candidateList}
 
   const prevQueueLength = getQueue(userId).length;
   for (const pick of pickedDetails) {
-    addToQueue(userId, { ncmId: String(pick.id), name: pick.name, artists: pick.artists }, 'end');
+    addToQueue(userId, {
+      ncmId: String(pick.id),
+      name: pick.name,
+      artists: pick.artists,
+      coverImgUrl: pick.coverImgUrl
+    }, 'end');
   }
   broadcastAppended(userId, prevQueueLength, emit);
 }
@@ -804,7 +857,8 @@ function applyClientQueueSnapshot(req: Request, userId: string): void {
       ncmId: track.id,
       name: track.name,
       artists: track.artists,
-      durationMs: track.durationMs
+      durationMs: track.durationMs,
+      coverImgUrl: track.coverImgUrl
     })),
     parsed.data.currentIndex ?? 0
   );

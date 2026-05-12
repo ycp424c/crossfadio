@@ -155,7 +155,8 @@ export const ncmPlaylistTrackSchema = z.object({
   id: z.number().int().positive(),
   name: z.string(),
   artists: z.array(z.string()).default([]),
-  durationMs: z.number().int().nonnegative()
+  durationMs: z.number().int().nonnegative(),
+  coverImgUrl: z.string().nullable().optional()
 });
 
 export type NcmPlaylistTrack = z.infer<typeof ncmPlaylistTrackSchema>;
@@ -187,7 +188,8 @@ export const ncmPlaylistDetailResponseSchema = z
                 dt: z.number().int().nonnegative().optional(),
                 ar: z
                   .array(z.object({ name: z.string().optional() }).passthrough())
-                  .optional()
+                  .optional(),
+                al: z.object({ picUrl: z.string().nullable().optional() }).passthrough().optional()
               })
               .passthrough()
           )
@@ -215,7 +217,8 @@ export const ncmSongDetailResponseSchema = z
             dt: z.number().int().nonnegative().optional(),
             ar: z
               .array(z.object({ name: z.string().optional() }).passthrough())
-              .optional()
+              .optional(),
+            al: z.object({ picUrl: z.string().nullable().optional() }).passthrough().optional()
           })
           .passthrough()
       )
@@ -227,7 +230,8 @@ export const queueTrackSchema = z.object({
   id: z.string().min(1),
   name: z.string(),
   artists: z.array(z.string()).default([]),
-  durationMs: z.number().int().nonnegative()
+  durationMs: z.number().int().nonnegative(),
+  coverImgUrl: z.string().nullable().optional()
 });
 
 export type QueueTrackDto = z.infer<typeof queueTrackSchema>;
@@ -253,6 +257,7 @@ export const nowPlayingResponseSchema = z.object({
   ok: z.literal(true),
   ncmId: z.string().min(1),
   url: z.string().url(),
+  coverImgUrl: z.string().nullable().optional(),
   durationMs: z.number().int().positive().nullable(),
   lyric: z.string().nullable(),
   translation: z.string().nullable(),
@@ -266,7 +271,8 @@ export const nextTrackResponseSchema = z.object({
   track: z.object({
     id: z.string().min(1),
     name: z.string().optional(),
-    artists: z.array(z.string()).optional()
+    artists: z.array(z.string()).optional(),
+    coverImgUrl: z.string().nullable().optional()
   }),
   url: z.string().url(),
   durationMs: z.number().int().positive().nullable(),

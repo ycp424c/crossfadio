@@ -39,10 +39,12 @@ export function createNowHandler(fallbackNcmClient?: NcmClient): RequestHandler 
     try {
       const ncmClient = getScopedNcmClient(req, fallbackNcmClient);
       const ncmId = parsed.data.ncmId;
-      const [songUrl, lyric] = await Promise.all([
+      const [songUrl, lyric, details] = await Promise.all([
         ncmClient.getSongUrl(ncmId),
-        ncmClient.getLyric(ncmId)
+        ncmClient.getLyric(ncmId),
+        ncmClient.getSongDetails([ncmId]).catch(() => [])
       ]);
+      const detail = details[0] ?? null;
 
       if (!songUrl?.url) {
         throw new NcmApiError(
@@ -55,6 +57,7 @@ export function createNowHandler(fallbackNcmClient?: NcmClient): RequestHandler 
         ok: true,
         ncmId,
         url: songUrl.url,
+        coverImgUrl: detail?.coverImgUrl ?? null,
         durationMs: estimateDurationMs(songUrl.size, songUrl.br),
         lyric: lyric?.lyric ?? null,
         translation: lyric?.translation ?? null,
@@ -97,7 +100,11 @@ export function createNextHandler(fallbackNcmClient?: NcmClient): RequestHandler
 
     try {
       const ncmClient = getScopedNcmClient(req, fallbackNcmClient);
-      const songUrl = await ncmClient.getSongUrl(nextId);
+      const [songUrl, details] = await Promise.all([
+        ncmClient.getSongUrl(nextId),
+        ncmClient.getSongDetails([nextId]).catch(() => [])
+      ]);
+      const detail = details[0] ?? null;
       if (!songUrl?.url) {
         throw new NcmApiError(
           NCM_ERROR_CODE.BAD_RESPONSE,
@@ -107,7 +114,12 @@ export function createNextHandler(fallbackNcmClient?: NcmClient): RequestHandler
 
       const payload = nextTrackResponseSchema.parse({
         ok: true,
-        track: { id: nextId },
+        track: {
+          id: nextId,
+          name: detail?.name,
+          artists: detail?.artists,
+          coverImgUrl: detail?.coverImgUrl ?? null
+        },
         url: songUrl.url,
         durationMs: estimateDurationMs(songUrl.size, songUrl.br),
         timing: defaultTiming()

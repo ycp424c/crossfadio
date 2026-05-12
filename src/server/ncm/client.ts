@@ -225,7 +225,8 @@ export class NcmClient {
       artists: (track.ar ?? [])
         .map((artist) => artist.name)
         .filter((name): name is string => typeof name === 'string' && name.length > 0),
-      durationMs: typeof track.dt === 'number' ? track.dt : 0
+      durationMs: typeof track.dt === 'number' ? track.dt : 0,
+      ...(track.al?.picUrl ? { coverImgUrl: track.al.picUrl } : {})
     }));
 
     return {
@@ -279,7 +280,8 @@ export class NcmClient {
       artists: (song.ar ?? [])
         .map((artist) => artist.name)
         .filter((name): name is string => typeof name === 'string' && name.length > 0),
-      durationMs: typeof song.dt === 'number' ? song.dt : 0
+      durationMs: typeof song.dt === 'number' ? song.dt : 0,
+      ...(song.al?.picUrl ? { coverImgUrl: song.al.picUrl } : {})
     }));
   }
 

@@ -61,6 +61,17 @@ describe('player layout', () => {
     expect(source).toContain('resetTrackMedia();');
   });
 
+  it('clears the restored queue snapshot when the final queued track ends', () => {
+    const source = fs.readFileSync(path.join(root, 'src/renderer/views/Player/PlayerView.tsx'), 'utf-8');
+    const onEndedStart = source.indexOf('function onEnded(): void');
+    const onErrorStart = source.indexOf('function onTrackMediaError(): void');
+    const onEndedBody = source.slice(onEndedStart, onErrorStart);
+
+    expect(onEndedBody).toContain('setQueue([])');
+    expect(onEndedBody).toContain("setTrackStatusText('播放完成')");
+    expect(source).toContain('persistQueueSnapshot(queue, currentIndex)');
+  });
+
   it('ignores stale now-playing responses from a previous current track', () => {
     const source = fs.readFileSync(path.join(root, 'src/renderer/views/Player/PlayerView.tsx'), 'utf-8');
     const loadNowPlayingStart = source.indexOf('async function loadNowPlaying');
@@ -263,17 +274,31 @@ describe('player layout', () => {
     expect(source).not.toContain('trackId');
   });
 
-  it('PlayerView uses two-column layout and removes the left sidebar', () => {
+  it('passes real cover artwork and discovery mode into the player surface', () => {
+    const playerSource = fs.readFileSync(path.join(root, 'src/renderer/views/Player/PlayerView.tsx'), 'utf-8');
+    const heroSource = fs.readFileSync(path.join(root, 'src/renderer/components/player/NowPlayingHero.tsx'), 'utf-8');
+    const queueSource = fs.readFileSync(path.join(root, 'src/renderer/components/player/QueuePanel.tsx'), 'utf-8');
+
+    expect(playerSource).toContain('discoveryMode');
+    expect(playerSource).toContain('handleDiscoveryModeChange');
+    expect(playerSource).toContain('modeSurface');
+    expect(playerSource).toContain('coverImgUrl={currentTrack?.coverImgUrl ?? nowPlaying?.coverImgUrl ?? null}');
+    expect(heroSource).toContain('coverImgUrl');
+    expect(heroSource).toContain('props.coverImgUrl ?? coverPlaceholder');
+    expect(queueSource).toContain('track.coverImgUrl');
+  });
+
+  it('PlayerView uses a main player plus queue layout and removes the left sidebar', () => {
     const source = fs.readFileSync(
       path.join(root, 'src/renderer/views/Player/PlayerView.tsx'),
       'utf-8'
     );
 
     expect(source).not.toContain('col-span-2');
-    expect(source).not.toContain('col-span-7');
     expect(source).not.toContain('col-span-3');
     expect(source).toContain('col-span-12');
-    expect(source).toContain('col-span-6');
+    expect(source).toContain('col-span-7');
+    expect(source).toContain('col-span-5');
   });
 
   it('PlayerView removes the prefetch status panel', () => {

@@ -8,6 +8,11 @@ import { getPref, setPref } from '../../store/prefs.js';
 import { getConfig } from '../../config.js';
 
 type AuthedRequest = Request & { userId: string; ncmClient: NcmClient };
+export type DiscoveryMode = 'explore' | 'comfort';
+
+function getDiscoveryMode(userId: string): DiscoveryMode {
+  return getPref<DiscoveryMode>(userId, 'discovery.mode') === 'comfort' ? 'comfort' : 'explore';
+}
 
 // ── GET /api/settings ─────────────────────────────────────────────────────────
 
@@ -17,6 +22,7 @@ export function createGetSettingsHandler() {
     const config = getConfig();
     const userVoice = getPref<string>(userId, 'tts.voice');
     const dailyThemeEnabled = getPref<boolean>(userId, 'dailyTheme.enabled') !== false;
+    const discoveryMode = getDiscoveryMode(userId);
 
     res.json({
       ok: true,
@@ -31,7 +37,8 @@ export function createGetSettingsHandler() {
         voice: userVoice ?? config.tts.voiceDefault ?? 'Cherry',
         voiceDefault: config.tts.voiceDefault
       },
-      dailyThemeEnabled
+      dailyThemeEnabled,
+      discoveryMode
     });
   };
 }
@@ -40,7 +47,8 @@ export function createGetSettingsHandler() {
 
 const settingsBodySchema = z.object({
   tts: z.object({ voice: z.string().min(1) }).optional(),
-  dailyThemeEnabled: z.boolean().optional()
+  dailyThemeEnabled: z.boolean().optional(),
+  discoveryMode: z.enum(['explore', 'comfort']).optional()
 });
 export function createSaveSettingsHandler() {
   return (req: Request, res: Response): void => {
@@ -56,6 +64,9 @@ export function createSaveSettingsHandler() {
     if (parsed.data.dailyThemeEnabled !== undefined) {
       setPref(userId, 'dailyTheme.enabled', parsed.data.dailyThemeEnabled);
     }
+    if (parsed.data.discoveryMode !== undefined) {
+      setPref(userId, 'discovery.mode', parsed.data.discoveryMode);
+    }
     res.json({ ok: true });
   };
 }
@@ -66,6 +77,7 @@ export function createGetPlayerContextHandler() {
   return async (req: Request, res: Response): Promise<void> => {
     const { userId } = req as AuthedRequest;
     const enabled = getPref<boolean>(userId, 'dailyTheme.enabled') !== false;
+    const discoveryMode = getDiscoveryMode(userId);
     const [theme, weather] = await Promise.all([
       enabled ? getOrGenerateDailyThemeWithin(3_000) : Promise.resolve(null),
       fetchWeather(userId)
@@ -76,7 +88,8 @@ export function createGetPlayerContextHandler() {
       ok: true,
       theme: theme ? { theme: theme.theme, keywords: theme.keywords } : null,
       weather,
-      taste
+      taste,
+      discoveryMode
     });
   };
 }

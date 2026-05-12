@@ -5,6 +5,8 @@ import {
   ChevronDown,
   ChevronUp,
   CloudSun,
+  Compass,
+  Home,
   LogOut,
   MapPin,
   Palette,
@@ -32,6 +34,7 @@ import {
   updateLocation
 } from '@renderer/api';
 import { getPrefetchDecision } from '@renderer/audio/prefetch';
+import { shouldTreatMediaErrorAsEnded } from '@renderer/audio/mediaError';
 import { NowPlayingHero } from '@renderer/components/player/NowPlayingHero';
 import { PlaybackTimeline } from '@renderer/components/player/PlaybackTimeline';
 import { QueuePanel } from '@renderer/components/player/QueuePanel';
@@ -63,6 +66,8 @@ type PersistedQueueSnapshot = {
   queue: QueueTrackDto[];
   currentIndex: number;
 };
+
+type DiscoveryMode = 'explore' | 'comfort';
 
 function newClientRequestId(): string {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
@@ -133,7 +138,8 @@ function normalizePersistedTrack(track: unknown): QueueTrackDto | null {
     artists: Array.isArray(t.artists) ? t.artists.filter((artist): artist is string => typeof artist === 'string') : [],
     durationMs: typeof t.durationMs === 'number' && Number.isFinite(t.durationMs) && t.durationMs >= 0
       ? Math.floor(t.durationMs)
-      : 0
+      : 0,
+    coverImgUrl: typeof t.coverImgUrl === 'string' && t.coverImgUrl.length > 0 ? t.coverImgUrl : null
   };
 }
 
@@ -183,6 +189,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
   const [weatherContext, setWeatherContext] = useState<{ location: string; tempC: number; desc: string } | null>(null);
   const [geolocationIssue, setGeolocationIssue] = useState<string | null>(null);
   const [dailyThemeEnabled, setDailyThemeEnabled] = useState(true);
+  const [discoveryMode, setDiscoveryMode] = useState<DiscoveryMode>('explore');
   const [userTaste, setUserTaste] = useState('');
   const [tasteExpanded, setTasteExpanded] = useState(false);
 
@@ -341,8 +348,10 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
           setWeatherContext(ctx.weather);
           console.info('[Crossfadio] player context weather', { weather: ctx.weather });
           setUserTaste(ctx.taste);
+          setDiscoveryMode(ctx.discoveryMode);
         }
         setDailyThemeEnabled(settings.dailyThemeEnabled);
+        setDiscoveryMode(settings.discoveryMode);
       })
       .catch(() => {});
   }, [sseToken]);
@@ -404,14 +413,15 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
       if (event === 'queue-updated') {
         const d = data as Record<string, unknown>;
         const nextQueue: QueueTrackDto[] = Array.isArray(d.queue)
-          ? (d.queue as unknown[]).map((track) => {
+          ? (d.queue as unknown[]).map((track): QueueTrackDto | null => {
               if (!track || typeof track !== 'object' || !('ncmId' in track)) return null;
               const t = track as unknown as Record<string, unknown>;
               return {
                 id: String(t.ncmId),
                 name: typeof t.name === 'string' ? t.name : `Track ${t.ncmId}`,
                 artists: Array.isArray(t.artists) ? (t.artists as string[]) : [],
-                durationMs: typeof t.durationMs === 'number' ? t.durationMs : 0
+                durationMs: typeof t.durationMs === 'number' ? t.durationMs : 0,
+                coverImgUrl: typeof t.coverImgUrl === 'string' ? t.coverImgUrl : null
               };
             })
             .filter((track): track is QueueTrackDto => track !== null)
@@ -421,13 +431,16 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
         setQueue(nextQueue);
         setCurrentIndex(nextIndex);
       } else if (event === 'queue-appended') {
-        const t = (data as Record<string, unknown>).track as { ncmId?: unknown; name?: unknown; artists?: unknown; durationMs?: unknown } | null;
+        const t = (data as Record<string, unknown>).track as { ncmId?: unknown; name?: unknown; artists?: unknown; durationMs?: unknown; coverImgUrl?: unknown } | null;
         if (t && typeof t === 'object' && t.ncmId) {
           const appended: QueueTrackDto = {
             id: String(t.ncmId),
             name: typeof t.name === 'string' ? t.name : `Track ${t.ncmId}`,
             artists: Array.isArray(t.artists) ? (t.artists as string[]) : [],
-            durationMs: typeof t.durationMs === 'number' ? t.durationMs : 0
+            durationMs: typeof t.durationMs === 'number' ? t.durationMs : 0,
+            coverImgUrl: typeof (t as { coverImgUrl?: unknown }).coverImgUrl === 'string'
+              ? (t as { coverImgUrl: string }).coverImgUrl
+              : null
           };
           setQueue((prev) => [...prev, appended]);
         }
@@ -507,6 +520,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
       setWeatherContext(ctx.weather);
       console.info('[Crossfadio] player context weather', { weather: ctx.weather });
       setUserTaste(ctx.taste);
+      setDiscoveryMode(ctx.discoveryMode);
     }
   }
 
@@ -530,6 +544,19 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
         void refreshPlayerContext().catch(() => {});
       }
       setError(err instanceof Error ? err.message : '每日主题设置保存失败');
+    }
+  }
+
+  async function handleDiscoveryModeChange(next: DiscoveryMode): Promise<void> {
+    if (next === discoveryMode) return;
+    const prev = discoveryMode;
+    setDiscoveryMode(next);
+    setDjStatusText(next === 'explore' ? '探索模式：放宽个人品味权重' : '舒适区模式：提高个人品味匹配');
+    try {
+      await saveSettings({ discoveryMode: next });
+    } catch (err) {
+      setDiscoveryMode(prev);
+      setError(err instanceof Error ? err.message : '模式保存失败');
     }
   }
 
@@ -948,19 +975,60 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
     }
     setIsPlaying(false);
     shouldAutoplayNextRef.current = false;
+    setQueue([]);
+    setCurrentIndex(0);
     setTrackStatusText('播放完成');
+  }
+
+  function onTrackMediaError(): void {
+    const audio = audioRef.current;
+    if (!audio) {
+      return;
+    }
+
+    if (shouldTreatMediaErrorAsEnded({ currentTime: audio.currentTime, duration: audio.duration })) {
+      setTrackStatusText('音频流在结尾断开，继续下一首');
+      onEnded();
+      return;
+    }
+
+    setIsPlaying(false);
+    shouldAutoplayNextRef.current = false;
+    setTrackStatusText('播放流中断');
+    setError('音频资源加载中断，请稍后重试或切换下一首');
   }
 
   const canPrev = false;
   const canSkip = queue.length > 1;
   const isLiked = currentTrackId ? likedTrackIds.includes(currentTrackId) : false;
+  const modeSurface = discoveryMode === 'explore'
+    ? {
+        page: 'bg-[radial-gradient(circle_at_12%_0%,rgba(34,197,94,0.20)_0%,transparent_28%),radial-gradient(circle_at_80%_8%,rgba(6,182,212,0.18)_0%,transparent_30%),linear-gradient(135deg,#07100f_0%,#070a12_44%,#020407_100%)]',
+        panel: 'border-emerald-400/15 bg-zinc-950/62',
+        accent: 'text-emerald-200',
+        soft: 'bg-emerald-400/10 text-emerald-100 border-emerald-300/20',
+        active: 'bg-emerald-400 text-zinc-950 shadow-[0_0_28px_rgba(52,211,153,0.28)]',
+        inactive: 'text-zinc-400 hover:text-emerald-100',
+        rail: 'border-cyan-300/15 bg-cyan-950/18',
+        caption: '品味外延 · 主题/天气/时间混合'
+      }
+    : {
+        page: 'bg-[radial-gradient(circle_at_16%_0%,rgba(251,191,36,0.18)_0%,transparent_27%),radial-gradient(circle_at_78%_8%,rgba(244,114,182,0.12)_0%,transparent_28%),linear-gradient(135deg,#120d08_0%,#090909_46%,#040405_100%)]',
+        panel: 'border-amber-300/15 bg-zinc-950/68',
+        accent: 'text-amber-200',
+        soft: 'bg-amber-400/10 text-amber-100 border-amber-300/20',
+        active: 'bg-amber-300 text-zinc-950 shadow-[0_0_28px_rgba(251,191,36,0.24)]',
+        inactive: 'text-zinc-400 hover:text-amber-100',
+        rail: 'border-rose-300/15 bg-rose-950/14',
+        caption: '高匹配 · 常听风格优先'
+      };
 
   return (
-    <main className="bg-[radial-gradient(circle_at_top_left,#1f2b5e_0%,#080b14_35%,#070a12_100%)] p-4 md:p-6 text-zinc-100">
+    <main className={`${modeSurface.page} min-h-screen p-4 md:p-6 text-zinc-100 transition-colors duration-500`}>
       <div className="mx-auto grid max-w-[1480px] grid-cols-1 md:grid-cols-12 gap-4">
 
         {/* Header */}
-        <header className="col-span-1 md:col-span-12 flex flex-col items-stretch justify-between gap-3 rounded-2xl border border-zinc-800/80 bg-zinc-950/60 px-5 py-3 md:flex-row md:items-center">
+        <header className={`col-span-1 md:col-span-12 flex flex-col items-stretch justify-between gap-3 rounded-2xl border ${modeSurface.panel} px-5 py-3 md:flex-row md:items-center`}>
           <div className="flex items-center gap-2.5">
             <img alt="Crossfadio 应用图标" className="h-7 w-7 rounded-lg" src={appMark} />
             <span className="text-lg font-semibold tracking-tight text-violet-200">Crossfadio</span>
@@ -1190,9 +1258,41 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
           </div>
         </header>
 
+        <section className={`col-span-1 md:col-span-12 rounded-2xl border ${modeSurface.rail} px-4 py-3`}>
+          <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+            <div>
+              <p className={`text-xs uppercase tracking-[0.18em] ${modeSurface.accent}`}>DJ 选歌模式</p>
+              <p className="mt-1 text-sm text-zinc-400">{modeSurface.caption}</p>
+            </div>
+            <div className="inline-grid grid-cols-2 gap-1 rounded-xl border border-white/10 bg-black/30 p-1">
+              <button
+                className={`inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition ${
+                  discoveryMode === 'explore' ? modeSurface.active : modeSurface.inactive
+                }`}
+                onClick={() => void handleDiscoveryModeChange('explore')}
+                type="button"
+              >
+                <Compass className="h-4 w-4" />
+                探索
+              </button>
+              <button
+                className={`inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition ${
+                  discoveryMode === 'comfort' ? modeSurface.active : modeSurface.inactive
+                }`}
+                onClick={() => void handleDiscoveryModeChange('comfort')}
+                type="button"
+              >
+                <Home className="h-4 w-4" />
+                舒适区
+              </button>
+            </div>
+          </div>
+        </section>
+
         {/* Left column — player */}
-        <section className="col-span-1 md:col-span-6 space-y-4">
+        <section className="col-span-1 md:col-span-7 space-y-4">
           <NowPlayingHero
+            coverImgUrl={currentTrack?.coverImgUrl ?? nowPlaying?.coverImgUrl ?? null}
             isLiked={isLiked}
             lyric={nowPlaying?.lyric ?? ''}
             onToggleLike={handleToggleLike}
@@ -1223,17 +1323,17 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
 
           {/* Daily Theme Banner */}
           {sseToken && (
-            <div className="rounded-xl border border-indigo-800/40 bg-indigo-950/30 px-4 py-3">
+            <div className={`rounded-xl border px-4 py-3 ${modeSurface.soft}`}>
               <div className="mb-2 flex items-center justify-between gap-3">
                 <div className="flex items-center gap-2">
-                  <Sparkles className="h-3.5 w-3.5 text-indigo-400" />
-                  <span className="text-xs font-medium uppercase tracking-wider text-indigo-400">今日主题</span>
+                  <Sparkles className="h-3.5 w-3.5" />
+                  <span className="text-xs font-medium uppercase tracking-wider">今日主题</span>
                 </div>
                 <button
                   aria-checked={dailyThemeEnabled}
                   aria-label="启用每日主题推荐"
                   className={`relative inline-flex h-5 w-9 shrink-0 rounded-full transition-colors ${
-                    dailyThemeEnabled ? 'bg-indigo-500' : 'bg-zinc-700'
+                    dailyThemeEnabled ? (discoveryMode === 'explore' ? 'bg-emerald-400' : 'bg-amber-300') : 'bg-zinc-700'
                   }`}
                   onClick={() => void handleDailyThemeToggle()}
                   role="switch"
@@ -1246,7 +1346,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
                   />
                 </button>
               </div>
-              <p className="text-sm text-indigo-200/80">
+              <p className="text-sm opacity-85">
                 {dailyThemeEnabled
                   ? dailyTheme?.theme ?? '正在准备今日主题'
                   : '主题推荐已关闭，DJ 选曲和转场不会参考每日主题'}
@@ -1254,7 +1354,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
               {dailyThemeEnabled && dailyTheme && dailyTheme.keywords.length > 0 && (
                 <div className="flex flex-wrap gap-1 mt-2">
                   {dailyTheme.keywords.map((kw) => (
-                    <span key={kw} className="rounded-full bg-indigo-800/30 px-2 py-0.5 text-xs text-indigo-300/70">
+                    <span key={kw} className="rounded-full bg-black/20 px-2 py-0.5 text-xs opacity-80">
                       {kw}
                     </span>
                   ))}
@@ -1265,15 +1365,15 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
 
           {/* User Taste — collapsible */}
           {userTaste && (
-            <div className="rounded-xl border border-zinc-800/60 bg-zinc-900/40">
+             <div className={`rounded-xl border ${modeSurface.panel}`}>
               <button
                 className="flex w-full items-center justify-between px-4 py-2.5 text-left hover:bg-zinc-800/30 transition rounded-xl"
                 onClick={() => setTasteExpanded((v) => !v)}
                 type="button"
               >
                 <div className="flex items-center gap-2">
-                  <Palette className="h-3.5 w-3.5 text-zinc-500" />
-                  <span className="text-xs font-medium uppercase tracking-wider text-zinc-500">我的品味</span>
+                  <Palette className={`h-3.5 w-3.5 ${modeSurface.accent}`} />
+                  <span className={`text-xs font-medium uppercase tracking-wider ${modeSurface.accent}`}>我的品味</span>
                 </div>
                 {tasteExpanded ? (
                   <ChevronUp className="h-4 w-4 text-zinc-600" />
@@ -1292,6 +1392,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
 
           <audio
             onEnded={onEnded}
+            onError={onTrackMediaError}
             onLoadedMetadata={onLoadedMetadata}
             onPause={() => setIsPlaying(false)}
             onPlay={() => setIsPlaying(true)}
@@ -1301,7 +1402,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
         </section>
 
         {/* Right column — queue + status */}
-        <section className="col-span-1 md:col-span-6 flex flex-col gap-4">
+        <section className="col-span-1 md:col-span-5 flex flex-col gap-4">
           <QueuePanel
             currentIndex={currentIndex}
             nextId={nextTrack?.track.id ?? null}

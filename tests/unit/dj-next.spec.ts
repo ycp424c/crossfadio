@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import { extractQueueDirectiveFromText } from '../../src/server/http/chat-sse-worker';
-import { buildTrackDedupeKey, parseDjCandidatePicks, serializeDjPickNextErrorForLog, searchCandidates } from '../../src/server/http/routes/djNext';
+import { buildDiscoveryModePromptParts, buildTrackDedupeKey, parseDjCandidatePicks, serializeDjPickNextErrorForLog, searchCandidates } from '../../src/server/http/routes/djNext';
 import { LlmError } from '../../src/server/llm/client';
 import type { NcmClient } from '../../src/server/ncm/client';
 import type { NcmSong } from '../../src/shared/schema';
@@ -48,6 +48,27 @@ describe('DJ pick-next diagnostics', () => {
 
     expect(source).toContain('excludedIds: Array.from(excludeState.ids)');
     expect(source).toContain('excludedDedupeKeys: Array.from(excludeState.dedupeKeys)');
+  });
+});
+
+describe('DJ discovery mode prompt parts', () => {
+  const tasteHints = ['该用户的音乐品味偏好：粤语流行、City Pop、陈奕迅'];
+
+  it('uses personal taste as an expansion seed in explore mode', () => {
+    const parts = buildDiscoveryModePromptParts('explore', tasteHints);
+
+    expect(parts.tasteContext).toContain('品味外延');
+    expect(parts.styleInstruction).toContain('今日主题、时间、天气');
+    expect(parts.pickInstruction).toContain('有可解释连接');
+    expect(parts.pickInstruction).not.toContain('优先选择符合用户品味偏好的歌曲');
+  });
+
+  it('keeps personal taste as a strong anchor in comfort mode', () => {
+    const parts = buildDiscoveryModePromptParts('comfort', tasteHints);
+
+    expect(parts.tasteContext).toContain('个人品味锚点');
+    expect(parts.styleInstruction).toContain('优先推荐符合该用户品味偏好的风格和艺人');
+    expect(parts.pickInstruction).toContain('优先选择符合用户品味偏好的歌曲');
   });
 });
 

@@ -4,6 +4,7 @@ export type QueueTrack = {
   name?: string;
   artists?: string[];
   durationMs?: number;
+  coverImgUrl?: string | null;
 };
 
 type QueueState = {

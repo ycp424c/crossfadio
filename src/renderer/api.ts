@@ -147,7 +147,7 @@ export async function toggleLikeTrack(id: string, like: boolean): Promise<void> 
 }
 
 export async function saveQueueState(
-  queue: Array<string | { id: string; name?: string; artists?: string[]; durationMs?: number }>,
+  queue: Array<string | { id: string; name?: string; artists?: string[]; durationMs?: number; coverImgUrl?: string | null }>,
   currentIndex: number
 ): Promise<void> {
   const result = await requestJson<{ ok: boolean }>('/api/queue/state', {
@@ -159,7 +159,7 @@ export async function saveQueueState(
 }
 
 export async function pickNextTrack(
-  queue: Array<{ id: string; name?: string; artists?: string[]; durationMs?: number }> = [],
+  queue: Array<{ id: string; name?: string; artists?: string[]; durationMs?: number; coverImgUrl?: string | null }> = [],
   currentIndex = 0
 ): Promise<{ ok: boolean }> {
   return requestJson<{ ok: boolean }>('/api/dj/pick-next', {
@@ -241,11 +241,13 @@ export type SettingsResponse = {
   llm: LlmSettings;
   tts: TtsSettings;
   dailyThemeEnabled: boolean;
+  discoveryMode: 'explore' | 'comfort';
 };
 
 export type SaveSettingsPayload = {
   tts?: { voice: string };
   dailyThemeEnabled?: boolean;
+  discoveryMode?: 'explore' | 'comfort';
 };
 
 export async function getSettings(): Promise<SettingsResponse> {
@@ -270,6 +272,7 @@ export type PlayerContextResponse = {
   theme: { theme: string; keywords: string[] } | null;
   weather: { location: string; tempC: number; desc: string } | null;
   taste: string;
+  discoveryMode: 'explore' | 'comfort';
 };
 
 export async function getPlayerContext(): Promise<PlayerContextResponse> {

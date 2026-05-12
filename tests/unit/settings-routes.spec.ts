@@ -69,15 +69,16 @@ describe('settings routes', () => {
     expect(res.statusCode).toBe(200);
     expect(res.body).toMatchObject({
       ok: true,
-      dailyThemeEnabled: true
+      dailyThemeEnabled: true,
+      discoveryMode: 'explore'
     });
   });
 
-  it('PUT saves dailyThemeEnabled and GET reflects it', () => {
+  it('PUT saves dailyThemeEnabled and discoveryMode and GET reflects them', () => {
     const saveHandler = createSaveSettingsHandler();
     const saveRes = createJsonResponse();
     saveHandler(
-      { userId: 'test-user', body: { dailyThemeEnabled: false } } as never,
+      { userId: 'test-user', body: { dailyThemeEnabled: false, discoveryMode: 'comfort' } } as never,
       saveRes as never
     );
     expect(saveRes.statusCode).toBe(200);
@@ -86,7 +87,7 @@ describe('settings routes', () => {
     const getHandler = createGetSettingsHandler();
     const getRes = createJsonResponse();
     getHandler({ userId: 'test-user' } as never, getRes as never);
-    expect(getRes.body).toMatchObject({ dailyThemeEnabled: false });
+    expect(getRes.body).toMatchObject({ dailyThemeEnabled: false, discoveryMode: 'comfort' });
   });
 });
 
@@ -132,7 +133,8 @@ describe('settings player context route', () => {
     expect(res.body).toMatchObject({
       ok: true,
       theme: { theme: '雨后城市漫步', keywords: ['city pop', '雨天'] },
-      taste: ''
+      taste: '',
+      discoveryMode: 'explore'
     });
   });
 
