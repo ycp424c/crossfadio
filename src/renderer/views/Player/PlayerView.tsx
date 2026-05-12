@@ -1325,16 +1325,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
             onSkip={handleSkip}
           />
 
-          <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
-            {sseToken ? (
-              <TodayThemePanel
-                dailyTheme={dailyTheme}
-                dailyThemeEnabled={dailyThemeEnabled}
-                discoveryMode={discoveryMode}
-                modeConfig={modeConfig}
-                onToggle={() => void handleDailyThemeToggle()}
-              />
-            ) : null}
+          <div className="space-y-4">
             {userTaste ? (
               <TastePanel
                 expanded={tasteExpanded}
@@ -1387,6 +1378,16 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
             onSelectIndex={handleSelectIndex}
             queue={queue}
           />
+
+          {sseToken ? (
+            <TodayThemePanel
+              dailyTheme={dailyTheme}
+              dailyThemeEnabled={dailyThemeEnabled}
+              discoveryMode={discoveryMode}
+              modeConfig={modeConfig}
+              onToggle={() => void handleDailyThemeToggle()}
+            />
+          ) : null}
 
           <DjStatusDock
             djPickLog={djPickLog}
