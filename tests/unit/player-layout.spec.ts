@@ -214,8 +214,8 @@ describe('player layout', () => {
 
   it('places the daily theme recommendation toggle in the player theme banner', () => {
     const source = fs.readFileSync(path.join(root, 'src/renderer/views/Player/PlayerView.tsx'), 'utf-8');
-    const bannerStart = source.indexOf('{/* Daily Theme Banner */}');
-    const bannerEnd = source.indexOf('{/* User Taste', bannerStart);
+    const bannerStart = source.indexOf('function TodayThemePanel');
+    const bannerEnd = source.indexOf('function TastePanel', bannerStart);
     const bannerSource = source.slice(bannerStart, bannerEnd);
 
     expect(source).toContain('saveSettings');
@@ -283,14 +283,14 @@ describe('player layout', () => {
 
     expect(playerSource).toContain('discoveryMode');
     expect(playerSource).toContain('handleDiscoveryModeChange');
-    expect(playerSource).toContain('modeSurface');
+    expect(playerSource).toContain('modeConfig');
     expect(playerSource).toContain('coverImgUrl={currentTrack?.coverImgUrl ?? nowPlaying?.coverImgUrl ?? null}');
     expect(heroSource).toContain('coverImgUrl');
     expect(heroSource).toContain('props.coverImgUrl ?? coverPlaceholder');
     expect(queueSource).toContain('track.coverImgUrl');
   });
 
-  it('PlayerView uses a main player plus queue layout and removes the left sidebar', () => {
+  it('PlayerView uses the new mode-aware studio layout from the design reference', () => {
     const source = fs.readFileSync(
       path.join(root, 'src/renderer/views/Player/PlayerView.tsx'),
       'utf-8'
@@ -298,9 +298,14 @@ describe('player layout', () => {
 
     expect(source).not.toContain('col-span-2');
     expect(source).not.toContain('col-span-3');
-    expect(source).toContain('col-span-12');
-    expect(source).toContain('col-span-7');
-    expect(source).toContain('col-span-5');
+    expect(source).toContain('modeConfig');
+    expect(source).toContain('modeInfoCards');
+    expect(source).toContain('xl:col-span-8');
+    expect(source).toContain('xl:col-span-4');
+    expect(source).toContain("discoveryMode === 'comfort'");
+    expect(source).toContain('TodayThemePanel');
+    expect(source).toContain('TastePanel');
+    expect(source).toContain('DjStatusDock');
   });
 
   it('PlayerView removes the prefetch status panel', () => {

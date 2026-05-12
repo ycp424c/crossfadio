@@ -1,4 +1,4 @@
-import { Pause, Play, SkipBack, SkipForward } from 'lucide-react';
+import { Pause, Play, Repeat2, Shuffle, SkipBack, SkipForward } from 'lucide-react';
 
 type TransportControlsProps = {
   isPlaying: boolean;
@@ -11,13 +11,20 @@ type TransportControlsProps = {
 
 export function TransportControls(props: TransportControlsProps): JSX.Element {
   return (
-    <section className="rounded-2xl border border-zinc-800/80 bg-zinc-950/60 p-4">
-      <div className="flex items-center justify-center gap-3">
+    <section className="rounded-xl border border-white/10 bg-black/20 px-5 py-4">
+      <div className="flex items-center justify-center gap-5">
         <button
-          className={`inline-flex items-center gap-2 rounded-xl border px-4 py-2 text-sm ${
+          aria-label="随机播放"
+          className="inline-flex h-10 w-10 items-center justify-center rounded-full text-zinc-300 transition hover:bg-white/5 hover:text-cyan-200"
+          type="button"
+        >
+          <Shuffle className="h-4 w-4" />
+        </button>
+        <button
+          className={`inline-flex items-center gap-2 rounded-full px-3 py-2 text-sm ${
             props.canPrev
-              ? 'border-zinc-700 bg-zinc-900 text-zinc-200 hover:border-zinc-500'
-              : 'cursor-not-allowed border-zinc-800 bg-zinc-900/40 text-zinc-600'
+              ? 'text-zinc-200 hover:bg-white/5'
+              : 'cursor-not-allowed text-zinc-600'
           }`}
           disabled={!props.canPrev}
           onClick={props.onPrev}
@@ -27,18 +34,18 @@ export function TransportControls(props: TransportControlsProps): JSX.Element {
           Prev
         </button>
         <button
-          className="inline-flex items-center gap-2 rounded-xl border border-amber-400/70 bg-amber-500/20 px-5 py-2 text-sm font-semibold text-amber-100 hover:bg-amber-500/30"
+          aria-label={props.isPlaying ? '暂停' : '播放'}
+          className="inline-flex h-14 w-14 items-center justify-center rounded-full border border-cyan-300/80 bg-black/35 text-cyan-50 shadow-[0_0_24px_rgba(45,212,191,0.30)] transition hover:bg-cyan-300/15"
           onClick={props.onPlayPause}
           type="button"
         >
-          {props.isPlaying ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}
-          {props.isPlaying ? 'Pause' : 'Play'}
+          {props.isPlaying ? <Pause className="h-6 w-6 fill-current" /> : <Play className="h-6 w-6 fill-current" />}
         </button>
         <button
-          className={`inline-flex items-center gap-2 rounded-xl border px-4 py-2 text-sm ${
+          className={`inline-flex items-center gap-2 rounded-full px-3 py-2 text-sm ${
             props.canSkip
-              ? 'border-zinc-700 bg-zinc-900 text-zinc-200 hover:border-zinc-500'
-              : 'cursor-not-allowed border-zinc-800 bg-zinc-900/40 text-zinc-600'
+              ? 'text-zinc-200 hover:bg-white/5'
+              : 'cursor-not-allowed text-zinc-600'
           }`}
           disabled={!props.canSkip}
           onClick={props.onSkip}
@@ -46,6 +53,13 @@ export function TransportControls(props: TransportControlsProps): JSX.Element {
         >
           <SkipForward className="h-4 w-4" />
           Skip
+        </button>
+        <button
+          aria-label="循环模式"
+          className="inline-flex h-10 w-10 items-center justify-center rounded-full text-zinc-300 transition hover:bg-white/5 hover:text-cyan-200"
+          type="button"
+        >
+          <Repeat2 className="h-4 w-4" />
         </button>
       </div>
     </section>

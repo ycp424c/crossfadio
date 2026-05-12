@@ -1,19 +1,25 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
+  Activity,
   AlertTriangle,
   CalendarDays,
-  ChevronDown,
-  ChevronUp,
+  Clock,
   CloudSun,
   Compass,
   Home,
   LogOut,
   MapPin,
+  MoreVertical,
+  Music2,
   Palette,
   QrCode,
+  RefreshCw,
   ScanSearch,
   Settings2,
+  ShieldCheck,
+  SlidersHorizontal,
   Sparkles,
+  Volume2,
   X
 } from 'lucide-react';
 import {
@@ -63,6 +69,19 @@ const DJ_PICK_COOLDOWN_MS = 3000; // min ms between pick-next calls
 const SEGUE_RETRY_COOLDOWN_MS = 6000; // min ms between segue trigger retries within the same track
 
 type DiscoveryMode = 'explore' | 'comfort';
+type ModeVisualConfig = {
+  page: string;
+  shell: string;
+  panel: string;
+  soft: string;
+  accent: string;
+  active: string;
+  inactive: string;
+  wave: string;
+  title: string;
+  caption: string;
+  taste: string;
+};
 
 function newClientRequestId(): string {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
@@ -937,42 +956,74 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
   const canPrev = false;
   const canSkip = queue.length > 1;
   const isLiked = currentTrackId ? likedTrackIds.includes(currentTrackId) : false;
-  const modeSurface = discoveryMode === 'explore'
+  const modeConfig = discoveryMode === 'explore'
     ? {
-        page: 'bg-[radial-gradient(circle_at_12%_0%,rgba(34,197,94,0.20)_0%,transparent_28%),radial-gradient(circle_at_80%_8%,rgba(6,182,212,0.18)_0%,transparent_30%),linear-gradient(135deg,#07100f_0%,#070a12_44%,#020407_100%)]',
-        panel: 'border-emerald-400/15 bg-zinc-950/62',
-        accent: 'text-emerald-200',
-        soft: 'bg-emerald-400/10 text-emerald-100 border-emerald-300/20',
-        active: 'bg-emerald-400 text-zinc-950 shadow-[0_0_28px_rgba(52,211,153,0.28)]',
-        inactive: 'text-zinc-400 hover:text-emerald-100',
-        rail: 'border-cyan-300/15 bg-cyan-950/18',
-        caption: '品味外延 · 主题/天气/时间混合'
+        page: 'bg-[radial-gradient(circle_at_14%_0%,rgba(20,184,166,0.22)_0%,transparent_30%),radial-gradient(circle_at_84%_18%,rgba(14,165,233,0.16)_0%,transparent_28%),linear-gradient(135deg,#031111_0%,#061019_48%,#020405_100%)]',
+        shell: 'border-cyan-200/20 bg-black/45 shadow-[0_0_42px_rgba(34,211,238,0.10)]',
+        panel: 'border-cyan-200/15 bg-slate-950/48',
+        soft: 'border-cyan-300/20 bg-cyan-400/10 text-cyan-100',
+        accent: 'text-cyan-200',
+        active: 'border-cyan-300/80 bg-cyan-400/18 text-cyan-50 shadow-[0_0_24px_rgba(45,212,191,0.28)]',
+        inactive: 'border-white/10 bg-white/[0.04] text-zinc-300 hover:border-cyan-300/40 hover:text-cyan-100',
+        wave: 'bg-cyan-300',
+        title: '探索模式',
+        caption: '一起探索更多未知的好歌',
+        taste: '开放探索 · 风格扩展'
       }
     : {
-        page: 'bg-[radial-gradient(circle_at_16%_0%,rgba(251,191,36,0.18)_0%,transparent_27%),radial-gradient(circle_at_78%_8%,rgba(244,114,182,0.12)_0%,transparent_28%),linear-gradient(135deg,#120d08_0%,#090909_46%,#040405_100%)]',
-        panel: 'border-amber-300/15 bg-zinc-950/68',
-        accent: 'text-amber-200',
-        soft: 'bg-amber-400/10 text-amber-100 border-amber-300/20',
-        active: 'bg-amber-300 text-zinc-950 shadow-[0_0_28px_rgba(251,191,36,0.24)]',
-        inactive: 'text-zinc-400 hover:text-amber-100',
-        rail: 'border-rose-300/15 bg-rose-950/14',
-        caption: '高匹配 · 常听风格优先'
+        page: 'bg-[radial-gradient(circle_at_15%_0%,rgba(251,146,60,0.18)_0%,transparent_31%),radial-gradient(circle_at_78%_13%,rgba(244,63,94,0.13)_0%,transparent_29%),linear-gradient(135deg,#130d09_0%,#100f10_48%,#050505_100%)]',
+        shell: 'border-orange-200/20 bg-black/44 shadow-[0_0_42px_rgba(251,146,60,0.10)]',
+        panel: 'border-orange-200/14 bg-zinc-950/52',
+        soft: 'border-rose-300/20 bg-rose-400/10 text-rose-100',
+        accent: 'text-orange-200',
+        active: 'border-orange-300/75 bg-orange-400/16 text-orange-50 shadow-[0_0_24px_rgba(251,146,60,0.24)]',
+        inactive: 'border-white/10 bg-white/[0.04] text-zinc-300 hover:border-orange-300/40 hover:text-orange-100',
+        wave: 'bg-rose-300',
+        title: '舒适区模式',
+        caption: '回到你喜欢的风格和熟悉的旋律',
+        taste: '融合品味 · 高匹配'
       };
+  const modeInfoCards = [
+    {
+      icon: <ShieldCheck className="h-4 w-4" />,
+      label: '今日主题',
+      value: dailyThemeEnabled ? dailyTheme?.theme ?? '春日里的生命守护' : '主题推荐已关闭'
+    },
+    {
+      icon: <CloudSun className="h-4 w-4" />,
+      label: '天气',
+      value: weatherContext ? `${weatherContext.tempC}°C ${weatherContext.desc}` : '等待天气'
+    },
+    {
+      icon: <Clock className="h-4 w-4" />,
+      label: '时间',
+      value: new Intl.DateTimeFormat('zh-CN', {
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false
+      }).format(new Date())
+    },
+    {
+      icon: <Sparkles className="h-4 w-4" />,
+      label: 'DJ 偏好',
+      value: modeConfig.taste
+    }
+  ];
 
   return (
-    <main className={`${modeSurface.page} min-h-screen p-4 md:p-6 text-zinc-100 transition-colors duration-500`}>
-      <div className="mx-auto grid max-w-[1480px] grid-cols-1 md:grid-cols-12 gap-4">
+    <main className={`${modeConfig.page} min-h-screen p-2 text-zinc-100 transition-colors duration-500 md:p-4`}>
+      <div className={`mx-auto grid max-w-[1500px] grid-cols-1 gap-4 rounded-[18px] border p-3 backdrop-blur-xl md:grid-cols-12 md:p-5 ${modeConfig.shell}`}>
 
         {/* Header */}
-        <header className={`col-span-1 md:col-span-12 flex flex-col items-stretch justify-between gap-3 rounded-2xl border ${modeSurface.panel} px-5 py-3 md:flex-row md:items-center`}>
+        <header className={`col-span-1 flex flex-col items-stretch justify-between gap-3 rounded-xl border px-4 py-3 md:col-span-12 md:flex-row md:items-center ${modeConfig.panel}`}>
           <div className="flex items-center gap-2.5">
             <img alt="Crossfadio 应用图标" className="h-7 w-7 rounded-lg" src={appMark} />
-            <span className="text-lg font-semibold tracking-tight text-violet-200">Crossfadio</span>
+            <span className="text-lg font-semibold tracking-tight text-zinc-50">Crossfadio</span>
           </div>
           {weatherContext ? (
-            <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-3 gap-y-1 rounded-xl border border-sky-500/15 bg-sky-950/20 px-3 py-2 text-xs text-zinc-300 md:max-w-[520px]">
+            <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-3 gap-y-1 rounded-full border border-white/10 bg-black/25 px-4 py-2 text-xs text-zinc-300 md:max-w-[520px]">
               <span className="inline-flex min-w-0 items-center gap-1.5">
-                <MapPin className="h-3.5 w-3.5 shrink-0 text-sky-300" />
+                <MapPin className={`h-3.5 w-3.5 shrink-0 ${modeConfig.accent}`} />
                 <span className="truncate text-zinc-400">{weatherContext.location}</span>
               </span>
               <span className="inline-flex items-center gap-1.5 text-sky-100">
@@ -993,7 +1044,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
           ) : null}
           <div className="flex shrink-0 items-center gap-2">
             <button
-              className="hidden md:inline-flex items-center gap-2 rounded-xl border border-zinc-800 bg-zinc-900/60 px-3 py-2 text-sm text-zinc-300 transition hover:border-zinc-700 hover:bg-zinc-900 hover:text-zinc-100"
+              className="hidden items-center gap-2 rounded-lg border border-white/10 bg-black/20 px-3 py-2 text-sm text-zinc-300 transition hover:border-white/20 hover:bg-white/5 hover:text-zinc-100 md:inline-flex"
               onClick={() => onNavigate?.('plan')}
               type="button"
             >
@@ -1001,7 +1052,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
               今日计划
             </button>
             <button
-              className="hidden md:inline-flex items-center gap-2 rounded-xl border border-zinc-800 bg-zinc-900/60 px-3 py-2 text-sm text-zinc-300 transition hover:border-zinc-700 hover:bg-zinc-900 hover:text-zinc-100"
+              className="hidden items-center gap-2 rounded-lg border border-white/10 bg-black/20 px-3 py-2 text-sm text-zinc-300 transition hover:border-white/20 hover:bg-white/5 hover:text-zinc-100 md:inline-flex"
               onClick={() => onNavigate?.('settings')}
               type="button"
             >
@@ -1010,7 +1061,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
             </button>
             <div className="relative" ref={ncmDropdownRef}>
               <button
-                className="inline-flex items-center gap-2 rounded-xl border border-zinc-800 bg-zinc-900/60 px-3 py-2 text-xs text-zinc-300 transition hover:border-zinc-700 hover:bg-zinc-900"
+                className="inline-flex items-center gap-2 rounded-lg border border-white/10 bg-black/20 px-3 py-2 text-xs text-zinc-300 transition hover:border-white/20 hover:bg-white/5"
                 onClick={() => {
                   if (isDesktop) setShowNcmDropdown((v) => !v);
                   else setShowNcmSheet(true);
@@ -1194,39 +1245,56 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
           </div>
         </header>
 
-        <section className={`col-span-1 md:col-span-12 rounded-2xl border ${modeSurface.rail} px-4 py-3`}>
-          <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-            <div>
-              <p className={`text-xs uppercase tracking-[0.18em] ${modeSurface.accent}`}>DJ 选歌模式</p>
-              <p className="mt-1 text-sm text-zinc-400">{modeSurface.caption}</p>
+        <section className="col-span-1 overflow-hidden rounded-xl px-2 py-4 md:col-span-12 md:px-6">
+          <div className="flex flex-col gap-5 xl:flex-row xl:items-end xl:justify-between">
+            <div className="min-w-0">
+              <h1 className={`text-2xl font-bold tracking-normal md:text-3xl ${modeConfig.accent}`}>
+                {modeConfig.title}
+              </h1>
+              <p className="mt-2 text-sm text-zinc-400">{modeConfig.caption}</p>
             </div>
-            <div className="inline-grid grid-cols-2 gap-1 rounded-xl border border-white/10 bg-black/30 p-1">
-              <button
-                className={`inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition ${
-                  discoveryMode === 'explore' ? modeSurface.active : modeSurface.inactive
-                }`}
-                onClick={() => void handleDiscoveryModeChange('explore')}
-                type="button"
-              >
-                <Compass className="h-4 w-4" />
-                探索
-              </button>
-              <button
-                className={`inline-flex items-center justify-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition ${
-                  discoveryMode === 'comfort' ? modeSurface.active : modeSurface.inactive
-                }`}
-                onClick={() => void handleDiscoveryModeChange('comfort')}
-                type="button"
-              >
-                <Home className="h-4 w-4" />
-                舒适区
-              </button>
+            <div className="flex flex-col gap-4 md:flex-row md:items-center">
+              <div className="inline-grid w-full grid-cols-2 gap-1 rounded-xl border border-white/10 bg-black/25 p-1 md:w-[300px]">
+                <button
+                  className={`inline-flex items-center justify-center gap-2 rounded-lg border px-4 py-2.5 text-sm font-medium transition ${
+                    discoveryMode === 'explore' ? modeConfig.active : modeConfig.inactive
+                  }`}
+                  onClick={() => void handleDiscoveryModeChange('explore')}
+                  type="button"
+                >
+                  <Compass className="h-4 w-4" />
+                  探索
+                </button>
+                <button
+                  className={`inline-flex items-center justify-center gap-2 rounded-lg border px-4 py-2.5 text-sm font-medium transition ${
+                    discoveryMode === 'comfort' ? modeConfig.active : modeConfig.inactive
+                  }`}
+                  onClick={() => void handleDiscoveryModeChange('comfort')}
+                  type="button"
+                >
+                  <Home className="h-4 w-4" />
+                  舒适区
+                </button>
+              </div>
+              <SignalBars colorClass={modeConfig.wave} />
             </div>
+          </div>
+
+          <div className="mt-6 grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+            {modeInfoCards.map((card) => (
+              <ModeInfoCard
+                icon={card.icon}
+                key={card.label}
+                label={card.label}
+                modeConfig={modeConfig}
+                value={card.value}
+              />
+            ))}
           </div>
         </section>
 
         {/* Left column — player */}
-        <section className="col-span-1 md:col-span-7 space-y-4">
+        <section className={`col-span-1 space-y-4 md:col-span-12 ${discoveryMode === 'comfort' ? 'xl:col-span-8' : 'xl:col-span-12'}`}>
           <NowPlayingHero
             coverImgUrl={currentTrack?.coverImgUrl ?? nowPlaying?.coverImgUrl ?? null}
             isLiked={isLiked}
@@ -1257,73 +1325,45 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
             onSkip={handleSkip}
           />
 
-          {/* Daily Theme Banner */}
-          {sseToken && (
-            <div className={`rounded-xl border px-4 py-3 ${modeSurface.soft}`}>
-              <div className="mb-2 flex items-center justify-between gap-3">
-                <div className="flex items-center gap-2">
-                  <Sparkles className="h-3.5 w-3.5" />
-                  <span className="text-xs font-medium uppercase tracking-wider">今日主题</span>
-                </div>
-                <button
-                  aria-checked={dailyThemeEnabled}
-                  aria-label="启用每日主题推荐"
-                  className={`relative inline-flex h-5 w-9 shrink-0 rounded-full transition-colors ${
-                    dailyThemeEnabled ? (discoveryMode === 'explore' ? 'bg-emerald-400' : 'bg-amber-300') : 'bg-zinc-700'
-                  }`}
-                  onClick={() => void handleDailyThemeToggle()}
-                  role="switch"
-                  type="button"
-                >
-                  <span
-                    className={`pointer-events-none inline-block h-5 w-5 rounded-full bg-white shadow transition-transform ${
-                      dailyThemeEnabled ? 'translate-x-4' : 'translate-x-0'
-                    }`}
-                  />
-                </button>
-              </div>
-              <p className="text-sm opacity-85">
-                {dailyThemeEnabled
-                  ? dailyTheme?.theme ?? '正在准备今日主题'
-                  : '主题推荐已关闭，DJ 选曲和转场不会参考每日主题'}
-              </p>
-              {dailyThemeEnabled && dailyTheme && dailyTheme.keywords.length > 0 && (
-                <div className="flex flex-wrap gap-1 mt-2">
-                  {dailyTheme.keywords.map((kw) => (
-                    <span key={kw} className="rounded-full bg-black/20 px-2 py-0.5 text-xs opacity-80">
-                      {kw}
-                    </span>
-                  ))}
-                </div>
-              )}
-            </div>
-          )}
+          <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
+            {sseToken ? (
+              <TodayThemePanel
+                dailyTheme={dailyTheme}
+                dailyThemeEnabled={dailyThemeEnabled}
+                discoveryMode={discoveryMode}
+                modeConfig={modeConfig}
+                onToggle={() => void handleDailyThemeToggle()}
+              />
+            ) : null}
+            {userTaste ? (
+              <TastePanel
+                expanded={tasteExpanded}
+                modeConfig={modeConfig}
+                onToggle={() => setTasteExpanded((v) => !v)}
+                userTaste={userTaste}
+              />
+            ) : null}
+          </div>
 
-          {/* User Taste — collapsible */}
-          {userTaste && (
-             <div className={`rounded-xl border ${modeSurface.panel}`}>
-              <button
-                className="flex w-full items-center justify-between px-4 py-2.5 text-left hover:bg-zinc-800/30 transition rounded-xl"
-                onClick={() => setTasteExpanded((v) => !v)}
-                type="button"
-              >
-                <div className="flex items-center gap-2">
-                  <Palette className={`h-3.5 w-3.5 ${modeSurface.accent}`} />
-                  <span className={`text-xs font-medium uppercase tracking-wider ${modeSurface.accent}`}>我的品味</span>
-                </div>
-                {tasteExpanded ? (
-                  <ChevronUp className="h-4 w-4 text-zinc-600" />
-                ) : (
-                  <ChevronDown className="h-4 w-4 text-zinc-600" />
-                )}
-              </button>
-              {tasteExpanded && (
-                <div className="px-4 pb-3 pt-0">
-                  <pre className="whitespace-pre-wrap text-xs text-zinc-400 leading-relaxed">{userTaste}</pre>
-                </div>
-              )}
-            </div>
-          )}
+          <div className={discoveryMode === 'comfort' ? 'xl:hidden' : ''}>
+            <DjStatusDock
+              djPickLog={djPickLog}
+              djPickLogExpanded={djPickLogExpanded}
+              djStatusText={djStatusText}
+              error={error}
+              isDesktop={isDesktop}
+              modeConfig={modeConfig}
+              onRestart={() => void loadLikedQueue()}
+              onToggleDjPickLog={() => setDjPickLogExpanded((v) => !v)}
+              onToggleSegueScript={() => setSegueScriptExpanded((v) => !v)}
+              segueScriptExpanded={segueScriptExpanded}
+              segueScriptText={segueScriptText}
+              segueStatusText={segueStatusText}
+              setStatusExpanded={setStatusExpanded}
+              statusExpanded={statusExpanded}
+              trackStatusText={trackStatusText}
+            />
+          </div>
 
 
           <audio
@@ -1338,7 +1378,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
         </section>
 
         {/* Right column — queue + status */}
-        <section className="col-span-1 md:col-span-5 flex flex-col gap-4">
+        <section className={`col-span-1 flex-col gap-4 md:col-span-12 xl:col-span-4 ${discoveryMode === 'comfort' ? 'flex' : 'hidden xl:hidden'}`}>
           <QueuePanel
             currentIndex={currentIndex}
             nextId={nextTrack?.track.id ?? null}
@@ -1347,153 +1387,305 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
             queue={queue}
           />
 
-          <div className="rounded-2xl border border-zinc-800/80 bg-zinc-950/60 p-3">
-            {statusExpanded ? (
-              <>
-                <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
-                  <StatusChip label="曲目" text={trackStatusText || '—'} />
-                  <StatusChip color="cyan" label="DJ选歌" text={djStatusText || '空闲'} />
-                  {djPickLog ? (
-                    <button
-                      className="inline-flex items-center gap-0.5 text-xs text-cyan-300/70 hover:text-cyan-200 transition"
-                      onClick={() => setDjPickLogExpanded((v) => !v)}
-                      type="button"
-                    >
-                      <span>{djPickLogExpanded ? '收起' : '日志'}</span>
-                      <svg
-                        className={`w-3 h-3 transition-transform ${djPickLogExpanded ? 'rotate-180' : ''}`}
-                        viewBox="0 0 24 24"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth={2}
-                      >
-                        <path d="M6 9l6 6 6-6" />
-                      </svg>
-                    </button>
-                  ) : null}
-                  <StatusChip color="violet" label="过渡文案" text={segueStatusText || '空闲'} />
-                  {segueScriptText ? (
-                    <button
-                      className="inline-flex items-center gap-0.5 text-xs text-violet-300/70 hover:text-violet-200 transition"
-                      onClick={() => setSegueScriptExpanded((v) => !v)}
-                      type="button"
-                    >
-                      <span>{segueScriptExpanded ? '收起' : '展开'}</span>
-                      <svg
-                        className={`w-3 h-3 transition-transform ${segueScriptExpanded ? 'rotate-180' : ''}`}
-                        viewBox="0 0 24 24"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth={2}
-                      >
-                        <path d="M6 9l6 6 6-6" />
-                      </svg>
-                    </button>
-                  ) : null}
-                  {error ? <span className="text-xs text-red-300">{error}</span> : null}
-                  {!isDesktop ? (
-                    <button
-                      className="inline-flex items-center gap-0.5 text-xs text-zinc-500 hover:text-zinc-300 transition"
-                      onClick={() => setStatusExpanded(false)}
-                      type="button"
-                    >
-                      收起
-                    </button>
-                  ) : null}
-                </div>
-                {segueScriptText && segueScriptExpanded ? (
-                  <div className="mt-2 rounded-lg border border-violet-800/40 bg-violet-950/20 px-3 py-2">
-                    <p className="text-xs text-violet-200/80 leading-relaxed whitespace-pre-wrap">{segueScriptText}</p>
-                  </div>
-                ) : null}
-                {djPickLog && djPickLogExpanded ? (
-                  <div className="mt-2 rounded-lg border border-cyan-800/40 bg-cyan-950/10 px-3 py-2 space-y-2">
-                    {djPickLog.selectedSay ? (
-                      <p className="text-xs text-cyan-200/80 leading-relaxed">{djPickLog.selectedSay}</p>
-                    ) : null}
-                    {djPickLog.searchQueries.length > 0 ? (
-                      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
-                        <span className="text-[10px] text-zinc-500 shrink-0">搜索词</span>
-                        <span className="text-xs text-zinc-300">
-                          {djPickLog.searchQueries.map((q, i) => (
-                            <span key={q}>
-                              {i > 0 ? '、' : ''}
-                              <span className="text-cyan-300/80">{q}</span>
-                            </span>
-                          ))}
-                        </span>
-                      </div>
-                    ) : null}
-                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-                      <span className="text-[10px] text-zinc-500">
-                        红心采样 <span className="text-zinc-300">{djPickLog.likedSample.length}</span> 首
-                      </span>
-                      <span className="text-[10px] text-zinc-500">
-                        搜索命中 <span className="text-zinc-300">{djPickLog.searchedTracks.length}</span> 首
-                      </span>
-                      <span className="text-[10px] text-zinc-500">
-                        候选池 <span className="text-cyan-300">{djPickLog.totalCandidates}</span> 首
-                      </span>
-                    </div>
-                    {djPickLog.searchedTracks.length > 0 ? (
-                      <div className="space-y-0.5">
-                        <span className="text-[10px] text-zinc-500">搜索命中曲目</span>
-                        <div className="text-[10px] text-zinc-400 leading-relaxed">
-                          {djPickLog.searchedTracks.slice(0, 8).map((t) => (
-                            <span key={t.id} className="mr-3 inline-block">
-                              {t.name} <span className="text-zinc-600">— {t.artist}</span>
-                            </span>
-                          ))}
-                          {djPickLog.searchedTracks.length > 8 ? (
-                            <span className="text-zinc-600">… +{djPickLog.searchedTracks.length - 8}</span>
-                          ) : null}
-                        </div>
-                      </div>
-                    ) : null}
-                    {djPickLog.likedSample.length > 0 ? (
-                      <div className="space-y-0.5">
-                        <span className="text-[10px] text-zinc-500">红心采样</span>
-                        <div className="text-[10px] text-zinc-500 leading-relaxed">
-                          {djPickLog.likedSample.slice(0, 6).map((t) => (
-                            <span key={t.id} className="mr-2 inline-block">
-                              {t.name}
-                            </span>
-                          ))}
-                          {djPickLog.likedSample.length > 6 ? (
-                            <span className="text-zinc-600">… +{djPickLog.likedSample.length - 6}</span>
-                          ) : null}
-                        </div>
-                      </div>
-                    ) : null}
-                  </div>
-                ) : null}
-                <button
-                  className="mt-2 rounded-lg border border-zinc-800 bg-zinc-900/60 px-2.5 py-1.5 text-xs text-zinc-400 transition hover:border-zinc-700 hover:text-zinc-200"
-                  onClick={() => void loadLikedQueue()}
-                  type="button"
-                >
-                  重新开始 DJ 模式
-                </button>
-              </>
-            ) : (
-              <button
-                className="w-full flex items-center gap-2 text-xs text-zinc-400 hover:text-zinc-200 transition"
-                onClick={() => setStatusExpanded(true)}
-                type="button"
-              >
-                <span className="text-zinc-500">DJ：</span>
-                <span className="text-cyan-300">{djStatusText || '空闲'}</span>
-                <span className="text-zinc-600">　</span>
-                <span className="text-zinc-500">过渡：</span>
-                <span className="text-violet-200">{segueStatusText || '空闲'}</span>
-                <span className="ml-auto text-zinc-600">展开</span>
-              </button>
-            )}
-          </div>
+          <DjStatusDock
+            djPickLog={djPickLog}
+            djPickLogExpanded={djPickLogExpanded}
+            djStatusText={djStatusText}
+            error={error}
+            isDesktop={isDesktop}
+            modeConfig={modeConfig}
+            onRestart={() => void loadLikedQueue()}
+            onToggleDjPickLog={() => setDjPickLogExpanded((v) => !v)}
+            onToggleSegueScript={() => setSegueScriptExpanded((v) => !v)}
+            segueScriptExpanded={segueScriptExpanded}
+            segueScriptText={segueScriptText}
+            segueStatusText={segueStatusText}
+            setStatusExpanded={setStatusExpanded}
+            statusExpanded={statusExpanded}
+            trackStatusText={trackStatusText}
+          />
         </section>
 
       </div>
     </main>
+  );
+}
+
+function SignalBars({ colorClass }: { colorClass: string }): JSX.Element {
+  return (
+    <div className="hidden h-9 items-center gap-1 px-2 md:flex" aria-hidden="true">
+      {[10, 18, 26, 16, 30, 20, 12].map((height, index) => (
+        <span
+          className={`w-0.5 rounded-full ${colorClass}`}
+          key={`${height}-${index}`}
+          style={{ height }}
+        />
+      ))}
+    </div>
+  );
+}
+
+function ModeInfoCard({
+  icon,
+  label,
+  modeConfig,
+  value
+}: {
+  icon: JSX.Element;
+  label: string;
+  modeConfig: ModeVisualConfig;
+  value: string;
+}): JSX.Element {
+  return (
+    <div className={`min-w-0 rounded-lg border px-4 py-3 ${modeConfig.soft}`}>
+      <div className="flex items-center gap-2 text-xs font-medium">
+        <span className={modeConfig.accent}>{icon}</span>
+        <span className="text-zinc-400">{label}</span>
+      </div>
+      <p className="mt-1 truncate text-sm font-medium text-zinc-100">{value}</p>
+    </div>
+  );
+}
+
+function TodayThemePanel({
+  dailyTheme,
+  dailyThemeEnabled,
+  discoveryMode,
+  modeConfig,
+  onToggle
+}: {
+  dailyTheme: { theme: string; keywords: string[] } | null;
+  dailyThemeEnabled: boolean;
+  discoveryMode: DiscoveryMode;
+  modeConfig: ModeVisualConfig;
+  onToggle: () => void;
+}): JSX.Element {
+  return (
+    <section className={`relative min-h-[178px] overflow-hidden rounded-xl border p-5 ${modeConfig.soft}`}>
+      <div className="pointer-events-none absolute inset-y-0 right-0 w-1/2 bg-[radial-gradient(circle_at_55%_48%,rgba(255,255,255,0.12),transparent_35%),radial-gradient(circle_at_72%_62%,rgba(255,255,255,0.08),transparent_30%)]" />
+      <div className="relative flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <Sparkles className="h-4 w-4" />
+          <span className="text-sm font-semibold">今日主题</span>
+        </div>
+        <button
+          aria-checked={dailyThemeEnabled}
+          aria-label="启用每日主题推荐"
+          className={`relative inline-flex h-5 w-9 shrink-0 rounded-full transition-colors ${
+            dailyThemeEnabled
+              ? discoveryMode === 'explore'
+                ? 'bg-cyan-300'
+                : 'bg-orange-300'
+              : 'bg-zinc-700'
+          }`}
+          onClick={onToggle}
+          role="switch"
+          type="button"
+        >
+          <span
+            className={`pointer-events-none inline-block h-5 w-5 rounded-full bg-white shadow transition-transform ${
+              dailyThemeEnabled ? 'translate-x-4' : 'translate-x-0'
+            }`}
+          />
+        </button>
+      </div>
+      <h2 className="relative mt-5 text-xl font-semibold leading-tight text-zinc-50">
+        {dailyThemeEnabled ? dailyTheme?.theme ?? '正在准备今日主题' : '主题推荐已关闭'}
+      </h2>
+      <p className="relative mt-3 max-w-[28rem] text-sm leading-6 text-zinc-300/85">
+        {dailyThemeEnabled
+          ? '在春天，我们更懂得珍惜与守护。让音乐陪伴每一次呼吸。'
+          : 'DJ 选曲和转场暂不参考每日主题。'}
+      </p>
+      {dailyThemeEnabled && dailyTheme && dailyTheme.keywords.length > 0 ? (
+        <div className="relative mt-4 flex flex-wrap gap-2">
+          {dailyTheme.keywords.map((kw) => (
+            <span key={kw} className="rounded-md border border-white/10 bg-black/20 px-2.5 py-1 text-xs text-zinc-200">
+              {kw}
+            </span>
+          ))}
+        </div>
+      ) : null}
+    </section>
+  );
+}
+
+function TastePanel({
+  expanded,
+  modeConfig,
+  onToggle,
+  userTaste
+}: {
+  expanded: boolean;
+  modeConfig: ModeVisualConfig;
+  onToggle: () => void;
+  userTaste: string;
+}): JSX.Element {
+  const tasteLines = userTaste
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const previewTags = tasteLines
+    .flatMap((line) => line.split(/[，、,\/]/).map((item) => item.trim()))
+    .filter(Boolean)
+    .slice(0, 8);
+
+  return (
+    <section className={`min-h-[178px] rounded-xl border p-5 ${modeConfig.panel}`}>
+      <button
+        className="flex w-full items-center justify-between gap-3 text-left"
+        onClick={onToggle}
+        type="button"
+      >
+        <span className="flex items-center gap-2">
+          <Palette className={`h-4 w-4 ${modeConfig.accent}`} />
+          <span className={`text-sm font-semibold ${modeConfig.accent}`}>我的品味</span>
+        </span>
+        <span className="flex items-center gap-3 text-xs text-zinc-500">
+          展开
+          <MoreVertical className="h-4 w-4" />
+        </span>
+      </button>
+      <p className="mt-3 text-xs text-zinc-500">偏好预览</p>
+      <div className="mt-3 flex flex-wrap gap-2">
+        {(previewTags.length > 0 ? previewTags : ['粤语为主', '治愈', '舒缓']).map((tag) => (
+          <span key={tag} className="rounded-md border border-white/10 bg-white/[0.04] px-2.5 py-1 text-xs text-zinc-300">
+            {tag}
+          </span>
+        ))}
+      </div>
+      {expanded ? (
+        <pre className="mt-4 max-h-40 overflow-y-auto whitespace-pre-wrap rounded-lg border border-white/10 bg-black/20 p-3 text-xs leading-relaxed text-zinc-400">
+          {userTaste}
+        </pre>
+      ) : null}
+    </section>
+  );
+}
+
+function DjStatusDock({
+  djPickLog,
+  djPickLogExpanded,
+  djStatusText,
+  error,
+  isDesktop,
+  modeConfig,
+  onRestart,
+  onToggleDjPickLog,
+  onToggleSegueScript,
+  segueScriptExpanded,
+  segueScriptText,
+  segueStatusText,
+  setStatusExpanded,
+  statusExpanded,
+  trackStatusText
+}: {
+  djPickLog: DjPickLog | null;
+  djPickLogExpanded: boolean;
+  djStatusText: string;
+  error: string;
+  isDesktop: boolean;
+  modeConfig: ModeVisualConfig;
+  onRestart: () => void;
+  onToggleDjPickLog: () => void;
+  onToggleSegueScript: () => void;
+  segueScriptExpanded: boolean;
+  segueScriptText: string;
+  segueStatusText: string;
+  setStatusExpanded: (expanded: boolean) => void;
+  statusExpanded: boolean;
+  trackStatusText: string;
+}): JSX.Element {
+  return (
+    <section className={`rounded-xl border p-3 ${modeConfig.panel}`}>
+      {statusExpanded ? (
+        <>
+          <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
+            <span className={`inline-flex items-center gap-2 text-sm font-semibold ${modeConfig.accent}`}>
+              <Activity className="h-4 w-4" />
+              DJ 状态
+            </span>
+            <StatusChip label="曲目" text={trackStatusText || '—'} />
+            <StatusChip color="cyan" label="DJ选歌" text={djStatusText || '空闲'} />
+            {djPickLog ? (
+              <button
+                className="inline-flex items-center gap-1 text-xs text-cyan-300/80 transition hover:text-cyan-100"
+                onClick={onToggleDjPickLog}
+                type="button"
+              >
+                <SlidersHorizontal className="h-3.5 w-3.5" />
+                {djPickLogExpanded ? '收起' : '日志'}
+              </button>
+            ) : null}
+            <StatusChip color="violet" label="过渡语音" text={segueStatusText || '空闲'} />
+            {segueScriptText ? (
+              <button
+                className="inline-flex items-center gap-1 text-xs text-violet-300/80 transition hover:text-violet-100"
+                onClick={onToggleSegueScript}
+                type="button"
+              >
+                <Volume2 className="h-3.5 w-3.5" />
+                {segueScriptExpanded ? '收起' : '展开'}
+              </button>
+            ) : null}
+            {error ? <span className="text-xs text-red-300">{error}</span> : null}
+            {!isDesktop ? (
+              <button
+                className="ml-auto text-xs text-zinc-500 transition hover:text-zinc-300"
+                onClick={() => setStatusExpanded(false)}
+                type="button"
+              >
+                收起
+              </button>
+            ) : null}
+          </div>
+          {segueScriptText && segueScriptExpanded ? (
+            <div className="mt-3 rounded-lg border border-violet-300/15 bg-violet-950/20 px-3 py-2">
+              <p className="whitespace-pre-wrap text-xs leading-relaxed text-violet-100/80">{segueScriptText}</p>
+            </div>
+          ) : null}
+          {djPickLog && djPickLogExpanded ? (
+            <div className="mt-3 space-y-2 rounded-lg border border-cyan-300/15 bg-cyan-950/10 px-3 py-2">
+              {djPickLog.selectedSay ? (
+                <p className="text-xs leading-relaxed text-cyan-100/80">{djPickLog.selectedSay}</p>
+              ) : null}
+              {djPickLog.searchQueries.length > 0 ? (
+                <p className="text-xs text-zinc-400">
+                  搜索词：<span className="text-cyan-200">{djPickLog.searchQueries.join('、')}</span>
+                </p>
+              ) : null}
+              <div className="flex flex-wrap gap-x-4 gap-y-1 text-[10px] text-zinc-500">
+                <span>红心采样 <span className="text-zinc-300">{djPickLog.likedSample.length}</span> 首</span>
+                <span>搜索命中 <span className="text-zinc-300">{djPickLog.searchedTracks.length}</span> 首</span>
+                <span>候选池 <span className="text-cyan-300">{djPickLog.totalCandidates}</span> 首</span>
+              </div>
+            </div>
+          ) : null}
+          <button
+            className={`mt-3 inline-flex items-center gap-2 rounded-lg border px-3 py-2 text-xs transition ${modeConfig.inactive}`}
+            onClick={onRestart}
+            type="button"
+          >
+            <RefreshCw className="h-3.5 w-3.5" />
+            重新生成
+          </button>
+        </>
+      ) : (
+        <button
+          className="flex w-full items-center gap-2 text-xs text-zinc-400 transition hover:text-zinc-200"
+          onClick={() => setStatusExpanded(true)}
+          type="button"
+        >
+          <Music2 className={`h-4 w-4 ${modeConfig.accent}`} />
+          <span>DJ：</span>
+          <span className="text-cyan-300">{djStatusText || '空闲'}</span>
+          <span className="text-zinc-600">/</span>
+          <span>过渡：</span>
+          <span className="text-violet-200">{segueStatusText || '空闲'}</span>
+          <span className="ml-auto text-zinc-600">展开</span>
+        </button>
+      )}
+    </section>
   );
 }
 
