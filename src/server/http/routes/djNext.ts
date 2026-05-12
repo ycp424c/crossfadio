@@ -33,6 +33,7 @@ const LIKED_IDS_TIMEOUT_MS = 8_000;
 const LIKED_DETAILS_TIMEOUT_MS = 8_000;
 const LIKED_IDS_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 1 day
 const LIKED_SAMPLE_SIZE = 20;
+const EXPLORE_LIKED_SAMPLE_SIZE = 8;
 const SEARCH_RESULT_SIZE = 40;
 const DAILY_THEME_CONTEXT_TIMEOUT_MS = 1_500;
 
@@ -104,6 +105,24 @@ export function buildDiscoveryModePromptParts(
     pickInstruction: '选择与用户品味有可解释连接、但能由今日主题/时间/天气/DJ 偏好带出新鲜感的 2 首歌，返回候选歌曲 id。',
     userContextLabel: `用户品味外延参考：${tasteHints.join('；')}\n`
   };
+}
+
+export function getCandidateSourceMix(mode: DiscoveryMode): {
+  likedSampleSize: number;
+  searchResultSize: number;
+  preferSearchCandidates: boolean;
+} {
+  return mode === 'comfort'
+    ? {
+        likedSampleSize: LIKED_SAMPLE_SIZE,
+        searchResultSize: SEARCH_RESULT_SIZE,
+        preferSearchCandidates: false
+      }
+    : {
+        likedSampleSize: EXPLORE_LIKED_SAMPLE_SIZE,
+        searchResultSize: SEARCH_RESULT_SIZE,
+        preferSearchCandidates: true
+      };
 }
 
 function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
@@ -302,6 +321,7 @@ async function doPickNext(
   if (llmConfig && allLikedIds.length > 0) {
     try {
       const discoveryMode = getDiscoveryMode(userId);
+      const candidateMix = getCandidateSourceMix(discoveryMode);
       const corpus = loadUserCorpus(userId);
       const [weather] = await Promise.all([withTimeout(fetchWeather(userId), 4_000, null)]);
       const nowDate = new Date();
@@ -334,9 +354,9 @@ async function doPickNext(
       const excludeState = getTodayAndQueueDedupeState(userId);
       const excludeIds = excludeState.ids;
 
-      // ── Phase 1: sample 20 IDs from full liked list, then fetch details ──
+      // ── Phase 1: sample IDs from full liked list, then fetch details ──
       const candidateIds = allLikedIds.filter((id) => !excludeIds.has(id));
-      const sampledIds = sampleN(candidateIds, LIKED_SAMPLE_SIZE);
+      const sampledIds = sampleN(candidateIds, candidateMix.likedSampleSize);
       const sampledDetails = await withTimeout(
         ncmClient.getSongDetails(sampledIds).catch(() => []),
         LIKED_DETAILS_TIMEOUT_MS,
@@ -352,7 +372,12 @@ async function doPickNext(
         .filter((track) => !excludeState.dedupeKeys.has(buildTrackDedupeKey(track)));
 
       logger.info(
-        { totalLikedIds: allLikedIds.length, candidateCount: candidateIds.length, sampledCount: likedSample.length },
+        {
+          totalLikedIds: allLikedIds.length,
+          candidateCount: candidateIds.length,
+          likedSampleTarget: candidateMix.likedSampleSize,
+          sampledCount: likedSample.length
+        },
         'DJ pick-next: sampled liked tracks from full list'
       );
 
@@ -520,17 +545,18 @@ async function doPickNext(
         searchQueries,
         ncmClient,
         excludeIds,
-        SEARCH_RESULT_SIZE,
+        candidateMix.searchResultSize,
         undefined,
         excludeState.dedupeKeys
       );
 
-      // Combine 40 candidates, deduplicate by ID
+      // Combine candidates, deduplicate by ID. Explore mode lists search results first
+      // so red-heart tracks are a smaller, lower-priority part of the candidate pool.
       const likedSampleIds = new Set(likedSample.map((t) => t.id));
-      const allCandidates = [
-        ...likedSample,
-        ...searchedTracks.filter((t) => !likedSampleIds.has(t.id))
-      ];
+      const searchedOnlyTracks = searchedTracks.filter((t) => !likedSampleIds.has(t.id));
+      const allCandidates = candidateMix.preferSearchCandidates
+        ? [...searchedOnlyTracks, ...likedSample]
+        : [...likedSample, ...searchedOnlyTracks];
 
       // Snapshot Phase 3 data for the debug broadcast — always emitted regardless of Phase 4 outcome
       const phase3Debug = {

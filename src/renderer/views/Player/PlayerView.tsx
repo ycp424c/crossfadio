@@ -282,6 +282,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
       setCurrentIndex(restoredQueue.currentIndex);
       setTrackStatusText('已恢复上次播放列表');
       setDjStatusText('播放列表已从本机恢复');
+      void refreshLikedTrackIds();
     } else {
       void loadLikedQueue();
     }
@@ -289,6 +290,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
 
   useEffect(() => {
     if (!sseToken) {
+      setLikedTrackIds([]);
       setDailyTheme(null);
       setWeatherContext(null);
       setDailyThemeEnabled(true);
@@ -296,6 +298,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
       return;
     }
 
+    void refreshLikedTrackIds();
     void Promise.all([getPlayerContext(), getSettings()])
       .then(([ctx, settings]) => {
         if (ctx.ok) {
@@ -476,6 +479,15 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
       console.info('[Crossfadio] player context weather', { weather: ctx.weather });
       setUserTaste(ctx.taste);
       setDiscoveryMode(ctx.discoveryMode);
+    }
+  }
+
+  async function refreshLikedTrackIds(): Promise<void> {
+    try {
+      const ids = await getLikedTrackIds();
+      setLikedTrackIds(ids);
+    } catch {
+      setLikedTrackIds([]);
     }
   }
 

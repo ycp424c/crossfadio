@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import { extractQueueDirectiveFromText } from '../../src/server/http/chat-sse-worker';
-import { buildDiscoveryModePromptParts, buildTrackDedupeKey, parseDjCandidatePicks, serializeDjPickNextErrorForLog, searchCandidates } from '../../src/server/http/routes/djNext';
+import { buildDiscoveryModePromptParts, buildTrackDedupeKey, getCandidateSourceMix, parseDjCandidatePicks, serializeDjPickNextErrorForLog, searchCandidates } from '../../src/server/http/routes/djNext';
 import { LlmError } from '../../src/server/llm/client';
 import type { NcmClient } from '../../src/server/ncm/client';
 import type { NcmSong } from '../../src/shared/schema';
@@ -69,6 +69,18 @@ describe('DJ discovery mode prompt parts', () => {
     expect(parts.tasteContext).toContain('个人品味锚点');
     expect(parts.styleInstruction).toContain('优先推荐符合该用户品味偏好的风格和艺人');
     expect(parts.pickInstruction).toContain('优先选择符合用户品味偏好的歌曲');
+  });
+});
+
+describe('DJ candidate source mix', () => {
+  it('uses fewer liked-song candidates in explore mode than comfort mode', () => {
+    const explore = getCandidateSourceMix('explore');
+    const comfort = getCandidateSourceMix('comfort');
+
+    expect(explore.likedSampleSize).toBeLessThan(comfort.likedSampleSize);
+    expect(explore.likedSampleSize).toBeLessThanOrEqual(Math.floor(explore.searchResultSize / 4));
+    expect(explore.preferSearchCandidates).toBe(true);
+    expect(comfort.preferSearchCandidates).toBe(false);
   });
 });
 

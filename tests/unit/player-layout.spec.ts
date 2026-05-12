@@ -47,6 +47,19 @@ describe('player layout', () => {
     expect(initBody.indexOf('if (restoredQueue)')).toBeLessThan(initBody.indexOf('void loadLikedQueue();'));
   });
 
+  it('refreshes liked track ids when restoring a persisted queue so the hero heart matches NCM', () => {
+    const source = fs.readFileSync(path.join(root, 'src/renderer/views/Player/PlayerView.tsx'), 'utf-8');
+    const initStart = source.indexOf('void refreshSession();');
+    const initEnd = source.indexOf("if ('geolocation' in navigator)", initStart);
+    const initBody = source.slice(initStart, initEnd);
+    const restoredStart = initBody.indexOf('if (restoredQueue)');
+    const restoredEnd = initBody.indexOf('} else {', restoredStart);
+    const restoredBlock = initBody.slice(restoredStart, restoredEnd);
+
+    expect(source).toContain('async function refreshLikedTrackIds');
+    expect(restoredBlock).toContain('void refreshLikedTrackIds();');
+  });
+
   it('surfaces waiting segue states instead of falling back to idle text', () => {
     const source = fs.readFileSync(path.join(root, 'src/renderer/views/Player/PlayerView.tsx'), 'utf-8');
 
