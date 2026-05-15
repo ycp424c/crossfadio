@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import { extractQueueDirectiveFromText } from '../../src/server/http/chat-sse-worker';
-import { buildDiscoveryModePromptParts, buildTrackDedupeKey, getCandidateSourceMix, parseDjCandidatePicks, serializeDjPickNextErrorForLog, searchCandidates } from '../../src/server/http/routes/djNext';
+import { buildDiscoveryModePromptParts, buildDjTimeContext, buildTrackDedupeKey, getCandidateSourceMix, parseDjCandidatePicks, serializeDjPickNextErrorForLog, searchCandidates } from '../../src/server/http/routes/djNext';
 import { LlmError } from '../../src/server/llm/client';
 import type { NcmClient } from '../../src/server/ncm/client';
 import type { NcmSong } from '../../src/shared/schema';
@@ -81,6 +81,16 @@ describe('DJ candidate source mix', () => {
     expect(explore.likedSampleSize).toBeLessThanOrEqual(Math.floor(explore.searchResultSize / 4));
     expect(explore.preferSearchCandidates).toBe(true);
     expect(comfort.preferSearchCandidates).toBe(false);
+  });
+});
+
+describe('DJ time context', () => {
+  it('labels afternoon explicitly so pick reasons do not infer night', () => {
+    const context = buildDjTimeContext(new Date(2026, 4, 15, 14, 30));
+
+    expect(context.localTime).toBe('周五 14:30（下午）');
+    expect(context.sayInstruction).toContain('当前时间段是“下午”');
+    expect(context.sayInstruction).toContain('不要写成晚上');
   });
 });
 

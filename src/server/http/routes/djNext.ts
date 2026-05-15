@@ -68,6 +68,36 @@ export function getDjPickReason(trackId: string): string | null {
   return djPickReasonCache.get(trackId) ?? null;
 }
 
+export type DjTimeContext = {
+  localTime: string;
+  daypart: string;
+  contextInstruction: string;
+  sayInstruction: string;
+};
+
+export function buildDjTimeContext(date: Date): DjTimeContext {
+  const weekdays = ['日', '一', '二', '三', '四', '五', '六'];
+  const day = weekdays[date.getDay()];
+  const hh = String(date.getHours()).padStart(2, '0');
+  const mm = String(date.getMinutes()).padStart(2, '0');
+  const daypart = getDaypart(date.getHours());
+  const localTime = `周${day} ${hh}:${mm}（${daypart}）`;
+  const contextInstruction = `当前时间段是“${daypart}”，所有时间判断都必须以这个时间段为准；今日主题和天气只影响氛围，不能覆盖当前时间段。`;
+  const sayInstruction = `say 字段必须与当前时间一致：当前时间段是“${daypart}”。不要写成晚上、夜晚、深夜、周五晚或其他不匹配的时间段。`;
+
+  return { localTime, daypart, contextInstruction, sayInstruction };
+}
+
+function getDaypart(hour: number): string {
+  if (hour >= 5 && hour < 9) return '早晨';
+  if (hour >= 9 && hour < 12) return '上午';
+  if (hour >= 12 && hour < 14) return '中午';
+  if (hour >= 14 && hour < 17) return '下午';
+  if (hour >= 17 && hour < 19) return '傍晚';
+  if (hour >= 19 && hour < 23) return '晚上';
+  return '深夜';
+}
+
 function getDiscoveryMode(userId: string): DiscoveryMode {
   return getPref<DiscoveryMode>(userId, 'discovery.mode') === 'comfort' ? 'comfort' : 'explore';
 }
@@ -325,11 +355,8 @@ async function doPickNext(
       const corpus = loadUserCorpus(userId);
       const [weather] = await Promise.all([withTimeout(fetchWeather(userId), 4_000, null)]);
       const nowDate = new Date();
-      const weekdays = ['日', '一', '二', '三', '四', '五', '六'];
-      const day = weekdays[nowDate.getDay()];
-      const hh = String(nowDate.getHours()).padStart(2, '0');
-      const mm = String(nowDate.getMinutes()).padStart(2, '0');
-      const localTime = `周${day} ${hh}:${mm}`;
+      const timeContext = buildDjTimeContext(nowDate);
+      const localTime = timeContext.localTime;
       const nowIso = nowDate.toISOString();
       const recentPlays = getRecentPlays(userId, 50);
       const recentChat = getRecentMessages(userId, 20, 60);
@@ -394,7 +421,7 @@ async function doPickNext(
         : '';
 
       const stylePrompt =
-        `当前时间：${localTime}\n天气：${weatherStr}\n最近播放：\n${recentPlayNames}\n` +
+        `当前时间：${localTime}\n时间约束：${timeContext.contextInstruction}\n天气：${weatherStr}\n最近播放：\n${recentPlayNames}\n` +
         themeContext +
         tasteContext +
         `\n${modePrompt.styleInstruction}` +
@@ -598,6 +625,7 @@ async function doPickNext(
 ${themePickNote}
 ${activeDirective ? `## 必须优先遵循的短期选歌指令\n${activeDirective}\n\n如果候选池里有符合该指令的歌曲，应优先选择；只有候选池明显不足时才放宽。\n\n` : ''}${tasteHints.length > 0 ? `## ${discoveryMode === 'comfort' ? '用户品味偏好' : '探索外延参考'}\n${tasteHints.join('\n')}\n\n${modePrompt.pickInstruction}\n\n` : ''}${tasteHints.length === 0 ? modePrompt.pickInstruction : ''}
 不要重复最近刚播过的歌曲。say 字段用一句话中文说明选曲理由。
+${timeContext.sayInstruction}
 优先选择艺人名像真实人名或乐队的歌曲，避开艺人名明显是厂牌、合集、影视原声、或自动生成的选项（如"群星""Various Artists""佚名""原声带"等）。
 只能返回候选歌曲列表中真实存在的 id，不要编造 id，不要返回歌名搜索词。
 
