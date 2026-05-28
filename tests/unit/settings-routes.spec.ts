@@ -12,6 +12,7 @@ import {
   createGetPlayerContextHandler
 } from '../../src/server/http/routes/settings';
 import { createAnalyzeTasteHandler } from '../../src/server/http/routes/taste-analysis';
+import { DEFAULT_TTS_MODEL } from '../../src/shared/tts';
 
 const originalEnv = { ...process.env };
 let dataDir: string;
@@ -69,6 +70,7 @@ describe('settings routes', () => {
     expect(res.statusCode).toBe(200);
     expect(res.body).toMatchObject({
       ok: true,
+      tts: { model: DEFAULT_TTS_MODEL, voice: 'Cherry' },
       dailyThemeEnabled: true,
       discoveryMode: 'explore'
     });

@@ -140,7 +140,7 @@ describe('TtsClient.synthesize', () => {
       provider: 'aliyun-qwen',
       baseUrl: 'https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation',
       apiKey: 'dashscope-key',
-      model: 'qwen-tts',
+      model: 'qwen3-tts-flash',
       voice: 'Cherry',
       speed: 1,
       format: 'mp3'
@@ -152,7 +152,7 @@ describe('TtsClient.synthesize', () => {
       'https://dashscope-result.example/audio.wav'
     ]);
     expect(capturedBody).toEqual({
-      model: 'qwen-tts',
+      model: 'qwen3-tts-flash',
       input: {
         text: '你好，欢迎回来',
         voice: 'Cherry',
@@ -184,7 +184,7 @@ describe('TtsClient.synthesize', () => {
       provider: 'aliyun-qwen',
       baseUrl: 'https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation',
       apiKey: 'dashscope-key',
-      model: 'qwen-tts',
+      model: 'qwen3-tts-flash',
       voice: 'Cherry',
       speed: 1,
       format: 'mp3'

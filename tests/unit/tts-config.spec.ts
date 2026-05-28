@@ -4,7 +4,7 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { initDb } from '../../src/server/store/db';
 import { setPref } from '../../src/server/store/prefs';
-import { DEFAULT_TTS_VOICE, resolveTtsConfig } from '../../src/server/tts/config';
+import { DEFAULT_TTS_MODEL, DEFAULT_TTS_VOICE, resolveTtsConfig } from '../../src/server/tts/config';
 
 const originalDataDir = process.env.CROSSFADIO_DATA_DIR;
 const originalTtsKey = process.env.CROSSFADIO_TTS_API_KEY;
@@ -38,6 +38,7 @@ describe('resolveTtsConfig', () => {
     const config = resolveTtsConfig('user1');
 
     expect(config.apiKey).toBe('dashscope-key');
+    expect(config.model).toBe(DEFAULT_TTS_MODEL);
     expect(config.voice).toBe(DEFAULT_TTS_VOICE);
     expect(config.provider).toBe('aliyun-qwen');
   });

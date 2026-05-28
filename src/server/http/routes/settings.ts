@@ -6,6 +6,7 @@ import { z } from 'zod';
 import type { NcmClient } from '../../ncm/client.js';
 import { getPref, setPref } from '../../store/prefs.js';
 import { getConfig } from '../../config.js';
+import { DEFAULT_TTS_MODEL, DEFAULT_TTS_VOICE } from '../../../shared/tts.js';
 
 type AuthedRequest = Request & { userId: string; ncmClient: NcmClient };
 export type DiscoveryMode = 'explore' | 'comfort';
@@ -33,8 +34,9 @@ export function createGetSettingsHandler() {
       },
       tts: {
         baseUrl: config.tts.baseUrl,
+        model: DEFAULT_TTS_MODEL,
         hasApiKey: Boolean(config.tts.apiKey),
-        voice: userVoice ?? config.tts.voiceDefault ?? 'Cherry',
+        voice: userVoice ?? config.tts.voiceDefault ?? DEFAULT_TTS_VOICE,
         voiceDefault: config.tts.voiceDefault
       },
       dailyThemeEnabled,

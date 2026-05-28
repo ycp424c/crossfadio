@@ -231,6 +231,7 @@ export type LlmSettings = {
 
 export type TtsSettings = {
   baseUrl: string;
+  model: string;
   hasApiKey: boolean;
   voice: string;
   voiceDefault: string | null;

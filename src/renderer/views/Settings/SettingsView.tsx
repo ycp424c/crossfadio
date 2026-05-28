@@ -13,6 +13,7 @@ import {
   type TtsSettings,
   type BlockedAttempt
 } from '@renderer/api';
+import { QWEN3_TTS_VOICES } from '@shared/tts';
 
 type SaveStatus = { type: 'idle' } | { type: 'saving' } | { type: 'ok' } | { type: 'error'; message: string };
 type WhitelistOpStatus = { type: 'idle' } | { type: 'saving' } | { type: 'ok' } | { type: 'error'; message: string };
@@ -111,6 +112,9 @@ type TasteStatus = { type: 'idle' } | { type: 'analyzing' } | { type: 'ok'; tast
   }
 
   const disabled = voice === tts?.voice;
+  const voiceOptions = voice && !(QWEN3_TTS_VOICES as readonly string[]).includes(voice)
+    ? [voice, ...QWEN3_TTS_VOICES]
+    : QWEN3_TTS_VOICES;
 
   if (loading) {
     return (
@@ -151,6 +155,7 @@ type TasteStatus = { type: 'idle' } | { type: 'analyzing' } | { type: 'ok'; tast
           </h2>
           <div className="space-y-3 rounded-xl border border-zinc-800 bg-zinc-900 p-4">
             <ReadOnlyField label="API Base URL" value={tts?.baseUrl ?? '—'} />
+            <ReadOnlyField label="模型" value={tts?.model ?? '—'} />
             <ReadOnlyField
               label="状态"
               value={tts?.hasApiKey ? '已配置 API Key' : '未配置 API Key'}
@@ -162,7 +167,7 @@ type TasteStatus = { type: 'idle' } | { type: 'analyzing' } | { type: 'ok'; tast
                 onChange={(e) => setVoice(e.target.value)}
                 className={inputClass}
               >
-                {['Cherry', 'Ethan', 'Chelsie', 'Serena', 'Dylan'].map((v) => (
+                {voiceOptions.map((v) => (
                   <option key={v} value={v}>{v}</option>
                 ))}
               </select>
