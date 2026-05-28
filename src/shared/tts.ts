@@ -1,5 +1,6 @@
 export const DEFAULT_TTS_MODEL = 'qwen3-tts-flash';
 export const DEFAULT_TTS_VOICE = 'Cherry';
+export const TTS_PREVIEW_TEXT = '你好，我是 Crossfadio 的 DJ。让音乐继续流动。';
 
 export const QWEN3_TTS_VOICES = [
   'Cherry',

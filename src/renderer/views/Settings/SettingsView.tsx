@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Settings2, Check, AlertCircle, Loader2, Trash2, UserPlus, Shield, Sparkles } from 'lucide-react';
+import { Settings2, Check, AlertCircle, Loader2, Trash2, UserPlus, Shield, Sparkles, Volume2 } from 'lucide-react';
 import {
   getSettings,
   saveSettings,
+  previewTtsVoice,
   getWhitelist,
   getBlockedAttempts,
   addToWhitelist,
@@ -17,6 +18,7 @@ import { QWEN3_TTS_VOICES } from '@shared/tts';
 
 type SaveStatus = { type: 'idle' } | { type: 'saving' } | { type: 'ok' } | { type: 'error'; message: string };
 type WhitelistOpStatus = { type: 'idle' } | { type: 'saving' } | { type: 'ok' } | { type: 'error'; message: string };
+type PreviewStatus = { type: 'idle' } | { type: 'loading' } | { type: 'playing' } | { type: 'error'; message: string };
 
 export function SettingsView(): JSX.Element {
   const [llm, setLlm] = useState<LlmSettings | null>(null);
@@ -24,6 +26,7 @@ export function SettingsView(): JSX.Element {
   const [voice, setVoice] = useState('');
   const [dailyThemeEnabled, setDailyThemeEnabled] = useState(true);
   const [saveStatus, setSaveStatus] = useState<SaveStatus>({ type: 'idle' });
+  const [previewStatus, setPreviewStatus] = useState<PreviewStatus>({ type: 'idle' });
   const [loading, setLoading] = useState(true);
   const [whitelist, setWhitelist] = useState<string[]>([]);
   const [blocked, setBlocked] = useState<BlockedAttempt[]>([]);
@@ -31,6 +34,7 @@ export function SettingsView(): JSX.Element {
   const [whitelistStatus, setWhitelistStatus] = useState<WhitelistOpStatus>({ type: 'idle' });
   const [isAdmin, setIsAdmin] = useState(true);
   const statusTimerRef = useRef<ReturnType<typeof setTimeout>>();
+  const previewAudioRef = useRef<HTMLAudioElement | null>(null);
 type TasteStatus = { type: 'idle' } | { type: 'analyzing' } | { type: 'ok'; taste: string } | { type: 'error'; message: string };
 
   const [tasteStatus, setTasteStatus] = useState<TasteStatus>({ type: 'idle' });
@@ -72,7 +76,11 @@ type TasteStatus = { type: 'idle' } | { type: 'analyzing' } | { type: 'ok'; tast
       .catch(() => {/* first launch, no config yet */})
       .finally(() => setLoading(false));
 
-    return () => clearTimeout(statusTimerRef.current);
+    return () => {
+      clearTimeout(statusTimerRef.current);
+      previewAudioRef.current?.pause();
+      previewAudioRef.current = null;
+    };
   }, []);
   const refreshWhitelist = useCallback(async () => {
     const [w, b] = await Promise.all([getWhitelist(), getBlockedAttempts()]);
@@ -98,6 +106,27 @@ type TasteStatus = { type: 'idle' } | { type: 'analyzing' } | { type: 'ok'; tast
       setTimeout(() => setSaveStatus({ type: 'idle' }), 2000);
     } catch (err) {
       setSaveStatus({ type: 'error', message: err instanceof Error ? err.message : '保存失败' });
+    }
+  }
+
+  async function handlePreviewVoice(): Promise<void> {
+    if (!voice) return;
+    setPreviewStatus({ type: 'loading' });
+    try {
+      previewAudioRef.current?.pause();
+      const preview = await previewTtsVoice(voice);
+      const audio = new Audio(preview.audioUrl);
+      previewAudioRef.current = audio;
+      audio.addEventListener('ended', () => {
+        if (previewAudioRef.current === audio) setPreviewStatus({ type: 'idle' });
+      }, { once: true });
+      audio.addEventListener('error', () => {
+        if (previewAudioRef.current === audio) setPreviewStatus({ type: 'error', message: '试听播放失败' });
+      }, { once: true });
+      await audio.play();
+      setPreviewStatus({ type: 'playing' });
+    } catch (err) {
+      setPreviewStatus({ type: 'error', message: err instanceof Error ? err.message : '试听生成失败' });
     }
   }
 
@@ -162,15 +191,40 @@ type TasteStatus = { type: 'idle' } | { type: 'analyzing' } | { type: 'ok'; tast
               valueClass={tts?.hasApiKey ? 'text-emerald-400' : 'text-amber-400'}
             />
             <Field label="声音（Voice）">
-              <select
-                value={voice}
-                onChange={(e) => setVoice(e.target.value)}
-                className={inputClass}
-              >
-                {voiceOptions.map((v) => (
-                  <option key={v} value={v}>{v}</option>
-                ))}
-              </select>
+              <div className="flex flex-col gap-2 sm:flex-row">
+                <select
+                  value={voice}
+                  onChange={(e) => {
+                    setVoice(e.target.value);
+                    setPreviewStatus({ type: 'idle' });
+                  }}
+                  className={inputClass}
+                >
+                  {voiceOptions.map((v) => (
+                    <option key={v} value={v}>{v}</option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  onClick={handlePreviewVoice}
+                  disabled={!voice || previewStatus.type === 'loading'}
+                  className="inline-flex shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-lg border border-zinc-700 px-3 py-2 text-sm font-medium text-zinc-100 transition hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {previewStatus.type === 'loading' ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Volume2 className="h-4 w-4" />
+                  )}
+                  {previewStatus.type === 'loading'
+                    ? '生成中'
+                    : previewStatus.type === 'playing'
+                      ? '播放中'
+                      : '试听音色'}
+                </button>
+              </div>
+              {previewStatus.type === 'error' && (
+                <p className="mt-2 text-xs text-red-400">{previewStatus.message}</p>
+              )}
             </Field>
           </div>
         </section>

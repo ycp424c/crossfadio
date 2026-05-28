@@ -6,7 +6,10 @@ import { z } from 'zod';
 import type { NcmClient } from '../../ncm/client.js';
 import { getPref, setPref } from '../../store/prefs.js';
 import { getConfig } from '../../config.js';
-import { DEFAULT_TTS_MODEL, DEFAULT_TTS_VOICE } from '../../../shared/tts.js';
+import { TtsClient } from '../../tts/client.js';
+import { resolveTtsConfig } from '../../tts/config.js';
+import { buildSegueAudioUrl } from './segue.js';
+import { DEFAULT_TTS_MODEL, DEFAULT_TTS_VOICE, TTS_PREVIEW_TEXT } from '../../../shared/tts.js';
 
 type AuthedRequest = Request & { userId: string; ncmClient: NcmClient };
 export type DiscoveryMode = 'explore' | 'comfort';
@@ -70,6 +73,42 @@ export function createSaveSettingsHandler() {
       setPref(userId, 'discovery.mode', parsed.data.discoveryMode);
     }
     res.json({ ok: true });
+  };
+}
+
+// ── POST /api/settings/tts-preview ───────────────────────────────────────────
+
+const ttsPreviewBodySchema = z.object({
+  voice: z.string().min(1).optional()
+});
+
+export function createPreviewTtsHandler() {
+  return async (req: Request, res: Response): Promise<void> => {
+    const { userId } = req as AuthedRequest;
+    const parsed = ttsPreviewBodySchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      res.status(400).json({ ok: false, error: 'invalid body', details: parsed.error.issues });
+      return;
+    }
+
+    const config = resolveTtsConfig(userId);
+    const voice = parsed.data.voice ?? config.voice;
+    const previewConfig = { ...config, voice };
+    const client = new TtsClient(previewConfig);
+
+    try {
+      const result = await client.synthesize(TTS_PREVIEW_TEXT);
+      res.json({
+        ok: true,
+        audioUrl: buildSegueAudioUrl(result.filePath),
+        cached: result.cached,
+        voice,
+        model: previewConfig.model
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'TTS preview failed';
+      res.status(502).json({ ok: false, error: message });
+    }
   };
 }
 

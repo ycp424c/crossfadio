@@ -264,6 +264,24 @@ export async function saveSettings(payload: SaveSettingsPayload): Promise<void> 
   if (!result.ok) throw new Error('Failed to save settings');
 }
 
+export type TtsPreviewResponse = {
+  ok: boolean;
+  audioUrl: string;
+  cached: boolean;
+  voice: string;
+  model: string;
+};
+
+export async function previewTtsVoice(voice: string): Promise<TtsPreviewResponse> {
+  const result = await requestJson<TtsPreviewResponse>('/api/settings/tts-preview', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ voice })
+  });
+  if (!result.ok) throw new Error('Failed to generate TTS preview');
+  return result;
+}
+
 export async function analyzeTaste(): Promise<{ ok: boolean; taste: string; message?: string }> {
   return requestJson<{ ok: boolean; taste: string; message?: string }>('/api/settings/analyze-taste', { method: 'POST' });
 }

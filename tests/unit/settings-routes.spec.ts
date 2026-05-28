@@ -8,6 +8,7 @@ import { setLocation } from '../../src/server/store/location';
 import { initDb, _resetDbForTest } from '../../src/server/store/db';
 import {
   createGetSettingsHandler,
+  createPreviewTtsHandler,
   createSaveSettingsHandler,
   createGetPlayerContextHandler
 } from '../../src/server/http/routes/settings';
@@ -90,6 +91,48 @@ describe('settings routes', () => {
     const getRes = createJsonResponse();
     getHandler({ userId: 'test-user' } as never, getRes as never);
     expect(getRes.body).toMatchObject({ dailyThemeEnabled: false, discoveryMode: 'comfort' });
+  });
+
+  it('POST tts-preview synthesizes a short preview with the requested voice', async () => {
+    process.env.CROSSFADIO_TTS_BASE_URL = 'https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation';
+    resetConfigForTest();
+    const audio = Buffer.from('preview-audio');
+    const requestedUrls: string[] = [];
+    let capturedBody: Record<string, unknown> | undefined;
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      requestedUrls.push(url);
+      if (url.includes('/services/aigc/multimodal-generation/generation')) {
+        capturedBody = JSON.parse(init?.body as string) as Record<string, unknown>;
+        return Response.json({ output: { audio: { url: 'https://audio.example/preview.wav' } } });
+      }
+      return new Response(audio, { status: 200, headers: { 'Content-Type': 'audio/wav' } });
+    }));
+
+    const handler = createPreviewTtsHandler();
+    const res = createJsonResponse();
+
+    await handler({ userId: 'test-user', body: { voice: 'Ethan' } } as never, res as never);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toMatchObject({
+      ok: true,
+      voice: 'Ethan',
+      model: DEFAULT_TTS_MODEL,
+      audioUrl: expect.stringMatching(/^\/api\/segue\/audio\/.+\.wav$/)
+    });
+    expect(capturedBody).toEqual({
+      model: DEFAULT_TTS_MODEL,
+      input: {
+        text: '你好，我是 Crossfadio 的 DJ。让音乐继续流动。',
+        voice: 'Ethan',
+        language_type: 'Auto'
+      }
+    });
+    expect(requestedUrls).toEqual([
+      'https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation',
+      'https://audio.example/preview.wav'
+    ]);
   });
 });
 
