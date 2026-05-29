@@ -154,13 +154,13 @@ type TasteStatus = { type: 'idle' } | { type: 'analyzing' } | { type: 'ok'; tast
   }
 
   return (
-    <div className="flex h-full flex-col overflow-y-auto bg-zinc-950 text-zinc-100">
-      <div className="flex items-center gap-2 border-b border-zinc-800 px-4 md:px-6 py-4">
+    <div className="flex h-full flex-col overflow-hidden bg-zinc-950 text-zinc-100">
+      <div className="flex shrink-0 items-center gap-2 border-b border-zinc-800 px-4 md:px-6 py-4">
         <Settings2 className="h-5 w-5 text-zinc-400" />
         <h1 className="text-lg font-semibold">设置</h1>
       </div>
 
-      <div className="flex-1 space-y-8 px-4 py-4 md:px-6 md:py-6">
+      <div className="min-h-0 flex-1 space-y-8 overflow-y-auto px-4 py-4 pb-8 md:px-6 md:py-6 md:pb-8">
         {/* LLM section — read-only */}
         <section>
           <h2 className="mb-4 text-sm font-medium uppercase tracking-wider text-zinc-400">
@@ -449,12 +449,14 @@ type TasteStatus = { type: 'idle' } | { type: 'analyzing' } | { type: 'ok'; tast
       </div>
 
       {/* Footer save bar */}
-      <div className="sticky bottom-0 flex items-center justify-between border-t border-zinc-800 bg-zinc-950 px-4 md:px-6 py-4">
-        <StatusIndicator status={saveStatus} />
+      <div className="flex shrink-0 items-center justify-between gap-3 border-t border-zinc-800 bg-zinc-950 px-4 md:px-6 py-4">
+        <div className="min-w-0 flex-1">
+          <StatusIndicator status={saveStatus} />
+        </div>
         <button
           onClick={handleSave}
           disabled={disabled || saveStatus.type === 'saving'}
-          className="flex items-center gap-2 rounded-lg bg-indigo-600 px-5 py-2 text-sm font-medium text-white transition hover:bg-indigo-500 disabled:opacity-50"
+          className="flex shrink-0 items-center gap-2 rounded-lg bg-indigo-600 px-5 py-2 text-sm font-medium text-white transition hover:bg-indigo-500 disabled:opacity-50"
         >
           {saveStatus.type === 'saving' && <Loader2 className="h-4 w-4 animate-spin" />}
           保存
@@ -500,8 +502,8 @@ function StatusIndicator({ status }: { status: SaveStatus }): JSX.Element {
   }
   if (status.type === 'error') {
     return (
-      <span className="flex items-center gap-1.5 text-sm text-red-400">
-        <AlertCircle className="h-4 w-4" /> {status.message}
+      <span className="flex min-w-0 items-center gap-1.5 text-sm text-red-400">
+        <AlertCircle className="h-4 w-4 shrink-0" /> <span className="truncate">{status.message}</span>
       </span>
     );
   }

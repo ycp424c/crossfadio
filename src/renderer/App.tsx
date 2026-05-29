@@ -37,7 +37,7 @@ export function App(): JSX.Element {
         <div style={{ display: tab === 'chat' ? 'flex' : 'none' }} className="h-full flex-col">
           <ChatPanel onRecommendEvent={setRecommendEvent} />
         </div>
-        <div style={{ display: tab === 'settings' ? 'block' : 'none' }}>
+        <div style={{ display: tab === 'settings' ? 'block' : 'none' }} className="h-full">
           <SettingsView />
         </div>
       </div>
