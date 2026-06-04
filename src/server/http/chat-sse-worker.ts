@@ -24,6 +24,8 @@ import type { MusicAgentRunOutput } from '../music-agent/schema.js';
 const RECOMMEND_CANDIDATE_LIMIT = 20;
 const RECOMMEND_PICK_LLM_TIMEOUT_MS = 30_000;
 const ACTIVE_DIRECTIVE_TTL_MS = 6 * 60 * 60 * 1000;
+const RECENT_PLAY_EXCLUDE_COUNT = 30;
+const CHAT_AGENT_TIMEOUT_MS = 40_000;
 
 const activeRecommendJobs = new Map<string, AbortController>();
 
@@ -152,35 +154,39 @@ export async function handleChatMessage(
           try {
             reportProgress({ phase: 'agent' });
             const agent = new MusicAgent({ llmConfig });
-            const output = await agent.recommendFromChat({
-              userId,
-              ncmClient,
-              userText: text,
-              signal: controller.signal
-            });
-
-            if (controller.signal.aborted || output.status === 'aborted') {
-              added = 0;
-            } else if (output.status === 'ok') {
-              added = applyMusicAgentPicks(
+            const agentAbort = createAbortTimeoutSignal(controller.signal, CHAT_AGENT_TIMEOUT_MS);
+            try {
+              const output = await agent.recommendFromChat({
                 userId,
-                output,
-                songActions.some((a) => a.type === 'swap_next')
-              );
-              reportProgress({
-                phase: 'done',
-                tracks: output.picks.map((pick) => ({
-                  name: pick.name ?? pick.id,
-                  artist: pick.artist ?? '未知艺人'
-                }))
+                ncmClient,
+                userText: text,
+                signal: agentAbort.signal
               });
-              shouldRunLegacyFallback = added === 0;
-            } else {
-              shouldRunLegacyFallback = output.status === 'empty_pool';
+
+              if (controller.signal.aborted) {
+                added = 0;
+              } else if (output.status === 'aborted') {
+                shouldRunLegacyFallback = agentAbort.timedOut();
+              } else if (output.status === 'ok') {
+                const addedTracks = applyMusicAgentPicks(
+                  userId,
+                  output,
+                  songActions.some((a) => a.type === 'swap_next')
+                );
+                added = addedTracks.length;
+                shouldRunLegacyFallback = added === 0;
+                if (!shouldRunLegacyFallback && addedTracks.length > 0) {
+                  reportProgress({ phase: 'done', tracks: addedTracks });
+                }
+              } else {
+                shouldRunLegacyFallback = output.status === 'empty_pool';
+              }
+            } finally {
+              agentAbort.cleanup();
             }
           } catch (err) {
             logger.warn({ err, jobId }, 'Chat recommend MusicAgent error');
-            shouldRunLegacyFallback = true;
+            shouldRunLegacyFallback = !controller.signal.aborted;
           }
 
           if (shouldRunLegacyFallback && !controller.signal.aborted) {
@@ -250,7 +256,7 @@ async function runChatRecommendPipeline(userId: string, input: RecommendPipeline
   onProgress({ phase: 'searching' });
 
   const recentIds = new Set(
-    getRecentPlays(userId, 30)
+    getRecentPlays(userId, RECENT_PLAY_EXCLUDE_COUNT)
       .map((p) => p.song_id)
       .filter((id): id is string => id !== null)
   );
@@ -362,14 +368,23 @@ ${candidateList}
   return added;
 }
 
-function applyMusicAgentPicks(userId: string, output: MusicAgentRunOutput, isSwap: boolean): number {
-  if (output.status !== 'ok') return 0;
+function applyMusicAgentPicks(
+  userId: string,
+  output: MusicAgentRunOutput,
+  isSwap: boolean
+): Array<{ name: string; artist: string }> {
+  if (output.status !== 'ok') return [];
 
-  const alreadyQueued = new Set(getQueue(userId).map((track) => track.ncmId));
-  let added = 0;
+  const recentIds = new Set(
+    getRecentPlays(userId, RECENT_PLAY_EXCLUDE_COUNT)
+      .map((play) => play.song_id)
+      .filter((id): id is string => id !== null)
+  );
+  const excludedIds = new Set([...recentIds, ...getQueue(userId).map((track) => track.ncmId)]);
+  const addedTracks: Array<{ name: string; artist: string }> = [];
   for (const pick of output.picks) {
-    if (alreadyQueued.has(pick.id)) continue;
-    alreadyQueued.add(pick.id);
+    if (excludedIds.has(pick.id)) continue;
+    excludedIds.add(pick.id);
     const track = {
       ncmId: pick.id,
       name: pick.name,
@@ -380,9 +395,39 @@ function applyMusicAgentPicks(userId: string, output: MusicAgentRunOutput, isSwa
     } else {
       addToQueue(userId, track, 'end');
     }
-    added++;
+    addedTracks.push({ name: pick.name ?? pick.id, artist: pick.artist ?? '未知艺人' });
   }
-  return added;
+  return addedTracks;
+}
+
+function createAbortTimeoutSignal(
+  parentSignal: AbortSignal | undefined,
+  timeoutMs: number
+): { signal: AbortSignal; cleanup: () => void; timedOut: () => boolean } {
+  const controller = new AbortController();
+  let didTimeOut = false;
+  const timeoutId = setTimeout(() => {
+    didTimeOut = true;
+    controller.abort(new Error('timeout'));
+  }, timeoutMs);
+  const abortFromParent = (): void => {
+    controller.abort(parentSignal?.reason ?? new Error('aborted'));
+  };
+
+  if (parentSignal?.aborted) {
+    abortFromParent();
+  } else {
+    parentSignal?.addEventListener('abort', abortFromParent, { once: true });
+  }
+
+  return {
+    signal: controller.signal,
+    cleanup: () => {
+      clearTimeout(timeoutId);
+      parentSignal?.removeEventListener('abort', abortFromParent);
+    },
+    timedOut: () => didTimeOut
+  };
 }
 
 function fallbackAddFromLiked(userId: string, likedTracks: Track[], excludeIds: Set<string>): number {

@@ -56,6 +56,13 @@ describe('DJ pick-next diagnostics', () => {
     expect(source).toContain('new MusicAgent');
     expect(source).toContain('doPickNext(userId, ncmClient, emit, controller.signal)');
     expect(source).toContain("output.status === 'ok'");
+    expect(source).toContain('createAbortTimeoutSignal(signal, DJ_AGENT_TIMEOUT_MS)');
+    expect(source).toContain('createAbortTimeoutSignal(signal, SEARCH_QUERY_LLM_TIMEOUT_MS)');
+    expect(source).toContain('createAbortTimeoutSignal(signal, PICK_LLM_TIMEOUT_MS)');
+    expect(source).toContain("controller.abort(new Error('job-timeout'))");
+    expect(source).toContain('const excludeState = getTodayAndQueueDedupeState(userId)');
+    expect(source).toContain('djPickReasonCache.set(track.ncmId, output.say.trim())');
+    expect(source).toContain('broadcastAppended(userId, prevQueueLength, emit)');
   });
 
   it('routes chat recommendations through MusicAgent with status guards', () => {
@@ -64,6 +71,11 @@ describe('DJ pick-next diagnostics', () => {
     expect(source).toContain('new MusicAgent');
     expect(source).toContain('recommendFromChat');
     expect(source).toContain("output.status === 'ok'");
+    expect(source).toContain('createAbortTimeoutSignal(controller.signal, CHAT_AGENT_TIMEOUT_MS)');
+    expect(source).toContain('getRecentPlays(userId, RECENT_PLAY_EXCLUDE_COUNT)');
+    expect(source).toContain('const addedTracks = applyMusicAgentPicks');
+    expect(source).toContain("if (!shouldRunLegacyFallback && addedTracks.length > 0)");
+    expect(source).toContain("output.status === 'aborted'");
   });
 });
 

@@ -37,6 +37,7 @@ const LIKED_SAMPLE_SIZE = 20;
 const EXPLORE_LIKED_SAMPLE_SIZE = 8;
 const SEARCH_RESULT_SIZE = 40;
 const DAILY_THEME_CONTEXT_TIMEOUT_MS = 1_500;
+const DJ_AGENT_TIMEOUT_MS = 65_000;
 
 const isRunning = new Map<string, boolean>();
 type DjEventSink = (payload: Record<string, unknown>) => void;
@@ -161,6 +162,36 @@ function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T
     promise,
     new Promise<T>((resolve) => setTimeout(() => resolve(fallback), ms))
   ]);
+}
+
+function createAbortTimeoutSignal(
+  parentSignal: AbortSignal | undefined,
+  timeoutMs: number
+): { signal: AbortSignal; cleanup: () => void; timedOut: () => boolean } {
+  const controller = new AbortController();
+  let didTimeOut = false;
+  const timeoutId = setTimeout(() => {
+    didTimeOut = true;
+    controller.abort(new Error('timeout'));
+  }, timeoutMs);
+  const abortFromParent = (): void => {
+    controller.abort(parentSignal?.reason ?? new Error('aborted'));
+  };
+
+  if (parentSignal?.aborted) {
+    abortFromParent();
+  } else {
+    parentSignal?.addEventListener('abort', abortFromParent, { once: true });
+  }
+
+  return {
+    signal: controller.signal,
+    cleanup: () => {
+      clearTimeout(timeoutId);
+      parentSignal?.removeEventListener('abort', abortFromParent);
+    },
+    timedOut: () => didTimeOut
+  };
 }
 
 // Fisher-Yates sample: return up to n random items from arr
@@ -299,19 +330,27 @@ async function runPickNextJob(userId: string, ncmClient: NcmClient): Promise<voi
   if (isRunning.get(userId)) return;
   isRunning.set(userId, true);
   const logger = getLogger();
+  const controller = new AbortController();
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
 
   const jobTimer = new Promise<'timeout'>((resolve) =>
-    setTimeout(() => resolve('timeout'), JOB_TIMEOUT_MS)
+    timeoutId = setTimeout(() => {
+      controller.abort(new Error('job-timeout'));
+      resolve('timeout');
+    }, JOB_TIMEOUT_MS)
   );
 
-  const jobResult = await Promise.race([doPickNext(userId, ncmClient).then(() => 'done' as const), jobTimer]);
+  try {
+    const jobResult = await Promise.race([doPickNext(userId, ncmClient, undefined, controller.signal).then(() => 'done' as const), jobTimer]);
 
-  if (jobResult === 'timeout') {
-    logger.warn('DJ pick-next job timed out after %dms', JOB_TIMEOUT_MS);
-    broadcastToUser(userId, { type: 'dj.pick-next.done', added: false, reason: 'timeout' });
+    if (jobResult === 'timeout') {
+      logger.warn('DJ pick-next job timed out after %dms', JOB_TIMEOUT_MS);
+      broadcastToUser(userId, { type: 'dj.pick-next.done', added: false, reason: 'timeout' });
+    }
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
+    isRunning.set(userId, false);
   }
-
-  isRunning.set(userId, false);
 }
 
 async function doPickNext(
@@ -329,10 +368,15 @@ async function doPickNext(
 
   const llmConfig = resolveLlmConfig();
   if (llmConfig && !signal?.aborted) {
+    const agentAbort = createAbortTimeoutSignal(signal, DJ_AGENT_TIMEOUT_MS);
     try {
       const agent = new MusicAgent({ llmConfig });
-      const output = await agent.pickNext({ userId, ncmClient, signal });
-      if (signal?.aborted || output.status === 'aborted') return;
+      const output = await agent.pickNext({ userId, ncmClient, signal: agentAbort.signal });
+      if (signal?.aborted) return;
+      if (output.status === 'aborted') {
+        if (!agentAbort.timedOut()) return;
+        logger.warn('DJ pick-next: MusicAgent timed out, using legacy fallback');
+      }
       if (output.status === 'ok') {
         const prevQueueLength = getQueue(userId).length;
         const excludeState = getTodayAndQueueDedupeState(userId);
@@ -376,7 +420,10 @@ async function doPickNext(
         logger.warn('DJ pick-next: MusicAgent picks did not change queue, using legacy fallback');
       }
     } catch (err) {
+      if (signal?.aborted) return;
       logger.warn({ err }, 'DJ pick-next: MusicAgent failed, using legacy fallback');
+    } finally {
+      agentAbort.cleanup();
     }
   }
 
@@ -492,13 +539,14 @@ async function doPickNext(
       let llmArtists: string[] = [];
       let styleConcepts: string[] = [];
       let sqRawSay = '';
+      const styleAbort = createAbortTimeoutSignal(signal, SEARCH_QUERY_LLM_TIMEOUT_MS);
       try {
         const sqResp = await new LlmClient(llmConfig).complete(
           [
             { role: 'system', content: corpus.djPersona || 'You are a DJ.' },
             { role: 'user', content: stylePrompt }
           ],
-          { signal: AbortSignal.timeout(SEARCH_QUERY_LLM_TIMEOUT_MS) }
+          { signal: styleAbort.signal }
         );
         sqRawSay = sqResp.content;
         const cleaned = sqResp.content
@@ -535,8 +583,12 @@ async function doPickNext(
           logger.warn({ raw: sqResp.content.slice(0, 200) }, 'DJ pick-next: failed to parse style+artists from LLM response');
         }
       } catch (err) {
+        if (signal?.aborted) return;
         logger.warn({ err }, 'DJ pick-next: style + artist generation failed');
+      } finally {
+        styleAbort.cleanup();
       }
+      if (signal?.aborted) return;
 
       logger.info({ styleConcepts, llmArtistCount: llmArtists.length }, 'DJ pick-next: LLM suggested styles and artists');
 
@@ -717,13 +769,14 @@ ${candidateList}
 
       let pickSay = '';
       let pickedTracks: Track[] = [];
+      const pickAbort = createAbortTimeoutSignal(signal, PICK_LLM_TIMEOUT_MS);
       try {
         const pickResp = await new LlmClient(llmConfig).complete(
           [
             { role: 'system', content: pickSystemPrompt },
             { role: 'user', content: pickUserPrompt }
           ],
-          { signal: AbortSignal.timeout(PICK_LLM_TIMEOUT_MS) }
+          { signal: pickAbort.signal }
         );
         const parsedPicks = parseDjCandidatePicks(pickResp.content, allCandidates);
         pickSay = parsedPicks.say;
@@ -732,8 +785,12 @@ ${candidateList}
           logger.warn({ raw: pickResp.content.slice(0, 300) }, 'DJ pick-next: failed to extract whitelisted picks from LLM response');
         }
       } catch (err) {
+        if (signal?.aborted) return;
         logger.warn({ err }, 'DJ pick-next: LLM pick failed, using random fallback');
+      } finally {
+        pickAbort.cleanup();
       }
+      if (signal?.aborted) return;
 
       if (pickedTracks.length > 0) {
         logger.info(
@@ -1016,8 +1073,12 @@ export function createSseDjPickNextHandler(opts: DjNextOptions) {
     isRunning.set(userId, true);
     const controller = new AbortController();
     req.on('close', () => controller.abort(new Error('client-disconnected')));
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
     const jobTimer = new Promise<'timeout'>((resolve) =>
-      setTimeout(() => resolve('timeout'), JOB_TIMEOUT_MS)
+      timeoutId = setTimeout(() => {
+        controller.abort(new Error('job-timeout'));
+        resolve('timeout');
+      }, JOB_TIMEOUT_MS)
     );
     void Promise.race([doPickNext(userId, ncmClient, emit, controller.signal).then(() => 'done' as const), jobTimer]).then((result) => {
       if (result === 'timeout' && !res.writableEnded) {
@@ -1027,7 +1088,10 @@ export function createSseDjPickNextHandler(opts: DjNextOptions) {
       if (!res.writableEnded) res.end();
     }).catch((err: Error) => {
       if (!res.writableEnded) endSse(res, 'dj.pick-next.done', { added: false, reason: 'error' });
-    }).finally(() => isRunning.set(userId, false));
+    }).finally(() => {
+      if (timeoutId) clearTimeout(timeoutId);
+      isRunning.set(userId, false);
+    });
     req.on('close', () => { if (!res.writableEnded) res.end(); });
   };
 }
