@@ -62,8 +62,9 @@ describe('CandidatePool', () => {
 
     expect(pool.count()).toBe(1);
     expect(pool.has('track-1')).toBe(true);
-    expect(pool.has('track-2')).toBe(false);
+    expect(pool.has('track-2')).toBe(true);
     expect(pool.get('track-1')?.sources).toEqual(['liked', 'search']);
+    expect(pool.get('track-2')?.id).toBe('track-1');
     expect(pool.get('track-1')?.evidence).toEqual(['liked by user', 'search hit']);
   });
 
@@ -121,14 +122,51 @@ describe('CandidatePool', () => {
 
     expect(pool.count()).toBe(1);
     expect(pool.has('canonical')).toBe(true);
-    expect(pool.has('duplicate')).toBe(false);
-    expect(pool.has('later-duplicate')).toBe(false);
+    expect(pool.has('duplicate')).toBe(true);
+    expect(pool.has('later-duplicate')).toBe(true);
     expect(pool.get('canonical')?.sources).toEqual(['liked', 'trend', 'search', 'plan']);
     expect(pool.get('canonical')?.evidence).toEqual([
       'canonical evidence',
       'duplicate evidence',
       'conflict evidence',
       'later evidence'
+    ]);
+  });
+
+  it('keeps alias id attached when a deduped id later arrives with a new title', () => {
+    const pool = new CandidatePool();
+
+    pool.upsert(candidate({
+      id: 'canonical',
+      name: 'Song',
+      artist: 'Artist',
+      sources: ['liked'],
+      evidence: ['canonical evidence']
+    }));
+    pool.upsert(candidate({
+      id: 'duplicate',
+      name: 'Song (Live)',
+      artist: 'Artist / Other',
+      sources: ['search'],
+      evidence: ['dedupe evidence']
+    }));
+    pool.upsert(candidate({
+      id: 'duplicate',
+      name: 'Alternate Title',
+      artist: 'Artist',
+      sources: ['trend'],
+      evidence: ['alias evidence']
+    }));
+
+    expect(pool.count()).toBe(1);
+    expect(pool.has('duplicate')).toBe(true);
+    expect(pool.get('duplicate')).toEqual(pool.get('canonical'));
+    expect(pool.get('duplicate')?.id).toBe('canonical');
+    expect(pool.get('duplicate')?.sources).toEqual(['liked', 'search', 'trend']);
+    expect(pool.get('duplicate')?.evidence).toEqual([
+      'canonical evidence',
+      'dedupe evidence',
+      'alias evidence'
     ]);
   });
 
@@ -148,6 +186,16 @@ describe('CandidatePool', () => {
 
     expect(() => pool.validateFinalPicks([{ id: 'known', reason: 'fits', source: 'trend' }]))
       .toThrow(/source mismatch/i);
+  });
+
+  it('validateFinalPicks resolves alias ids to canonical ids', () => {
+    const pool = new CandidatePool();
+
+    pool.upsert(candidate({ id: 'canonical', name: 'Song', artist: 'Artist', sources: ['liked'] }));
+    pool.upsert(candidate({ id: 'duplicate', name: 'Song (Live)', artist: 'Artist / Other', sources: ['trend'] }));
+
+    expect(pool.validateFinalPicks([{ id: 'duplicate', reason: 'fits', source: 'trend' }]))
+      .toEqual([{ id: 'canonical', reason: 'fits', source: 'trend' }]);
   });
 
   it('validateFinalPicks rejects blank reason', () => {

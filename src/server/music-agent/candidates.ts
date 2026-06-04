@@ -83,6 +83,7 @@ export function buildCandidateDedupeKey(candidate: CandidateDedupeInput): string
 export class CandidatePool {
   private readonly byId = new Map<string, CandidatePoolEntry>();
   private readonly idByDedupeKey = new Map<string, string>();
+  private readonly canonicalIdByAliasId = new Map<string, string>();
   private readonly bannedArtists: Set<string>;
   private readonly bannedTrackKeys: Set<string>;
   private readonly maxCandidates: number;
@@ -101,29 +102,37 @@ export class CandidatePool {
     }
 
     const existingById = this.byId.get(candidate.id);
+    const canonicalId = this.resolveCanonicalId(candidate.id);
+    const existingByCanonicalId = canonicalId ? this.byId.get(canonicalId) : undefined;
     const dedupedId = this.idByDedupeKey.get(dedupeKey);
     const dedupedEntry = dedupedId ? this.byId.get(dedupedId) : undefined;
+    const existingEntry = existingByCanonicalId ?? existingById;
+    const existingEntryId = existingByCanonicalId && canonicalId ? canonicalId : candidate.id;
 
-    if (existingById && dedupedId && dedupedEntry && dedupedId !== candidate.id) {
-      existingById.candidate = mergeCandidate(
-        mergeCandidate(existingById.candidate, dedupedEntry.candidate),
+    if (existingEntry && dedupedId && dedupedEntry && dedupedId !== existingEntryId) {
+      existingEntry.candidate = mergeCandidate(
+        mergeCandidate(existingEntry.candidate, dedupedEntry.candidate),
         candidate
       );
-      this.reassignDedupeKeys(dedupedEntry, candidate.id, existingById);
-      this.addDedupeKey(existingById, candidate.id, dedupeKey);
+      this.reassignDedupeKeys(dedupedEntry, existingEntryId, existingEntry);
+      this.addDedupeKey(existingEntry, existingEntryId, dedupeKey);
+      this.reassignAliases(dedupedId, existingEntryId);
+      this.addAlias(candidate.id, existingEntryId);
       this.byId.delete(dedupedId);
       return;
     }
 
-    if (existingById) {
-      existingById.candidate = mergeCandidate(existingById.candidate, candidate);
-      this.addDedupeKey(existingById, candidate.id, dedupeKey);
+    if (existingEntry) {
+      existingEntry.candidate = mergeCandidate(existingEntry.candidate, candidate);
+      this.addDedupeKey(existingEntry, existingEntryId, dedupeKey);
+      this.addAlias(candidate.id, existingEntryId);
       return;
     }
 
     if (dedupedEntry && dedupedId) {
       dedupedEntry.candidate = mergeCandidate(dedupedEntry.candidate, candidate);
       this.addDedupeKey(dedupedEntry, dedupedId, dedupeKey);
+      this.addAlias(candidate.id, dedupedId);
       return;
     }
 
@@ -139,12 +148,13 @@ export class CandidatePool {
   }
 
   get(id: string): MusicCandidate | undefined {
-    const entry = this.byId.get(id);
+    const canonicalId = this.resolveCanonicalId(id);
+    const entry = canonicalId ? this.byId.get(canonicalId) : undefined;
     return entry ? cloneCandidate(entry.candidate) : undefined;
   }
 
   has(id: string): boolean {
-    return this.byId.has(id);
+    return this.resolveCanonicalId(id) !== undefined;
   }
 
   list(): MusicCandidate[] {
@@ -164,7 +174,13 @@ export class CandidatePool {
   validateFinalPicks(picks: FinalPick[]): FinalPick[] {
     return picks.map((pick) => {
       const parsedPick = finalPickSchema.parse(pick);
-      const candidate = this.byId.get(parsedPick.id)?.candidate;
+      const canonicalId = this.resolveCanonicalId(parsedPick.id);
+
+      if (!canonicalId) {
+        throw new Error(`Final pick ${parsedPick.id} is not in candidate pool`);
+      }
+
+      const candidate = this.byId.get(canonicalId)?.candidate;
 
       if (!candidate) {
         throw new Error(`Final pick ${parsedPick.id} is not in candidate pool`);
@@ -180,8 +196,30 @@ export class CandidatePool {
         throw new Error(`Final pick ${parsedPick.id} source mismatch: ${parsedPick.source}`);
       }
 
-      return { ...parsedPick, reason };
+      return { ...parsedPick, id: canonicalId, reason };
     });
+  }
+
+  private resolveCanonicalId(id: string): string | undefined {
+    const canonicalId = this.canonicalIdByAliasId.get(id) ?? id;
+
+    return this.byId.has(canonicalId) ? canonicalId : undefined;
+  }
+
+  private addAlias(aliasId: string, canonicalId: string): void {
+    if (aliasId !== canonicalId) {
+      this.canonicalIdByAliasId.set(aliasId, canonicalId);
+    }
+  }
+
+  private reassignAliases(fromId: string, toId: string): void {
+    this.addAlias(fromId, toId);
+
+    for (const [aliasId, canonicalId] of this.canonicalIdByAliasId.entries()) {
+      if (canonicalId === fromId) {
+        this.canonicalIdByAliasId.set(aliasId, toId);
+      }
+    }
   }
 
   private addDedupeKey(entry: CandidatePoolEntry, id: string, dedupeKey: string): void {
