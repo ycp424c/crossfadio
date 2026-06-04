@@ -11,6 +11,26 @@ import type { NcmSong } from '../../src/shared/schema';
 
 const root = process.cwd();
 
+function readSource(relativePath: string): string {
+  return fs.readFileSync(path.join(root, relativePath), 'utf-8');
+}
+
+function extractBetween(source: string, start: string, end: string): string {
+  const startIndex = source.indexOf(start);
+  expect(startIndex, `missing start marker: ${start}`).toBeGreaterThanOrEqual(0);
+  const endIndex = source.indexOf(end, startIndex + start.length);
+  expect(endIndex, `missing end marker: ${end}`).toBeGreaterThan(startIndex);
+  return source.slice(startIndex, endIndex);
+}
+
+function expectBefore(source: string, before: string, after: string): void {
+  const beforeIndex = source.indexOf(before);
+  const afterIndex = source.indexOf(after);
+  expect(beforeIndex, `missing before marker: ${before}`).toBeGreaterThanOrEqual(0);
+  expect(afterIndex, `missing after marker: ${after}`).toBeGreaterThanOrEqual(0);
+  expect(beforeIndex).toBeLessThan(afterIndex);
+}
+
 function makeSong(id: number, name: string, artist: string): NcmSong {
   return { id, name, artists: [artist] };
 }
@@ -44,38 +64,61 @@ describe('DJ pick-next diagnostics', () => {
   });
 
   it('includes exclusion lists in DJ debug events for browser diagnostics', () => {
-    const source = fs.readFileSync(path.join(root, 'src/server/http/routes/djNext.ts'), 'utf-8');
+    const source = readSource('src/server/http/routes/djNext.ts');
 
     expect(source).toContain('excludedIds: Array.from(excludeState.ids)');
     expect(source).toContain('excludedDedupeKeys: Array.from(excludeState.dedupeKeys)');
   });
 
   it('routes DJ pick-next through MusicAgent with abort and status guards', () => {
-    const source = fs.readFileSync(path.join(root, 'src/server/http/routes/djNext.ts'), 'utf-8');
+    const source = readSource('src/server/http/routes/djNext.ts');
+    const runPickNextJob = extractBetween(source, 'async function runPickNextJob', 'async function doPickNext');
+    const doPickNext = extractBetween(source, 'async function doPickNext', 'function broadcastAppended');
+    const sseHandler = extractBetween(source, 'export function createSseDjPickNextHandler', 'function getScopedNcmClient');
 
-    expect(source).toContain('new MusicAgent');
-    expect(source).toContain('doPickNext(userId, ncmClient, emit, controller.signal)');
-    expect(source).toContain("output.status === 'ok'");
-    expect(source).toContain('createAbortTimeoutSignal(signal, DJ_AGENT_TIMEOUT_MS)');
-    expect(source).toContain('createAbortTimeoutSignal(signal, SEARCH_QUERY_LLM_TIMEOUT_MS)');
-    expect(source).toContain('createAbortTimeoutSignal(signal, PICK_LLM_TIMEOUT_MS)');
-    expect(source).toContain("controller.abort(new Error('job-timeout'))");
-    expect(source).toContain('const excludeState = getTodayAndQueueDedupeState(userId)');
-    expect(source).toContain('djPickReasonCache.set(track.ncmId, output.say.trim())');
-    expect(source).toContain('broadcastAppended(userId, prevQueueLength, emit)');
+    expect(runPickNextJob).toContain("controller.abort(new Error('job-timeout'))");
+    expect(runPickNextJob).toContain('doPickNext(userId, ncmClient, undefined, controller.signal)');
+
+    expect(sseHandler).toContain("controller.abort(new Error('job-timeout'))");
+    expect(sseHandler).toContain('doPickNext(userId, ncmClient, emit, controller.signal)');
+
+    expect(doPickNext).toContain('new MusicAgent');
+    expect(doPickNext).toContain("output.status === 'ok'");
+    expect(doPickNext).toContain('createAbortTimeoutSignal(signal, DJ_AGENT_TIMEOUT_MS)');
+    expect(doPickNext).toContain('const excludeState = getTodayAndQueueDedupeState(userId)');
+    expect(doPickNext).toContain('djPickReasonCache.set(track.ncmId, output.say.trim())');
+    expect(doPickNext).toContain('broadcastAppended(userId, prevQueueLength, emit)');
+
+    expect(doPickNext).toContain('const styleAbort = createAbortTimeoutSignal(signal, SEARCH_QUERY_LLM_TIMEOUT_MS)');
+    expect(doPickNext).toContain('{ signal: styleAbort.signal }');
+    expect(doPickNext).toContain('styleAbort.cleanup()');
+    expectBefore(doPickNext, 'const styleAbort = createAbortTimeoutSignal(signal, SEARCH_QUERY_LLM_TIMEOUT_MS)', 'new LlmClient(llmConfig).complete');
+    expectBefore(doPickNext, '{ signal: styleAbort.signal }', 'styleAbort.cleanup()');
+
+    expect(doPickNext).toContain('const pickAbort = createAbortTimeoutSignal(signal, PICK_LLM_TIMEOUT_MS)');
+    expect(doPickNext).toContain('{ signal: pickAbort.signal }');
+    expect(doPickNext).toContain('pickAbort.cleanup()');
+    expectBefore(doPickNext, 'const pickAbort = createAbortTimeoutSignal(signal, PICK_LLM_TIMEOUT_MS)', 'parseDjCandidatePicks');
+    expectBefore(doPickNext, '{ signal: pickAbort.signal }', 'pickAbort.cleanup()');
   });
 
   it('routes chat recommendations through MusicAgent with status guards', () => {
-    const source = fs.readFileSync(path.join(root, 'src/server/http/chat-sse-worker.ts'), 'utf-8');
+    const source = readSource('src/server/http/chat-sse-worker.ts');
+    const recommendBlock = extractBetween(source, 'if (isRecommend) {', '      } else {\n        if (signal?.aborted) return;');
+    const applyPicks = extractBetween(source, 'function applyMusicAgentPicks', 'function createAbortTimeoutSignal');
 
-    expect(source).toContain('new MusicAgent');
-    expect(source).toContain('recommendFromChat');
-    expect(source).toContain("output.status === 'ok'");
-    expect(source).toContain('createAbortTimeoutSignal(controller.signal, CHAT_AGENT_TIMEOUT_MS)');
-    expect(source).toContain('getRecentPlays(userId, RECENT_PLAY_EXCLUDE_COUNT)');
-    expect(source).toContain('const addedTracks = applyMusicAgentPicks');
-    expect(source).toContain("if (!shouldRunLegacyFallback && addedTracks.length > 0)");
-    expect(source).toContain("output.status === 'aborted'");
+    expect(recommendBlock).toContain('new MusicAgent');
+    expect(recommendBlock).toContain('recommendFromChat');
+    expect(recommendBlock).toContain('createAbortTimeoutSignal(controller.signal, CHAT_AGENT_TIMEOUT_MS)');
+    expect(recommendBlock).toContain("output.status === 'aborted'");
+    expect(recommendBlock).toContain("if (signal?.aborted) {\n          onParentAbort();\n        } else {\n          signal?.addEventListener('abort', onParentAbort, { once: true });\n        }");
+    expect(recommendBlock).toContain('const addedTracks = applyMusicAgentPicks');
+    expect(recommendBlock).toContain("if (!shouldRunLegacyFallback && addedTracks.length > 0)");
+    expectBefore(recommendBlock, 'const addedTracks = applyMusicAgentPicks', "reportProgress({ phase: 'done'");
+    expectBefore(recommendBlock, "if (!shouldRunLegacyFallback && addedTracks.length > 0)", "reportProgress({ phase: 'done'");
+
+    expect(applyPicks).toContain('getRecentPlays(userId, RECENT_PLAY_EXCLUDE_COUNT)');
+    expect(applyPicks).toContain('const excludedIds = new Set([...recentIds, ...getQueue(userId).map((track) => track.ncmId)])');
   });
 });
 

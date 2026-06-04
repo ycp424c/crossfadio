@@ -140,7 +140,16 @@ export async function handleChatMessage(
             controller.abort(new Error('parent-aborted'));
           }
         };
-        signal?.addEventListener('abort', onParentAbort, { once: true });
+        if (signal?.aborted) {
+          onParentAbort();
+        } else {
+          signal?.addEventListener('abort', onParentAbort, { once: true });
+        }
+        if (controller.signal.aborted) {
+          activeRecommendJobs.delete(jobId);
+          signal?.removeEventListener('abort', onParentAbort);
+          return;
+        }
 
         const reportProgress = (evt: Record<string, unknown>): void => {
           send('chat.recommend.progress', { jobId, ...evt });
