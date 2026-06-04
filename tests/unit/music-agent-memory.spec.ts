@@ -183,6 +183,73 @@ describe('music agent chat preference memory', () => {
     expect(getUnextractedMessages(userId)).toHaveLength(10);
     expect(llm.completeCalls[0].messages[1].content.length).toBeLessThan(8000);
   });
+
+  it('triggers chat preference extraction from the production chat path', async () => {
+    const userId = 'user-1';
+    const { saveMessage } = await import('../../src/server/store/messages.js');
+    saveMessage(userId, 'user', '最近喜欢 city pop');
+    saveMessage(userId, 'user', '想要女声');
+    saveMessage(userId, 'user', '不要太炸');
+
+    const memoryCompleteCalls: unknown[] = [];
+    vi.doMock('../../src/server/llm/config.js', () => ({
+      resolveLlmConfig: () => ({ provider: 'fake', model: 'fake-model', apiKey: 'fake-key' })
+    }));
+    vi.doMock('../../src/server/llm/client.js', () => ({
+      LlmClient: class {
+        async complete(messages: unknown[]) {
+          memoryCompleteCalls.push(messages);
+          return {
+            content: JSON.stringify({
+              musicRelated: true,
+              summary: '近期偏好：city pop 女声，避免太炸。'
+            }),
+            model: 'fake-memory-model'
+          };
+        }
+      }
+    }));
+    vi.doMock('../../src/server/agent/compute.js', () => ({
+      computeStream: async function* () {
+        yield {
+          type: 'done',
+          output: {
+            mode: 'chat',
+            say: '记住了，后面会偏 city pop 女声。',
+            intent: 'chitchat',
+            actions: []
+          }
+        };
+      }
+    }));
+    vi.doMock('../../src/server/logger.js', () => ({
+      getLogger: () => ({
+        warn: vi.fn(),
+        info: vi.fn(),
+        error: vi.fn(),
+        debug: vi.fn()
+      })
+    }));
+
+    const { handleChatMessage } = await import('../../src/server/http/chat-sse-worker.js');
+    await handleChatMessage(
+      userId,
+      { getLikedSongIds: vi.fn(async () => []), getSongDetails: vi.fn(async () => []) } as never,
+      '继续来点轻快 city pop 女声',
+      vi.fn()
+    );
+
+    const { getPreferenceContext } = await import('../../src/server/store/chat-preferences.js');
+    await vi.waitFor(() => {
+      expect(getPreferenceContext(userId, 1)).toContain('city pop 女声');
+    });
+    expect(JSON.stringify(memoryCompleteCalls[0])).toContain('继续来点轻快 city pop 女声');
+
+    vi.doUnmock('../../src/server/llm/config.js');
+    vi.doUnmock('../../src/server/llm/client.js');
+    vi.doUnmock('../../src/server/agent/compute.js');
+    vi.doUnmock('../../src/server/logger.js');
+  });
 });
 
 describe('music agent context builder', () => {
@@ -228,6 +295,7 @@ describe('music agent context builder', () => {
 
     expect(() => musicAgentContextSummarySchema.parse(context)).not.toThrow();
     expect(context.request).toBe('chat-recommend');
+    expect(context.currentUserText).toBe('给我接着推荐');
     expect(context.currentMoment.localTime).toMatch(/周四 07:30/);
     expect(context.currentMoment.daypart).toBe('早晨');
     expect(context.currentMoment.weather).toBe('22°C，晴');

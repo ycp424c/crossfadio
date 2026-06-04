@@ -34,6 +34,7 @@ export async function buildMusicAgentContext(input: BuildMusicAgentContextInput)
 
   const context: MusicAgentContextSummary = {
     request: input.request,
+    currentUserText: input.request === 'chat-recommend' ? truncate(input.userText ?? '', 600) : '',
     currentMoment: {
       localTime: formatLocalTime(now),
       daypart: getDaypart(now.getHours()),

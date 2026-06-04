@@ -118,7 +118,11 @@ describe('DJ pick-next diagnostics', () => {
     expectBefore(recommendBlock, "if (!shouldRunLegacyFallback && addedTracks.length > 0)", "reportProgress({ phase: 'done'");
 
     expect(applyPicks).toContain('getRecentPlays(userId, RECENT_PLAY_EXCLUDE_COUNT)');
-    expect(applyPicks).toContain('const excludedIds = new Set([...recentIds, ...getQueue(userId).map((track) => track.ncmId)])');
+    expect(applyPicks).toContain('const queuedTracks = getQueue(userId)');
+    expect(applyPicks).toContain('const excludedIds = new Set([...recentIds, ...queuedTracks.map((track) => track.ncmId)])');
+    expect(applyPicks).toContain('const excludedDedupeKeys = new Set([...recentDedupeKeys, ...queueDedupeKeys])');
+    expect(applyPicks).toContain('const dedupeKey = buildTrackDedupeKey(pick)');
+    expect(applyPicks).toContain('excludedDedupeKeys.has(dedupeKey)');
   });
 });
 

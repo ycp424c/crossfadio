@@ -90,6 +90,7 @@ export function createMusicAgentTools(input: CreateMusicAgentToolsInput): MusicA
       const text = [
         stringValue(toolInput.text),
         stringValue(toolInput.userText),
+        input.context.currentUserText,
         input.context.activeDirective,
         input.context.currentPlanSegment ?? '',
         input.context.tasteSummary,
@@ -267,6 +268,7 @@ export function createMusicAgentTools(input: CreateMusicAgentToolsInput): MusicA
       if (signal?.aborted) return abortedObservation(input.candidatePool);
       const text = [
         stringValue(toolInput.text),
+        input.context.currentUserText,
         input.context.activeDirective,
         input.context.tasteSummary,
         input.context.recentPreferenceSummary
@@ -446,6 +448,7 @@ function abortedObservation(pool: CandidatePool): ToolObservation {
 function summarizeContext(context: MusicAgentContextSummary): string {
   return truncate([
     `request=${context.request}`,
+    context.currentUserText ? `currentUserText=${context.currentUserText}` : '',
     `moment=${context.currentMoment.localTime} ${context.currentMoment.daypart}`,
     context.currentMoment.weather ? `weather=${context.currentMoment.weather}` : '',
     context.currentMoment.dailyTheme ? `theme=${context.currentMoment.dailyTheme}` : '',
@@ -508,6 +511,7 @@ function defaultQueryPlan(
   const baseText = [
     stringValue(input.text),
     stringValue(input.userText),
+    context.currentUserText,
     context.activeDirective,
     context.currentPlanSegment ?? '',
     context.tasteSummary,

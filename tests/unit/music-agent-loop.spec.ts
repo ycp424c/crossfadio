@@ -47,6 +47,7 @@ function budget(overrides: Partial<AgentBudget> = {}): AgentBudget {
 function context(overrides: Partial<MusicAgentContextSummary> = {}): MusicAgentContextSummary {
   return {
     request: 'chat-recommend',
+    currentUserText: '想听轻快一点的女声',
     currentMoment: {
       localTime: '2026-06-04T14:00:00+08:00',
       daypart: 'afternoon',

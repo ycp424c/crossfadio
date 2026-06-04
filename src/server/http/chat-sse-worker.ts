@@ -17,8 +17,9 @@ import { executeActions } from '../agent/actions.js';
 import { getCurrentIndex, getQueue, addToQueue, swapNext } from '../store/queue.js';
 import { broadcastToUser } from './broadcast.js';
 import { getLogger } from '../logger.js';
-import { searchCandidates } from './routes/djNext.js';
+import { buildTrackDedupeKey, searchCandidates } from './routes/djNext.js';
 import { MusicAgent } from '../music-agent/index.js';
+import { extractChatPreferencesIfDue } from '../music-agent/memory.js';
 import type { MusicAgentRunOutput } from '../music-agent/schema.js';
 
 const RECOMMEND_CANDIDATE_LIMIT = 20;
@@ -109,6 +110,7 @@ export async function handleChatMessage(
       const fallback = extractSayFromRawChat(streamedRaw);
       send('chat.done', { say: fallback, intent: 'chitchat', actions: [] });
       saveMessage(userId, 'assistant', fallback);
+      scheduleChatPreferenceExtraction(userId, llmConfig);
       return;
     }
 
@@ -119,6 +121,7 @@ export async function handleChatMessage(
       intent: chatOutput.intent,
       actions: chatOutput.actions
     });
+    scheduleChatPreferenceExtraction(userId, llmConfig);
 
     if (chatOutput.actions.length > 0) {
       const songActions = chatOutput.actions.filter(
@@ -389,11 +392,29 @@ function applyMusicAgentPicks(
       .map((play) => play.song_id)
       .filter((id): id is string => id !== null)
   );
-  const excludedIds = new Set([...recentIds, ...getQueue(userId).map((track) => track.ncmId)]);
+  const recentDedupeKeys = getRecentPlays(userId, RECENT_PLAY_EXCLUDE_COUNT)
+    .map((play) => buildTrackDedupeKey({
+      id: play.song_id,
+      name: play.song_name,
+      artist: play.artist_name
+    }))
+    .filter(Boolean);
+  const queuedTracks = getQueue(userId);
+  const queueDedupeKeys = queuedTracks
+    .map((track) => buildTrackDedupeKey({
+      id: track.ncmId,
+      name: track.name,
+      artists: track.artists
+    }))
+    .filter(Boolean);
+  const excludedIds = new Set([...recentIds, ...queuedTracks.map((track) => track.ncmId)]);
+  const excludedDedupeKeys = new Set([...recentDedupeKeys, ...queueDedupeKeys]);
   const addedTracks: Array<{ name: string; artist: string }> = [];
   for (const pick of output.picks) {
-    if (excludedIds.has(pick.id)) continue;
+    const dedupeKey = buildTrackDedupeKey(pick);
+    if (excludedIds.has(pick.id) || (dedupeKey && excludedDedupeKeys.has(dedupeKey))) continue;
     excludedIds.add(pick.id);
+    if (dedupeKey) excludedDedupeKeys.add(dedupeKey);
     const track = {
       ncmId: pick.id,
       name: pick.name,
@@ -407,6 +428,16 @@ function applyMusicAgentPicks(
     addedTracks.push({ name: pick.name ?? pick.id, artist: pick.artist ?? '未知艺人' });
   }
   return addedTracks;
+}
+
+function scheduleChatPreferenceExtraction(userId: string, llmConfig: LlmConfig): void {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(new Error('memory-extraction-timeout')), 10_000);
+  void extractChatPreferencesIfDue(userId, new LlmClient(llmConfig), controller.signal)
+    .catch((err) => {
+      getLogger().warn({ err }, 'Chat preference extraction failed');
+    })
+    .finally(() => clearTimeout(timeoutId));
 }
 
 function createAbortTimeoutSignal(

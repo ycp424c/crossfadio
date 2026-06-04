@@ -79,6 +79,26 @@ describe('MusicAgent facade', () => {
     expect(ncmClient.getSongDetails).toHaveBeenCalledWith(['101']);
   });
 
+  it('passes chat recommendation text into the tool-loop prompt', async () => {
+    const ncmClient = {
+      getLikedSongIds: vi.fn(async () => []),
+      getSongDetails: vi.fn(async () => []),
+      searchSongs: vi.fn(async () => []),
+      getPlaylistDetail: vi.fn(async () => null)
+    };
+    const fake = new FakeLlmClient().queueResponse('not json at all');
+
+    const { MusicAgent } = await import('../../src/server/music-agent/index.js');
+    const agent = new MusicAgent({ llmClient: fake });
+    await agent.recommendFromChat({
+      userId: 'user-1',
+      ncmClient: ncmClient as any,
+      userText: '想听低沉一点的爵士女声，不要太吵'
+    });
+
+    expect(JSON.stringify(fake.completeCalls[0].messages)).toContain('想听低沉一点的爵士女声，不要太吵');
+  });
+
   it('returns empty_pool instead of throwing when malformed LLM output leaves the pool empty', async () => {
     const ncmClient = {
       getLikedSongIds: vi.fn(async () => []),
@@ -114,6 +134,7 @@ describe('createMusicAgentTools', () => {
       ncmClient: ncmClient as any,
       context: {
         request: 'chat-recommend',
+        currentUserText: '',
         currentMoment: { localTime: '周四 15:00', daypart: '下午', weather: null },
         activeDirective: '',
         currentPlanSegment: null,
@@ -162,6 +183,7 @@ describe('createMusicAgentTools', () => {
       ncmClient: ncmClient as any,
       context: {
         request: 'chat-recommend',
+        currentUserText: '',
         currentMoment: { localTime: '周四 15:00', daypart: '下午', weather: null },
         activeDirective: '',
         currentPlanSegment: null,
