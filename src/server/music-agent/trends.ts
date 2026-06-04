@@ -33,6 +33,10 @@ export async function buildTrendContext(options: BuildTrendContextOptions): Prom
   }
 
   const empty = createEmptyTrendContext(options.locale);
+  if (options.maxFetchMs <= 0) {
+    return empty;
+  }
+
   const fetched = await withTimeout(
     fetchTrendContext(options.ncmClient, options.locale),
     options.maxFetchMs,
@@ -152,10 +156,6 @@ function resolveTrendCachePath(locale: TrendContext['locale']): string {
 }
 
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, fallback: T): Promise<T> {
-  if (timeoutMs <= 0) {
-    return fallback;
-  }
-
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     return await Promise.race([

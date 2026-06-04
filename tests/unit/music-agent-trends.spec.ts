@@ -124,6 +124,66 @@ describe('music-agent trend context', () => {
     expect(context.confidence).toBe(0);
   });
 
+  it('does not call NCM when trend fetch budget is exhausted', async () => {
+    const { buildTrendContext } = await import('../../src/server/music-agent/trends.js');
+    const ncmClient = {
+      getSearchHotDetail: vi.fn(async () => [{ searchWord: 'should not load' }]),
+      getTopSongHints: vi.fn(async () => [
+        {
+          title: 'Should Not Load',
+          artist: 'No Artist',
+          source: 'ncm_top_song' as const,
+          reason: 'budget exhausted'
+        }
+      ]),
+      getArtistToplist: vi.fn(async () => ['Should Not Load'])
+    };
+
+    const context = await buildTrendContext({
+      ncmClient,
+      locale: 'zh-CN',
+      maxFetchMs: 0,
+      ttlMs: 0
+    });
+
+    expect(context.sources).toEqual([]);
+    expect(context.confidence).toBe(0);
+    expect(ncmClient.getSearchHotDetail).not.toHaveBeenCalled();
+    expect(ncmClient.getTopSongHints).not.toHaveBeenCalled();
+    expect(ncmClient.getArtistToplist).not.toHaveBeenCalled();
+  });
+
+  it('keeps successful trend sources when one NCM source fails', async () => {
+    const { buildTrendContext } = await import('../../src/server/music-agent/trends.js');
+    const ncmClient = {
+      getSearchHotDetail: vi.fn(async () => {
+        throw new Error('search hot unavailable');
+      }),
+      getTopSongHints: vi.fn(async () => [
+        {
+          title: 'Partial Song',
+          artist: 'Partial Artist',
+          source: 'ncm_top_song' as const,
+          reason: '新歌速递'
+        }
+      ]),
+      getArtistToplist: vi.fn(async () => ['Partial Artist'])
+    };
+
+    const context = await buildTrendContext({
+      ncmClient,
+      locale: 'zh-CN',
+      maxFetchMs: 100,
+      ttlMs: 0
+    });
+
+    expect(context.sources).toEqual(['ncm_top_song', 'ncm_artist_toplist']);
+    expect(context.hotStyles).toEqual([]);
+    expect(context.chartTrackHints[0]?.title).toBe('Partial Song');
+    expect(context.hotArtists).toEqual(['Partial Artist']);
+    expect(context.confidence).toBeCloseTo(2 / 3);
+  });
+
   it('returns null when cached JSON is invalid', async () => {
     const cachePath = path.join(tempDataDir, 'cache', 'trends', 'zh-CN.json');
     fs.mkdirSync(path.dirname(cachePath), { recursive: true });
