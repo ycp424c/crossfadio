@@ -43,6 +43,8 @@ music-agent/
   rank.ts           # 服务端初排、diversity、负反馈惩罚
   tools.ts          # agent 可调用工具白名单
   prompts.ts        # tool-loop system prompt
+  knowledge.ts      # 稳定音乐知识包：风格邻接、场景映射、基础选歌常识
+  trends.ts         # 运行时趋势上下文：榜单、热门艺人、近期风格，带缓存和预算
   schema.ts         # tool call / observation / final output schema
 ```
 
@@ -114,7 +116,7 @@ type MusicCandidate = {
   id: string;
   name: string;
   artist: string;
-  sources: Array<'liked' | 'playlist' | 'plan' | 'search' | 'style_expansion'>;
+  sources: Array<'liked' | 'playlist' | 'plan' | 'search' | 'style_expansion' | 'trend'>;
   evidence: string[];
   scores: {
     intentMatch: number;
@@ -144,18 +146,82 @@ type MusicCandidate = {
 
 ```text
 get_context_summary
+get_music_knowledge
+get_trend_context
 expand_queries
 recall_from_liked
 recall_from_playlists
 recall_from_plan_segment
 recall_from_ncm_search
 recall_from_style_expansion
+recall_from_trending
 rank_candidates
 diversify_candidates
 finalize_pick
 ```
 
-### 6.1 expand_queries
+### 6.1 get_music_knowledge
+
+稳定音乐知识可以作为内置上下文，但不能无限堆 prompt。第一版用结构化知识包，而不是长篇 system prompt。
+
+知识包包含：
+
+- 风格邻接：例如 city pop 可向 synth pop、AOR、80s J-pop、粤语怀旧流行扩展。
+- 场景映射：工作、通勤、深夜、跑步、下午低能量时段分别适合的能量和人声密度。
+- 查询模板：中文、英文、风格、艺人、场景词如何组合成 NCM 搜索词。
+- 负向约束：低能量不等于无聊，安静不等于纯器乐，探索不等于随机陌生。
+- 多样性常识：同艺人、同厂牌、同 OST/合集来源不应连续占满候选。
+
+输出给 LLM 的不是完整知识库，而是根据当前请求摘出的短摘要：
+
+```ts
+type MusicKnowledgeSlice = {
+  styleAdjacency: string[];
+  sceneRules: string[];
+  queryTemplates: string[];
+  diversityRules: string[];
+};
+```
+
+### 6.2 get_trend_context
+
+“最近红火的艺人、流行风格、榜单”应该加入上下文，但必须作为运行时趋势上下文，不写死在内置 prompt。
+
+原因：
+
+- 趋势会过期，写进 prompt 会快速陈旧。
+- 榜单和热门风格有地域、语言、平台差异。
+- 用户当前偏好和短期指令仍应高于大众趋势。
+
+第一版设计为可选 tool：
+
+```ts
+type TrendContext = {
+  fetchedAt: string;
+  locale: 'zh-CN' | 'global';
+  sources: Array<'ncm_chart' | 'ncm_hot_search' | 'web_chart' | 'manual_cache'>;
+  hotArtists: string[];
+  hotStyles: string[];
+  chartTrackHints: Array<{ title: string; artist: string; reason: string }>;
+  confidence: number;
+};
+```
+
+趋势来源按可用性分层：
+
+1. 网易云相关榜单、热搜或排行榜接口，如果当前 NCM API 可稳定提供。
+2. 外部 chart / web search provider，如果配置允许并且网络可用。
+3. 本地手动缓存或上次成功抓取结果。
+4. 无趋势上下文时，直接跳过，不阻塞选歌。
+
+缓存策略：
+
+- 默认 TTL 12 小时。
+- `pick-next` 最多使用缓存或 2 秒内返回的趋势。
+- `chat recommend` 只使用已有缓存，不主动长时间抓取。
+- 趋势上下文只影响 query expansion 和 exploration recall，不覆盖 `activeDirective`。
+
+### 6.3 expand_queries
 
 输入：
 
@@ -164,16 +230,42 @@ finalize_pick
 - `queue.activeDirective`。
 - `taste.md` 与 `chat_preferences`。
 - 当前 plan segment。
+- `MusicKnowledgeSlice`。
+- `TrendContext`，如果可用。
 
-输出 query groups：
+`expand_queries` 是一个 query planner，不是让 LLM 随便写几个搜索词。输出必须符合 schema：
+
+```ts
+type QueryPlan = {
+  intentQueries: string[];
+  tasteAnchorQueries: string[];
+  planQueries: string[];
+  trendQueries: string[];
+  explorationQueries: string[];
+  negativeTerms: string[];
+  rationale: string;
+};
+```
+
+示例 query groups：
 
 ```text
 intent: ["华语 女声 indie pop", "下午 放松 女歌手"]
 taste: ["City Pop 女声", "粤语 female vocal"]
+trend: ["近期热门 女声 流行", "华语新歌 indie pop"]
 exploration: ["dream pop female vocalist", "indie folk soft vocal"]
 ```
 
-### 6.2 recall_from_liked
+生成规则：
+
+- 当前聊天请求和 `activeDirective` 先形成 intent queries。
+- `taste.md` 与 `chat_preferences` 形成 taste anchor queries。
+- 当前 plan segment 形成 plan queries。
+- trend context 只生成 trend queries，不能覆盖前面三类。
+- music knowledge 用于补风格邻接和查询模板，例如把“安静女声”扩成“soft female vocal / dream pop / acoustic pop”。
+- `negativeTerms` 用于后续过滤或降权，例如“不要太吵”映射为高能量、重型、噪声倾向 penalty。
+
+### 6.4 recall_from_liked
 
 从红心歌曲 ID 采样并拉详情。
 
@@ -181,14 +273,14 @@ exploration: ["dream pop female vocalist", "indie folk soft vocal"]
 - `explore` 模式只保留较小 liked sample，作为 taste anchor。
 - evidence: `用户红心歌曲`。
 
-### 6.3 recall_from_playlists
+### 6.5 recall_from_playlists
 
 读取 `playlists.json` 中匹配当前 segment、tags、energyRange 的歌单，用 `getPlaylistDetail()` 拉曲目。
 
 - `playlist.priority` 影响 `sourceConfidence`。
 - evidence: `来自歌单 <name>，标签 <tags>`。
 
-### 6.4 recall_from_plan_segment
+### 6.6 recall_from_plan_segment
 
 读取今日 plan 的当前时段：
 
@@ -196,7 +288,7 @@ exploration: ["dream pop female vocalist", "indie folk soft vocal"]
 - `tracks.query` 可以先 resolve 到 NCM id，也可作为搜索 query。
 - evidence: `今日计划当前时段推荐`。
 
-### 6.5 recall_from_ncm_search
+### 6.7 recall_from_ncm_search
 
 对 query groups 调 NCM `cloudsearch`。
 
@@ -204,7 +296,22 @@ exploration: ["dream pop female vocalist", "indie folk soft vocal"]
 - query source 进入 evidence。
 - 结果统一进 CandidatePool。
 
-### 6.6 recall_from_style_expansion
+### 6.8 recall_from_trending
+
+把 trend context 转化为候选，而不是直接相信趋势文本。
+
+- `hotArtists` 会变成 NCM 搜索 query。
+- `hotStyles` 会进入 exploration query。
+- `chartTrackHints` 需要通过 NCM 搜索或 resolve 后才进入 CandidatePool。
+- 所有趋势候选的 source 是 `trend`，并带 `confidence`。
+- 如果趋势结果与用户明确指令冲突，只能低权重进入候选池。
+
+趋势不是“越热越好”，而是用于提高召回新鲜度：
+
+- `explore` 模式可以适当提高 trend source 权重。
+- `comfort` 模式只在 taste anchor 能解释时使用 trend source。
+
+### 6.9 recall_from_style_expansion
 
 复用现有 MusicBrainz/Wikipedia 风格艺人扩展。
 
@@ -251,7 +358,7 @@ score =
 - 同一艺人最多 1 首进入最终 top 10。
 - 同一 source 不能占满 top 10。
 - `pick-next` 选 2 首时尽量不同艺人、不同 source。
-- `explore` 模式提高 `search` / `style_expansion` 占比。
+- `explore` 模式提高 `search` / `style_expansion` / `trend` 占比。
 - `comfort` 模式提高 `liked` / `playlist` 占比。
 
 召回不足不是直接 fallback，而是 observation：
@@ -447,7 +554,7 @@ type MusicAgentFinalOutput = {
     name?: string;
     artist?: string;
     reason: string;
-    source: 'liked' | 'playlist' | 'plan' | 'search' | 'style_expansion';
+    source: 'liked' | 'playlist' | 'plan' | 'search' | 'style_expansion' | 'trend';
   }>;
   rejected: Array<{
     id: string;
@@ -542,7 +649,7 @@ pnpm test
 
 - 自动补歌和聊天推荐都通过 `MusicAgent`。
 - 最终选歌只能来自 CandidatePool 白名单。
-- CandidatePool 支持 liked / playlist / plan / search / style expansion 多 source。
+- CandidatePool 支持 liked / playlist / plan / search / style expansion / trend 多 source。
 - 聊天偏好能沉淀到 `chat_preferences` 并影响后续 `pick-next`。
 - `plays.end_reason = skip` 能影响候选 penalty。
 - 客户端断开或取消后不会继续改队列。
