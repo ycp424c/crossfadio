@@ -59,6 +59,12 @@ type ToolState = {
 
 const SUMMARY_MAX_CHARS = 900;
 const DEFAULT_SEARCH_LIMIT = 8;
+const MAX_LIKED_RECALL_LIMIT = 60;
+const MAX_SEARCH_RECALL_LIMIT = 20;
+const MAX_TREND_RECALL_LIMIT = 10;
+const MAX_STYLE_EXPANSION_RECALL_LIMIT = 10;
+const MAX_RANK_DISPLAY_LIMIT = 20;
+const MAX_DIVERSIFY_DISPLAY_LIMIT = 5;
 
 export function createMusicAgentTools(input: CreateMusicAgentToolsInput): MusicAgentToolRegistry {
   const state: ToolState = {
@@ -132,7 +138,7 @@ export function createMusicAgentTools(input: CreateMusicAgentToolsInput): MusicA
 
     recall_from_liked: async (toolInput, signal) => {
       if (signal?.aborted) return abortedObservation(input.candidatePool);
-      const limit = positiveInt(toolInput.limit, 30);
+      const limit = boundedPositiveInt(toolInput.limit, 30, MAX_LIKED_RECALL_LIMIT);
       try {
         const ids = (await input.ncmClient.getLikedSongIds()).slice(0, limit).map(String);
         if (signal?.aborted) return abortedObservation(input.candidatePool);
@@ -230,7 +236,7 @@ export function createMusicAgentTools(input: CreateMusicAgentToolsInput): MusicA
         state,
         maxSearches: limits.maxNcmSearches,
         signal,
-        limit: positiveInt(toolInput.limit, DEFAULT_SEARCH_LIMIT)
+        limit: boundedPositiveInt(toolInput.limit, DEFAULT_SEARCH_LIMIT, MAX_SEARCH_RECALL_LIMIT)
       });
     },
 
@@ -253,7 +259,7 @@ export function createMusicAgentTools(input: CreateMusicAgentToolsInput): MusicA
         state,
         maxSearches: limits.maxNcmSearches,
         signal,
-        limit: positiveInt(toolInput.limit, 5)
+        limit: boundedPositiveInt(toolInput.limit, 5, MAX_TREND_RECALL_LIMIT)
       });
     },
 
@@ -283,19 +289,20 @@ export function createMusicAgentTools(input: CreateMusicAgentToolsInput): MusicA
         state,
         maxSearches: limits.maxNcmSearches,
         signal,
-        limit: positiveInt(toolInput.limit, 5)
+        limit: boundedPositiveInt(toolInput.limit, 5, MAX_STYLE_EXPANSION_RECALL_LIMIT)
       });
     },
 
-    rank_candidates: async (_toolInput, signal) => {
+    rank_candidates: async (toolInput, signal) => {
       if (signal?.aborted) return abortedObservation(input.candidatePool);
-      const top = input.candidatePool.topBy(scoreCandidate, 8);
+      const limit = boundedPositiveInt(toolInput.limit, 8, MAX_RANK_DISPLAY_LIMIT);
+      const top = input.candidatePool.topBy(scoreCandidate, limit);
       return observation(input.candidatePool, summarizeCandidates('ranked candidates', top));
     },
 
     diversify_candidates: async (toolInput, signal) => {
       if (signal?.aborted) return abortedObservation(input.candidatePool);
-      const limit = positiveInt(toolInput.limit, 2);
+      const limit = boundedPositiveInt(toolInput.limit, 2, MAX_DIVERSIFY_DISPLAY_LIMIT);
       const diversified = diversifyCandidates(input.candidatePool.topBy(scoreCandidate, 20), limit);
       return observation(input.candidatePool, summarizeCandidates('diversified candidates', diversified));
     },
@@ -570,6 +577,10 @@ function uniqueStrings(values: string[]): string[] {
 function positiveInt(value: unknown, fallback: number): number {
   const parsed = typeof value === 'number' ? value : Number.parseInt(stringValue(value), 10);
   return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
+}
+
+function boundedPositiveInt(value: unknown, fallback: number, max: number): number {
+  return Math.min(positiveInt(value, fallback), max);
 }
 
 function formatError(error: unknown): string {

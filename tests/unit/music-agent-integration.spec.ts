@@ -143,4 +143,58 @@ describe('createMusicAgentTools', () => {
     expect(observation?.candidateCount).toBe(0);
     expect(candidatePool.count()).toBe(0);
   });
+
+  it('clamps per-query NCM search limits and still upserts candidates', async () => {
+    const ncmClient = {
+      getLikedSongIds: vi.fn(async () => []),
+      getSongDetails: vi.fn(async () => []),
+      searchSongs: vi.fn(async () => [
+        { id: 201, name: 'City Light', artists: ['Singer'] }
+      ]),
+      getPlaylistDetail: vi.fn(async () => null)
+    };
+
+    const { CandidatePool } = await import('../../src/server/music-agent/candidates.js');
+    const { createMusicAgentTools } = await import('../../src/server/music-agent/tools.js');
+    const candidatePool = new CandidatePool();
+    const tools = createMusicAgentTools({
+      userId: 'user-1',
+      ncmClient: ncmClient as any,
+      context: {
+        request: 'chat-recommend',
+        currentMoment: { localTime: '周四 15:00', daypart: '下午', weather: null },
+        activeDirective: '',
+        currentPlanSegment: null,
+        tasteSummary: '偏好 city pop 女声',
+        recentPreferenceSummary: '',
+        recentPlaySignals: '',
+        queueStateSummary: '',
+        bannedSummary: ''
+      },
+      candidatePool,
+      budget: {
+        maxMs: 10_000,
+        maxSteps: 3,
+        maxLlmCalls: 2,
+        maxToolCalls: 2,
+        maxNcmSearches: 1,
+        maxPlaylistFetches: 0,
+        maxTrendFetchMs: 0,
+        maxCandidates: 20
+      }
+    });
+
+    const observation = await tools.recall_from_ncm_search?.({ queries: ['city pop'], limit: 9999 });
+
+    expect(ncmClient.searchSongs).toHaveBeenCalledTimes(1);
+    expect(ncmClient.searchSongs.mock.calls[0][0]).toBe('city pop');
+    expect(ncmClient.searchSongs.mock.calls[0][1]).toBeLessThanOrEqual(20);
+    expect(observation?.candidateCount).toBe(1);
+    expect(candidatePool.get('201')).toMatchObject({
+      id: '201',
+      name: 'City Light',
+      artist: 'Singer',
+      sources: ['search']
+    });
+  });
 });
