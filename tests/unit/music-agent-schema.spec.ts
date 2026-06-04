@@ -72,6 +72,22 @@ describe('music-agent schema', () => {
     expect(output.type).toBe('final');
   });
 
+  it('rejects primitive tool_call input', () => {
+    expect(() => musicAgentLoopOutputSchema.parse({
+      type: 'tool_call',
+      tool: 'rank_candidates',
+      input: 20
+    })).toThrow();
+  });
+
+  it('rejects final loop output with empty picks', () => {
+    expect(() => musicAgentLoopOutputSchema.parse({
+      type: 'final',
+      say: '这首更适合现在的下午状态。',
+      picks: []
+    })).toThrow();
+  });
+
   it('validates final MusicAgent output', () => {
     const finalOutput = musicAgentFinalOutputSchema.parse({
       mode: 'pick_next',
@@ -83,5 +99,21 @@ describe('music-agent schema', () => {
 
     expect(finalOutput.mode).toBe('pick_next');
     expect(finalOutput.picks[0].source).toBe('liked');
+  });
+
+  it('rejects final MusicAgent output with empty say', () => {
+    expect(() => musicAgentFinalOutputSchema.parse({
+      mode: 'pick_next',
+      say: '',
+      picks: [{ id: '101', name: 'Soft Song', artist: 'Singer', reason: '符合下午低能量', source: 'liked' }]
+    })).toThrow();
+  });
+
+  it('rejects final MusicAgent output with empty picks', () => {
+    expect(() => musicAgentFinalOutputSchema.parse({
+      mode: 'pick_next',
+      say: '补一首轻一点的。',
+      picks: []
+    })).toThrow();
   });
 });

@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { LlmMessage } from '../llm/client.js';
+import type { LlmCompleteOptions, LlmMessage, LlmResponse } from '../llm/client.js';
 
 export const candidateSourceSchema = z.enum([
   'liked',
@@ -162,12 +162,12 @@ export const musicAgentLoopOutputSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('tool_call'),
     tool: musicAgentToolNameSchema,
-    input: z.unknown().default({})
+    input: z.record(z.unknown()).default({})
   }),
   z.object({
     type: z.literal('final'),
     say: z.string().min(1),
-    picks: z.array(finalPickSchema).max(2),
+    picks: z.array(finalPickSchema).min(1).max(2),
     rejected: z.array(rejectedPickSchema).default([])
   })
 ]);
@@ -176,8 +176,8 @@ export type MusicAgentLoopOutput = z.infer<typeof musicAgentLoopOutputSchema>;
 
 export const musicAgentFinalOutputSchema = z.object({
   mode: z.enum(['pick_next', 'chat_recommend']),
-  say: z.string(),
-  picks: z.array(finalPickSchema).max(2),
+  say: z.string().min(1),
+  picks: z.array(finalPickSchema).min(1).max(2),
   rejected: z.array(rejectedPickSchema).default([]),
   trace: z.array(agentTraceStepSchema).default([])
 });
@@ -196,8 +196,5 @@ export type AgentBudget = {
 };
 
 export type MusicAgentLlmClient = {
-  complete(
-    messages: LlmMessage[],
-    opts?: { signal?: AbortSignal; temperature?: number; maxTokens?: number }
-  ): Promise<{ content: string; model: string }>;
+  complete(messages: LlmMessage[], opts?: LlmCompleteOptions): Promise<LlmResponse>;
 };
