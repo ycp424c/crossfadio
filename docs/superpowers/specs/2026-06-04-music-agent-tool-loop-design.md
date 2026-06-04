@@ -164,6 +164,13 @@ finalize_pick
 
 稳定音乐知识可以作为内置上下文，但不能无限堆 prompt。第一版用结构化知识包，而不是长篇 system prompt。
 
+知识来源：
+
+1. 仓库内维护的 curated 静态数据，例如 `src/server/music-agent/data/music-knowledge.zh-CN.ts`。
+2. 内容只放低漂移知识：风格邻接、场景能量、人声密度、查询模板、多样性规则。
+3. 不放“最近热门艺人”“今年流行风格”“榜单歌曲”这类会过期的信息；这些只走 `get_trend_context`。
+4. 不依赖 LLM 现场编知识。LLM 只能从静态知识包中取相关 slice，再结合用户上下文生成 query plan。
+
 知识包包含：
 
 - 风格邻接：例如 city pop 可向 synth pop、AOR、80s J-pop、粤语怀旧流行扩展。
@@ -180,8 +187,35 @@ type MusicKnowledgeSlice = {
   sceneRules: string[];
   queryTemplates: string[];
   diversityRules: string[];
+  negativeMappings: string[];
 };
 ```
+
+静态知识包示例结构：
+
+```ts
+type MusicKnowledgeBase = {
+  styleGraph: Record<string, string[]>;
+  sceneProfiles: Record<string, {
+    energyRange: [number, number];
+    vocalDensity: 'low' | 'medium' | 'high';
+    preferredStyles: string[];
+    avoidTraits: string[];
+  }>;
+  queryTemplates: Array<{
+    intent: string;
+    templates: string[];
+  }>;
+  negativeMappings: Record<string, string[]>;
+  diversityRules: string[];
+};
+```
+
+维护原则：
+
+- 小而准，优先覆盖当前产品常见意图：专注、通勤、下午放松、深夜、跑步、女声、少人声、别太吵。
+- 可人工更新，更新需要单测验证 query slice 和 scene profile。
+- 不把知识包当百科库；具体艺人和歌曲仍由 NCM / playlist / trend recall 产生。
 
 ### 6.2 get_trend_context
 
@@ -199,7 +233,16 @@ type MusicKnowledgeSlice = {
 type TrendContext = {
   fetchedAt: string;
   locale: 'zh-CN' | 'global';
-  sources: Array<'ncm_chart' | 'ncm_hot_search' | 'web_chart' | 'manual_cache'>;
+  sources: Array<
+    | 'ncm_search_hot'
+    | 'ncm_toplist'
+    | 'ncm_top_song'
+    | 'ncm_personalized_newsong'
+    | 'ncm_recommend_songs'
+    | 'ncm_artist_toplist'
+    | 'web_chart'
+    | 'manual_cache'
+  >;
   hotArtists: string[];
   hotStyles: string[];
   chartTrackHints: Array<{ title: string; artist: string; reason: string }>;
@@ -207,16 +250,35 @@ type TrendContext = {
 };
 ```
 
-趋势来源按可用性分层：
+趋势来源按可用性分层，第一版优先 NCM，本地包已支持这些接口：
 
-1. 网易云相关榜单、热搜或排行榜接口，如果当前 NCM API 可稳定提供。
-2. 外部 chart / web search provider，如果配置允许并且网络可用。
-3. 本地手动缓存或上次成功抓取结果。
-4. 无趋势上下文时，直接跳过，不阻塞选歌。
+1. `/search/hot/detail`: 热搜词，适合生成 `hotStyles`、热门艺人 query 和近期话题 query。
+2. `/toplist/detail`: 榜单元信息，选取云音乐热歌榜、新歌榜、飙升榜、原创榜等，再用 `/playlist/detail` 拉榜单曲目。
+3. `/top/song?type=...`: 新歌速递，按区域取近期新歌，作为 `chartTrackHints`。
+4. `/personalized/newsong`: 推荐新音乐，作为低权重新歌补充。
+5. `/recommend/songs`: 登录态每日推荐。这更偏“个性化新鲜度”，不是大众 trend；只在有登录态且预算允许时作为辅助 source。
+6. `/toplist/artist`: 热门艺人榜，形成 `hotArtists`。
+7. 外部 chart / web search provider：只作为可选增强，配置允许且网络可用才使用。
+8. 本地手动缓存或上次成功抓取结果。
+9. 无趋势上下文时，直接跳过，不阻塞选歌。
+
+实现上需要给 `NcmClient` 补趋势相关方法，或新增只读 `NcmTrendClient` adapter。趋势 adapter 只返回短字段：
+
+```ts
+type TrendTrackHint = {
+  title: string;
+  artist: string;
+  source: TrendContext['sources'][number];
+  reason: string;
+};
+```
+
+不要把完整榜单 payload 传给 LLM，也不要在日志里记录 cookie 或完整 URL。
 
 缓存策略：
 
-- 默认 TTL 12 小时。
+- 缓存文件放在 app data 目录，例如 `<dataDir>/cache/trends/zh-CN.json`，不进 git。
+- 默认 TTL 12 小时；热搜可更短，新歌和榜单可更长。
 - `pick-next` 最多使用缓存或 2 秒内返回的趋势。
 - `chat recommend` 只使用已有缓存，不主动长时间抓取。
 - 趋势上下文只影响 query expansion 和 exploration recall，不覆盖 `activeDirective`。
@@ -470,6 +532,7 @@ type AgentBudget = {
   maxToolCalls: number;
   maxNcmSearches: number;
   maxPlaylistFetches: number;
+  maxTrendFetchMs: number;
   maxCandidates: number;
 };
 ```
@@ -599,6 +662,17 @@ music-agent/memory.spec.ts
 - 只提取音乐偏好
 - saveChatPreference + markMessagesExtracted
 
+music-agent/knowledge.spec.ts
+- 根据请求返回相关 style adjacency / scene rules
+- 不返回过长知识包
+- negativeMappings 能把“别太吵”转成降权特征
+
+music-agent/trends.spec.ts
+- 优先读取未过期缓存
+- NCM 趋势接口失败时不阻塞选歌
+- trend source 只影响 trendQueries / trend candidates
+- `/recommend/songs` 标记为个性化新鲜度，不当作大众榜单
+
 music-agent/loop.spec.ts
 - 多轮 tool call
 - 预算耗尽 fallback
@@ -630,12 +704,14 @@ pnpm test
 ## 15. 实施顺序
 
 1. 建 `music-agent/schema.ts`、`candidates.ts`、`rank.ts`，先不接路由。
-2. 建 `memory.ts`，接 `chat_preferences` 和 `messages.extracted_at`。
-3. 建 `tools.ts` 和 `loop.ts`，用 fake LLM 完成 loop 单测。
-4. 把 `chat-sse-worker.ts` 中 `runChatRecommendPipeline()` 迁到 `MusicAgent.recommendFromChat()`。
-5. 把 `djNext.ts` 中 Phase 2-4 迁到 `MusicAgent.pickNext()`。
-6. 修复 `pick-next` abort signal 传递。
-7. 保留旧 helper 和 fallback，逐步删除路由里的重复逻辑。
+2. 建 `knowledge.ts` 和静态 `data/music-knowledge.zh-CN.ts`。
+3. 建 `trends.ts`，补 NCM trend adapter 和 app data cache。
+4. 建 `memory.ts`，接 `chat_preferences` 和 `messages.extracted_at`。
+5. 建 `tools.ts` 和 `loop.ts`，用 fake LLM 完成 loop 单测。
+6. 把 `chat-sse-worker.ts` 中 `runChatRecommendPipeline()` 迁到 `MusicAgent.recommendFromChat()`。
+7. 把 `djNext.ts` 中 Phase 2-4 迁到 `MusicAgent.pickNext()`。
+8. 修复 `pick-next` abort signal 传递。
+9. 保留旧 helper 和 fallback，逐步删除路由里的重复逻辑。
 
 ## 16. 风险
 
