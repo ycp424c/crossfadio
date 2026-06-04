@@ -184,6 +184,22 @@ export const musicAgentFinalOutputSchema = z.object({
 
 export type MusicAgentFinalOutput = z.infer<typeof musicAgentFinalOutputSchema>;
 
+export const musicAgentRunOutputSchema = z.discriminatedUnion('status', [
+  musicAgentFinalOutputSchema.extend({
+    status: z.literal('ok')
+  }),
+  z.object({
+    status: z.enum(['aborted', 'empty_pool']),
+    mode: z.enum(['pick_next', 'chat_recommend']),
+    say: z.string().min(1),
+    picks: z.array(finalPickSchema).length(0),
+    rejected: z.array(rejectedPickSchema).default([]),
+    trace: z.array(agentTraceStepSchema).default([])
+  })
+]);
+
+export type MusicAgentRunOutput = z.infer<typeof musicAgentRunOutputSchema>;
+
 export type AgentBudget = {
   maxMs: number;
   maxSteps: number;

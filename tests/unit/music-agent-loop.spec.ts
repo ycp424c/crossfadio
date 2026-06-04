@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { CandidatePool } from '../../src/server/music-agent/candidates.js';
 import { runMusicAgentLoop } from '../../src/server/music-agent/loop.js';
 import type { MusicAgentToolRegistry } from '../../src/server/music-agent/tools.js';
+import { musicAgentRunOutputSchema } from '../../src/server/music-agent/schema.js';
 import type {
   AgentBudget,
   MusicAgentContextSummary,
@@ -13,13 +14,18 @@ import type { LlmCompleteOptions, LlmMessage, LlmResponse } from '../../src/serv
 class LoopFakeLlmClient implements MusicAgentLlmClient {
   readonly calls: Array<{ messages: LlmMessage[]; opts?: LlmCompleteOptions }> = [];
   private readonly responses: string[];
+  private readonly delayMs: number;
 
-  constructor(responses: string[]) {
+  constructor(responses: string[], delayMs = 0) {
     this.responses = [...responses];
+    this.delayMs = delayMs;
   }
 
   async complete(messages: LlmMessage[], opts?: LlmCompleteOptions): Promise<LlmResponse> {
     this.calls.push({ messages, opts });
+    if (this.delayMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, this.delayMs));
+    }
     return { content: this.responses.shift() ?? '{}', model: 'fake-loop-model' };
   }
 }
@@ -106,6 +112,8 @@ describe('runMusicAgentLoop', () => {
       budget: budget()
     });
 
+    expect(musicAgentRunOutputSchema.parse(result).status).toBe('ok');
+    expect(result.status).toBe('ok');
     expect(result.picks[0]).toMatchObject({ id: '101', source: 'liked' });
     expect(result.trace.some((step) => step.tool === 'recall_from_liked')).toBe(true);
     expect(llmClient.calls[0].opts).toMatchObject({ temperature: 0.2, maxTokens: 1000 });
@@ -131,6 +139,8 @@ describe('runMusicAgentLoop', () => {
       budget: budget()
     });
 
+    expect(musicAgentRunOutputSchema.parse(result).status).toBe('ok');
+    expect(result.status).toBe('ok');
     expect(result.picks).toHaveLength(1);
     expect(result.picks[0]).toMatchObject({ id: '101', reason: 'ranked fallback', source: 'liked' });
     expect(result.say.toLowerCase()).toContain('fallback');
@@ -158,6 +168,8 @@ describe('runMusicAgentLoop', () => {
       signal: controller.signal
     });
 
+    expect(musicAgentRunOutputSchema.parse(result).status).toBe('aborted');
+    expect(result.status).toBe('aborted');
     expect(toolCalls).toBe(0);
     expect(result.picks).toEqual([]);
     expect(result.say.toLowerCase()).toContain('aborted');
@@ -180,6 +192,8 @@ describe('runMusicAgentLoop', () => {
       budget: budget({ maxSteps: 2, maxLlmCalls: 2 })
     });
 
+    expect(musicAgentRunOutputSchema.parse(result).status).toBe('ok');
+    expect(result.status).toBe('ok');
     expect(result.picks[0].id).toBe('101');
     expect(result.say.toLowerCase()).toContain('fallback');
     expect(result.trace.some((step) => /unavailable|unknown/i.test(step.observationSummary ?? ''))).toBe(true);
@@ -206,6 +220,8 @@ describe('runMusicAgentLoop', () => {
         budget: budget()
       });
 
+      expect(musicAgentRunOutputSchema.parse(result).status).toBe('ok');
+      expect(result.status).toBe('ok');
       expect(result.picks[0].id).toBe('101');
     }
 
@@ -219,6 +235,8 @@ describe('runMusicAgentLoop', () => {
       budget: budget({ maxSteps: 1, maxLlmCalls: 1 })
     });
 
+    expect(musicAgentRunOutputSchema.parse(malformedResult).status).toBe('ok');
+    expect(malformedResult.status).toBe('ok');
     expect(malformedResult.picks[0].id).toBe('101');
     expect(malformedResult.say.toLowerCase()).toContain('fallback');
   });
@@ -245,6 +263,8 @@ describe('runMusicAgentLoop', () => {
     });
 
     expect(toolCalls).toBe(1);
+    expect(musicAgentRunOutputSchema.parse(toolLimited).status).toBe('empty_pool');
+    expect(toolLimited.status).toBe('empty_pool');
     expect(toolLimited.picks).toEqual([]);
     expect(toolLimited.say.toLowerCase()).toContain('fallback');
 
@@ -262,6 +282,8 @@ describe('runMusicAgentLoop', () => {
     });
 
     expect(llmLimited.trace).toHaveLength(1);
+    expect(musicAgentRunOutputSchema.parse(llmLimited).status).toBe('empty_pool');
+    expect(llmLimited.status).toBe('empty_pool');
     expect(llmLimited.say.toLowerCase()).toContain('fallback');
 
     const stepLimited = await runMusicAgentLoop({
@@ -278,6 +300,33 @@ describe('runMusicAgentLoop', () => {
     });
 
     expect(stepLimited.trace).toHaveLength(1);
+    expect(musicAgentRunOutputSchema.parse(stepLimited).status).toBe('empty_pool');
+    expect(stepLimited.status).toBe('empty_pool');
     expect(stepLimited.say.toLowerCase()).toContain('fallback');
+  });
+
+  it('does not execute tools when the LLM call exceeds maxMs', async () => {
+    const llmClient = new LoopFakeLlmClient([
+      JSON.stringify({ type: 'tool_call', tool: 'recall_from_liked', input: {} })
+    ], 20);
+    let toolCalls = 0;
+
+    const result = await runMusicAgentLoop({
+      llmClient,
+      context: context(),
+      candidatePool: new CandidatePool(),
+      tools: {
+        recall_from_liked: async () => {
+          toolCalls += 1;
+          return { summary: 'should not run', candidateCount: 0 };
+        }
+      },
+      budget: budget({ maxMs: 1 })
+    });
+
+    expect(musicAgentRunOutputSchema.parse(result).status).toBe('empty_pool');
+    expect(result.status).toBe('empty_pool');
+    expect(toolCalls).toBe(0);
+    expect(result.say.toLowerCase()).toContain('fallback');
   });
 });

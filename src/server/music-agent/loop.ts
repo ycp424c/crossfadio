@@ -10,6 +10,7 @@ import {
   type MusicAgentContextSummary,
   type MusicAgentFinalOutput,
   type MusicAgentLlmClient,
+  type MusicAgentRunOutput,
   type MusicAgentToolName
 } from './schema.js';
 import type { MusicAgentToolRegistry, ToolObservation } from './tools.js';
@@ -20,6 +21,7 @@ export type RunMusicAgentLoopInput = {
   candidatePool: CandidatePool;
   tools: MusicAgentToolRegistry;
   budget: AgentBudget;
+  mode?: MusicAgentFinalOutput['mode'];
   signal?: AbortSignal;
 };
 
@@ -42,7 +44,7 @@ const DEFAULT_TOOL_CALL: ParsedLoopOutput = {
 const MAX_TRACE_INPUT_CHARS = 180;
 const MAX_TRACE_OBSERVATION_CHARS = 240;
 
-export async function runMusicAgentLoop(input: RunMusicAgentLoopInput): Promise<MusicAgentFinalOutput> {
+export async function runMusicAgentLoop(input: RunMusicAgentLoopInput): Promise<MusicAgentRunOutput> {
   const startedAt = Date.now();
   const observations: LoopObservation[] = [];
   const trace: AgentTraceStep[] = [];
@@ -52,11 +54,11 @@ export async function runMusicAgentLoop(input: RunMusicAgentLoopInput): Promise<
 
   while (true) {
     if (input.signal?.aborted) {
-      return abortedOutput(input.context, trace);
+      return abortedOutput(resolveMode(input), trace);
     }
 
     if (isBudgetReached(startedAt, input.budget, step, llmCalls)) {
-      return rankedFallback(input.context, input.candidatePool, trace);
+      return rankedFallback(resolveMode(input), input.candidatePool, trace);
     }
 
     const messages = buildLoopMessages({
@@ -72,7 +74,11 @@ export async function runMusicAgentLoop(input: RunMusicAgentLoopInput): Promise<
     llmCalls += 1;
 
     if (input.signal?.aborted) {
-      return abortedOutput(input.context, trace);
+      return abortedOutput(resolveMode(input), trace);
+    }
+
+    if (Date.now() - startedAt >= input.budget.maxMs) {
+      return rankedFallback(resolveMode(input), input.candidatePool, trace);
     }
 
     const output = parseLoopOutput(response.content);
@@ -82,7 +88,8 @@ export async function runMusicAgentLoop(input: RunMusicAgentLoopInput): Promise<
       try {
         const picks = validateFinalPicks(output.picks, input.candidatePool);
         return {
-          mode: modeFromContext(input.context),
+          status: 'ok',
+          mode: resolveMode(input),
           say: output.say,
           picks,
           rejected: output.rejected ?? [],
@@ -98,7 +105,7 @@ export async function runMusicAgentLoop(input: RunMusicAgentLoopInput): Promise<
           thoughtSummary: 'final rejected by candidate pool whitelist',
           observationSummary: summarizeObservation(observation)
         }));
-        return rankedFallback(input.context, input.candidatePool, trace);
+        return rankedFallback(resolveMode(input), input.candidatePool, trace);
       }
     }
 
@@ -114,11 +121,11 @@ export async function runMusicAgentLoop(input: RunMusicAgentLoopInput): Promise<
         toolInputSummary: summarizeInput(output.input),
         observationSummary: summarizeObservation(observation)
       }));
-      return rankedFallback(input.context, input.candidatePool, trace);
+      return rankedFallback(resolveMode(input), input.candidatePool, trace);
     }
 
     if (input.signal?.aborted) {
-      return abortedOutput(input.context, trace);
+      return abortedOutput(resolveMode(input), trace);
     }
 
     const toolName = parseToolName(output.tool);
@@ -148,6 +155,10 @@ export async function runMusicAgentLoop(input: RunMusicAgentLoopInput): Promise<
       toolInputSummary: summarizeInput(output.input),
       observationSummary: summarizeObservation(observation)
     }));
+
+    if (input.signal?.aborted) {
+      return abortedOutput(resolveMode(input), trace);
+    }
   }
 }
 
@@ -246,10 +257,10 @@ function extractFirstJsonObject(raw: string): string | undefined {
 }
 
 function rankedFallback(
-  context: MusicAgentContextSummary,
+  mode: MusicAgentFinalOutput['mode'],
   pool: CandidatePool,
   trace: AgentTraceStep[]
-): MusicAgentFinalOutput {
+): MusicAgentRunOutput {
   const ranked = pool.topBy(scoreCandidate, 10);
   const picks = diversifyCandidates(ranked, 2).map((candidate) => ({
     id: candidate.id,
@@ -260,7 +271,8 @@ function rankedFallback(
   }));
 
   return {
-    mode: modeFromContext(context),
+    status: picks.length > 0 ? 'ok' : 'empty_pool',
+    mode,
     say: picks.length > 0
       ? 'fallback: 使用候选池排序结果。'
       : 'fallback: 候选池为空，暂时无法给出选歌。',
@@ -270,9 +282,13 @@ function rankedFallback(
   };
 }
 
-function abortedOutput(context: MusicAgentContextSummary, trace: AgentTraceStep[]): MusicAgentFinalOutput {
+function abortedOutput(
+  mode: MusicAgentFinalOutput['mode'],
+  trace: AgentTraceStep[]
+): MusicAgentRunOutput {
   return {
-    mode: modeFromContext(context),
+    status: 'aborted',
+    mode,
     say: 'aborted: music agent loop was cancelled.',
     picks: [],
     rejected: [],
@@ -344,6 +360,10 @@ function isBudgetReached(
     step >= budget.maxSteps ||
     llmCalls >= budget.maxLlmCalls
   );
+}
+
+function resolveMode(input: RunMusicAgentLoopInput): MusicAgentFinalOutput['mode'] {
+  return input.mode ?? modeFromContext(input.context);
 }
 
 function modeFromContext(context: MusicAgentContextSummary): MusicAgentFinalOutput['mode'] {

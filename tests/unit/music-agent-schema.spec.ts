@@ -4,7 +4,8 @@ import {
   musicAgentLoopOutputSchema,
   musicAgentToolNameSchema,
   musicCandidateSchema,
-  musicAgentFinalOutputSchema
+  musicAgentFinalOutputSchema,
+  musicAgentRunOutputSchema
 } from '../../src/server/music-agent/schema';
 
 describe('music-agent schema', () => {
@@ -111,6 +112,42 @@ describe('music-agent schema', () => {
 
   it('rejects final MusicAgent output with empty picks', () => {
     expect(() => musicAgentFinalOutputSchema.parse({
+      mode: 'pick_next',
+      say: '补一首轻一点的。',
+      picks: []
+    })).toThrow();
+  });
+
+  it('accepts aborted run output with empty picks', () => {
+    const output = musicAgentRunOutputSchema.parse({
+      status: 'aborted',
+      mode: 'pick_next',
+      say: 'aborted: cancelled',
+      picks: [],
+      trace: []
+    });
+
+    expect(output.status).toBe('aborted');
+    expect(output.picks).toEqual([]);
+  });
+
+  it('accepts ok run output with non-empty picks', () => {
+    const output = musicAgentRunOutputSchema.parse({
+      status: 'ok',
+      mode: 'pick_next',
+      say: '补一首轻一点的。',
+      picks: [{ id: '101', name: 'Soft Song', artist: 'Singer', reason: '符合下午低能量', source: 'liked' }],
+      rejected: [],
+      trace: []
+    });
+
+    expect(output.status).toBe('ok');
+    expect(output.picks[0].id).toBe('101');
+  });
+
+  it('rejects ok run output with empty picks', () => {
+    expect(() => musicAgentRunOutputSchema.parse({
+      status: 'ok',
       mode: 'pick_next',
       say: '补一首轻一点的。',
       picks: []
