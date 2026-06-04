@@ -49,6 +49,22 @@ describe('DJ pick-next diagnostics', () => {
     expect(source).toContain('excludedIds: Array.from(excludeState.ids)');
     expect(source).toContain('excludedDedupeKeys: Array.from(excludeState.dedupeKeys)');
   });
+
+  it('routes DJ pick-next through MusicAgent with abort and status guards', () => {
+    const source = fs.readFileSync(path.join(root, 'src/server/http/routes/djNext.ts'), 'utf-8');
+
+    expect(source).toContain('new MusicAgent');
+    expect(source).toContain('doPickNext(userId, ncmClient, emit, controller.signal)');
+    expect(source).toContain("output.status === 'ok'");
+  });
+
+  it('routes chat recommendations through MusicAgent with status guards', () => {
+    const source = fs.readFileSync(path.join(root, 'src/server/http/chat-sse-worker.ts'), 'utf-8');
+
+    expect(source).toContain('new MusicAgent');
+    expect(source).toContain('recommendFromChat');
+    expect(source).toContain("output.status === 'ok'");
+  });
 });
 
 describe('DJ discovery mode prompt parts', () => {

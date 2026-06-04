@@ -18,6 +18,8 @@ import { getCurrentIndex, getQueue, addToQueue, swapNext } from '../store/queue.
 import { broadcastToUser } from './broadcast.js';
 import { getLogger } from '../logger.js';
 import { searchCandidates } from './routes/djNext.js';
+import { MusicAgent } from '../music-agent/index.js';
+import type { MusicAgentRunOutput } from '../music-agent/schema.js';
 
 const RECOMMEND_CANDIDATE_LIMIT = 20;
 const RECOMMEND_PICK_LLM_TIMEOUT_MS = 30_000;
@@ -144,18 +146,54 @@ export async function handleChatMessage(
 
         send('chat.recommend.started', { jobId });
 
-        const prevLen = getQueue(userId).length;
         let added = 0;
         try {
-          added = await runChatRecommendPipeline(userId, {
-            actions: songActions,
-            likedTracks,
-            ncmClient,
-            llmConfig,
-            userText: text,
-            onProgress: reportProgress,
-            signal: controller.signal
-          });
+          let shouldRunLegacyFallback = false;
+          try {
+            reportProgress({ phase: 'agent' });
+            const agent = new MusicAgent({ llmConfig });
+            const output = await agent.recommendFromChat({
+              userId,
+              ncmClient,
+              userText: text,
+              signal: controller.signal
+            });
+
+            if (controller.signal.aborted || output.status === 'aborted') {
+              added = 0;
+            } else if (output.status === 'ok') {
+              added = applyMusicAgentPicks(
+                userId,
+                output,
+                songActions.some((a) => a.type === 'swap_next')
+              );
+              reportProgress({
+                phase: 'done',
+                tracks: output.picks.map((pick) => ({
+                  name: pick.name ?? pick.id,
+                  artist: pick.artist ?? '未知艺人'
+                }))
+              });
+              shouldRunLegacyFallback = added === 0;
+            } else {
+              shouldRunLegacyFallback = output.status === 'empty_pool';
+            }
+          } catch (err) {
+            logger.warn({ err, jobId }, 'Chat recommend MusicAgent error');
+            shouldRunLegacyFallback = true;
+          }
+
+          if (shouldRunLegacyFallback && !controller.signal.aborted) {
+            added = await runChatRecommendPipeline(userId, {
+              actions: songActions,
+              likedTracks,
+              ncmClient,
+              llmConfig,
+              userText: text,
+              onProgress: reportProgress,
+              signal: controller.signal
+            });
+          }
         } catch (err) {
           logger.warn({ err, jobId }, 'Chat recommend pipeline error');
           reportProgress({ phase: 'error', reason: err instanceof Error ? err.message : 'unknown' });
@@ -321,6 +359,29 @@ ${candidateList}
   onProgress({ phase: 'done', tracks: addedTracks });
 
   logger.info({ added, chosenIndices, totalCandidates: allCandidates.length }, 'Chat recommend: added tracks');
+  return added;
+}
+
+function applyMusicAgentPicks(userId: string, output: MusicAgentRunOutput, isSwap: boolean): number {
+  if (output.status !== 'ok') return 0;
+
+  const alreadyQueued = new Set(getQueue(userId).map((track) => track.ncmId));
+  let added = 0;
+  for (const pick of output.picks) {
+    if (alreadyQueued.has(pick.id)) continue;
+    alreadyQueued.add(pick.id);
+    const track = {
+      ncmId: pick.id,
+      name: pick.name,
+      artists: pick.artist ? [pick.artist] : []
+    };
+    if (isSwap) {
+      swapNext(userId, track);
+    } else {
+      addToQueue(userId, track, 'end');
+    }
+    added++;
+  }
   return added;
 }
 
