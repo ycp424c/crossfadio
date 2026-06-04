@@ -72,6 +72,24 @@ export const musicKnowledgeZhCN: MusicKnowledgeBase = {
       queryTemplates: ['下午 女声 轻松', '午后 city pop', '下午 indie pop 不吵']
     },
     {
+      scene: '中午',
+      aliases: ['中午', '午间', 'noon'],
+      rules: ['中午适合轻快但不尖锐的曲目，保持节奏感同时避免过强压迫。'],
+      queryTemplates: ['中午 轻快 pop', '午间 华语女声', '中午 city pop']
+    },
+    {
+      scene: '傍晚',
+      aliases: ['傍晚', '黄昏', '下班路上', 'evening commute'],
+      rules: ['傍晚适合温暖、松弛、中等能量的歌，帮助从工作状态过渡。'],
+      queryTemplates: ['傍晚 轻松 女声', '黄昏 indie pop', '下班路上 粤语']
+    },
+    {
+      scene: '晚上',
+      aliases: ['晚上', '夜晚', '晚间', 'evening', 'night'],
+      rules: ['晚上优先松弛、耐听、中低能量，避免过亮或过密的编曲。'],
+      queryTemplates: ['晚上 轻松 女声', '晚间 dream pop', '晚上 粤语 不吵']
+    },
+    {
       scene: '深夜',
       aliases: ['深夜', '夜里', '凌晨', 'late night'],
       rules: ['深夜优先低动态、少打扰、留白感强的曲目。'],

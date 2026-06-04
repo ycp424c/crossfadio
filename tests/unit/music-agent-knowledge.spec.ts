@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { getMusicKnowledgeSlice } from '../../src/server/music-agent/knowledge.js';
+import { musicKnowledgeSliceSchema } from '../../src/server/music-agent/schema.js';
 
 describe('music-agent knowledge slice', () => {
   it('returns afternoon female-vocal quiet guidance for a soft afternoon request', () => {
@@ -31,6 +32,17 @@ describe('music-agent knowledge slice', () => {
     });
 
     expect(JSON.stringify(slice).length).toBeLessThan(3000);
+  });
+
+  it('returns evening scene guidance for generic evening requests and matches schema', () => {
+    const slice = getMusicKnowledgeSlice({
+      text: '随便推荐几首',
+      daypart: '晚上'
+    });
+
+    expect(slice.sceneRules.length).toBeGreaterThan(0);
+    expect(slice.queryTemplates.length).toBeGreaterThan(0);
+    expect(musicKnowledgeSliceSchema.parse(slice)).toEqual(slice);
   });
 
   it('deduplicates arrays and always includes a small diversity rule set', () => {
