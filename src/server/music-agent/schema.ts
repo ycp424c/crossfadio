@@ -1,0 +1,203 @@
+import { z } from 'zod';
+import type { LlmMessage } from '../llm/client.js';
+
+export const candidateSourceSchema = z.enum([
+  'liked',
+  'playlist',
+  'plan',
+  'search',
+  'style_expansion',
+  'trend'
+]);
+
+export type CandidateSource = z.infer<typeof candidateSourceSchema>;
+
+export const musicAgentToolNameSchema = z.enum([
+  'get_context_summary',
+  'get_music_knowledge',
+  'get_trend_context',
+  'expand_queries',
+  'recall_from_liked',
+  'recall_from_playlists',
+  'recall_from_plan_segment',
+  'recall_from_ncm_search',
+  'recall_from_trending',
+  'recall_from_style_expansion',
+  'rank_candidates',
+  'diversify_candidates',
+  'finalize_pick'
+]);
+
+export type MusicAgentToolName = z.infer<typeof musicAgentToolNameSchema>;
+
+export const musicCandidateScoresSchema = z.object({
+  intentMatch: z.number().min(0).max(1),
+  tasteMatch: z.number().min(0).max(1),
+  timeFit: z.number().min(0).max(1),
+  planFit: z.number().min(0).max(1),
+  novelty: z.number().min(0).max(1),
+  recentPenalty: z.number().min(0),
+  skipPenalty: z.number().min(0),
+  sourceConfidence: z.number().min(0).max(1)
+});
+
+export type MusicCandidateScores = z.infer<typeof musicCandidateScoresSchema>;
+
+export const musicCandidateSchema = z.object({
+  id: z.string().min(1),
+  name: z.string().min(1),
+  artist: z.string().min(1),
+  sources: z.array(candidateSourceSchema).min(1),
+  evidence: z.array(z.string()).default([]),
+  scores: musicCandidateScoresSchema
+});
+
+export type MusicCandidate = z.infer<typeof musicCandidateSchema>;
+
+export const queryPlanSchema = z.object({
+  intentQueries: z.array(z.string()).default([]),
+  tasteAnchorQueries: z.array(z.string()).default([]),
+  planQueries: z.array(z.string()).default([]),
+  trendQueries: z.array(z.string()).default([]),
+  explorationQueries: z.array(z.string()).default([]),
+  negativeTerms: z.array(z.string()).default([]),
+  rationale: z.string().default('')
+});
+
+export type QueryPlan = z.infer<typeof queryPlanSchema>;
+
+export const trendSourceSchema = z.enum([
+  'ncm_search_hot',
+  'ncm_toplist',
+  'ncm_top_song',
+  'ncm_personalized_newsong',
+  'ncm_recommend_songs',
+  'ncm_artist_toplist',
+  'web_chart',
+  'manual_cache'
+]);
+
+export type TrendSource = z.infer<typeof trendSourceSchema>;
+
+export const trendTrackHintSchema = z.object({
+  title: z.string().min(1),
+  artist: z.string().min(1),
+  source: trendSourceSchema,
+  reason: z.string().default('')
+});
+
+export type TrendTrackHint = z.infer<typeof trendTrackHintSchema>;
+
+export const trendContextSchema = z.object({
+  fetchedAt: z.string(),
+  locale: z.enum(['zh-CN', 'global']).default('zh-CN'),
+  sources: z.array(trendSourceSchema).default([]),
+  hotArtists: z.array(z.string()).default([]),
+  hotStyles: z.array(z.string()).default([]),
+  chartTrackHints: z.array(trendTrackHintSchema).default([]),
+  confidence: z.number().min(0).max(1).default(0)
+});
+
+export type TrendContext = z.infer<typeof trendContextSchema>;
+
+export const musicKnowledgeSliceSchema = z.object({
+  styleAdjacency: z.array(z.string()).default([]),
+  sceneRules: z.array(z.string()).default([]),
+  queryTemplates: z.array(z.string()).default([]),
+  diversityRules: z.array(z.string()).default([]),
+  negativeMappings: z.array(z.string()).default([])
+});
+
+export type MusicKnowledgeSlice = z.infer<typeof musicKnowledgeSliceSchema>;
+
+export const musicAgentContextSummarySchema = z.object({
+  request: z.enum(['auto-fill', 'chat-recommend']),
+  currentMoment: z.object({
+    localTime: z.string(),
+    daypart: z.string(),
+    weather: z.string().nullable(),
+    dailyTheme: z.string().optional()
+  }),
+  activeDirective: z.string().default(''),
+  currentPlanSegment: z.string().nullable(),
+  tasteSummary: z.string().default(''),
+  recentPreferenceSummary: z.string().default(''),
+  recentPlaySignals: z.string().default(''),
+  queueStateSummary: z.string().default(''),
+  bannedSummary: z.string().default('')
+});
+
+export type MusicAgentContextSummary = z.infer<typeof musicAgentContextSummarySchema>;
+
+export const agentTraceStepSchema = z.object({
+  step: z.number().int().positive(),
+  thoughtSummary: z.string(),
+  tool: musicAgentToolNameSchema.optional(),
+  toolInputSummary: z.string().optional(),
+  observationSummary: z.string().optional(),
+  candidateCount: z.number().int().nonnegative(),
+  elapsedMs: z.number().int().nonnegative()
+});
+
+export type AgentTraceStep = z.infer<typeof agentTraceStepSchema>;
+
+export const finalPickSchema = z.object({
+  id: z.string().min(1),
+  name: z.string().optional(),
+  artist: z.string().optional(),
+  reason: z.string().min(1),
+  source: candidateSourceSchema
+});
+
+export type FinalPick = z.infer<typeof finalPickSchema>;
+
+export const rejectedPickSchema = z.object({
+  id: z.string().min(1),
+  reason: z.string().min(1)
+});
+
+export type RejectedPick = z.infer<typeof rejectedPickSchema>;
+
+export const musicAgentLoopOutputSchema = z.discriminatedUnion('type', [
+  z.object({
+    type: z.literal('tool_call'),
+    tool: musicAgentToolNameSchema,
+    input: z.unknown().default({})
+  }),
+  z.object({
+    type: z.literal('final'),
+    say: z.string().min(1),
+    picks: z.array(finalPickSchema).max(2),
+    rejected: z.array(rejectedPickSchema).default([])
+  })
+]);
+
+export type MusicAgentLoopOutput = z.infer<typeof musicAgentLoopOutputSchema>;
+
+export const musicAgentFinalOutputSchema = z.object({
+  mode: z.enum(['pick_next', 'chat_recommend']),
+  say: z.string(),
+  picks: z.array(finalPickSchema).max(2),
+  rejected: z.array(rejectedPickSchema).default([]),
+  trace: z.array(agentTraceStepSchema).default([])
+});
+
+export type MusicAgentFinalOutput = z.infer<typeof musicAgentFinalOutputSchema>;
+
+export type AgentBudget = {
+  maxMs: number;
+  maxSteps: number;
+  maxLlmCalls: number;
+  maxToolCalls: number;
+  maxNcmSearches: number;
+  maxPlaylistFetches: number;
+  maxTrendFetchMs: number;
+  maxCandidates: number;
+};
+
+export type MusicAgentLlmClient = {
+  complete(
+    messages: LlmMessage[],
+    opts?: { signal?: AbortSignal; temperature?: number; maxTokens?: number }
+  ): Promise<{ content: string; model: string }>;
+};
