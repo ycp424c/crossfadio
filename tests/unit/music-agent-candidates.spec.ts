@@ -76,7 +76,7 @@ describe('CandidatePool', () => {
 
   it('filters banned artists and banned tracks by normalized track key', () => {
     const pool = new CandidatePool({
-      bannedArtists: ['Blocked Artist'],
+      bannedArtists: new Set(['Blocked Artist']),
       bannedTrackKeys: new Set([buildCandidateDedupeKey({ name: 'Blocked', artist: 'Other' })])
     });
 
@@ -85,6 +85,51 @@ describe('CandidatePool', () => {
     pool.upsert(candidate({ id: 'allowed-track', artist: 'Allowed Artist' }));
 
     expect(pool.list().map((item) => item.id)).toEqual(['allowed-track']);
+  });
+
+  it('merges id and dedupe conflicts into the existing id entry', () => {
+    const pool = new CandidatePool();
+
+    pool.upsert(candidate({
+      id: 'canonical',
+      name: 'First Song',
+      artist: 'Artist',
+      sources: ['liked'],
+      evidence: ['canonical evidence']
+    }));
+    pool.upsert(candidate({
+      id: 'duplicate',
+      name: 'Second Song',
+      artist: 'Artist',
+      sources: ['trend'],
+      evidence: ['duplicate evidence']
+    }));
+    pool.upsert(candidate({
+      id: 'canonical',
+      name: 'Second Song',
+      artist: 'Artist / Guest',
+      sources: ['search'],
+      evidence: ['conflict evidence']
+    }));
+    pool.upsert(candidate({
+      id: 'later-duplicate',
+      name: 'Second Song',
+      artist: 'Artist',
+      sources: ['plan'],
+      evidence: ['later evidence']
+    }));
+
+    expect(pool.count()).toBe(1);
+    expect(pool.has('canonical')).toBe(true);
+    expect(pool.has('duplicate')).toBe(false);
+    expect(pool.has('later-duplicate')).toBe(false);
+    expect(pool.get('canonical')?.sources).toEqual(['liked', 'trend', 'search', 'plan']);
+    expect(pool.get('canonical')?.evidence).toEqual([
+      'canonical evidence',
+      'duplicate evidence',
+      'conflict evidence',
+      'later evidence'
+    ]);
   });
 
   it('validateFinalPicks rejects picks not in pool and accepts valid picks from candidate source', () => {
@@ -103,6 +148,14 @@ describe('CandidatePool', () => {
 
     expect(() => pool.validateFinalPicks([{ id: 'known', reason: 'fits', source: 'trend' }]))
       .toThrow(/source mismatch/i);
+  });
+
+  it('validateFinalPicks rejects blank reason', () => {
+    const pool = new CandidatePool();
+    pool.upsert(candidate({ id: 'known', sources: ['liked'] }));
+
+    expect(() => pool.validateFinalPicks([{ id: 'known', reason: '   ', source: 'liked' }]))
+      .toThrow(/reason/i);
   });
 
   it('returns cloned list entries and respects maxCandidates for new candidates', () => {

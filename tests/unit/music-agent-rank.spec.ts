@@ -24,6 +24,34 @@ function candidate(overrides: Partial<MusicCandidate> = {}): MusicCandidate {
 }
 
 describe('music-agent ranking', () => {
+  it('uses the planned score weights exactly and floors negative scores', () => {
+    expect(scoreCandidate(candidate({
+      scores: {
+        intentMatch: 0.9,
+        tasteMatch: 0.8,
+        timeFit: 0.7,
+        planFit: 0.6,
+        sourceConfidence: 0.5,
+        novelty: 0.4,
+        recentPenalty: 0.2,
+        skipPenalty: 0.1
+      }
+    }))).toBeCloseTo(0.405, 5);
+
+    expect(scoreCandidate(candidate({
+      scores: {
+        intentMatch: 0,
+        tasteMatch: 0,
+        timeFit: 0,
+        planFit: 0,
+        sourceConfidence: 0,
+        novelty: 0,
+        recentPenalty: 0.2,
+        skipPenalty: 0.3
+      }
+    }))).toBe(0);
+  });
+
   it('scores active-directive high intent candidate higher than trend-only novelty', () => {
     const directiveMatch = candidate({
       id: 'directive',
@@ -92,5 +120,15 @@ describe('music-agent ranking', () => {
     ];
 
     expect(diversifyCandidates(candidates, 3).map((item) => item.id)).toEqual(['a1', 'b1', 'c1']);
+  });
+
+  it('diversifyCandidates skips repeated artists instead of filling the limit', () => {
+    const candidates = [
+      candidate({ id: 'a1', artist: 'Artist A', scores: { ...candidate().scores, intentMatch: 1 } }),
+      candidate({ id: 'a2', artist: 'Artist A', scores: { ...candidate().scores, intentMatch: 0.9 } })
+    ];
+
+    expect(diversifyCandidates(candidates, 3).map((item) => item.id)).toEqual(['a1']);
+    expect(diversifyCandidates(candidates, 0)).toEqual([]);
   });
 });

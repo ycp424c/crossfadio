@@ -3,7 +3,7 @@ import type { FinalPick, MusicCandidate, MusicCandidateScores } from './schema.j
 
 export interface CandidatePoolOptions {
   maxCandidates?: number;
-  bannedArtists?: string[];
+  bannedArtists?: Set<string> | string[];
   bannedTrackKeys?: Set<string>;
 }
 
@@ -14,7 +14,7 @@ type CandidateDedupeInput = {
 
 type CandidatePoolEntry = {
   candidate: MusicCandidate;
-  dedupeKey: string;
+  dedupeKeys: Set<string>;
 };
 
 function normalizeText(value: string | null | undefined): string {
@@ -89,8 +89,8 @@ export class CandidatePool {
 
   constructor(options: CandidatePoolOptions = {}) {
     this.maxCandidates = options.maxCandidates ?? Number.POSITIVE_INFINITY;
-    this.bannedArtists = new Set((options.bannedArtists ?? []).map((artist) => normalizeText(artist)));
-    this.bannedTrackKeys = options.bannedTrackKeys ?? new Set();
+    this.bannedArtists = new Set(Array.from(options.bannedArtists ?? []).map((artist) => normalizeText(artist)));
+    this.bannedTrackKeys = new Set(options.bannedTrackKeys ?? []);
   }
 
   upsert(candidate: MusicCandidate): void {
@@ -102,10 +102,28 @@ export class CandidatePool {
 
     const existingById = this.byId.get(candidate.id);
     const dedupedId = this.idByDedupeKey.get(dedupeKey);
-    const targetEntry = existingById ?? (dedupedId ? this.byId.get(dedupedId) : undefined);
+    const dedupedEntry = dedupedId ? this.byId.get(dedupedId) : undefined;
 
-    if (targetEntry) {
-      targetEntry.candidate = mergeCandidate(targetEntry.candidate, candidate);
+    if (existingById && dedupedId && dedupedEntry && dedupedId !== candidate.id) {
+      existingById.candidate = mergeCandidate(
+        mergeCandidate(existingById.candidate, dedupedEntry.candidate),
+        candidate
+      );
+      this.reassignDedupeKeys(dedupedEntry, candidate.id, existingById);
+      this.addDedupeKey(existingById, candidate.id, dedupeKey);
+      this.byId.delete(dedupedId);
+      return;
+    }
+
+    if (existingById) {
+      existingById.candidate = mergeCandidate(existingById.candidate, candidate);
+      this.addDedupeKey(existingById, candidate.id, dedupeKey);
+      return;
+    }
+
+    if (dedupedEntry && dedupedId) {
+      dedupedEntry.candidate = mergeCandidate(dedupedEntry.candidate, candidate);
+      this.addDedupeKey(dedupedEntry, dedupedId, dedupeKey);
       return;
     }
 
@@ -115,7 +133,7 @@ export class CandidatePool {
 
     this.byId.set(candidate.id, {
       candidate: cloneCandidate(candidate),
-      dedupeKey
+      dedupeKeys: new Set([dedupeKey])
     });
     this.idByDedupeKey.set(dedupeKey, candidate.id);
   }
@@ -152,12 +170,29 @@ export class CandidatePool {
         throw new Error(`Final pick ${parsedPick.id} is not in candidate pool`);
       }
 
+      const reason = parsedPick.reason.trim();
+
+      if (!reason) {
+        throw new Error(`Final pick ${parsedPick.id} reason is blank`);
+      }
+
       if (!candidate.sources.includes(parsedPick.source)) {
         throw new Error(`Final pick ${parsedPick.id} source mismatch: ${parsedPick.source}`);
       }
 
-      return { ...parsedPick };
+      return { ...parsedPick, reason };
     });
+  }
+
+  private addDedupeKey(entry: CandidatePoolEntry, id: string, dedupeKey: string): void {
+    entry.dedupeKeys.add(dedupeKey);
+    this.idByDedupeKey.set(dedupeKey, id);
+  }
+
+  private reassignDedupeKeys(from: CandidatePoolEntry, id: string, to: CandidatePoolEntry): void {
+    for (const key of from.dedupeKeys) {
+      this.addDedupeKey(to, id, key);
+    }
   }
 
   private isBanned(candidate: MusicCandidate, dedupeKey: string): boolean {

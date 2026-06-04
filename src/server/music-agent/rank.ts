@@ -7,36 +7,44 @@ function primaryArtist(artist: string): string {
 export function scoreCandidate(candidate: MusicCandidate): number {
   const { scores } = candidate;
 
-  return (
+  const score = (
     scores.intentMatch * 0.3 +
     scores.tasteMatch * 0.2 +
     scores.timeFit * 0.15 +
-    scores.planFit * 0.2 +
-    scores.novelty * 0.05 +
-    scores.sourceConfidence * 0.1 -
+    scores.planFit * 0.1 +
+    scores.sourceConfidence * 0.1 +
+    scores.novelty * 0.15 -
     scores.recentPenalty -
     scores.skipPenalty
   );
+
+  return Math.max(0, score);
 }
 
 export function diversifyCandidates(candidates: MusicCandidate[], limit: number): MusicCandidate[] {
-  const remaining = [...candidates].sort((left, right) => scoreCandidate(right) - scoreCandidate(left));
+  const sorted = [...candidates].sort((left, right) => scoreCandidate(right) - scoreCandidate(left));
   const selected: MusicCandidate[] = [];
   const usedArtists = new Set<string>();
   const target = Math.max(0, limit);
 
-  while (selected.length < target && remaining.length > 0) {
-    const diverseIndex = remaining.findIndex((candidate) => !usedArtists.has(primaryArtist(candidate.artist)));
-    const nextIndex = diverseIndex === -1 ? 0 : diverseIndex;
-    const [next] = remaining.splice(nextIndex, 1);
+  for (const candidate of sorted) {
+    if (selected.length >= target) {
+      break;
+    }
+
+    const artist = primaryArtist(candidate.artist);
+
+    if (usedArtists.has(artist)) {
+      continue;
+    }
 
     selected.push({
-      ...next,
-      sources: [...next.sources],
-      evidence: [...next.evidence],
-      scores: { ...next.scores }
+      ...candidate,
+      sources: [...candidate.sources],
+      evidence: [...candidate.evidence],
+      scores: { ...candidate.scores }
     });
-    usedArtists.add(primaryArtist(next.artist));
+    usedArtists.add(artist);
   }
 
   return selected;
