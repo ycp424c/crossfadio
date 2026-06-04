@@ -4,16 +4,21 @@ import type { FinalPick, MusicCandidate, MusicCandidateScores } from './schema.j
 export interface CandidatePoolOptions {
   maxCandidates?: number;
   bannedArtists?: string[];
-  bannedTrackIds?: string[];
+  bannedTrackKeys?: Set<string>;
 }
+
+type CandidateDedupeInput = {
+  name?: string | null;
+  artist?: string | null;
+};
 
 type CandidatePoolEntry = {
   candidate: MusicCandidate;
   dedupeKey: string;
 };
 
-function normalizeText(value: string): string {
-  return value
+function normalizeText(value: string | null | undefined): string {
+  return (value ?? '')
     .normalize('NFKC')
     .toLowerCase()
     .replace(/\([^)]*\)/g, ' ')
@@ -23,8 +28,10 @@ function normalizeText(value: string): string {
     .replace(/\s+/g, ' ');
 }
 
-function primaryArtist(artist: string): string {
-  return artist.split(/\s*(?:\/|,|，|&| feat\.?| ft\.?| with )\s*/i)[0]?.trim() ?? artist.trim();
+function primaryArtist(artist: string | null | undefined): string {
+  const value = artist ?? '';
+
+  return value.split(/\s*(?:\/|,|，|&| feat\.?| ft\.?| with )\s*/i)[0]?.trim() ?? value.trim();
 }
 
 function artistParts(artist: string): string[] {
@@ -69,7 +76,7 @@ function mergeCandidate(existing: MusicCandidate, incoming: MusicCandidate): Mus
   };
 }
 
-export function buildCandidateDedupeKey(candidate: MusicCandidate): string {
+export function buildCandidateDedupeKey(candidate: CandidateDedupeInput): string {
   return `${normalizeText(candidate.name)}::${normalizeText(primaryArtist(candidate.artist))}`;
 }
 
@@ -77,21 +84,22 @@ export class CandidatePool {
   private readonly byId = new Map<string, CandidatePoolEntry>();
   private readonly idByDedupeKey = new Map<string, string>();
   private readonly bannedArtists: Set<string>;
-  private readonly bannedTrackIds: Set<string>;
+  private readonly bannedTrackKeys: Set<string>;
   private readonly maxCandidates: number;
 
   constructor(options: CandidatePoolOptions = {}) {
     this.maxCandidates = options.maxCandidates ?? Number.POSITIVE_INFINITY;
     this.bannedArtists = new Set((options.bannedArtists ?? []).map((artist) => normalizeText(artist)));
-    this.bannedTrackIds = new Set(options.bannedTrackIds ?? []);
+    this.bannedTrackKeys = options.bannedTrackKeys ?? new Set();
   }
 
   upsert(candidate: MusicCandidate): void {
-    if (this.isBanned(candidate)) {
+    const dedupeKey = buildCandidateDedupeKey(candidate);
+
+    if (this.isBanned(candidate, dedupeKey)) {
       return;
     }
 
-    const dedupeKey = buildCandidateDedupeKey(candidate);
     const existingById = this.byId.get(candidate.id);
     const dedupedId = this.idByDedupeKey.get(dedupeKey);
     const targetEntry = existingById ?? (dedupedId ? this.byId.get(dedupedId) : undefined);
@@ -152,8 +160,8 @@ export class CandidatePool {
     });
   }
 
-  private isBanned(candidate: MusicCandidate): boolean {
-    if (this.bannedTrackIds.has(candidate.id)) {
+  private isBanned(candidate: MusicCandidate, dedupeKey: string): boolean {
+    if (this.bannedTrackKeys.has(dedupeKey)) {
       return true;
     }
 

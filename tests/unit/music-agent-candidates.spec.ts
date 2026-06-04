@@ -74,13 +74,13 @@ describe('CandidatePool', () => {
     }))).toBe('song::artist');
   });
 
-  it('filters banned artists and banned tracks', () => {
+  it('filters banned artists and banned tracks by normalized track key', () => {
     const pool = new CandidatePool({
       bannedArtists: ['Blocked Artist'],
-      bannedTrackIds: ['blocked-track']
+      bannedTrackKeys: new Set([buildCandidateDedupeKey({ name: 'Blocked', artist: 'Other' })])
     });
 
-    pool.upsert(candidate({ id: 'blocked-track' }));
+    pool.upsert(candidate({ id: 'different-id', name: 'Blocked', artist: 'Other / Guest' }));
     pool.upsert(candidate({ id: 'artist-track', artist: 'Blocked Artist / Guest' }));
     pool.upsert(candidate({ id: 'allowed-track', artist: 'Allowed Artist' }));
 
