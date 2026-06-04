@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 import { FakeLlmClient } from '../support/fake-llm';
 
 const originalDataDir = process.env.CROSSFADIO_DATA_DIR;
@@ -113,6 +113,76 @@ describe('music agent chat preference memory', () => {
     expect(getPreferenceContext(userId, 1)).toBe('');
     expect(getUnextractedMessages(userId)).toEqual([]);
   });
+
+  it('dedupes concurrent extraction for the same user', async () => {
+    const userId = 'user-1';
+    await saveMessages(userId, ['今天听女声', '要轻快一点', '别太吵', '适合通勤']);
+    const llm = new FakeLlmClient().queueResponse(
+      JSON.stringify({ musicRelated: true, summary: '近期偏好：女声、轻快通勤，避免太吵。' })
+    );
+
+    const { extractChatPreferencesIfDue } = await import('../../src/server/music-agent/memory.js');
+    const [first, second] = await Promise.all([
+      extractChatPreferencesIfDue(userId, llm),
+      extractChatPreferencesIfDue(userId, llm)
+    ]);
+    const { getLatestPreferences } = await import('../../src/server/store/chat-preferences.js');
+
+    expect(llm.completeCalls).toHaveLength(1);
+    expect(getLatestPreferences(userId, 10)).toHaveLength(1);
+    expect(first).toEqual(second);
+    expect(first.extracted).toBe(true);
+  });
+
+  it('does not save musicRelated summaries that contain strong personal facts', async () => {
+    const userId = 'user-1';
+    await saveMessages(userId, ['我想听歌', '女声也行', '轻快一点', '别太吵']);
+    const llm = new FakeLlmClient().queueResponse(
+      JSON.stringify({ musicRelated: true, summary: '住址在上海某小区，公司项目会议很多。' })
+    );
+
+    const { extractChatPreferencesIfDue } = await import('../../src/server/music-agent/memory.js');
+    const result = await extractChatPreferencesIfDue(userId, llm);
+    const { getPreferenceContext } = await import('../../src/server/store/chat-preferences.js');
+
+    expect(result.summary).toBe('');
+    expect(getPreferenceContext(userId, 1)).toBe('');
+  });
+
+  it('truncates long music summaries before saving', async () => {
+    const userId = 'user-1';
+    await saveMessages(userId, ['喜欢 city pop', '女声', '通勤听', '节奏轻快']);
+    const longSummary = `city pop 女声 通勤 节奏轻快 ${'旋律舒服'.repeat(80)}`;
+    const llm = new FakeLlmClient().queueResponse(
+      JSON.stringify({ musicRelated: true, summary: longSummary })
+    );
+
+    const { extractChatPreferencesIfDue } = await import('../../src/server/music-agent/memory.js');
+    const result = await extractChatPreferencesIfDue(userId, llm);
+    const { getPreferenceContext } = await import('../../src/server/store/chat-preferences.js');
+    const saved = getPreferenceContext(userId, 1);
+
+    expect(result.summary).toContain('近期偏好：');
+    expect(result.summary.length).toBeLessThanOrEqual(160);
+    expect(saved).toBe(result.summary);
+  });
+
+  it('limits backlog batches and prompt size', async () => {
+    const userId = 'user-1';
+    const longContent = '喜欢轻快女声和 city pop，'.repeat(80);
+    await saveMessages(userId, Array.from({ length: 30 }, (_, index) => `${index}: ${longContent}`));
+    const llm = new FakeLlmClient().queueResponse(
+      JSON.stringify({ musicRelated: true, summary: '近期偏好：轻快女声、city pop。' })
+    );
+
+    const { extractChatPreferencesIfDue } = await import('../../src/server/music-agent/memory.js');
+    const result = await extractChatPreferencesIfDue(userId, llm);
+    const { getUnextractedMessages } = await import('../../src/server/store/messages.js');
+
+    expect(result.messageIds).toHaveLength(20);
+    expect(getUnextractedMessages(userId)).toHaveLength(10);
+    expect(llm.completeCalls[0].messages[1].content.length).toBeLessThan(8000);
+  });
 });
 
 describe('music agent context builder', () => {
@@ -188,5 +258,37 @@ describe('music agent context builder', () => {
     });
 
     expect(context.activeDirective).toBe('');
+  });
+
+  it('degrades to null weather when weather fetch rejects', async () => {
+    const { fetchWeather } = await import('../../src/server/weather.js');
+    (fetchWeather as Mock).mockRejectedValueOnce(new Error('weather failed'));
+
+    const { buildMusicAgentContext } = await import('../../src/server/music-agent/context.js');
+    const context = await buildMusicAgentContext({
+      userId: 'user-1',
+      request: 'auto-fill',
+      now: new Date('2026-06-04T07:30:00+08:00')
+    });
+
+    expect(context.currentMoment.weather).toBeNull();
+  });
+
+  it('does not block when weather fetch hangs', async () => {
+    vi.useFakeTimers();
+    const { fetchWeather } = await import('../../src/server/weather.js');
+    (fetchWeather as Mock).mockImplementationOnce(() => new Promise(() => {}));
+
+    const { buildMusicAgentContext } = await import('../../src/server/music-agent/context.js');
+    const promise = buildMusicAgentContext({
+      userId: 'user-1',
+      request: 'auto-fill',
+      now: new Date('2026-06-04T07:30:00+08:00')
+    });
+
+    await vi.advanceTimersByTimeAsync(1600);
+    const context = await promise;
+
+    expect(context.currentMoment.weather).toBeNull();
   });
 });

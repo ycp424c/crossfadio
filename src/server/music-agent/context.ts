@@ -12,6 +12,8 @@ import {
   type MusicAgentContextSummary
 } from './schema.js';
 
+const WEATHER_TIMEOUT_MS = 1500;
+
 export type BuildMusicAgentContextInput = {
   userId: string;
   ncmClient?: NcmClient;
@@ -27,7 +29,7 @@ type ActiveDirectivePref = {
 
 export async function buildMusicAgentContext(input: BuildMusicAgentContextInput): Promise<MusicAgentContextSummary> {
   const now = input.now ?? new Date();
-  const weather = await fetchWeather(input.userId);
+  const weather = await fetchWeatherWithTimeout(input.userId);
   const theme = getDailyTheme();
 
   const context: MusicAgentContextSummary = {
@@ -48,6 +50,20 @@ export async function buildMusicAgentContext(input: BuildMusicAgentContextInput)
   };
 
   return musicAgentContextSummarySchema.parse(context);
+}
+
+async function fetchWeatherWithTimeout(userId: string) {
+  return withTimeout(fetchWeather(userId).catch(() => null), WEATHER_TIMEOUT_MS, null);
+}
+
+function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<T>((resolve) => {
+    timer = setTimeout(() => resolve(fallback), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
 }
 
 function formatLocalTime(date: Date): string {

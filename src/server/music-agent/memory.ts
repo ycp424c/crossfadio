@@ -4,6 +4,11 @@ import { getUnextractedMessages, markMessagesExtracted, type StoredMessage } fro
 import { saveChatPreference } from '../store/chat-preferences.js';
 
 const EXTRACTION_THRESHOLD = 4;
+const MAX_BATCH_MESSAGES = 20;
+const MAX_MESSAGE_CONTENT_LENGTH = 300;
+const MAX_SAVED_SUMMARY_LENGTH = 160;
+
+const inFlightByUser = new Map<string, Promise<MemoryExtractionResult>>();
 
 const extractionSchema = z.object({
   musicRelated: z.boolean().default(false),
@@ -18,12 +23,29 @@ export type MemoryExtractionResult = {
   summary: string;
 };
 
-export async function extractChatPreferencesIfDue(
+export function extractChatPreferencesIfDue(
   userId: string,
   llmClient: MusicAgentLlmClient,
   signal?: AbortSignal
 ): Promise<MemoryExtractionResult> {
-  const messages = getUnextractedMessages(userId);
+  const existing = inFlightByUser.get(userId);
+  if (existing) return existing;
+
+  const promise = extractChatPreferencesIfDueInner(userId, llmClient, signal).finally(() => {
+    if (inFlightByUser.get(userId) === promise) {
+      inFlightByUser.delete(userId);
+    }
+  });
+  inFlightByUser.set(userId, promise);
+  return promise;
+}
+
+async function extractChatPreferencesIfDueInner(
+  userId: string,
+  llmClient: MusicAgentLlmClient,
+  signal?: AbortSignal
+): Promise<MemoryExtractionResult> {
+  const messages = getUnextractedMessages(userId).slice(0, MAX_BATCH_MESSAGES);
   if (messages.length < EXTRACTION_THRESHOLD) {
     return { extracted: false, messageIds: [], summary: '' };
   }
@@ -45,17 +67,17 @@ export async function extractChatPreferencesIfDue(
   );
 
   const parsed = parseExtraction(response.content);
-  const summary = parsed.summary.trim();
+  const summary = parsed.musicRelated ? sanitizeMusicPreferenceSummary(parsed.summary) : '';
   markMessagesExtracted(userId, messageIds);
 
-  if (parsed.musicRelated && summary) {
+  if (summary) {
     saveChatPreference(userId, summary, messageIds);
   }
 
   return {
     extracted: true,
     messageIds,
-    summary: parsed.musicRelated ? summary : ''
+    summary
   };
 }
 
@@ -75,11 +97,22 @@ export function parseExtraction(raw: string): ParsedExtraction {
   }
 }
 
+export function sanitizeMusicPreferenceSummary(raw: string): string {
+  const compact = raw.replace(/\s+/g, ' ').trim();
+  if (!compact) return '';
+  if (!hasMusicSignal(compact)) return '';
+  if (hasSensitivePersonalFact(compact)) return '';
+
+  const withPrefix = compact.startsWith('近期偏好：') ? compact : `近期偏好：${compact}`;
+  if (withPrefix.length <= MAX_SAVED_SUMMARY_LENGTH) return withPrefix;
+  return `${withPrefix.slice(0, MAX_SAVED_SUMMARY_LENGTH - 1)}…`;
+}
+
 function buildExtractionPrompt(messages: StoredMessage[]): string {
   const transcript = messages
     .map((message) => {
       const role = message.role === 'assistant' ? 'assistant' : 'user';
-      return `[${message.id}] ${role}: ${message.content}`;
+      return `[${message.id}] ${role}: ${truncateForPrompt(message.content)}`;
     })
     .join('\n');
 
@@ -104,4 +137,18 @@ function extractJsonObject(raw: string): string | null {
     .trim();
   const match = cleaned.match(/\{[\s\S]*\}/);
   return match?.[0] ?? null;
+}
+
+function truncateForPrompt(content: string): string {
+  const compact = content.replace(/\s+/g, ' ').trim();
+  if (compact.length <= MAX_MESSAGE_CONTENT_LENGTH) return compact;
+  return `${compact.slice(0, MAX_MESSAGE_CONTENT_LENGTH - 1)}…`;
+}
+
+function hasMusicSignal(summary: string): boolean {
+  return /音乐|歌|歌曲|选歌|播放|队列|风格|艺人|歌手|女声|男声|人声|流行|摇滚|爵士|电子|粤语|华语|日系|能量|节奏|旋律|安静|吵|通勤|跑步|city\s*pop|indie|dream\s*pop|hip\s*hop|rap|r&b/i.test(summary);
+}
+
+function hasSensitivePersonalFact(summary: string): boolean {
+  return /住址|地址|定位|经纬度|身份证|手机号|电话|公司|项目|会议|工资|家庭|真实姓名/i.test(summary);
 }
