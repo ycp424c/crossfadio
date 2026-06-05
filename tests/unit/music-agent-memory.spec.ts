@@ -306,6 +306,11 @@ describe('music agent context builder', () => {
     expect(context.recentPlaySignals).toContain('completed');
     expect(context.queueStateSummary).toContain('海边公路');
     expect(context.queueStateSummary).toContain('200');
+    expect(context.recentArtistPenalties).toEqual([
+      { artist: '林风', penalty: 0.18 },
+      { artist: 'mika', penalty: 0.12 },
+      { artist: '阿雅', penalty: 0.1 }
+    ]);
     expect(context.bannedSummary).toContain('通勤轻快');
     expect(context.bannedSummary).toContain('减少伤感');
   });

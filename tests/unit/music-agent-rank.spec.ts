@@ -132,6 +132,23 @@ describe('music-agent ranking', () => {
     expect(rankCandidates(candidates, 3).map((item) => item.id)).toEqual(['a1', 'b1', 'a2']);
   });
 
+  it('rankCandidates applies artist recency penalties with distance decay', () => {
+    const candidates = [
+      candidate({ id: 'near', artist: 'Near Artist', scores: { ...candidate().scores, intentMatch: 1 } }),
+      candidate({ id: 'far', artist: 'Far Artist', scores: { ...candidate().scores, intentMatch: 0.95 } }),
+      candidate({ id: 'fresh', artist: 'Fresh Artist', scores: { ...candidate().scores, intentMatch: 0.9 } })
+    ];
+
+    const ranked = rankCandidates(candidates, 3, {
+      artistPenalties: new Map([
+        ['near artist', 0.18],
+        ['far artist', 0.01]
+      ])
+    });
+
+    expect(ranked.map((item) => item.id)).toEqual(['far', 'fresh', 'near']);
+  });
+
   it('diversifyCandidates skips repeated artists instead of filling the limit', () => {
     const candidates = [
       candidate({ id: 'a1', artist: 'Artist A', scores: { ...candidate().scores, intentMatch: 1 } }),

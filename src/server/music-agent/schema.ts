@@ -127,6 +127,10 @@ export const musicAgentContextSummarySchema = z.object({
   recentPreferenceSummary: z.string().default(''),
   recentPlaySignals: z.string().default(''),
   queueStateSummary: z.string().default(''),
+  recentArtistPenalties: z.array(z.object({
+    artist: z.string().min(1),
+    penalty: z.number().min(0)
+  })).optional(),
   bannedSummary: z.string().default('')
 });
 

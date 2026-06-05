@@ -88,7 +88,7 @@ export async function runMusicAgentLoop(input: RunMusicAgentLoopInput): Promise<
     const messages = buildLoopMessages({
       context: input.context,
       observations,
-      candidateSummary: summarizeCandidatePool(input.candidatePool)
+      candidateSummary: summarizeCandidatePool(input.candidatePool, input.context)
     });
     const response = await input.llmClient.complete(messages, {
       signal: input.signal,
@@ -294,7 +294,7 @@ function rankedFallback(
   toolCalls: number
 ): MusicAgentRunOutput {
   const mode = resolveMode(input);
-  const ranked = rankCandidates(input.candidatePool.list(), 10);
+  const ranked = rankCandidates(input.candidatePool.list(), 10, rankOptions(input.context));
   const picks = diversifyCandidates(ranked, 2).map((candidate) => ({
     id: candidate.id,
     name: candidate.name,
@@ -349,8 +349,8 @@ function abortedOutput(
   };
 }
 
-function summarizeCandidatePool(pool: CandidatePool): string {
-  return JSON.stringify(rankCandidates(pool.list(), 20).map((candidate) => ({
+function summarizeCandidatePool(pool: CandidatePool, context: MusicAgentContextSummary): string {
+  return JSON.stringify(rankCandidates(pool.list(), 20, rankOptions(context)).map((candidate) => ({
     id: candidate.id,
     name: candidate.name,
     artist: candidate.artist,
@@ -358,6 +358,12 @@ function summarizeCandidatePool(pool: CandidatePool): string {
     score: Number(scoreCandidate(candidate).toFixed(4)),
     evidence: candidate.evidence.slice(0, 3)
   })));
+}
+
+function rankOptions(context: MusicAgentContextSummary) {
+  return {
+    artistPenalties: new Map((context.recentArtistPenalties ?? []).map((item) => [item.artist, item.penalty]))
+  };
 }
 
 function traceStep(

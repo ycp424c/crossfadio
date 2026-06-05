@@ -13,6 +13,8 @@ import {
 } from './schema.js';
 
 const WEATHER_TIMEOUT_MS = 1500;
+const QUEUE_ARTIST_PENALTIES = [0.18, 0.12, 0.1, 0.08];
+const RECENT_PLAY_ARTIST_PENALTIES = [0.1, 0.08, 0.06, 0.05, 0.04, 0.03, 0.03, 0.03];
 
 export type BuildMusicAgentContextInput = {
   userId: string;
@@ -52,6 +54,7 @@ export async function buildMusicAgentContext(input: BuildMusicAgentContextInput)
     recentPreferenceSummary: truncate(getPreferenceContext(input.userId, 3), 600),
     recentPlaySignals: buildRecentPlaySignals(input.userId),
     queueStateSummary: buildQueueStateSummary(input.userId),
+    recentArtistPenalties: buildRecentArtistPenalties(input.userId),
     bannedSummary: buildBannedSummary(input.userId)
   };
 
@@ -189,6 +192,35 @@ function buildQueueStateSummary(userId: string): string {
       .join('\n'),
     700
   );
+}
+
+function buildRecentArtistPenalties(userId: string): Array<{ artist: string; penalty: number }> {
+  const byArtist = new Map<string, number>();
+
+  getQueue(userId).slice(0, QUEUE_ARTIST_PENALTIES.length).forEach((track, index) => {
+    const penalty = QUEUE_ARTIST_PENALTIES[index];
+    for (const artist of track.artists ?? []) {
+      addArtistPenalty(byArtist, artist, penalty);
+    }
+  });
+
+  getRecentPlays(userId, RECENT_PLAY_ARTIST_PENALTIES.length).forEach((play, index) => {
+    const penalty = RECENT_PLAY_ARTIST_PENALTIES[index];
+    addArtistPenalty(byArtist, play.artist_name, penalty);
+  });
+
+  return [...byArtist.entries()].map(([artist, penalty]) => ({ artist, penalty }));
+}
+
+function addArtistPenalty(byArtist: Map<string, number>, artist: string | null | undefined, penalty: number): void {
+  const normalized = primaryArtist(artist);
+  if (!normalized) return;
+  byArtist.set(normalized, Math.max(byArtist.get(normalized) ?? 0, penalty));
+}
+
+function primaryArtist(artist: string | null | undefined): string {
+  const value = artist ?? '';
+  return value.split(/\s*(?:\/|,|，|&| feat\.?| ft\.?| with )\s*/i)[0]?.trim().toLowerCase() ?? value.trim().toLowerCase();
 }
 
 function buildBannedSummary(userId: string): string {

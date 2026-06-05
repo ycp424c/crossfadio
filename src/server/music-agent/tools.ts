@@ -1,6 +1,6 @@
 import type { NcmClient } from '../ncm/client.js';
 import { getMusicKnowledgeSlice } from './knowledge.js';
-import { diversifyCandidates, rankCandidates, scoreCandidate } from './rank.js';
+import { diversifyCandidates, rankCandidates } from './rank.js';
 import { buildTrendContext, type TrendCapableNcmClient } from './trends.js';
 import {
   queryPlanSchema,
@@ -293,22 +293,28 @@ export function createMusicAgentTools(input: CreateMusicAgentToolsInput): MusicA
     rank_candidates: async (toolInput, signal) => {
       if (signal?.aborted) return abortedObservation(input.candidatePool);
       const limit = boundedPositiveInt(toolInput.limit, 8, MAX_RANK_DISPLAY_LIMIT);
-      const top = rankCandidates(input.candidatePool.list(), limit);
+      const top = rankCandidates(input.candidatePool.list(), limit, rankOptions(input.context));
       return observation(input.candidatePool, summarizeCandidates('ranked candidates', top));
     },
 
     diversify_candidates: async (toolInput, signal) => {
       if (signal?.aborted) return abortedObservation(input.candidatePool);
       const limit = boundedPositiveInt(toolInput.limit, 2, MAX_DIVERSIFY_DISPLAY_LIMIT);
-      const diversified = diversifyCandidates(input.candidatePool.topBy(scoreCandidate, 20), limit);
+      const diversified = diversifyCandidates(rankCandidates(input.candidatePool.list(), 20, rankOptions(input.context)), limit);
       return observation(input.candidatePool, summarizeCandidates('diversified candidates', diversified));
     },
 
     finalize_pick: async (_toolInput, signal) => {
       if (signal?.aborted) return abortedObservation(input.candidatePool);
-      const top = rankCandidates(input.candidatePool.list(), 5);
+      const top = rankCandidates(input.candidatePool.list(), 5, rankOptions(input.context));
       return observation(input.candidatePool, summarizeCandidates('finalize candidates', top));
     }
+  };
+}
+
+function rankOptions(context: MusicAgentContextSummary) {
+  return {
+    artistPenalties: new Map((context.recentArtistPenalties ?? []).map((item) => [item.artist, item.penalty]))
   };
 }
 

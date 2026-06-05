@@ -2,6 +2,10 @@ import type { MusicCandidate } from './schema.js';
 
 const REPEATED_ARTIST_PENALTY = 0.08;
 
+export type RankCandidatesOptions = {
+  artistPenalties?: ReadonlyMap<string, number>;
+};
+
 function primaryArtist(artist: string): string {
   return artist.split(/\s*(?:\/|,|，|&| feat\.?| ft\.?| with )\s*/i)[0]?.trim().toLowerCase() ?? artist.trim().toLowerCase();
 }
@@ -23,7 +27,7 @@ export function scoreCandidate(candidate: MusicCandidate): number {
   return Math.max(0, score);
 }
 
-export function rankCandidates(candidates: MusicCandidate[], limit: number): MusicCandidate[] {
+export function rankCandidates(candidates: MusicCandidate[], limit: number, options: RankCandidatesOptions = {}): MusicCandidate[] {
   const target = Math.max(0, limit);
   const remaining = [...candidates];
   const selected: MusicCandidate[] = [];
@@ -31,10 +35,10 @@ export function rankCandidates(candidates: MusicCandidate[], limit: number): Mus
 
   while (selected.length < target && remaining.length > 0) {
     let bestIndex = 0;
-    let bestScore = repeatedArtistAdjustedScore(remaining[0], artistCounts);
+    let bestScore = repeatedArtistAdjustedScore(remaining[0], artistCounts, options);
 
     for (let index = 1; index < remaining.length; index += 1) {
-      const score = repeatedArtistAdjustedScore(remaining[index], artistCounts);
+      const score = repeatedArtistAdjustedScore(remaining[index], artistCounts, options);
       if (score > bestScore) {
         bestIndex = index;
         bestScore = score;
@@ -85,7 +89,13 @@ export function diversifyCandidates(candidates: MusicCandidate[], limit: number)
   return selected;
 }
 
-function repeatedArtistAdjustedScore(candidate: MusicCandidate, artistCounts: Map<string, number>): number {
-  const repeatCount = artistCounts.get(primaryArtist(candidate.artist)) ?? 0;
-  return Math.max(0, scoreCandidate(candidate) - repeatCount * REPEATED_ARTIST_PENALTY);
+function repeatedArtistAdjustedScore(
+  candidate: MusicCandidate,
+  artistCounts: Map<string, number>,
+  options: RankCandidatesOptions = {}
+): number {
+  const artist = primaryArtist(candidate.artist);
+  const repeatCount = artistCounts.get(artist) ?? 0;
+  const recencyPenalty = options.artistPenalties?.get(artist) ?? 0;
+  return Math.max(0, scoreCandidate(candidate) - recencyPenalty - repeatCount * REPEATED_ARTIST_PENALTY);
 }
