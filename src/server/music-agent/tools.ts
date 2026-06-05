@@ -1,6 +1,6 @@
 import type { NcmClient } from '../ncm/client.js';
 import { getMusicKnowledgeSlice } from './knowledge.js';
-import { diversifyCandidates, scoreCandidate } from './rank.js';
+import { diversifyCandidates, rankCandidates, scoreCandidate } from './rank.js';
 import { buildTrendContext, type TrendCapableNcmClient } from './trends.js';
 import {
   queryPlanSchema,
@@ -293,7 +293,7 @@ export function createMusicAgentTools(input: CreateMusicAgentToolsInput): MusicA
     rank_candidates: async (toolInput, signal) => {
       if (signal?.aborted) return abortedObservation(input.candidatePool);
       const limit = boundedPositiveInt(toolInput.limit, 8, MAX_RANK_DISPLAY_LIMIT);
-      const top = input.candidatePool.topBy(scoreCandidate, limit);
+      const top = rankCandidates(input.candidatePool.list(), limit);
       return observation(input.candidatePool, summarizeCandidates('ranked candidates', top));
     },
 
@@ -306,7 +306,7 @@ export function createMusicAgentTools(input: CreateMusicAgentToolsInput): MusicA
 
     finalize_pick: async (_toolInput, signal) => {
       if (signal?.aborted) return abortedObservation(input.candidatePool);
-      const top = input.candidatePool.topBy(scoreCandidate, 5);
+      const top = rankCandidates(input.candidatePool.list(), 5);
       return observation(input.candidatePool, summarizeCandidates('finalize candidates', top));
     }
   };

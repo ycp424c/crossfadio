@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { diversifyCandidates, scoreCandidate } from '../../src/server/music-agent/rank.js';
+import { diversifyCandidates, rankCandidates, scoreCandidate } from '../../src/server/music-agent/rank.js';
 import type { MusicCandidate } from '../../src/server/music-agent/schema.js';
 
 function candidate(overrides: Partial<MusicCandidate> = {}): MusicCandidate {
@@ -120,6 +120,16 @@ describe('music-agent ranking', () => {
     ];
 
     expect(diversifyCandidates(candidates, 3).map((item) => item.id)).toEqual(['a1', 'b1', 'c1']);
+  });
+
+  it('rankCandidates lowers repeated artist scores when ordering picks', () => {
+    const candidates = [
+      candidate({ id: 'a1', artist: 'Artist A', scores: { ...candidate().scores, intentMatch: 1 } }),
+      candidate({ id: 'a2', artist: 'Artist A', scores: { ...candidate().scores, intentMatch: 0.98 } }),
+      candidate({ id: 'b1', artist: 'Artist B', scores: { ...candidate().scores, intentMatch: 0.9 } })
+    ];
+
+    expect(rankCandidates(candidates, 3).map((item) => item.id)).toEqual(['a1', 'b1', 'a2']);
   });
 
   it('diversifyCandidates skips repeated artists instead of filling the limit', () => {

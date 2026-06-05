@@ -1,6 +1,6 @@
 import { buildLoopMessages } from './prompts.js';
 import { CandidatePool, validateFinalPicks } from './candidates.js';
-import { diversifyCandidates, scoreCandidate } from './rank.js';
+import { diversifyCandidates, rankCandidates, scoreCandidate } from './rank.js';
 import {
   musicAgentLoopOutputSchema,
   musicAgentToolNameSchema,
@@ -294,7 +294,7 @@ function rankedFallback(
   toolCalls: number
 ): MusicAgentRunOutput {
   const mode = resolveMode(input);
-  const ranked = input.candidatePool.topBy(scoreCandidate, 10);
+  const ranked = rankCandidates(input.candidatePool.list(), 10);
   const picks = diversifyCandidates(ranked, 2).map((candidate) => ({
     id: candidate.id,
     name: candidate.name,
@@ -350,7 +350,7 @@ function abortedOutput(
 }
 
 function summarizeCandidatePool(pool: CandidatePool): string {
-  return JSON.stringify(pool.topBy(scoreCandidate, 20).map((candidate) => ({
+  return JSON.stringify(rankCandidates(pool.list(), 20).map((candidate) => ({
     id: candidate.id,
     name: candidate.name,
     artist: candidate.artist,
