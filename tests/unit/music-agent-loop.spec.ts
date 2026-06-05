@@ -115,7 +115,12 @@ describe('runMusicAgentLoop', () => {
 
     expect(musicAgentRunOutputSchema.parse(result).status).toBe('ok');
     expect(result.status).toBe('ok');
-    expect(result.picks[0]).toMatchObject({ id: '101', source: 'liked' });
+    expect(result.picks[0]).toMatchObject({
+      id: '101',
+      name: 'Soft Song',
+      artist: 'Singer',
+      source: 'liked'
+    });
     expect(result.trace.some((step) => step.tool === 'recall_from_liked')).toBe(true);
     expect(llmClient.calls[0].opts).toMatchObject({ temperature: 0.2, maxTokens: 1000 });
   });

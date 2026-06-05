@@ -172,6 +172,7 @@ export async function handleChatMessage(
                 userId,
                 ncmClient,
                 userText: text,
+                actions: songActions,
                 signal: agentAbort.signal
               });
 

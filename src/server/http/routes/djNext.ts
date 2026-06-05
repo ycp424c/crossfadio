@@ -371,7 +371,12 @@ async function doPickNext(
     const agentAbort = createAbortTimeoutSignal(signal, DJ_AGENT_TIMEOUT_MS);
     try {
       const agent = new MusicAgent({ llmConfig });
-      const output = await agent.pickNext({ userId, ncmClient, signal: agentAbort.signal });
+      const output = await agent.pickNext({
+        userId,
+        ncmClient,
+        signal: agentAbort.signal,
+        includeDailyTheme: dailyThemeEnabled
+      });
       if (signal?.aborted) return;
       if (output.status === 'aborted') {
         if (!agentAbort.timedOut()) return;

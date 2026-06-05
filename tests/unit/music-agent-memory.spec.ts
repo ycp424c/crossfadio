@@ -328,6 +328,29 @@ describe('music agent context builder', () => {
     expect(context.activeDirective).toBe('');
   });
 
+  it('omits daily theme when the caller disables theme context', async () => {
+    vi.doMock('../../src/server/daily-theme.js', () => ({
+      getDailyTheme: () => ({
+        date: '2026-06-04',
+        theme: '今日主题应该被跳过',
+        keywords: ['skip-me'],
+        generatedAt: Date.now()
+      })
+    }));
+
+    const { buildMusicAgentContext } = await import('../../src/server/music-agent/context.js');
+    const context = await buildMusicAgentContext({
+      userId: 'user-1',
+      request: 'auto-fill',
+      now: new Date('2026-06-04T07:30:00+08:00'),
+      includeDailyTheme: false
+    } as never);
+
+    expect(context.currentMoment.dailyTheme).toBeUndefined();
+
+    vi.doUnmock('../../src/server/daily-theme.js');
+  });
+
   it('degrades to null weather when weather fetch rejects', async () => {
     const { fetchWeather } = await import('../../src/server/weather.js');
     (fetchWeather as Mock).mockRejectedValueOnce(new Error('weather failed'));

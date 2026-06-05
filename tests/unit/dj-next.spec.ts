@@ -85,6 +85,7 @@ describe('DJ pick-next diagnostics', () => {
     expect(doPickNext).toContain('new MusicAgent');
     expect(doPickNext).toContain("output.status === 'ok'");
     expect(doPickNext).toContain('createAbortTimeoutSignal(signal, DJ_AGENT_TIMEOUT_MS)');
+    expect(doPickNext).toContain('includeDailyTheme: dailyThemeEnabled');
     expect(doPickNext).toContain('const excludeState = getTodayAndQueueDedupeState(userId)');
     expect(doPickNext).toContain('djPickReasonCache.set(track.ncmId, output.say.trim())');
     expect(doPickNext).toContain('broadcastAppended(userId, prevQueueLength, emit)');
@@ -109,6 +110,7 @@ describe('DJ pick-next diagnostics', () => {
 
     expect(recommendBlock).toContain('new MusicAgent');
     expect(recommendBlock).toContain('recommendFromChat');
+    expect(recommendBlock).toContain('actions: songActions');
     expect(recommendBlock).toContain('createAbortTimeoutSignal(controller.signal, CHAT_AGENT_TIMEOUT_MS)');
     expect(recommendBlock).toContain("output.status === 'aborted'");
     expect(recommendBlock).toContain("if (signal?.aborted) {\n          onParentAbort();\n        } else {\n          signal?.addEventListener('abort', onParentAbort, { once: true });\n        }");

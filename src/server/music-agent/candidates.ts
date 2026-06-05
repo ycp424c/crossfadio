@@ -196,7 +196,13 @@ export class CandidatePool {
         throw new Error(`Final pick ${parsedPick.id} source mismatch: ${parsedPick.source}`);
       }
 
-      return { ...parsedPick, id: canonicalId, reason };
+      return {
+        ...parsedPick,
+        id: canonicalId,
+        name: candidate.name,
+        artist: candidate.artist,
+        reason
+      };
     });
   }
 

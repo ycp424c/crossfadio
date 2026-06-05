@@ -15,13 +15,21 @@ export type PickNextInput = {
   userId: string;
   ncmClient: NcmClient;
   signal?: AbortSignal;
+  includeDailyTheme?: boolean;
   now?: Date;
+};
+
+type ChatRecommendAction = {
+  pick?: {
+    query?: string;
+  };
 };
 
 export type ChatRecommendInput = {
   userId: string;
   ncmClient: NcmClient;
   userText: string;
+  actions?: ChatRecommendAction[];
   signal?: AbortSignal;
   now?: Date;
 };
@@ -39,6 +47,7 @@ export class MusicAgent {
       userId: input.userId,
       ncmClient: input.ncmClient,
       request: 'auto-fill',
+      includeDailyTheme: input.includeDailyTheme,
       now: input.now
     });
     const candidatePool = new CandidatePool({ maxCandidates: budget.maxCandidates });
@@ -68,6 +77,7 @@ export class MusicAgent {
       ncmClient: input.ncmClient,
       request: 'chat-recommend',
       userText: input.userText,
+      actionQueries: extractActionQueries(input.actions ?? []),
       now: input.now
     });
     const candidatePool = new CandidatePool({ maxCandidates: budget.maxCandidates });
@@ -89,6 +99,16 @@ export class MusicAgent {
       signal: input.signal
     });
   }
+}
+
+function extractActionQueries(actions: ChatRecommendAction[]): string[] {
+  return Array.from(
+    new Set(
+      actions
+        .map((action) => action.pick?.query?.trim() ?? '')
+        .filter((query) => query.length > 0)
+    )
+  );
 }
 
 function resolveLlmClient(options: MusicAgentOptions): MusicAgentLlmClient {

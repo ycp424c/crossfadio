@@ -110,12 +110,6 @@ export function createMusicAgentTools(input: CreateMusicAgentToolsInput): MusicA
           'trend-capable NCM client is unavailable'
         ]);
       }
-      if (limits.maxTrendFetchMs <= 0) {
-        return observation(input.candidatePool, 'trend context skipped: trend fetch budget is 0.', [
-          'trend fetch budget exhausted'
-        ]);
-      }
-
       try {
         state.trendContext = await buildTrendContext({
           ncmClient: input.ncmClient,
@@ -219,6 +213,7 @@ export function createMusicAgentTools(input: CreateMusicAgentToolsInput): MusicA
       const queries = uniqueStrings([
         ...stringArrayValue(toolInput.queries),
         stringValue(toolInput.query),
+        ...(input.context.actionQueries ?? []),
         ...(state.queryPlan
           ? [
               ...state.queryPlan.intentQueries,
@@ -512,6 +507,7 @@ function defaultQueryPlan(
     stringValue(input.text),
     stringValue(input.userText),
     context.currentUserText,
+    ...(context.actionQueries ?? []),
     context.activeDirective,
     context.currentPlanSegment ?? '',
     context.tasteSummary,
@@ -527,6 +523,7 @@ function defaultQueryPlan(
     intentQueries: uniqueStrings([
       ...stringArrayValue(input.queries),
       stringValue(input.query),
+      ...(context.actionQueries ?? []),
       ...knowledge.queryTemplates.slice(0, 4)
     ]),
     tasteAnchorQueries: uniqueStrings(knowledge.styleAdjacency.slice(0, 4)),

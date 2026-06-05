@@ -99,6 +99,33 @@ describe('MusicAgent facade', () => {
     expect(JSON.stringify(fake.completeCalls[0].messages)).toContain('想听低沉一点的爵士女声，不要太吵');
   });
 
+  it('passes resolved chat action queries into the tool-loop prompt', async () => {
+    const ncmClient = {
+      getLikedSongIds: vi.fn(async () => []),
+      getSongDetails: vi.fn(async () => []),
+      searchSongs: vi.fn(async () => []),
+      getPlaylistDetail: vi.fn(async () => null)
+    };
+    const fake = new FakeLlmClient().queueResponse('not json at all');
+
+    const { MusicAgent } = await import('../../src/server/music-agent/index.js');
+    const agent = new MusicAgent({ llmClient: fake });
+    await agent.recommendFromChat({
+      userId: 'user-1',
+      ncmClient: ncmClient as any,
+      userText: '按刚才说的来两首',
+      actions: [
+        {
+          type: 'add_to_queue',
+          pick: { query: '落日飞车 city pop 女声' }
+        }
+      ]
+    } as any);
+
+    expect(JSON.stringify(fake.completeCalls[0].messages)).toContain('按刚才说的来两首');
+    expect(JSON.stringify(fake.completeCalls[0].messages)).toContain('落日飞车 city pop 女声');
+  });
+
   it('returns empty_pool instead of throwing when malformed LLM output leaves the pool empty', async () => {
     const ncmClient = {
       getLikedSongIds: vi.fn(async () => []),
@@ -218,5 +245,79 @@ describe('createMusicAgentTools', () => {
       artist: 'Singer',
       sources: ['search']
     });
+  });
+
+  it('reads cached trend context when chat trend fetch budget is zero', async () => {
+    const ncmClient = {
+      getLikedSongIds: vi.fn(async () => []),
+      getSongDetails: vi.fn(async () => []),
+      searchSongs: vi.fn(async () => []),
+      getPlaylistDetail: vi.fn(async () => null),
+      getSearchHotDetail: vi.fn(async () => {
+        throw new Error('should not fetch search hot');
+      }),
+      getTopSongHints: vi.fn(async () => {
+        throw new Error('should not fetch top songs');
+      }),
+      getArtistToplist: vi.fn(async () => {
+        throw new Error('should not fetch artists');
+      })
+    };
+    const { CandidatePool } = await import('../../src/server/music-agent/candidates.js');
+    const { createMusicAgentTools } = await import('../../src/server/music-agent/tools.js');
+    const { writeTrendCache } = await import('../../src/server/music-agent/trends.js');
+    await writeTrendCache({
+      fetchedAt: new Date().toISOString(),
+      locale: 'zh-CN',
+      sources: ['manual_cache'],
+      hotArtists: ['Cached Artist'],
+      hotStyles: ['Cached Style'],
+      chartTrackHints: [
+        {
+          title: 'Cached Song',
+          artist: 'Cached Artist',
+          source: 'manual_cache',
+          reason: 'cached'
+        }
+      ],
+      confidence: 1
+    });
+
+    const candidatePool = new CandidatePool();
+    const tools = createMusicAgentTools({
+      userId: 'user-1',
+      ncmClient: ncmClient as any,
+      context: {
+        request: 'chat-recommend',
+        currentUserText: '',
+        currentMoment: { localTime: '周四 15:00', daypart: '下午', weather: null },
+        activeDirective: '',
+        currentPlanSegment: null,
+        tasteSummary: '',
+        recentPreferenceSummary: '',
+        recentPlaySignals: '',
+        queueStateSummary: '',
+        bannedSummary: ''
+      },
+      candidatePool,
+      budget: {
+        maxMs: 10_000,
+        maxSteps: 3,
+        maxLlmCalls: 2,
+        maxToolCalls: 2,
+        maxNcmSearches: 0,
+        maxPlaylistFetches: 0,
+        maxTrendFetchMs: 0,
+        maxCandidates: 20
+      }
+    });
+
+    const observation = await tools.get_trend_context?.({});
+
+    expect(observation?.summary).toContain('Cached Artist');
+    expect(observation?.summary).toContain('Cached Style');
+    expect(ncmClient.getSearchHotDetail).not.toHaveBeenCalled();
+    expect(ncmClient.getTopSongHints).not.toHaveBeenCalled();
+    expect(ncmClient.getArtistToplist).not.toHaveBeenCalled();
   });
 });

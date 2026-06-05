@@ -19,6 +19,8 @@ export type BuildMusicAgentContextInput = {
   ncmClient?: NcmClient;
   request: 'auto-fill' | 'chat-recommend';
   userText?: string;
+  actionQueries?: string[];
+  includeDailyTheme?: boolean;
   now?: Date;
 };
 
@@ -30,11 +32,13 @@ type ActiveDirectivePref = {
 export async function buildMusicAgentContext(input: BuildMusicAgentContextInput): Promise<MusicAgentContextSummary> {
   const now = input.now ?? new Date();
   const weather = await fetchWeatherWithTimeout(input.userId);
-  const theme = getDailyTheme();
+  const theme = input.includeDailyTheme === false ? null : getDailyTheme();
+  const actionQueries = compactActionQueries(input.actionQueries ?? []);
 
   const context: MusicAgentContextSummary = {
     request: input.request,
     currentUserText: input.request === 'chat-recommend' ? truncate(input.userText ?? '', 600) : '',
+    ...(actionQueries.length > 0 ? { actionQueries } : {}),
     currentMoment: {
       localTime: formatLocalTime(now),
       daypart: getDaypart(now.getHours()),
@@ -51,6 +55,16 @@ export async function buildMusicAgentContext(input: BuildMusicAgentContextInput)
   };
 
   return musicAgentContextSummarySchema.parse(context);
+}
+
+function compactActionQueries(queries: string[]): string[] {
+  return Array.from(
+    new Set(
+      queries
+        .map((query) => compactWhitespace(query).slice(0, 160))
+        .filter((query) => query.length > 0)
+    )
+  ).slice(0, 6);
 }
 
 async function fetchWeatherWithTimeout(userId: string) {

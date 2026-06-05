@@ -175,7 +175,7 @@ describe('CandidatePool', () => {
     pool.upsert(candidate({ id: 'known', sources: ['liked', 'trend'] }));
 
     expect(validateFinalPicks([{ id: 'known', reason: 'fits', source: 'trend' }], pool))
-      .toEqual([{ id: 'known', reason: 'fits', source: 'trend' }]);
+      .toEqual([{ id: 'known', name: 'Song', artist: 'Artist', reason: 'fits', source: 'trend' }]);
     expect(() => validateFinalPicks([{ id: 'missing', reason: 'fits', source: 'trend' }], pool))
       .toThrow(/not in candidate pool/i);
   });
@@ -195,7 +195,7 @@ describe('CandidatePool', () => {
     pool.upsert(candidate({ id: 'duplicate', name: 'Song (Live)', artist: 'Artist / Other', sources: ['trend'] }));
 
     expect(pool.validateFinalPicks([{ id: 'duplicate', reason: 'fits', source: 'trend' }]))
-      .toEqual([{ id: 'canonical', reason: 'fits', source: 'trend' }]);
+      .toEqual([{ id: 'canonical', name: 'Song', artist: 'Artist', reason: 'fits', source: 'trend' }]);
   });
 
   it('validateFinalPicks rejects blank reason', () => {
