@@ -218,22 +218,16 @@ describe('runMusicAgentLoop', () => {
     expect(result.trace.some((step) => /unavailable|unknown/i.test(step.observationSummary ?? ''))).toBe(true);
   });
 
-  it('asks the LLM to finalize after ranking enough candidates', async () => {
+  it('asks the LLM to finalize after ranking fewer than two candidates', async () => {
     const pool = new CandidatePool();
     pool.upsert(candidate({ id: '101', scores: { ...candidate().scores, intentMatch: 0.9 } }));
-    pool.upsert(candidate({
-      id: '102',
-      name: 'Bright Song',
-      artist: 'Another Singer',
-      scores: { ...candidate().scores, intentMatch: 0.8 }
-    }));
     const fallbackLogger = vi.fn();
     const llmClient = new LoopFakeLlmClient([
       JSON.stringify({ type: 'tool_call', tool: 'rank_candidates', input: {} }),
       JSON.stringify({
         type: 'final',
-        say: '第二首更贴近当前语境。',
-        picks: [{ id: '102', reason: '更贴近当前语境', source: 'liked' }],
+        say: '这首更贴近当前语境。',
+        picks: [{ id: '101', reason: '更贴近当前语境', source: 'liked' }],
         rejected: []
       })
     ]);
@@ -255,11 +249,92 @@ describe('runMusicAgentLoop', () => {
 
     expect(result.status).toBe('ok');
     expect(result.picks).toHaveLength(1);
-    expect(result.picks.map((pick) => pick.id)).toEqual(['102']);
-    expect(result.say).toBe('第二首更贴近当前语境。');
+    expect(result.picks.map((pick) => pick.id)).toEqual(['101']);
+    expect(result.say).toBe('这首更贴近当前语境。');
     expect(toolCalls).toBe(1);
     expect(llmClient.calls).toHaveLength(2);
     expect(fallbackLogger).not.toHaveBeenCalled();
+  });
+
+  it('converges deterministically after ranking enough candidates', async () => {
+    const pool = new CandidatePool();
+    pool.upsert(candidate({ id: '101', scores: { ...candidate().scores, intentMatch: 0.9 } }));
+    pool.upsert(candidate({
+      id: '102',
+      name: 'Bright Song',
+      artist: 'Another Singer',
+      scores: { ...candidate().scores, intentMatch: 0.8 }
+    }));
+    const fallbackLogger = vi.fn();
+    const llmClient = new LoopFakeLlmClient([
+      JSON.stringify({ type: 'tool_call', tool: 'rank_candidates', input: {} }),
+      JSON.stringify({ type: 'tool_call', tool: 'recall_from_liked', input: {} })
+    ]);
+    let toolCalls = 0;
+
+    const result = await runMusicAgentLoop({
+      llmClient,
+      context: context(),
+      candidatePool: pool,
+      tools: {
+        rank_candidates: async () => {
+          toolCalls += 1;
+          return { summary: 'ranked candidates', candidateCount: pool.count() };
+        },
+        recall_from_liked: async () => {
+          throw new Error('should not keep recalling after ranked convergence');
+        }
+      },
+      budget: budget({ maxLlmCalls: 10, maxSteps: 10 }),
+      fallbackLogger
+    });
+
+    expect(result.status).toBe('ok');
+    expect(result.picks.map((pick) => pick.id)).toEqual(['101', '102']);
+    expect(result.picks.every((pick) => pick.reason === 'ranked convergence')).toBe(true);
+    expect(toolCalls).toBe(1);
+    expect(llmClient.calls).toHaveLength(1);
+    expect(fallbackLogger).toHaveBeenCalledWith(expect.objectContaining({
+      reason: 'ranked_tool_completed',
+      status: 'ok',
+      candidateCount: 2,
+      pickCount: 2
+    }));
+  });
+
+  it('converges deterministically when only one LLM call remains and candidates are enough', async () => {
+    const pool = new CandidatePool();
+    pool.upsert(candidate({ id: '101' }));
+    pool.upsert(candidate({ id: '102', name: 'Bright Song', artist: 'Another Singer' }));
+    const fallbackLogger = vi.fn();
+    const llmClient = new LoopFakeLlmClient([
+      JSON.stringify({ type: 'tool_call', tool: 'recall_from_liked', input: {} }),
+      JSON.stringify({ type: 'tool_call', tool: 'recall_from_ncm_search', input: { query: 'more' } })
+    ]);
+
+    const result = await runMusicAgentLoop({
+      llmClient,
+      context: context(),
+      candidatePool: pool,
+      tools: {
+        recall_from_liked: async () => ({ summary: 'liked recall added 0 candidates', candidateCount: pool.count() }),
+        recall_from_ncm_search: async () => {
+          throw new Error('should not spend the final LLM call on more tools');
+        }
+      },
+      budget: budget({ maxLlmCalls: 2, maxSteps: 10 }),
+      fallbackLogger
+    });
+
+    expect(result.status).toBe('ok');
+    expect(result.picks).toHaveLength(2);
+    expect(llmClient.calls).toHaveLength(1);
+    expect(fallbackLogger).toHaveBeenCalledWith(expect.objectContaining({
+      reason: 'ranked_tool_completed',
+      status: 'ok',
+      candidateCount: 2,
+      pickCount: 2
+    }));
   });
 
   it('parses fenced and prose-wrapped JSON, and malformed output defaults without crashing', async () => {

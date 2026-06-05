@@ -67,6 +67,11 @@ const DEFAULT_TOOL_CALL: ParsedLoopOutput = {
 
 const MAX_TRACE_INPUT_CHARS = 180;
 const MAX_TRACE_OBSERVATION_CHARS = 240;
+const CONVERGENCE_TOOL_NAMES = new Set<MusicAgentToolName>([
+  'rank_candidates',
+  'diversify_candidates',
+  'finalize_pick'
+]);
 
 export async function runMusicAgentLoop(input: RunMusicAgentLoopInput): Promise<MusicAgentRunOutput> {
   const startedAt = Date.now();
@@ -182,6 +187,10 @@ export async function runMusicAgentLoop(input: RunMusicAgentLoopInput): Promise<
 
     if (input.signal?.aborted) {
       return abortedOutput(resolveMode(input), trace);
+    }
+
+    if (shouldConvergeAfterTool(toolName, input, llmCalls)) {
+      return rankedConvergence(input, trace, startedAt, step, llmCalls, toolCalls);
     }
 
   }
@@ -326,6 +335,50 @@ function rankedFallback(
   return output;
 }
 
+function rankedConvergence(
+  input: RunMusicAgentLoopInput,
+  trace: AgentTraceStep[],
+  startedAt: number,
+  step: number,
+  llmCalls: number,
+  toolCalls: number
+): MusicAgentRunOutput {
+  const mode = resolveMode(input);
+  const ranked = rankCandidates(input.candidatePool.list(), 10, rankOptions(input.context));
+  const picks = diversifyCandidates(ranked, 2).map((candidate) => ({
+    id: candidate.id,
+    name: candidate.name,
+    artist: candidate.artist,
+    reason: 'ranked convergence',
+    source: candidate.sources[0]
+  }));
+
+  const output: MusicAgentRunOutput = {
+    status: 'ok',
+    mode,
+    say: picks.length > 1
+      ? '我从已经排序的候选池里收束出两首更适合现在的歌。'
+      : '我从已经排序的候选池里收束出一首更适合现在的歌。',
+    picks,
+    rejected: [],
+    trace
+  };
+  input.fallbackLogger?.({
+    reason: 'ranked_tool_completed',
+    mode,
+    status: output.status,
+    candidateCount: input.candidatePool.count(),
+    pickCount: picks.length,
+    step,
+    llmCalls,
+    toolCalls,
+    elapsedMs: Math.max(0, Date.now() - startedAt),
+    budget: input.budget,
+    lastTraceStep: trace.at(-1)
+  });
+  return output;
+}
+
 function rankedFallbackSay(pickCount: number): string {
   return pickCount > 1
     ? '我从候选池里挑了两首更适合现在的歌。'
@@ -416,6 +469,16 @@ function isBudgetReached(
     step >= budget.maxSteps ||
     llmCalls >= budget.maxLlmCalls
   );
+}
+
+function shouldConvergeAfterTool(
+  toolName: MusicAgentToolName,
+  input: RunMusicAgentLoopInput,
+  llmCalls: number
+): boolean {
+  if (input.candidatePool.count() < 2) return false;
+  if (CONVERGENCE_TOOL_NAMES.has(toolName)) return true;
+  return input.budget.maxLlmCalls - llmCalls <= 1;
 }
 
 function resolveMode(input: RunMusicAgentLoopInput): MusicAgentFinalOutput['mode'] {
