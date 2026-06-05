@@ -45,6 +45,13 @@ afterEach(() => {
 });
 
 describe('MusicAgent facade', () => {
+  it('allows ten LLM calls for automatic pick-next runs', () => {
+    const source = fs.readFileSync(path.join(process.cwd(), 'src/server/music-agent/index.ts'), 'utf8');
+    const pickNextBudget = source.slice(source.indexOf('function pickNextBudget'), source.indexOf('function chatRecommendBudget'));
+
+    expect(pickNextBudget).toContain('maxLlmCalls: 10');
+  });
+
   it('labels local ranked convergence separately from fallback logs', async () => {
     const { musicAgentRunLogMessage } = await import('../../src/server/music-agent/index.js');
     const baseEvent = {
