@@ -37,6 +37,7 @@ export async function buildMusicAgentContext(input: BuildMusicAgentContextInput)
 
   const context: MusicAgentContextSummary = {
     request: input.request,
+    discoveryMode: getDiscoveryMode(input.userId),
     currentUserText: input.request === 'chat-recommend' ? truncate(input.userText ?? '', 600) : '',
     ...(actionQueries.length > 0 ? { actionQueries } : {}),
     currentMoment: {
@@ -55,6 +56,10 @@ export async function buildMusicAgentContext(input: BuildMusicAgentContextInput)
   };
 
   return musicAgentContextSummarySchema.parse(context);
+}
+
+function getDiscoveryMode(userId: string): 'explore' | 'comfort' {
+  return getPref<'explore' | 'comfort'>(userId, 'discovery.mode') === 'comfort' ? 'comfort' : 'explore';
 }
 
 function compactActionQueries(queries: string[]): string[] {

@@ -143,7 +143,7 @@ export function createMusicAgentTools(input: CreateMusicAgentToolsInput): MusicA
         const tracks = await input.ncmClient.getSongDetails(ids);
         const added = upsertTracks(input.candidatePool, tracks, 'liked', {
           evidence: '网易云红心歌曲',
-          scores: sourceScores('liked')
+          scores: sourceScores('liked', input.context)
         });
         return observation(input.candidatePool, `liked recall added ${added} candidates from ${ids.length} ids.`);
       } catch (error) {
@@ -180,7 +180,7 @@ export function createMusicAgentTools(input: CreateMusicAgentToolsInput): MusicA
           }
           added += upsertTracks(input.candidatePool, detail.tracks, 'playlist', {
             evidence: `歌单 ${detail.name}`,
-            scores: sourceScores('playlist')
+            scores: sourceScores('playlist', input.context)
           });
         } catch (error) {
           problems.push(`playlist ${playlistId}: ${formatError(error)}`);
@@ -200,7 +200,7 @@ export function createMusicAgentTools(input: CreateMusicAgentToolsInput): MusicA
         queries,
         source: 'plan',
         evidencePrefix: '计划段落',
-        scores: sourceScores('plan'),
+        scores: sourceScores('plan', input.context),
         input,
         state,
         maxSearches: limits.maxNcmSearches,
@@ -227,7 +227,7 @@ export function createMusicAgentTools(input: CreateMusicAgentToolsInput): MusicA
         queries,
         source: 'search',
         evidencePrefix: '网易云搜索',
-        scores: sourceScores('search'),
+        scores: sourceScores('search', input.context),
         input,
         state,
         maxSearches: limits.maxNcmSearches,
@@ -250,7 +250,7 @@ export function createMusicAgentTools(input: CreateMusicAgentToolsInput): MusicA
         queries: uniqueStrings([...stringArrayValue(toolInput.queries), ...trendQueries]).slice(0, 8),
         source: 'trend',
         evidencePrefix: '趋势线索',
-        scores: sourceScores('trend'),
+        scores: sourceScores('trend', input.context),
         input,
         state,
         maxSearches: limits.maxNcmSearches,
@@ -281,7 +281,7 @@ export function createMusicAgentTools(input: CreateMusicAgentToolsInput): MusicA
         queries,
         source: 'style_expansion',
         evidencePrefix: '风格扩展',
-        scores: sourceScores('style_expansion'),
+        scores: sourceScores('style_expansion', input.context),
         input,
         state,
         maxSearches: limits.maxNcmSearches,
@@ -398,7 +398,8 @@ function candidateFromTrack(
   };
 }
 
-function sourceScores(source: CandidateSource): MusicCandidateScores {
+function sourceScores(source: CandidateSource, context: MusicAgentContextSummary): MusicCandidateScores {
+  const mode = context.discoveryMode;
   const base: MusicCandidateScores = {
     intentMatch: 0.62,
     tasteMatch: 0.58,
@@ -411,21 +412,33 @@ function sourceScores(source: CandidateSource): MusicCandidateScores {
   };
 
   if (source === 'liked') {
-    return { ...base, intentMatch: 0.68, tasteMatch: 0.92, sourceConfidence: 0.86, novelty: 0.35 };
+    return mode === 'comfort'
+      ? { ...base, intentMatch: 0.7, tasteMatch: 0.94, sourceConfidence: 0.88, novelty: 0.35 }
+      : { ...base, intentMatch: 0.62, tasteMatch: 0.72, sourceConfidence: 0.68, novelty: 0.32 };
   }
   if (source === 'playlist') {
-    return { ...base, tasteMatch: 0.78, sourceConfidence: 0.76 };
+    return mode === 'comfort'
+      ? { ...base, tasteMatch: 0.8, sourceConfidence: 0.78 }
+      : { ...base, tasteMatch: 0.66, sourceConfidence: 0.62, novelty: 0.48 };
   }
   if (source === 'plan') {
-    return { ...base, intentMatch: 0.76, planFit: 0.86, sourceConfidence: 0.7 };
+    return mode === 'comfort'
+      ? { ...base, intentMatch: 0.76, planFit: 0.86, sourceConfidence: 0.72 }
+      : { ...base, intentMatch: 0.72, planFit: 0.76, sourceConfidence: 0.62, novelty: 0.5 };
   }
   if (source === 'trend') {
-    return { ...base, intentMatch: 0.58, tasteMatch: 0.45, novelty: 0.72, sourceConfidence: 0.64 };
+    return mode === 'comfort'
+      ? { ...base, intentMatch: 0.54, tasteMatch: 0.46, novelty: 0.62, sourceConfidence: 0.58 }
+      : { ...base, intentMatch: 0.66, tasteMatch: 0.52, novelty: 0.82, sourceConfidence: 0.7 };
   }
   if (source === 'style_expansion') {
-    return { ...base, intentMatch: 0.74, novelty: 0.68, sourceConfidence: 0.62 };
+    return mode === 'comfort'
+      ? { ...base, intentMatch: 0.66, tasteMatch: 0.62, novelty: 0.58, sourceConfidence: 0.58 }
+      : { ...base, intentMatch: 0.78, tasteMatch: 0.62, novelty: 0.8, sourceConfidence: 0.72 };
   }
-  return base;
+  return mode === 'comfort'
+    ? base
+    : { ...base, intentMatch: 0.76, tasteMatch: 0.64, novelty: 0.78, sourceConfidence: 0.72 };
 }
 
 function observation(pool: CandidatePool, summary: string, problems: string[] = []): ToolObservation {

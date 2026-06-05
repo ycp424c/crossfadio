@@ -112,6 +112,7 @@ export type MusicKnowledgeSlice = z.infer<typeof musicKnowledgeSliceSchema>;
 
 export const musicAgentContextSummarySchema = z.object({
   request: z.enum(['auto-fill', 'chat-recommend']),
+  discoveryMode: z.enum(['explore', 'comfort']).default('explore'),
   currentUserText: z.string().default(''),
   actionQueries: z.array(z.string()).optional(),
   currentMoment: z.object({

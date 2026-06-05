@@ -311,6 +311,66 @@ describe('createMusicAgentTools', () => {
     });
   });
 
+  it('scores source candidates differently for explore and comfort discovery modes', async () => {
+    const ncmClient = {
+      getLikedSongIds: vi.fn(async () => ['liked-1']),
+      getSongDetails: vi.fn(async () => [
+        { id: 'liked-1', name: 'Known Song', artists: ['Known Artist'] }
+      ]),
+      searchSongs: vi.fn(async () => [
+        { id: 'search-1', name: 'Fresh Search', artists: ['Search Artist'] }
+      ]),
+      getPlaylistDetail: vi.fn(async () => null)
+    };
+    const { CandidatePool } = await import('../../src/server/music-agent/candidates.js');
+    const { createMusicAgentTools } = await import('../../src/server/music-agent/tools.js');
+
+    async function rankedIds(discoveryMode: 'explore' | 'comfort') {
+      const candidatePool = new CandidatePool();
+      const tools = createMusicAgentTools({
+        userId: 'user-1',
+        ncmClient: ncmClient as any,
+        context: {
+          request: 'auto-fill',
+          currentUserText: '',
+          discoveryMode,
+          currentMoment: { localTime: '周五 15:00', daypart: '下午', weather: null },
+          activeDirective: '',
+          currentPlanSegment: null,
+          tasteSummary: '偏好熟悉女声，但探索模式要扩展',
+          recentPreferenceSummary: '',
+          recentPlaySignals: '',
+          queueStateSummary: '',
+          bannedSummary: ''
+        },
+        candidatePool,
+        budget: {
+          maxMs: 10_000,
+          maxSteps: 4,
+          maxLlmCalls: 2,
+          maxToolCalls: 3,
+          maxNcmSearches: 1,
+          maxPlaylistFetches: 0,
+          maxTrendFetchMs: 0,
+          maxCandidates: 20
+        }
+      });
+      await tools.recall_from_liked?.({ limit: 1 });
+      await tools.recall_from_ncm_search?.({ query: 'fresh', limit: 1 });
+      return candidatePool.topBy((candidate) => candidate.scores.intentMatch * 0.3
+        + candidate.scores.tasteMatch * 0.2
+        + candidate.scores.timeFit * 0.15
+        + candidate.scores.planFit * 0.1
+        + candidate.scores.sourceConfidence * 0.1
+        + candidate.scores.novelty * 0.15
+        - candidate.scores.recentPenalty
+        - candidate.scores.skipPenalty, 2).map((candidate) => candidate.id);
+    }
+
+    expect(await rankedIds('explore')).toEqual(['search-1', 'liked-1']);
+    expect(await rankedIds('comfort')).toEqual(['liked-1', 'search-1']);
+  });
+
   it('reads cached trend context when chat trend fetch budget is zero', async () => {
     const ncmClient = {
       getLikedSongIds: vi.fn(async () => []),
