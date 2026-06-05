@@ -3,6 +3,7 @@ import type { FinalPick, MusicCandidate, MusicCandidateScores } from './schema.j
 
 export interface CandidatePoolOptions {
   maxCandidates?: number;
+  bannedIds?: Set<string> | string[];
   bannedArtists?: Set<string> | string[];
   bannedTrackKeys?: Set<string>;
 }
@@ -84,12 +85,14 @@ export class CandidatePool {
   private readonly byId = new Map<string, CandidatePoolEntry>();
   private readonly idByDedupeKey = new Map<string, string>();
   private readonly canonicalIdByAliasId = new Map<string, string>();
+  private readonly bannedIds: Set<string>;
   private readonly bannedArtists: Set<string>;
   private readonly bannedTrackKeys: Set<string>;
   private readonly maxCandidates: number;
 
   constructor(options: CandidatePoolOptions = {}) {
     this.maxCandidates = options.maxCandidates ?? Number.POSITIVE_INFINITY;
+    this.bannedIds = new Set(options.bannedIds ?? []);
     this.bannedArtists = new Set(Array.from(options.bannedArtists ?? []).map((artist) => normalizeText(artist)));
     this.bannedTrackKeys = new Set(options.bannedTrackKeys ?? []);
   }
@@ -240,6 +243,10 @@ export class CandidatePool {
   }
 
   private isBanned(candidate: MusicCandidate, dedupeKey: string): boolean {
+    if (this.bannedIds.has(candidate.id)) {
+      return true;
+    }
+
     if (this.bannedTrackKeys.has(dedupeKey)) {
       return true;
     }

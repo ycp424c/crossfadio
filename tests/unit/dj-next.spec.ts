@@ -87,6 +87,8 @@ describe('DJ pick-next diagnostics', () => {
     expect(doPickNext).toContain('createAbortTimeoutSignal(signal, DJ_AGENT_TIMEOUT_MS)');
     expect(doPickNext).toContain('includeDailyTheme: dailyThemeEnabled');
     expect(doPickNext).toContain('const excludeState = getTodayAndQueueDedupeState(userId)');
+    expect(doPickNext).toContain('excludeTrackIds: excludeState.ids');
+    expect(doPickNext).toContain('excludeTrackDedupeKeys: excludeState.dedupeKeys');
     expect(doPickNext).toContain('djPickReasonCache.set(track.ncmId, output.say.trim())');
     expect(doPickNext).toContain('broadcastAppended(userId, prevQueueLength, emit)');
 

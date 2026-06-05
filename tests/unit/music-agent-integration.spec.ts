@@ -79,6 +79,41 @@ describe('MusicAgent facade', () => {
     expect(ncmClient.getSongDetails).toHaveBeenCalledWith(['101']);
   });
 
+  it('excludes queued and recently played tracks before ranking MusicAgent candidates', async () => {
+    const ncmClient = {
+      getLikedSongIds: vi.fn(async () => ['queued-id', 'duplicate-id', 'fresh-1', 'fresh-2']),
+      getSongDetails: vi.fn(async () => [
+        { id: 'queued-id', name: 'Queued Song', artists: ['Queued Artist'], durationMs: 200_000 },
+        { id: 'duplicate-id', name: 'Recent Song (Live)', artists: ['Recent Artist'], durationMs: 200_000 },
+        { id: 'fresh-1', name: 'Fresh One', artists: ['Fresh Artist'], durationMs: 200_000 },
+        { id: 'fresh-2', name: 'Fresh Two', artists: ['Another Artist'], durationMs: 200_000 }
+      ]),
+      searchSongs: vi.fn(async () => []),
+      getPlaylistDetail: vi.fn(async () => null),
+      getSearchHotDetail: vi.fn(async () => []),
+      getTopSongHints: vi.fn(async () => []),
+      getArtistToplist: vi.fn(async () => [])
+    };
+    const fake = new FakeLlmClient()
+      .queueResponse(JSON.stringify({ type: 'tool_call', tool: 'recall_from_liked', input: { limit: 10 } }))
+      .queueResponse(JSON.stringify({ type: 'tool_call', tool: 'rank_candidates', input: {} }));
+
+    const { MusicAgent } = await import('../../src/server/music-agent/index.js');
+    const { buildCandidateDedupeKey } = await import('../../src/server/music-agent/candidates.js');
+    const agent = new MusicAgent({ llmClient: fake });
+    const result = await agent.pickNext({
+      userId: 'user-1',
+      ncmClient: ncmClient as any,
+      excludeTrackIds: new Set(['queued-id']),
+      excludeTrackDedupeKeys: new Set([buildCandidateDedupeKey({ name: 'Recent Song', artist: 'Recent Artist' })])
+    });
+
+    expect(result.status).toBe('ok');
+    expect(result.picks.map((pick) => pick.id)).toEqual(['fresh-1', 'fresh-2']);
+    expect(JSON.stringify(result.trace)).not.toContain('queued-id');
+    expect(JSON.stringify(result.trace)).not.toContain('duplicate-id');
+  });
+
   it('passes chat recommendation text into the tool-loop prompt', async () => {
     const ncmClient = {
       getLikedSongIds: vi.fn(async () => []),

@@ -365,6 +365,7 @@ async function doPickNext(
   const dailyThemePromise = dailyThemeEnabled
     ? getOrGenerateDailyThemeWithin(DAILY_THEME_CONTEXT_TIMEOUT_MS)
     : Promise.resolve(null);
+  const excludeState = getTodayAndQueueDedupeState(userId);
 
   const llmConfig = resolveLlmConfig();
   if (llmConfig && !signal?.aborted) {
@@ -375,7 +376,9 @@ async function doPickNext(
         userId,
         ncmClient,
         signal: agentAbort.signal,
-        includeDailyTheme: dailyThemeEnabled
+        includeDailyTheme: dailyThemeEnabled,
+        excludeTrackIds: excludeState.ids,
+        excludeTrackDedupeKeys: excludeState.dedupeKeys
       });
       if (signal?.aborted) return;
       if (output.status === 'aborted') {
@@ -384,7 +387,6 @@ async function doPickNext(
       }
       if (output.status === 'ok') {
         const prevQueueLength = getQueue(userId).length;
-        const excludeState = getTodayAndQueueDedupeState(userId);
         for (const pick of output.picks) {
           const dedupeKey = buildTrackDedupeKey(pick);
           if (excludeState.ids.has(pick.id) || excludeState.dedupeKeys.has(dedupeKey)) continue;
@@ -860,7 +862,6 @@ ${candidateList}
   }
 
   // Random fallback: sample 2 IDs from full liked list, then fetch details
-  const excludeState = getTodayAndQueueDedupeState(userId);
   const fallbackIds = allLikedIds.filter((id) => !excludeState.ids.has(id));
 
   if (fallbackIds.length === 0) {

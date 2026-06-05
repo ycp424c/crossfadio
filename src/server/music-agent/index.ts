@@ -18,6 +18,8 @@ export type PickNextInput = {
   ncmClient: NcmClient;
   signal?: AbortSignal;
   includeDailyTheme?: boolean;
+  excludeTrackIds?: Set<string>;
+  excludeTrackDedupeKeys?: Set<string>;
   now?: Date;
 };
 
@@ -58,7 +60,11 @@ export class MusicAgent {
       includeDailyTheme: input.includeDailyTheme,
       now: input.now
     });
-    const candidatePool = new CandidatePool({ maxCandidates: budget.maxCandidates });
+    const candidatePool = new CandidatePool({
+      maxCandidates: budget.maxCandidates,
+      bannedIds: input.excludeTrackIds,
+      bannedTrackKeys: input.excludeTrackDedupeKeys
+    });
     const tools = createMusicAgentTools({
       userId: input.userId,
       ncmClient: input.ncmClient,
