@@ -46,7 +46,13 @@ export class MusicAgent {
     this.llmClient = resolveLlmClient(options);
     this.fallbackLogger = options.llmConfig
       ? (event) => {
-          getLogger().warn(event, 'MusicAgent ranked fallback');
+          const logger = getLogger();
+          const message = musicAgentRunLogMessage(event);
+          if (event.reason === 'ranked_tool_completed') {
+            logger.info(event, message);
+          } else {
+            logger.warn(event, message);
+          }
         }
       : undefined;
   }
@@ -122,6 +128,12 @@ export class MusicAgent {
       this.fallbackLogger?.({ ...event, userId });
     };
   }
+}
+
+export function musicAgentRunLogMessage(event: MusicAgentFallbackLogEvent): string {
+  return event.reason === 'ranked_tool_completed'
+    ? 'MusicAgent ranked convergence'
+    : 'MusicAgent ranked fallback';
 }
 
 function extractActionQueries(actions: ChatRecommendAction[]): string[] {

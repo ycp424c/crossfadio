@@ -45,6 +45,35 @@ afterEach(() => {
 });
 
 describe('MusicAgent facade', () => {
+  it('labels local ranked convergence separately from fallback logs', async () => {
+    const { musicAgentRunLogMessage } = await import('../../src/server/music-agent/index.js');
+    const baseEvent = {
+      mode: 'pick_next',
+      status: 'ok',
+      candidateCount: 2,
+      pickCount: 2,
+      step: 1,
+      llmCalls: 1,
+      toolCalls: 1,
+      elapsedMs: 100,
+      budget: {
+        maxMs: 60_000,
+        maxSteps: 8,
+        maxLlmCalls: 4,
+        maxToolCalls: 8,
+        maxNcmSearches: 8,
+        maxPlaylistFetches: 3,
+        maxTrendFetchMs: 2_000,
+        maxCandidates: 120
+      }
+    } as const;
+
+    expect(musicAgentRunLogMessage({ ...baseEvent, reason: 'ranked_tool_completed' }))
+      .toBe('MusicAgent ranked convergence');
+    expect(musicAgentRunLogMessage({ ...baseEvent, reason: 'budget_reached' }))
+      .toBe('MusicAgent ranked fallback');
+  });
+
   it('recalls liked songs and returns a validated run output', async () => {
     const ncmClient = {
       getLikedSongIds: vi.fn(async () => ['101']),
