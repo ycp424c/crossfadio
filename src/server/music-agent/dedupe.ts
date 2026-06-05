@@ -13,7 +13,7 @@ const MIN_LONG_TITLE_COVERAGE = 0.58;
 export function buildMusicTrackDedupeKey(track: TrackDedupeInput): string {
   const title = normalizeTrackTitle(track.name ?? '');
   const artist = normalizeMusicTrackToken(primaryArtist(track));
-  if (!title || !artist) return '';
+  if (!title) return '';
   return `${title}${DEDUPE_KEY_SEPARATOR}${artist}`;
 }
 
@@ -43,7 +43,9 @@ export function areMusicTrackDedupeKeysSimilar(leftKey: string, rightKey: string
 
   const left = parseDedupeKey(leftKey);
   const right = parseDedupeKey(rightKey);
-  if (!left || !right || left.artist !== right.artist) return false;
+  if (!left || !right) return false;
+  if (left.title === right.title) return true;
+  if (!left.artist || !right.artist || left.artist !== right.artist) return false;
 
   return areTitlesSimilar(left.title, right.title);
 }
@@ -59,7 +61,7 @@ function primaryArtist(track: TrackDedupeInput): string {
 
 function parseDedupeKey(key: string): { title: string; artist: string } | null {
   const index = key.lastIndexOf(DEDUPE_KEY_SEPARATOR);
-  if (index <= 0 || index >= key.length - DEDUPE_KEY_SEPARATOR.length) return null;
+  if (index <= 0) return null;
 
   return {
     title: key.slice(0, index),

@@ -97,6 +97,20 @@ describe('CandidatePool', () => {
     }))).toBe('song::artist');
   });
 
+  it('deduplicates exact normalized titles even when artists differ', () => {
+    const pool = new CandidatePool();
+
+    pool.upsert(candidate({ id: 'track-1', name: '关于小熊（Cover 蛋堡）', artist: '', sources: ['search'] }));
+    pool.upsert(candidate({ id: 'track-2', name: '关于小熊（Cover 蛋堡）', artist: '雅雅Celia', sources: ['liked'] }));
+
+    expect(buildCandidateDedupeKey(candidate({
+      name: '关于小熊（Cover 蛋堡）',
+      artist: ''
+    }))).toBe('关于小熊::');
+    expect(pool.count()).toBe(1);
+    expect(pool.has('track-2')).toBe(true);
+  });
+
   it('filters banned artists and banned tracks by normalized track key', () => {
     const pool = new CandidatePool({
       bannedArtists: new Set(['Blocked Artist']),
