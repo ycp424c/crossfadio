@@ -218,6 +218,56 @@ describe('runMusicAgentLoop', () => {
     expect(result.trace.some((step) => /unavailable|unknown/i.test(step.observationSummary ?? ''))).toBe(true);
   });
 
+  it('finalizes locally after ranking enough candidates instead of asking the LLM again', async () => {
+    const pool = new CandidatePool();
+    pool.upsert(candidate({ id: '101', scores: { ...candidate().scores, intentMatch: 0.9 } }));
+    pool.upsert(candidate({
+      id: '102',
+      name: 'Bright Song',
+      artist: 'Another Singer',
+      scores: { ...candidate().scores, intentMatch: 0.8 }
+    }));
+    const fallbackLogger = vi.fn();
+    const llmClient = new LoopFakeLlmClient([
+      JSON.stringify({ type: 'tool_call', tool: 'rank_candidates', input: {} }),
+      JSON.stringify({
+        type: 'final',
+        say: '不应该再请求这一轮。',
+        picks: [{ id: '999', reason: 'wrong', source: 'liked' }],
+        rejected: []
+      })
+    ]);
+    let toolCalls = 0;
+
+    const result = await runMusicAgentLoop({
+      llmClient,
+      context: context(),
+      candidatePool: pool,
+      tools: {
+        rank_candidates: async () => {
+          toolCalls += 1;
+          return { summary: 'ranked candidates', candidateCount: pool.count() };
+        }
+      },
+      budget: budget(),
+      fallbackLogger
+    });
+
+    expect(result.status).toBe('ok');
+    expect(result.picks).toHaveLength(2);
+    expect(result.picks.map((pick) => pick.id)).toEqual(['101', '102']);
+    expect(toolCalls).toBe(1);
+    expect(llmClient.calls).toHaveLength(1);
+    expect(fallbackLogger).toHaveBeenCalledWith(expect.objectContaining({
+      reason: 'ranked_tool_completed',
+      candidateCount: 2,
+      pickCount: 2,
+      llmCalls: 1,
+      toolCalls: 1,
+      lastTraceStep: expect.objectContaining({ tool: 'rank_candidates' })
+    }));
+  });
+
   it('parses fenced and prose-wrapped JSON, and malformed output defaults without crashing', async () => {
     const fencedLlm = new LoopFakeLlmClient([
       '```json\n{"type":"final","say":"ok","picks":[{"id":"101","reason":"fits","source":"liked"}],"rejected":[]}\n```'

@@ -30,7 +30,8 @@ export type MusicAgentFallbackReason =
   | 'budget_reached'
   | 'llm_response_timeout'
   | 'final_rejected'
-  | 'tool_budget_exhausted';
+  | 'tool_budget_exhausted'
+  | 'ranked_tool_completed';
 
 export type MusicAgentFallbackLogEvent = {
   reason: MusicAgentFallbackReason;
@@ -181,6 +182,10 @@ export async function runMusicAgentLoop(input: RunMusicAgentLoopInput): Promise<
 
     if (input.signal?.aborted) {
       return abortedOutput(resolveMode(input), trace);
+    }
+
+    if (isFinalizingTool(toolName) && input.candidatePool.count() >= 2) {
+      return rankedFallback('ranked_tool_completed', input, trace, startedAt, step, llmCalls, toolCalls);
     }
   }
 }
@@ -395,6 +400,10 @@ function parseToolName(tool: string): MusicAgentToolName | undefined {
 
 function asTraceTool(tool: string): MusicAgentToolName | undefined {
   return parseToolName(tool);
+}
+
+function isFinalizingTool(tool: MusicAgentToolName): boolean {
+  return tool === 'rank_candidates' || tool === 'diversify_candidates' || tool === 'finalize_pick';
 }
 
 function isBudgetReached(

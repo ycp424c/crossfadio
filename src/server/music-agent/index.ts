@@ -138,7 +138,7 @@ function pickNextBudget(): AgentBudget {
   return {
     maxMs: 60_000,
     maxSteps: 8,
-    maxLlmCalls: 5,
+    maxLlmCalls: 4,
     maxToolCalls: 8,
     maxNcmSearches: 8,
     maxPlaylistFetches: 3,
