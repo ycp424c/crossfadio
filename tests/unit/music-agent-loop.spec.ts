@@ -149,7 +149,8 @@ describe('runMusicAgentLoop', () => {
     expect(result.status).toBe('ok');
     expect(result.picks).toHaveLength(1);
     expect(result.picks[0]).toMatchObject({ id: '101', reason: 'ranked fallback', source: 'liked' });
-    expect(result.say.toLowerCase()).toContain('fallback');
+    expect(result.say).toBe('我从候选池里挑了一首更适合现在的歌。');
+    expect(result.say).not.toMatch(/^fallback:/i);
   });
 
   it('does not execute tools when the signal is already aborted', async () => {
@@ -201,7 +202,7 @@ describe('runMusicAgentLoop', () => {
     expect(musicAgentRunOutputSchema.parse(result).status).toBe('ok');
     expect(result.status).toBe('ok');
     expect(result.picks[0].id).toBe('101');
-    expect(result.say.toLowerCase()).toContain('fallback');
+    expect(result.say).not.toMatch(/^fallback:/i);
     expect(result.trace.some((step) => /unavailable|unknown/i.test(step.observationSummary ?? ''))).toBe(true);
   });
 
@@ -244,7 +245,7 @@ describe('runMusicAgentLoop', () => {
     expect(musicAgentRunOutputSchema.parse(malformedResult).status).toBe('ok');
     expect(malformedResult.status).toBe('ok');
     expect(malformedResult.picks[0].id).toBe('101');
-    expect(malformedResult.say.toLowerCase()).toContain('fallback');
+    expect(malformedResult.say).not.toMatch(/^fallback:/i);
   });
 
   it('stops at max tool, llm, and step budgets without looping forever', async () => {
@@ -272,7 +273,7 @@ describe('runMusicAgentLoop', () => {
     expect(musicAgentRunOutputSchema.parse(toolLimited).status).toBe('empty_pool');
     expect(toolLimited.status).toBe('empty_pool');
     expect(toolLimited.picks).toEqual([]);
-    expect(toolLimited.say.toLowerCase()).toContain('fallback');
+    expect(toolLimited.say).not.toMatch(/^fallback:/i);
 
     const llmLimited = await runMusicAgentLoop({
       llmClient: new LoopFakeLlmClient([
@@ -290,7 +291,7 @@ describe('runMusicAgentLoop', () => {
     expect(llmLimited.trace).toHaveLength(1);
     expect(musicAgentRunOutputSchema.parse(llmLimited).status).toBe('empty_pool');
     expect(llmLimited.status).toBe('empty_pool');
-    expect(llmLimited.say.toLowerCase()).toContain('fallback');
+    expect(llmLimited.say).not.toMatch(/^fallback:/i);
 
     const stepLimited = await runMusicAgentLoop({
       llmClient: new LoopFakeLlmClient([
@@ -308,7 +309,7 @@ describe('runMusicAgentLoop', () => {
     expect(stepLimited.trace).toHaveLength(1);
     expect(musicAgentRunOutputSchema.parse(stepLimited).status).toBe('empty_pool');
     expect(stepLimited.status).toBe('empty_pool');
-    expect(stepLimited.say.toLowerCase()).toContain('fallback');
+    expect(stepLimited.say).not.toMatch(/^fallback:/i);
   });
 
   it('does not execute tools when the LLM call exceeds maxMs', async () => {
@@ -333,6 +334,6 @@ describe('runMusicAgentLoop', () => {
     expect(musicAgentRunOutputSchema.parse(result).status).toBe('empty_pool');
     expect(result.status).toBe('empty_pool');
     expect(toolCalls).toBe(0);
-    expect(result.say.toLowerCase()).toContain('fallback');
+    expect(result.say).not.toMatch(/^fallback:/i);
   });
 });

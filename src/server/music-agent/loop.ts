@@ -274,12 +274,18 @@ function rankedFallback(
     status: picks.length > 0 ? 'ok' : 'empty_pool',
     mode,
     say: picks.length > 0
-      ? 'fallback: 使用候选池排序结果。'
-      : 'fallback: 候选池为空，暂时无法给出选歌。',
+      ? rankedFallbackSay(picks.length)
+      : '暂时没有可用候选，先不追加新歌。',
     picks,
     rejected: [],
     trace
   };
+}
+
+function rankedFallbackSay(pickCount: number): string {
+  return pickCount > 1
+    ? '我从候选池里挑了两首更适合现在的歌。'
+    : '我从候选池里挑了一首更适合现在的歌。';
 }
 
 function abortedOutput(
