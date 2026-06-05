@@ -218,7 +218,7 @@ describe('runMusicAgentLoop', () => {
     expect(result.trace.some((step) => /unavailable|unknown/i.test(step.observationSummary ?? ''))).toBe(true);
   });
 
-  it('finalizes locally after ranking enough candidates instead of asking the LLM again', async () => {
+  it('asks the LLM to finalize after ranking enough candidates', async () => {
     const pool = new CandidatePool();
     pool.upsert(candidate({ id: '101', scores: { ...candidate().scores, intentMatch: 0.9 } }));
     pool.upsert(candidate({
@@ -232,8 +232,8 @@ describe('runMusicAgentLoop', () => {
       JSON.stringify({ type: 'tool_call', tool: 'rank_candidates', input: {} }),
       JSON.stringify({
         type: 'final',
-        say: '不应该再请求这一轮。',
-        picks: [{ id: '999', reason: 'wrong', source: 'liked' }],
+        say: '第二首更贴近当前语境。',
+        picks: [{ id: '102', reason: '更贴近当前语境', source: 'liked' }],
         rejected: []
       })
     ]);
@@ -254,18 +254,12 @@ describe('runMusicAgentLoop', () => {
     });
 
     expect(result.status).toBe('ok');
-    expect(result.picks).toHaveLength(2);
-    expect(result.picks.map((pick) => pick.id)).toEqual(['101', '102']);
+    expect(result.picks).toHaveLength(1);
+    expect(result.picks.map((pick) => pick.id)).toEqual(['102']);
+    expect(result.say).toBe('第二首更贴近当前语境。');
     expect(toolCalls).toBe(1);
-    expect(llmClient.calls).toHaveLength(1);
-    expect(fallbackLogger).toHaveBeenCalledWith(expect.objectContaining({
-      reason: 'ranked_tool_completed',
-      candidateCount: 2,
-      pickCount: 2,
-      llmCalls: 1,
-      toolCalls: 1,
-      lastTraceStep: expect.objectContaining({ tool: 'rank_candidates' })
-    }));
+    expect(llmClient.calls).toHaveLength(2);
+    expect(fallbackLogger).not.toHaveBeenCalled();
   });
 
   it('parses fenced and prose-wrapped JSON, and malformed output defaults without crashing', async () => {

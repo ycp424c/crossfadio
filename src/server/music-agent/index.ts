@@ -154,11 +154,11 @@ function resolveLlmClient(options: MusicAgentOptions): MusicAgentLlmClient {
 
 function pickNextBudget(): AgentBudget {
   return {
-    maxMs: 60_000,
-    maxSteps: 8,
-    maxLlmCalls: 4,
-    maxToolCalls: 8,
-    maxNcmSearches: 8,
+    maxMs: 75_000,
+    maxSteps: 10,
+    maxLlmCalls: 6,
+    maxToolCalls: 10,
+    maxNcmSearches: 10,
     maxPlaylistFetches: 3,
     maxTrendFetchMs: 2_000,
     maxCandidates: 120
@@ -167,11 +167,11 @@ function pickNextBudget(): AgentBudget {
 
 function chatRecommendBudget(): AgentBudget {
   return {
-    maxMs: 35_000,
-    maxSteps: 5,
-    maxLlmCalls: 3,
-    maxToolCalls: 5,
-    maxNcmSearches: 5,
+    maxMs: 50_000,
+    maxSteps: 7,
+    maxLlmCalls: 5,
+    maxToolCalls: 7,
+    maxNcmSearches: 7,
     maxPlaylistFetches: 2,
     maxTrendFetchMs: 0,
     maxCandidates: 80

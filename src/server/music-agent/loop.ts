@@ -184,9 +184,6 @@ export async function runMusicAgentLoop(input: RunMusicAgentLoopInput): Promise<
       return abortedOutput(resolveMode(input), trace);
     }
 
-    if (isFinalizingTool(toolName) && input.candidatePool.count() >= 2) {
-      return rankedFallback('ranked_tool_completed', input, trace, startedAt, step, llmCalls, toolCalls);
-    }
   }
 }
 
@@ -406,10 +403,6 @@ function parseToolName(tool: string): MusicAgentToolName | undefined {
 
 function asTraceTool(tool: string): MusicAgentToolName | undefined {
   return parseToolName(tool);
-}
-
-function isFinalizingTool(tool: MusicAgentToolName): boolean {
-  return tool === 'rank_candidates' || tool === 'diversify_candidates' || tool === 'finalize_pick';
 }
 
 function isBudgetReached(

@@ -38,7 +38,7 @@ const LIKED_SAMPLE_SIZE = 20;
 const EXPLORE_LIKED_SAMPLE_SIZE = 8;
 const SEARCH_RESULT_SIZE = 40;
 const DAILY_THEME_CONTEXT_TIMEOUT_MS = 1_500;
-const DJ_AGENT_TIMEOUT_MS = 65_000;
+const DJ_AGENT_TIMEOUT_MS = 90_000;
 const DJ_PICK_TARGET_COUNT = 2;
 
 const isRunning = new Map<string, boolean>();

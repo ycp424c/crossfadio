@@ -26,7 +26,7 @@ const RECOMMEND_CANDIDATE_LIMIT = 20;
 const RECOMMEND_PICK_LLM_TIMEOUT_MS = 30_000;
 const ACTIVE_DIRECTIVE_TTL_MS = 6 * 60 * 60 * 1000;
 const RECENT_PLAY_EXCLUDE_COUNT = 30;
-const CHAT_AGENT_TIMEOUT_MS = 40_000;
+const CHAT_AGENT_TIMEOUT_MS = 60_000;
 
 const activeRecommendJobs = new Map<string, AbortController>();
 
