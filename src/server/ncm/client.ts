@@ -18,6 +18,20 @@ type NcmClientOptions = {
   fetchTimeoutMs?: number;
 };
 
+type NcmSearchHotItem = {
+  searchWord?: unknown;
+  content?: unknown;
+};
+
+type NcmArtistItem = {
+  name?: unknown;
+};
+
+type NcmTopSongItem = {
+  name?: unknown;
+  ar?: NcmArtistItem[];
+};
+
 export type NcmQrPayload = {
   key: string;
   qrimg: string;
@@ -295,6 +309,59 @@ export class NcmClient {
       return null;
     }
     return json as Record<string, unknown>;
+  }
+
+  async getSearchHotDetail(): Promise<Array<{ searchWord: string; content?: string }>> {
+    const json = await this.getJson('/search/hot/detail', {});
+    const data: NcmSearchHotItem[] = Array.isArray(json?.data) ? json.data : [];
+
+    return data
+      .map((item) => {
+        const searchWord = typeof item?.searchWord === 'string' ? item.searchWord.trim() : '';
+        const content = typeof item?.content === 'string' ? item.content.trim() : '';
+        return {
+          searchWord,
+          ...(content ? { content } : {})
+        };
+      })
+      .filter((item): item is { searchWord: string; content?: string } => item.searchWord.length > 0)
+      .slice(0, 20);
+  }
+
+  async getTopSongHints(type = '0'): Promise<
+    Array<{ title: string; artist: string; source: 'ncm_top_song'; reason: string }>
+  > {
+    const json = await this.getJson('/top/song', { type });
+    const data: NcmTopSongItem[] = Array.isArray(json?.data) ? json.data : [];
+
+    return data
+      .map((song) => {
+        const title = typeof song?.name === 'string' ? song.name.trim() : '';
+        const artist = Array.isArray(song?.ar)
+          ? song.ar
+              .map((item) => (typeof item?.name === 'string' ? item.name.trim() : ''))
+              .filter((name: string) => name.length > 0)
+              .join(' / ')
+          : '';
+        return {
+          title,
+          artist,
+          source: 'ncm_top_song' as const,
+          reason: '新歌速递'
+        };
+      })
+      .filter((item) => item.title.length > 0 && item.artist.length > 0)
+      .slice(0, 30);
+  }
+
+  async getArtistToplist(): Promise<string[]> {
+    const json = await this.getJson('/toplist/artist', {});
+    const artists: NcmArtistItem[] = Array.isArray(json?.list?.artists) ? json.list.artists : [];
+
+    return artists
+      .map((artist) => (typeof artist?.name === 'string' ? artist.name.trim() : ''))
+      .filter((name: string) => name.length > 0)
+      .slice(0, 30);
   }
 
   private async getJson(path: string, query: Record<string, string>): Promise<any> {

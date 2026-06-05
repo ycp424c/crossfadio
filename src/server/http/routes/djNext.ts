@@ -17,6 +17,8 @@ import { broadcastToUser } from '../broadcast.js';
 import { getLogger } from '../../logger.js';
 import { initSseRes, writeSseEvent, endSse } from '../sse.js';
 import { getOrGenerateDailyThemeWithin } from '../../daily-theme.js';
+import { MusicAgent } from '../../music-agent/index.js';
+import { buildMusicTrackDedupeKey, isMusicTrackDedupeKeyExcluded } from '../../music-agent/dedupe.js';
 
 type AuthedRequest = Request & { userId: string; ncmClient: NcmClient };
 export type DiscoveryMode = 'explore' | 'comfort';
@@ -36,6 +38,8 @@ const LIKED_SAMPLE_SIZE = 20;
 const EXPLORE_LIKED_SAMPLE_SIZE = 8;
 const SEARCH_RESULT_SIZE = 40;
 const DAILY_THEME_CONTEXT_TIMEOUT_MS = 1_500;
+const DJ_AGENT_TIMEOUT_MS = 65_000;
+const DJ_PICK_TARGET_COUNT = 2;
 
 const isRunning = new Map<string, boolean>();
 type DjEventSink = (payload: Record<string, unknown>) => void;
@@ -162,6 +166,36 @@ function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T
   ]);
 }
 
+function createAbortTimeoutSignal(
+  parentSignal: AbortSignal | undefined,
+  timeoutMs: number
+): { signal: AbortSignal; cleanup: () => void; timedOut: () => boolean } {
+  const controller = new AbortController();
+  let didTimeOut = false;
+  const timeoutId = setTimeout(() => {
+    didTimeOut = true;
+    controller.abort(new Error('timeout'));
+  }, timeoutMs);
+  const abortFromParent = (): void => {
+    controller.abort(parentSignal?.reason ?? new Error('aborted'));
+  };
+
+  if (parentSignal?.aborted) {
+    abortFromParent();
+  } else {
+    parentSignal?.addEventListener('abort', abortFromParent, { once: true });
+  }
+
+  return {
+    signal: controller.signal,
+    cleanup: () => {
+      clearTimeout(timeoutId);
+      parentSignal?.removeEventListener('abort', abortFromParent);
+    },
+    timedOut: () => didTimeOut
+  };
+}
+
 // Fisher-Yates sample: return up to n random items from arr
 function sampleN<T>(arr: T[], n: number): T[] {
   const copy = [...arr];
@@ -170,6 +204,18 @@ function sampleN<T>(arr: T[], n: number): T[] {
     [copy[i], copy[j]] = [copy[j], copy[i]];
   }
   return copy.slice(0, n);
+}
+
+function getAddedTrackCount(userId: string, initialQueueLength: number): number {
+  return Math.max(0, getQueue(userId).length - initialQueueLength);
+}
+
+function getRemainingPickSlots(userId: string, initialQueueLength: number): number {
+  return Math.max(0, DJ_PICK_TARGET_COUNT - getAddedTrackCount(userId, initialQueueLength));
+}
+
+function hasReachedPickTarget(userId: string, initialQueueLength: number): boolean {
+  return getAddedTrackCount(userId, initialQueueLength) >= DJ_PICK_TARGET_COUNT;
 }
 
 // Run parallel NCM searches, deduplicate results, exclude known IDs
@@ -188,18 +234,22 @@ export async function searchCandidates(
     queries.map((q) => signal?.aborted ? [] : ncmClient.searchSongs(q, perQuery).catch(() => []))
   );
   const seen = new Set<string>();
+  const seenDedupeKeys = new Set<string>();
   const tracks: Track[] = [];
   for (const songs of results) {
     for (const song of songs) {
       const id = String(song.id);
       const track = { id, name: song.name, artist: song.artists.join(' / ') };
+      const dedupeKey = buildTrackDedupeKey(track);
       if (
         !seen.has(id)
         && !excludeIds.has(id)
-        && !excludeDedupeKeys.has(buildTrackDedupeKey(track))
+        && !isTrackDedupeKeyExcluded(dedupeKey, excludeDedupeKeys)
+        && !isTrackDedupeKeyExcluded(dedupeKey, seenDedupeKeys)
         && song.artists.length > 0
       ) {
         seen.add(id);
+        if (dedupeKey) seenDedupeKeys.add(dedupeKey);
         tracks.push(track);
         if (tracks.length >= limit) return tracks;
       }
@@ -279,7 +329,7 @@ export function parseDjCandidatePicks(raw: string, candidates: Track[]): ParsedD
     }
   }
 
-  return { say, tracks: tracks.slice(0, 2) };
+  return { say, tracks: tracks.slice(0, DJ_PICK_TARGET_COUNT) };
 }
 
 export function createDjPickNextHandler(opts: DjNextOptions): RequestHandler {
@@ -298,25 +348,34 @@ async function runPickNextJob(userId: string, ncmClient: NcmClient): Promise<voi
   if (isRunning.get(userId)) return;
   isRunning.set(userId, true);
   const logger = getLogger();
+  const controller = new AbortController();
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
 
   const jobTimer = new Promise<'timeout'>((resolve) =>
-    setTimeout(() => resolve('timeout'), JOB_TIMEOUT_MS)
+    timeoutId = setTimeout(() => {
+      controller.abort(new Error('job-timeout'));
+      resolve('timeout');
+    }, JOB_TIMEOUT_MS)
   );
 
-  const jobResult = await Promise.race([doPickNext(userId, ncmClient).then(() => 'done' as const), jobTimer]);
+  try {
+    const jobResult = await Promise.race([doPickNext(userId, ncmClient, undefined, controller.signal).then(() => 'done' as const), jobTimer]);
 
-  if (jobResult === 'timeout') {
-    logger.warn('DJ pick-next job timed out after %dms', JOB_TIMEOUT_MS);
-    broadcastToUser(userId, { type: 'dj.pick-next.done', added: false, reason: 'timeout' });
+    if (jobResult === 'timeout') {
+      logger.warn('DJ pick-next job timed out after %dms', JOB_TIMEOUT_MS);
+      broadcastToUser(userId, { type: 'dj.pick-next.done', added: false, reason: 'timeout' });
+    }
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
+    isRunning.set(userId, false);
   }
-
-  isRunning.set(userId, false);
 }
 
 async function doPickNext(
   userId: string,
   ncmClient: NcmClient,
-  emit: DjEventSink = (payload) => broadcastToUser(userId, payload)
+  emit: DjEventSink = (payload) => broadcastToUser(userId, payload),
+  signal?: AbortSignal
 ): Promise<void> {
   const logger = getLogger();
   let debugBroadcastSent = false;
@@ -324,7 +383,86 @@ async function doPickNext(
   const dailyThemePromise = dailyThemeEnabled
     ? getOrGenerateDailyThemeWithin(DAILY_THEME_CONTEXT_TIMEOUT_MS)
     : Promise.resolve(null);
+  const excludeState = getTodayAndQueueDedupeState(userId);
+  const initialQueueLength = getQueue(userId).length;
 
+  const llmConfig = resolveLlmConfig();
+  if (llmConfig && !signal?.aborted) {
+    const agentAbort = createAbortTimeoutSignal(signal, DJ_AGENT_TIMEOUT_MS);
+    try {
+      const agent = new MusicAgent({ llmConfig });
+      const output = await agent.pickNext({
+        userId,
+        ncmClient,
+        signal: agentAbort.signal,
+        includeDailyTheme: dailyThemeEnabled,
+        excludeTrackIds: excludeState.ids,
+        excludeTrackDedupeKeys: excludeState.dedupeKeys
+      });
+      if (signal?.aborted) return;
+      if (output.status === 'aborted') {
+        if (!agentAbort.timedOut()) return;
+        logger.warn('DJ pick-next: MusicAgent timed out, using legacy fallback');
+      }
+      if (output.status === 'ok') {
+        const pathQueueLength = getQueue(userId).length;
+        for (const pick of output.picks) {
+          if (getRemainingPickSlots(userId, initialQueueLength) <= 0) break;
+          const dedupeKey = buildTrackDedupeKey(pick);
+          if (excludeState.ids.has(pick.id) || isTrackDedupeKeyExcluded(dedupeKey, excludeState.dedupeKeys)) continue;
+          addToQueue(userId, {
+            ncmId: pick.id,
+            name: pick.name,
+            artists: pick.artist ? [pick.artist] : []
+          }, 'end');
+          excludeState.ids.add(pick.id);
+          if (dedupeKey) excludeState.dedupeKeys.add(dedupeKey);
+        }
+        if (getQueue(userId).length > pathQueueLength) {
+          const pathNewTracks = getQueue(userId).slice(pathQueueLength);
+          if (output.say.trim()) {
+            for (const track of pathNewTracks) {
+              djPickReasonCache.set(track.ncmId, output.say.trim());
+            }
+          }
+        }
+        if (hasReachedPickTarget(userId, initialQueueLength)) {
+          emit({
+            type: 'dj.debug',
+            likedSample: [],
+            sqRaw: JSON.stringify(output.trace),
+            searchQueries: [],
+            searchedTracks: output.picks.map((pick) => ({
+              id: pick.id,
+              name: pick.name,
+              artist: pick.artist
+            })),
+            excludedIds: Array.from(excludeState.ids),
+            excludedDedupeKeys: Array.from(excludeState.dedupeKeys),
+            totalCandidates: output.picks.length,
+            selectedSay: output.say
+          });
+          debugBroadcastSent = true;
+          broadcastAppended(userId, initialQueueLength, emit);
+          return;
+        }
+        const appendedCount = getQueue(userId).length - initialQueueLength;
+        logger.warn(
+          { targetCount: DJ_PICK_TARGET_COUNT, appendedCount, requestedPickCount: output.picks.length },
+          appendedCount > 0
+            ? 'DJ pick-next: MusicAgent appended fewer than target, using legacy fallback'
+            : 'DJ pick-next: MusicAgent picks did not change queue, using legacy fallback'
+        );
+      }
+    } catch (err) {
+      if (signal?.aborted) return;
+      logger.warn({ err }, 'DJ pick-next: MusicAgent failed, using legacy fallback');
+    } finally {
+      agentAbort.cleanup();
+    }
+  }
+
+  if (signal?.aborted) return;
 
   // Refresh full liked-song ID list at most once per day
   const now = Date.now();
@@ -335,13 +473,13 @@ async function doPickNext(
       LIKED_IDS_TIMEOUT_MS,
       [] as string[]
     );
+    if (signal?.aborted) return;
     if (freshIds.length > 0) {
       likedIdsCache.set(userId, { ids: freshIds, fetchedAt: now });
     }
   }
   const allLikedIds = likedIdsCache.get(userId)?.ids ?? [];
 
-  const llmConfig = resolveLlmConfig();
   if (!llmConfig) {
     logger.warn('DJ pick-next: skipping LLM pick because LLM config is missing');
   } else if (allLikedIds.length === 0) {
@@ -354,6 +492,7 @@ async function doPickNext(
       const candidateMix = getCandidateSourceMix(discoveryMode);
       const corpus = loadUserCorpus(userId);
       const [weather] = await Promise.all([withTimeout(fetchWeather(userId), 4_000, null)]);
+      if (signal?.aborted) return;
       const nowDate = new Date();
       const timeContext = buildDjTimeContext(nowDate);
       const localTime = timeContext.localTime;
@@ -396,7 +535,7 @@ async function doPickNext(
           name: t.name,
           artist: t.artists.join(' / ') || undefined
         }))
-        .filter((track) => !excludeState.dedupeKeys.has(buildTrackDedupeKey(track)));
+        .filter((track) => !isTrackDedupeKeyExcluded(buildTrackDedupeKey(track), excludeState.dedupeKeys));
 
       logger.info(
         {
@@ -416,6 +555,7 @@ async function doPickNext(
       const weatherStr = weather ? `${weather.tempC}°C，${weather.desc}` : '未知';
       // Resolve daily theme — either cached or freshly generated
       const dailyTheme = await dailyThemePromise;
+      if (signal?.aborted) return;
       const themeContext = dailyTheme
         ? `\n今日主题：${dailyTheme.theme}\n主题关键词：${dailyTheme.keywords.join('、')}\n`
         : '';
@@ -434,13 +574,14 @@ async function doPickNext(
       let llmArtists: string[] = [];
       let styleConcepts: string[] = [];
       let sqRawSay = '';
+      const styleAbort = createAbortTimeoutSignal(signal, SEARCH_QUERY_LLM_TIMEOUT_MS);
       try {
         const sqResp = await new LlmClient(llmConfig).complete(
           [
             { role: 'system', content: corpus.djPersona || 'You are a DJ.' },
             { role: 'user', content: stylePrompt }
           ],
-          { signal: AbortSignal.timeout(SEARCH_QUERY_LLM_TIMEOUT_MS) }
+          { signal: styleAbort.signal }
         );
         sqRawSay = sqResp.content;
         const cleaned = sqResp.content
@@ -477,8 +618,12 @@ async function doPickNext(
           logger.warn({ raw: sqResp.content.slice(0, 200) }, 'DJ pick-next: failed to parse style+artists from LLM response');
         }
       } catch (err) {
+        if (signal?.aborted) return;
         logger.warn({ err }, 'DJ pick-next: style + artist generation failed');
+      } finally {
+        styleAbort.cleanup();
       }
+      if (signal?.aborted) return;
 
       logger.info({ styleConcepts, llmArtistCount: llmArtists.length }, 'DJ pick-next: LLM suggested styles and artists');
 
@@ -573,9 +718,10 @@ async function doPickNext(
         ncmClient,
         excludeIds,
         candidateMix.searchResultSize,
-        undefined,
+        signal,
         excludeState.dedupeKeys
       );
+      if (signal?.aborted) return;
 
       // Combine candidates, deduplicate by ID. Explore mode lists search results first
       // so red-heart tracks are a smaller, lower-priority part of the candidate pool.
@@ -654,17 +800,18 @@ ${themeContextUser}${directiveUserContext}${tasteUserContext}</context>
 ${candidateList}
 </候选歌曲列表>
 
-从以上 ${allCandidates.length} 首候选歌曲中挑选 2 首。`;
+从以上 ${allCandidates.length} 首候选歌曲中挑选 ${DJ_PICK_TARGET_COUNT} 首。`;
 
       let pickSay = '';
       let pickedTracks: Track[] = [];
+      const pickAbort = createAbortTimeoutSignal(signal, PICK_LLM_TIMEOUT_MS);
       try {
         const pickResp = await new LlmClient(llmConfig).complete(
           [
             { role: 'system', content: pickSystemPrompt },
             { role: 'user', content: pickUserPrompt }
           ],
-          { signal: AbortSignal.timeout(PICK_LLM_TIMEOUT_MS) }
+          { signal: pickAbort.signal }
         );
         const parsedPicks = parseDjCandidatePicks(pickResp.content, allCandidates);
         pickSay = parsedPicks.say;
@@ -673,8 +820,12 @@ ${candidateList}
           logger.warn({ raw: pickResp.content.slice(0, 300) }, 'DJ pick-next: failed to extract whitelisted picks from LLM response');
         }
       } catch (err) {
+        if (signal?.aborted) return;
         logger.warn({ err }, 'DJ pick-next: LLM pick failed, using random fallback');
+      } finally {
+        pickAbort.cleanup();
       }
+      if (signal?.aborted) return;
 
       if (pickedTracks.length > 0) {
         logger.info(
@@ -686,13 +837,15 @@ ${candidateList}
             ncmClient.getSongDetails(pickedTracks.map((track) => track.id)).catch(() => []),
             LIKED_DETAILS_TIMEOUT_MS,
             []
-          )).map((track) => [String(track.id), track])
+        )).map((track) => [String(track.id), track])
         );
-        const prevQueueLength = getQueue(userId).length;
+        if (signal?.aborted) return;
+        const pathQueueLength = getQueue(userId).length;
         const excludeState = getTodayAndQueueDedupeState(userId);
         for (const track of pickedTracks) {
+          if (getRemainingPickSlots(userId, initialQueueLength) <= 0) break;
           const dedupeKey = buildTrackDedupeKey(track);
-          if (excludeState.ids.has(track.id) || excludeState.dedupeKeys.has(dedupeKey)) continue;
+          if (excludeState.ids.has(track.id) || isTrackDedupeKeyExcluded(dedupeKey, excludeState.dedupeKeys)) continue;
           const detail = pickedDetailMap.get(track.id);
           addToQueue(userId, {
             ncmId: track.id,
@@ -703,19 +856,27 @@ ${candidateList}
           excludeState.ids.add(track.id);
           excludeState.dedupeKeys.add(dedupeKey);
         }
-        if (getQueue(userId).length > prevQueueLength) {
-          const newTracks = getQueue(userId).slice(prevQueueLength);
+        if (getQueue(userId).length > pathQueueLength) {
+          const pathNewTracks = getQueue(userId).slice(pathQueueLength);
           if (pickSay.trim()) {
-            for (const track of newTracks) {
+            for (const track of pathNewTracks) {
               djPickReasonCache.set(track.ncmId, pickSay.trim());
             }
           }
+        }
+        if (hasReachedPickTarget(userId, initialQueueLength)) {
           emit({ type: 'dj.debug', ...phase3Debug, selectedSay: pickSay });
           debugBroadcastSent = true;
-          broadcastAppended(userId, prevQueueLength, emit);
+          broadcastAppended(userId, initialQueueLength, emit);
           return;
         }
-        logger.warn('DJ pick-next: whitelisted picks did not change queue, using random fallback');
+        const appendedCount = getQueue(userId).length - initialQueueLength;
+        logger.warn(
+          { targetCount: DJ_PICK_TARGET_COUNT, appendedCount, pickedCount: pickedTracks.length },
+          appendedCount > 0
+            ? 'DJ pick-next: whitelisted picks appended fewer than target, using random fallback'
+            : 'DJ pick-next: whitelisted picks did not change queue, using random fallback'
+        );
       } else {
         logger.warn('DJ pick-next: LLM returned no usable whitelisted picks, using random fallback');
       }
@@ -738,12 +899,17 @@ ${candidateList}
   }
 
   // Random fallback: sample 2 IDs from full liked list, then fetch details
-  const excludeState = getTodayAndQueueDedupeState(userId);
-  const fallbackIds = allLikedIds.filter((id) => !excludeState.ids.has(id));
+  const fallbackExcludeState = getTodayAndQueueDedupeState(userId);
+  const fallbackIds = allLikedIds.filter((id) => !fallbackExcludeState.ids.has(id));
 
   if (fallbackIds.length === 0) {
-    logger.warn('DJ pick-next fallback: no candidates');
-    emit({ type: 'dj.pick-next.done', added: false, reason: 'no-candidates' });
+    const appendedCount = getAddedTrackCount(userId, initialQueueLength);
+    logger.warn({ targetCount: DJ_PICK_TARGET_COUNT, appendedCount }, 'DJ pick-next fallback: no candidates');
+    if (appendedCount > 0) {
+      broadcastAppended(userId, initialQueueLength, emit);
+    } else {
+      emit({ type: 'dj.pick-next.done', added: false, reason: 'no-candidates' });
+    }
     return;
   }
 
@@ -754,43 +920,71 @@ ${candidateList}
       sqRaw: '',
       searchQueries: [],
       searchedTracks: [],
-      excludedIds: Array.from(excludeState.ids),
-      excludedDedupeKeys: Array.from(excludeState.dedupeKeys),
+      excludedIds: Array.from(fallbackExcludeState.ids),
+      excludedDedupeKeys: Array.from(fallbackExcludeState.dedupeKeys),
       totalCandidates: fallbackIds.length,
       selectedSay: '随机 fallback（LLM 未配置或选歌失败）'
     });
   }
 
-  const pickedIds = sampleN(fallbackIds, Math.min(2, fallbackIds.length));
+  const fallbackSampleSize = Math.min(
+    Math.max(DJ_PICK_TARGET_COUNT, getRemainingPickSlots(userId, initialQueueLength) * 4),
+    fallbackIds.length
+  );
+  const pickedIds = sampleN(fallbackIds, fallbackSampleSize);
   const pickedDetails = (await withTimeout(
     ncmClient.getSongDetails(pickedIds).catch(() => []),
     LIKED_DETAILS_TIMEOUT_MS,
     []
   )).filter((t) => {
     if (t.artists.length === 0) return false;
-    return !excludeState.dedupeKeys.has(buildTrackDedupeKey({
+    return !isTrackDedupeKeyExcluded(buildTrackDedupeKey({
       id: String(t.id),
       name: t.name,
       artist: t.artists.join(' / ')
-    }));
+    }), fallbackExcludeState.dedupeKeys);
   });
+  if (signal?.aborted) return;
 
   if (pickedDetails.length === 0) {
-    logger.warn('DJ pick-next fallback: failed to fetch track details');
-    emit({ type: 'dj.pick-next.done', added: false, reason: 'no-candidates' });
+    const appendedCount = getQueue(userId).length - initialQueueLength;
+    logger.warn({ targetCount: DJ_PICK_TARGET_COUNT, appendedCount }, 'DJ pick-next fallback: failed to fetch track details');
+    if (appendedCount > 0) {
+      broadcastAppended(userId, initialQueueLength, emit);
+    } else {
+      emit({ type: 'dj.pick-next.done', added: false, reason: 'no-candidates' });
+    }
     return;
   }
 
-  const prevQueueLength = getQueue(userId).length;
+  const pathQueueLength = getQueue(userId).length;
   for (const pick of pickedDetails) {
+    if (getRemainingPickSlots(userId, initialQueueLength) <= 0) break;
+    const dedupeKey = buildTrackDedupeKey({
+      id: String(pick.id),
+      name: pick.name,
+      artists: pick.artists
+    });
+    if (isTrackDedupeKeyExcluded(dedupeKey, fallbackExcludeState.dedupeKeys)) continue;
     addToQueue(userId, {
       ncmId: String(pick.id),
       name: pick.name,
       artists: pick.artists,
       coverImgUrl: pick.coverImgUrl
     }, 'end');
+    fallbackExcludeState.ids.add(String(pick.id));
+    if (dedupeKey) fallbackExcludeState.dedupeKeys.add(dedupeKey);
   }
-  broadcastAppended(userId, prevQueueLength, emit);
+  logger.info(
+    {
+      targetCount: DJ_PICK_TARGET_COUNT,
+      appendedCount: getQueue(userId).length - initialQueueLength,
+      fallbackAppendedCount: getQueue(userId).length - pathQueueLength,
+      sampledCount: pickedIds.length
+    },
+    'DJ pick-next fallback: appended tracks'
+  );
+  broadcastAppended(userId, initialQueueLength, emit);
 }
 
 function broadcastAppended(userId: string, prevQueueLength: number, emit: DjEventSink): void {
@@ -800,6 +994,15 @@ function broadcastAppended(userId: string, prevQueueLength: number, emit: DjEven
     emit({ type: 'queue-appended', track });
   }
   const names = newTracks.map((t) => t.name).filter((n): n is string => Boolean(n));
+  getLogger().info(
+    {
+      targetCount: DJ_PICK_TARGET_COUNT,
+      appendedCount: newTracks.length,
+      trackIds: newTracks.map((track) => track.ncmId),
+      trackNames: names
+    },
+    'DJ pick-next: broadcast appended tracks'
+  );
   emit({
     type: 'dj.pick-next.done',
     added: newTracks.length > 0,
@@ -857,22 +1060,11 @@ type DedupeState = {
 };
 
 export function buildTrackDedupeKey(track: TrackDedupeInput): string {
-  const name = normalizeDedupeText(track.name ?? '');
-  const artist = normalizeDedupeText(primaryArtist(track));
-  if (!name || !artist) return '';
-  return `${name}::${artist}`;
+  return buildMusicTrackDedupeKey(track);
 }
 
-function normalizeDedupeText(value: string): string {
-  return value
-    .toLowerCase()
-    .replace(/（[^）]*）|\([^)]*\)|\[[^\]]*]|\{[^}]*}/g, '')
-    .replace(/[^\p{L}\p{N}]+/gu, '');
-}
-
-function primaryArtist(track: TrackDedupeInput): string {
-  const artist = track.artist ?? track.artists?.join(' / ') ?? '';
-  return artist.split(/\s*(?:\/|,|，|、|&|feat\.?|ft\.?)\s*/i)[0]?.trim() ?? '';
+export function isTrackDedupeKeyExcluded(dedupeKey: string, excludedKeys: Set<string>): boolean {
+  return isMusicTrackDedupeKeyExcluded(dedupeKey, excludedKeys);
 }
 
 function getTodayAndQueueDedupeState(userId: string): DedupeState {
@@ -955,10 +1147,14 @@ export function createSseDjPickNextHandler(opts: DjNextOptions) {
     isRunning.set(userId, true);
     const controller = new AbortController();
     req.on('close', () => controller.abort(new Error('client-disconnected')));
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
     const jobTimer = new Promise<'timeout'>((resolve) =>
-      setTimeout(() => resolve('timeout'), JOB_TIMEOUT_MS)
+      timeoutId = setTimeout(() => {
+        controller.abort(new Error('job-timeout'));
+        resolve('timeout');
+      }, JOB_TIMEOUT_MS)
     );
-    void Promise.race([doPickNext(userId, ncmClient, emit).then(() => 'done' as const), jobTimer]).then((result) => {
+    void Promise.race([doPickNext(userId, ncmClient, emit, controller.signal).then(() => 'done' as const), jobTimer]).then((result) => {
       if (result === 'timeout' && !res.writableEnded) {
         endSse(res, 'dj.pick-next.done', { added: false, reason: 'timeout' });
         return;
@@ -966,7 +1162,10 @@ export function createSseDjPickNextHandler(opts: DjNextOptions) {
       if (!res.writableEnded) res.end();
     }).catch((err: Error) => {
       if (!res.writableEnded) endSse(res, 'dj.pick-next.done', { added: false, reason: 'error' });
-    }).finally(() => isRunning.set(userId, false));
+    }).finally(() => {
+      if (timeoutId) clearTimeout(timeoutId);
+      isRunning.set(userId, false);
+    });
     req.on('close', () => { if (!res.writableEnded) res.end(); });
   };
 }
