@@ -81,6 +81,7 @@ describe('DJ pick-next diagnostics', () => {
 
     expect(sseHandler).toContain("controller.abort(new Error('job-timeout'))");
     expect(sseHandler).toContain('doPickNext(userId, ncmClient, emit, controller.signal)');
+    expectBefore(sseHandler, 'if (isRunning.get(userId))', 'applyClientQueueSnapshot(req, userId)');
 
     expect(doPickNext).toContain('new MusicAgent');
     expect(doPickNext).toContain("output.status === 'ok'");
@@ -110,6 +111,17 @@ describe('DJ pick-next diagnostics', () => {
     expect(doPickNext).toContain('pickAbort.cleanup()');
     expectBefore(doPickNext, 'const pickAbort = createAbortTimeoutSignal(signal, PICK_LLM_TIMEOUT_MS)', 'parseDjCandidatePicks');
     expectBefore(doPickNext, '{ signal: pickAbort.signal }', 'pickAbort.cleanup()');
+  });
+
+  it('does not apply stale client queue snapshots to already-running DJ jobs', () => {
+    const source = readSource('src/server/http/routes/djNext.ts');
+    const jsonHandler = extractBetween(source, 'export function createDjPickNextHandler', 'async function runPickNextJob');
+    const sseHandler = extractBetween(source, 'export function createSseDjPickNextHandler', 'function getScopedNcmClient');
+
+    expectBefore(jsonHandler, 'if (isRunning.get(userId))', 'applyClientQueueSnapshot(req, userId)');
+    expectBefore(sseHandler, 'if (isRunning.get(userId))', 'applyClientQueueSnapshot(req, userId)');
+    expect(jsonHandler).toContain('res.json({ ok: true, running: true })');
+    expect(sseHandler).toContain("endSse(res, 'dj.pick-next.done', { added: false, reason: 'already-running' })");
   });
 
   it('routes chat recommendations through MusicAgent with status guards', () => {

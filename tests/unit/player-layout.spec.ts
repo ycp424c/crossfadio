@@ -150,6 +150,25 @@ describe('player layout', () => {
     expect(triggerBlock).toContain('djPickNextInFlightRef.current = false');
   });
 
+  it('backs off instead of retrying immediately when DJ pick-next is already running on the server', () => {
+    const source = fs.readFileSync(path.join(root, 'src/renderer/views/Player/PlayerView.tsx'), 'utf-8');
+    const triggerStart = source.indexOf('// DJ mode: keep queue at DJ_TARGET_QUEUE songs');
+    const startSegueAudioStart = source.indexOf('maybeStartSegueAudio();', triggerStart);
+    const triggerBlock = source.slice(triggerStart, startSegueAudioStart);
+    const doneStart = triggerBlock.indexOf("type === 'dj.pick-next.done'");
+    const doneBlock = triggerBlock.slice(doneStart);
+
+    expect(source).toContain('const DJ_ALREADY_RUNNING_BACKOFF_MS = 30000');
+    expect(source).toContain('const djPickNextBackoffUntilRef = useRef<number>(0)');
+    expect(triggerBlock).toContain('now >= djPickNextBackoffUntilRef.current');
+    expect(doneBlock).toContain("reason === 'already-running'");
+    expect(doneBlock).toContain('djPickNextBackoffUntilRef.current = Date.now() + DJ_ALREADY_RUNNING_BACKOFF_MS');
+    expect(doneBlock).toContain("setDjStatusText('正在补充队列…')");
+    expect(doneBlock.indexOf("reason === 'already-running'")).toBeLessThan(
+      doneBlock.indexOf('djPickNextLastCallRef.current = 0')
+    );
+  });
+
   it('logs DJ pick-next exclusion lists from debug events to the browser console', () => {
     const source = fs.readFileSync(path.join(root, 'src/renderer/views/Player/PlayerView.tsx'), 'utf-8');
     const debugStart = source.indexOf("type === 'dj.debug'");

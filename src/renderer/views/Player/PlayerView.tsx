@@ -67,6 +67,7 @@ const TRACK_DEFAULT_VOLUME = 1;
 const TRACK_DUCKING_VOLUME = 0.2;
 const DJ_TARGET_QUEUE = 3;       // keep this many songs in queue at all times
 const DJ_PICK_COOLDOWN_MS = 3000; // min ms between pick-next calls
+const DJ_ALREADY_RUNNING_BACKOFF_MS = 30000;
 const SEGUE_RETRY_COOLDOWN_MS = 6000; // min ms between segue trigger retries within the same track
 
 type DiscoveryMode = 'explore' | 'comfort';
@@ -184,6 +185,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
   const segueSatisfiedForTrackIdRef = useRef<string | null>(null);
   const segueLastAttemptAtRef = useRef<number>(0);
   const djPickNextLastCallRef = useRef<number>(0);
+  const djPickNextBackoffUntilRef = useRef<number>(0);
   const djPickNextInFlightRef = useRef(false);
   const applyingRemoteQueueRef = useRef(false);
   const skipNextQueuePersistRef = useRef(true);
@@ -440,6 +442,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
           : [];
         const nextIndex = typeof d.currentIndex === 'number' ? d.currentIndex : 0;
         applyingRemoteQueueRef.current = true;
+        djPickNextBackoffUntilRef.current = 0;
         setQueue(nextQueue);
         setCurrentIndex(nextIndex);
       } else if (event === 'queue-appended') {
@@ -454,6 +457,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
               ? (t as { coverImgUrl: string }).coverImgUrl
               : null
           };
+          djPickNextBackoffUntilRef.current = 0;
           setQueue((prev) => [...prev, appended]);
         }
       }
@@ -923,8 +927,14 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
     // Defer while a segue request is in flight so both jobs don't compete for LLM bandwidth —
     // segue has a hard timing constraint, DJ pick-next does not.
     const segueInFlight = segueClientRequestIdRef.current !== null;
-    if (isPlaying && !segueInFlight && !djPickNextInFlightRef.current && queueIds.length < DJ_TARGET_QUEUE) {
-      const now = Date.now();
+    const now = Date.now();
+    if (
+      isPlaying
+      && !segueInFlight
+      && !djPickNextInFlightRef.current
+      && now >= djPickNextBackoffUntilRef.current
+      && queueIds.length < DJ_TARGET_QUEUE
+    ) {
       if (now - djPickNextLastCallRef.current >= DJ_PICK_COOLDOWN_MS) {
         djPickNextLastCallRef.current = now;
         djPickNextInFlightRef.current = true;
@@ -950,16 +960,24 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
                 });
               } else if (type === 'dj.pick-next.done') {
                 if (data.added) {
+                  djPickNextBackoffUntilRef.current = 0;
                   const name = typeof data.trackName === 'string' ? data.trackName : '';
                   setDjStatusText(name ? `已加入「${name}」` : '已补充一首');
                 } else {
-                  djPickNextLastCallRef.current = 0;
                   const reason = typeof data.reason === 'string' && data.reason.length > 0 ? data.reason : '稍后重试';
-                  setDjStatusText(`补歌失败（${reason}）`);
+                  if (reason === 'already-running') {
+                    djPickNextBackoffUntilRef.current = Date.now() + DJ_ALREADY_RUNNING_BACKOFF_MS;
+                    setDjStatusText('正在补充队列…');
+                  } else {
+                    djPickNextBackoffUntilRef.current = 0;
+                    djPickNextLastCallRef.current = 0;
+                    setDjStatusText(`补歌失败（${reason}）`);
+                  }
                 }
               }
             }
           } catch {
+            djPickNextBackoffUntilRef.current = 0;
             djPickNextLastCallRef.current = 0;
             setDjStatusText('补歌请求失败');
           } finally {

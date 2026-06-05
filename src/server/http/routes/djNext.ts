@@ -336,11 +336,13 @@ export function createDjPickNextHandler(opts: DjNextOptions): RequestHandler {
   return (req, res) => {
     const userId = (req as AuthedRequest).userId;
     const ncmClient = getScopedNcmClient(req, opts.ncmClient);
-    applyClientQueueSnapshot(req, userId);
-    res.json({ ok: true, running: isRunning.get(userId) ?? false });
-    if (!(isRunning.get(userId) ?? false)) {
-      void runPickNextJob(userId, ncmClient);
+    if (isRunning.get(userId)) {
+      res.json({ ok: true, running: true });
+      return;
     }
+    applyClientQueueSnapshot(req, userId);
+    res.json({ ok: true, running: false });
+    void runPickNextJob(userId, ncmClient);
   };
 }
 
@@ -1133,17 +1135,17 @@ export function createSseDjPickNextHandler(opts: DjNextOptions) {
   return (req: Request, res: Response): void => {
     const userId = (req as AuthedRequest).userId;
     const ncmClient = getScopedNcmClient(req, opts.ncmClient);
-    applyClientQueueSnapshot(req, userId);
     initSseRes(res);
+    if (isRunning.get(userId)) {
+      endSse(res, 'dj.pick-next.done', { added: false, reason: 'already-running' });
+      return;
+    }
+    applyClientQueueSnapshot(req, userId);
     const emit = (payload: Record<string, unknown>): void => {
       const type = typeof payload.type === 'string' ? payload.type : 'message';
       broadcastToUser(userId, payload);
       try { writeSseEvent(res, type, payload); } catch { /* disconnect */ }
     };
-    if (isRunning.get(userId)) {
-      endSse(res, 'dj.pick-next.done', { added: false, reason: 'already-running' });
-      return;
-    }
     isRunning.set(userId, true);
     const controller = new AbortController();
     req.on('close', () => controller.abort(new Error('client-disconnected')));
