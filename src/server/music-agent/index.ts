@@ -1,9 +1,11 @@
 import { LlmClient, type LlmConfig } from '../llm/client.js';
+import { getLogger } from '../logger.js';
 import type { NcmClient } from '../ncm/client.js';
 import { CandidatePool } from './candidates.js';
 import { buildMusicAgentContext } from './context.js';
 import { runMusicAgentLoop } from './loop.js';
 import { createMusicAgentTools } from './tools.js';
+import type { MusicAgentFallbackLogEvent } from './loop.js';
 import type { AgentBudget, MusicAgentLlmClient, MusicAgentRunOutput } from './schema.js';
 
 export type MusicAgentOptions = {
@@ -36,9 +38,15 @@ export type ChatRecommendInput = {
 
 export class MusicAgent {
   private readonly llmClient: MusicAgentLlmClient;
+  private readonly fallbackLogger: ((event: MusicAgentFallbackLogEvent & { userId: string }) => void) | undefined;
 
   constructor(options: MusicAgentOptions = {}) {
     this.llmClient = resolveLlmClient(options);
+    this.fallbackLogger = options.llmConfig
+      ? (event) => {
+          getLogger().warn(event, 'MusicAgent ranked fallback');
+        }
+      : undefined;
   }
 
   async pickNext(input: PickNextInput): Promise<MusicAgentRunOutput> {
@@ -66,7 +74,8 @@ export class MusicAgent {
       llmClient: this.llmClient,
       tools,
       budget,
-      signal: input.signal
+      signal: input.signal,
+      fallbackLogger: this.withUserIdFallbackLogger(input.userId)
     });
   }
 
@@ -96,8 +105,16 @@ export class MusicAgent {
       llmClient: this.llmClient,
       tools,
       budget,
-      signal: input.signal
+      signal: input.signal,
+      fallbackLogger: this.withUserIdFallbackLogger(input.userId)
     });
+  }
+
+  private withUserIdFallbackLogger(userId: string) {
+    if (!this.fallbackLogger) return undefined;
+    return (event: MusicAgentFallbackLogEvent) => {
+      this.fallbackLogger?.({ ...event, userId });
+    };
   }
 }
 

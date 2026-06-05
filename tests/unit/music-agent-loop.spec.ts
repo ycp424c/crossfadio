@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { CandidatePool } from '../../src/server/music-agent/candidates.js';
 import { runMusicAgentLoop } from '../../src/server/music-agent/loop.js';
 import type { MusicAgentToolRegistry } from '../../src/server/music-agent/tools.js';
@@ -128,6 +128,7 @@ describe('runMusicAgentLoop', () => {
   it('falls back to ranked candidates when final picks are outside the whitelist pool', async () => {
     const pool = new CandidatePool();
     pool.upsert(candidate({ id: '101' }));
+    const fallbackLogger = vi.fn();
     const llmClient = new LoopFakeLlmClient([
       JSON.stringify({
         type: 'final',
@@ -142,7 +143,8 @@ describe('runMusicAgentLoop', () => {
       context: context(),
       candidatePool: pool,
       tools: {},
-      budget: budget()
+      budget: budget(),
+      fallbackLogger
     });
 
     expect(musicAgentRunOutputSchema.parse(result).status).toBe('ok');
@@ -151,6 +153,16 @@ describe('runMusicAgentLoop', () => {
     expect(result.picks[0]).toMatchObject({ id: '101', reason: 'ranked fallback', source: 'liked' });
     expect(result.say).toBe('我从候选池里挑了一首更适合现在的歌。');
     expect(result.say).not.toMatch(/^fallback:/i);
+    expect(fallbackLogger).toHaveBeenCalledWith(expect.objectContaining({
+      reason: 'final_rejected',
+      mode: 'chat_recommend',
+      status: 'ok',
+      candidateCount: 1,
+      pickCount: 1,
+      lastTraceStep: expect.objectContaining({
+        thoughtSummary: 'final rejected by candidate pool whitelist'
+      })
+    }));
   });
 
   it('does not execute tools when the signal is already aborted', async () => {
