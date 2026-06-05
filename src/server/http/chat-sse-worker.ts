@@ -17,7 +17,7 @@ import { executeActions } from '../agent/actions.js';
 import { getCurrentIndex, getQueue, addToQueue, swapNext } from '../store/queue.js';
 import { broadcastToUser } from './broadcast.js';
 import { getLogger } from '../logger.js';
-import { buildTrackDedupeKey, searchCandidates } from './routes/djNext.js';
+import { buildTrackDedupeKey, isTrackDedupeKeyExcluded, searchCandidates } from './routes/djNext.js';
 import { MusicAgent } from '../music-agent/index.js';
 import { extractChatPreferencesIfDue } from '../music-agent/memory.js';
 import type { MusicAgentRunOutput } from '../music-agent/schema.js';
@@ -413,7 +413,7 @@ function applyMusicAgentPicks(
   const addedTracks: Array<{ name: string; artist: string }> = [];
   for (const pick of output.picks) {
     const dedupeKey = buildTrackDedupeKey(pick);
-    if (excludedIds.has(pick.id) || (dedupeKey && excludedDedupeKeys.has(dedupeKey))) continue;
+    if (excludedIds.has(pick.id) || isTrackDedupeKeyExcluded(dedupeKey, excludedDedupeKeys)) continue;
     excludedIds.add(pick.id);
     if (dedupeKey) excludedDedupeKeys.add(dedupeKey);
     const track = {

@@ -87,10 +87,17 @@ describe('DJ pick-next diagnostics', () => {
     expect(doPickNext).toContain('createAbortTimeoutSignal(signal, DJ_AGENT_TIMEOUT_MS)');
     expect(doPickNext).toContain('includeDailyTheme: dailyThemeEnabled');
     expect(doPickNext).toContain('const excludeState = getTodayAndQueueDedupeState(userId)');
+    expect(doPickNext).toContain('const initialQueueLength = getQueue(userId).length');
     expect(doPickNext).toContain('excludeTrackIds: excludeState.ids');
     expect(doPickNext).toContain('excludeTrackDedupeKeys: excludeState.dedupeKeys');
+    expect(doPickNext).toContain('if (getRemainingPickSlots(userId, initialQueueLength) <= 0) break');
+    expect(doPickNext).toContain('if (hasReachedPickTarget(userId, initialQueueLength))');
     expect(doPickNext).toContain('djPickReasonCache.set(track.ncmId, output.say.trim())');
-    expect(doPickNext).toContain('broadcastAppended(userId, prevQueueLength, emit)');
+    expect(doPickNext).toContain('broadcastAppended(userId, initialQueueLength, emit)');
+    expect(doPickNext).toContain('MusicAgent appended fewer than target');
+    expect(doPickNext).toContain('whitelisted picks appended fewer than target');
+    expect(doPickNext).toContain('getRemainingPickSlots(userId, initialQueueLength) * 4');
+    expect(doPickNext).toContain('targetCount: DJ_PICK_TARGET_COUNT');
 
     expect(doPickNext).toContain('const styleAbort = createAbortTimeoutSignal(signal, SEARCH_QUERY_LLM_TIMEOUT_MS)');
     expect(doPickNext).toContain('{ signal: styleAbort.signal }');
@@ -126,7 +133,7 @@ describe('DJ pick-next diagnostics', () => {
     expect(applyPicks).toContain('const excludedIds = new Set([...recentIds, ...queuedTracks.map((track) => track.ncmId)])');
     expect(applyPicks).toContain('const excludedDedupeKeys = new Set([...recentDedupeKeys, ...queueDedupeKeys])');
     expect(applyPicks).toContain('const dedupeKey = buildTrackDedupeKey(pick)');
-    expect(applyPicks).toContain('excludedDedupeKeys.has(dedupeKey)');
+    expect(applyPicks).toContain('isTrackDedupeKeyExcluded(dedupeKey, excludedDedupeKeys)');
   });
 });
 
@@ -259,6 +266,58 @@ describe('searchCandidates', () => {
     );
 
     expect(result.map((track) => track.id)).toEqual(['100']);
+  });
+
+  it('excludes source-prefixed live variants by normalized title and primary artist', async () => {
+    const ncm = mockNcmClient({
+      '钟舒漫': [
+        makeSong(1, '感应 + 给自己的信 (Live)', '钟舒漫'),
+        makeSong(2, '下一首', '钟舒漫')
+      ]
+    });
+    const excludedKey = buildTrackDedupeKey({
+      name: '给自己的信(Live)',
+      artist: '钟舒漫'
+    });
+
+    const result = await searchCandidates(
+      ['钟舒漫'],
+      ncm as unknown as NcmClient,
+      new Set(),
+      20,
+      undefined,
+      new Set([excludedKey])
+    );
+
+    expect(result.map((track) => track.id)).toEqual(['2']);
+  });
+
+  it('deduplicates source-prefixed variants within search results by title similarity', async () => {
+    const ncm = mockNcmClient({
+      '钟舒漫': [
+        makeSong(1, '感应 + 给自己的信 (Live)', '钟舒漫'),
+        makeSong(2, '给自己的信(Live)', '钟舒漫'),
+        makeSong(3, '下一首', '钟舒漫')
+      ]
+    });
+
+    const result = await searchCandidates(['钟舒漫'], ncm as unknown as NcmClient, new Set(), 20);
+
+    expect(result.map((track) => track.id)).toEqual(['1', '3']);
+  });
+
+  it('deduplicates high-overlap title variants that are not exact substrings', async () => {
+    const ncm = mockNcmClient({
+      '莫文蔚': [
+        makeSong(1, '慢慢喜欢你', '莫文蔚'),
+        makeSong(2, '慢慢地喜欢你', '莫文蔚'),
+        makeSong(3, '阴天', '莫文蔚')
+      ]
+    });
+
+    const result = await searchCandidates(['莫文蔚'], ncm as unknown as NcmClient, new Set(), 20);
+
+    expect(result.map((track) => track.id)).toEqual(['1', '3']);
   });
 
   it('respects the limit and stops collecting once reached', async () => {

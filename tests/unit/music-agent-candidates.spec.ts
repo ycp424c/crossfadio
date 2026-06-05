@@ -68,6 +68,28 @@ describe('CandidatePool', () => {
     expect(pool.get('track-1')?.evidence).toEqual(['liked by user', 'search hit']);
   });
 
+  it('deduplicates source-prefixed live variants of the same song', () => {
+    const pool = new CandidatePool();
+
+    pool.upsert(candidate({ id: 'track-1', name: '感应 + 给自己的信 (Live)', artist: '钟舒漫', sources: ['search'] }));
+    pool.upsert(candidate({ id: 'track-2', name: '给自己的信(Live)', artist: '钟舒漫', sources: ['liked'] }));
+
+    expect(pool.count()).toBe(1);
+    expect(pool.has('track-1')).toBe(true);
+    expect(pool.has('track-2')).toBe(true);
+    expect(pool.get('track-2')?.id).toBe('track-1');
+  });
+
+  it('deduplicates high-overlap title variants that are not exact substrings', () => {
+    const pool = new CandidatePool();
+
+    pool.upsert(candidate({ id: 'track-1', name: '慢慢喜欢你', artist: '莫文蔚', sources: ['search'] }));
+    pool.upsert(candidate({ id: 'track-2', name: '慢慢地喜欢你', artist: '莫文蔚', sources: ['liked'] }));
+
+    expect(pool.count()).toBe(1);
+    expect(pool.has('track-2')).toBe(true);
+  });
+
   it('builds normalized dedupe key from title and primary artist', () => {
     expect(buildCandidateDedupeKey(candidate({
       name: '  Song (Live) ',

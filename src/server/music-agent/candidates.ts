@@ -1,4 +1,10 @@
 import { finalPickSchema } from './schema.js';
+import {
+  areMusicTrackDedupeKeysSimilar,
+  buildMusicTrackDedupeKey,
+  isMusicTrackDedupeKeyExcluded,
+  normalizeMusicTrackToken
+} from './dedupe.js';
 import type { FinalPick, MusicCandidate, MusicCandidateScores } from './schema.js';
 
 export interface CandidatePoolOptions {
@@ -18,17 +24,6 @@ type CandidatePoolEntry = {
   dedupeKeys: Set<string>;
 };
 
-function normalizeText(value: string | null | undefined): string {
-  return (value ?? '')
-    .normalize('NFKC')
-    .toLowerCase()
-    .replace(/\([^)]*\)/g, ' ')
-    .replace(/（[^）]*）/g, ' ')
-    .replace(/[^\p{L}\p{N}]+/gu, ' ')
-    .trim()
-    .replace(/\s+/g, ' ');
-}
-
 function primaryArtist(artist: string | null | undefined): string {
   const value = artist ?? '';
 
@@ -38,7 +33,7 @@ function primaryArtist(artist: string | null | undefined): string {
 function artistParts(artist: string): string[] {
   return artist
     .split(/\s*(?:\/|,|，|&| feat\.?| ft\.?| with )\s*/i)
-    .map((part) => normalizeText(part))
+    .map((part) => normalizeMusicTrackToken(part))
     .filter(Boolean);
 }
 
@@ -78,7 +73,7 @@ function mergeCandidate(existing: MusicCandidate, incoming: MusicCandidate): Mus
 }
 
 export function buildCandidateDedupeKey(candidate: CandidateDedupeInput): string {
-  return `${normalizeText(candidate.name)}::${normalizeText(primaryArtist(candidate.artist))}`;
+  return buildMusicTrackDedupeKey({ name: candidate.name, artist: primaryArtist(candidate.artist) });
 }
 
 export class CandidatePool {
@@ -93,7 +88,7 @@ export class CandidatePool {
   constructor(options: CandidatePoolOptions = {}) {
     this.maxCandidates = options.maxCandidates ?? Number.POSITIVE_INFINITY;
     this.bannedIds = new Set(options.bannedIds ?? []);
-    this.bannedArtists = new Set(Array.from(options.bannedArtists ?? []).map((artist) => normalizeText(artist)));
+    this.bannedArtists = new Set(Array.from(options.bannedArtists ?? []).map((artist) => normalizeMusicTrackToken(artist)));
     this.bannedTrackKeys = new Set(options.bannedTrackKeys ?? []);
   }
 
@@ -107,7 +102,7 @@ export class CandidatePool {
     const existingById = this.byId.get(candidate.id);
     const canonicalId = this.resolveCanonicalId(candidate.id);
     const existingByCanonicalId = canonicalId ? this.byId.get(canonicalId) : undefined;
-    const dedupedId = this.idByDedupeKey.get(dedupeKey);
+    const dedupedId = this.findDedupedId(dedupeKey);
     const dedupedEntry = dedupedId ? this.byId.get(dedupedId) : undefined;
     const existingEntry = existingByCanonicalId ?? existingById;
     const existingEntryId = existingByCanonicalId && canonicalId ? canonicalId : candidate.id;
@@ -145,9 +140,11 @@ export class CandidatePool {
 
     this.byId.set(candidate.id, {
       candidate: cloneCandidate(candidate),
-      dedupeKeys: new Set([dedupeKey])
+      dedupeKeys: new Set(dedupeKey ? [dedupeKey] : [])
     });
-    this.idByDedupeKey.set(dedupeKey, candidate.id);
+    if (dedupeKey) {
+      this.idByDedupeKey.set(dedupeKey, candidate.id);
+    }
   }
 
   get(id: string): MusicCandidate | undefined {
@@ -232,6 +229,7 @@ export class CandidatePool {
   }
 
   private addDedupeKey(entry: CandidatePoolEntry, id: string, dedupeKey: string): void {
+    if (!dedupeKey) return;
     entry.dedupeKeys.add(dedupeKey);
     this.idByDedupeKey.set(dedupeKey, id);
   }
@@ -247,11 +245,26 @@ export class CandidatePool {
       return true;
     }
 
-    if (this.bannedTrackKeys.has(dedupeKey)) {
+    if (isMusicTrackDedupeKeyExcluded(dedupeKey, this.bannedTrackKeys)) {
       return true;
     }
 
     return artistParts(candidate.artist).some((artist) => this.bannedArtists.has(artist));
+  }
+
+  private findDedupedId(dedupeKey: string): string | undefined {
+    if (!dedupeKey) return undefined;
+
+    const exactId = this.idByDedupeKey.get(dedupeKey);
+    if (exactId) return exactId;
+
+    for (const [existingKey, id] of this.idByDedupeKey.entries()) {
+      if (areMusicTrackDedupeKeysSimilar(dedupeKey, existingKey)) {
+        return id;
+      }
+    }
+
+    return undefined;
   }
 }
 
