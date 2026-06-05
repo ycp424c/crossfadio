@@ -183,6 +183,27 @@ describe('player layout', () => {
     expect(source).not.toContain('decision.shouldTriggerSegue &&');
   });
 
+  it('does not stop an already playing segue audio when staging the next TTS clip', () => {
+    const source = fs.readFileSync(path.join(root, 'src/renderer/views/Player/PlayerView.tsx'), 'utf-8');
+    const ttsReadyStart = source.indexOf("type === 'segue.tts-ready'");
+    const degradedStart = source.indexOf("type === 'segue.degraded'");
+    const ttsReadyBlock = source.slice(ttsReadyStart, degradedStart);
+
+    expect(ttsReadyBlock).toContain('disposeSegueAudio();');
+    expect(ttsReadyBlock).not.toContain('disposeSegueAudio(true);');
+  });
+
+  it('uses speech duration instead of only the crossfade window when starting segue audio', () => {
+    const source = fs.readFileSync(path.join(root, 'src/renderer/views/Player/PlayerView.tsx'), 'utf-8');
+    const maybeStartStart = source.indexOf('const maybeStartSegueAudio = useCallback(() => {');
+    const nextEffectStart = source.indexOf('useEffect(() => {', maybeStartStart);
+    const maybeStartBlock = source.slice(maybeStartStart, nextEffectStart);
+
+    expect(source).toContain('@renderer/audio/seguePlayback');
+    expect(maybeStartBlock).toContain('shouldStartSegueAudio({');
+    expect(maybeStartBlock).not.toContain('trackAudio.currentTime < crossfadeAtSec');
+  });
+
   it('reloads player context after auth token changes so daily theme appears after login', () => {
     const source = fs.readFileSync(path.join(root, 'src/renderer/views/Player/PlayerView.tsx'), 'utf-8');
     const contextLoadStart = source.indexOf('getPlayerContext()');
