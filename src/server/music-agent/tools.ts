@@ -60,6 +60,8 @@ type ToolState = {
 const SUMMARY_MAX_CHARS = 900;
 const DEFAULT_SEARCH_LIMIT = 8;
 const MAX_LIKED_RECALL_LIMIT = 60;
+const AUTO_FILL_DEFAULT_LIKED_RECALL_LIMIT = 8;
+const AUTO_FILL_MAX_LIKED_RECALL_LIMIT = 10;
 const MAX_SEARCH_RECALL_LIMIT = 20;
 const MAX_TREND_RECALL_LIMIT = 10;
 const MAX_STYLE_EXPANSION_RECALL_LIMIT = 10;
@@ -138,7 +140,7 @@ export function createMusicAgentTools(input: CreateMusicAgentToolsInput): MusicA
 
     recall_from_liked: async (toolInput, signal) => {
       if (signal?.aborted) return abortedObservation(input.candidatePool);
-      const limit = boundedPositiveInt(toolInput.limit, 30, MAX_LIKED_RECALL_LIMIT);
+      const limit = likedRecallLimit(toolInput.limit, input.context);
       try {
         const ids = (await input.ncmClient.getLikedSongIds()).slice(0, limit).map(String);
         if (signal?.aborted) return abortedObservation(input.candidatePool);
@@ -318,6 +320,13 @@ export function createMusicAgentTools(input: CreateMusicAgentToolsInput): MusicA
       return observation(input.candidatePool, summarizeCandidates('finalize candidates', top, options));
     }
   };
+}
+
+function likedRecallLimit(value: unknown, context: MusicAgentContextSummary): number {
+  if (context.request !== 'auto-fill') {
+    return boundedPositiveInt(value, 30, MAX_LIKED_RECALL_LIMIT);
+  }
+  return boundedPositiveInt(value, AUTO_FILL_DEFAULT_LIKED_RECALL_LIMIT, AUTO_FILL_MAX_LIKED_RECALL_LIMIT);
 }
 
 function rankOptions(context: MusicAgentContextSummary) {

@@ -318,6 +318,57 @@ describe('createMusicAgentTools', () => {
     });
   });
 
+  it('caps auto-fill liked recall so liked songs cannot fill the whole candidate pool', async () => {
+    const likedIds = Array.from({ length: 30 }, (_, index) => `liked-${index + 1}`);
+    const ncmClient = {
+      getLikedSongIds: vi.fn(async () => likedIds),
+      getSongDetails: vi.fn(async (ids: string[]) => ids.map((id) => ({
+        id,
+        name: `Liked ${id}`,
+        artists: [`Artist ${id}`]
+      }))),
+      searchSongs: vi.fn(async () => []),
+      getPlaylistDetail: vi.fn(async () => null)
+    };
+
+    const { CandidatePool } = await import('../../src/server/music-agent/candidates.js');
+    const { createMusicAgentTools } = await import('../../src/server/music-agent/tools.js');
+    const candidatePool = new CandidatePool();
+    const tools = createMusicAgentTools({
+      userId: 'user-1',
+      ncmClient: ncmClient as any,
+      context: {
+        request: 'auto-fill',
+        currentUserText: '',
+        currentMoment: { localTime: '周一 13:30', daypart: '下午', weather: null },
+        activeDirective: '',
+        currentPlanSegment: null,
+        tasteSummary: '偏好华语抒情与欧美流行女声',
+        recentPreferenceSummary: '',
+        recentPlaySignals: '',
+        queueStateSummary: '',
+        bannedSummary: ''
+      },
+      candidatePool,
+      budget: {
+        maxMs: 10_000,
+        maxSteps: 3,
+        maxLlmCalls: 2,
+        maxToolCalls: 2,
+        maxNcmSearches: 1,
+        maxPlaylistFetches: 0,
+        maxTrendFetchMs: 0,
+        maxCandidates: 20
+      }
+    });
+
+    const observation = await tools.recall_from_liked?.({ limit: 30 });
+
+    expect(ncmClient.getSongDetails).toHaveBeenCalledWith(likedIds.slice(0, 10));
+    expect(observation?.candidateCount).toBe(10);
+    expect(candidatePool.count()).toBe(10);
+  });
+
   it('front-loads repeated artist penalties into query recall diversity', async () => {
     const ncmClient = {
       getLikedSongIds: vi.fn(async () => []),

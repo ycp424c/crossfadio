@@ -337,6 +337,79 @@ describe('runMusicAgentLoop', () => {
     }));
   });
 
+  it('auto-fill supplements liked recall with search, style, and trend before converging', async () => {
+    const pool = new CandidatePool();
+    const fallbackLogger = vi.fn();
+    const llmClient = new LoopFakeLlmClient([
+      JSON.stringify({ type: 'tool_call', tool: 'recall_from_liked', input: { limit: 30 } }),
+      JSON.stringify({ type: 'tool_call', tool: 'recall_from_liked', input: { limit: 30 } })
+    ]);
+    const calls: string[] = [];
+
+    function addCandidates(source: 'liked' | 'search' | 'style_expansion' | 'trend', count: number): void {
+      const start = pool.count();
+      for (let index = 0; index < count; index += 1) {
+        pool.upsert(candidate({
+          id: `${source}-${index + 1}`,
+          name: `${source} ${index + 1}`,
+          artist: `${source} Artist ${index + 1 + start}`,
+          sources: [source]
+        }));
+      }
+    }
+
+    const result = await runMusicAgentLoop({
+      llmClient,
+      context: context({ request: 'auto-fill' }),
+      candidatePool: pool,
+      tools: {
+        expand_queries: async () => {
+          calls.push('expand_queries');
+          return { summary: 'expanded queries', candidateCount: pool.count() };
+        },
+        recall_from_liked: async () => {
+          calls.push('recall_from_liked');
+          addCandidates('liked', 10);
+          return { summary: 'liked recall added 10 candidates', candidateCount: pool.count() };
+        },
+        recall_from_ncm_search: async () => {
+          calls.push('recall_from_ncm_search');
+          addCandidates('search', 3);
+          return { summary: 'search recall added 3 candidates', candidateCount: pool.count() };
+        },
+        recall_from_style_expansion: async () => {
+          calls.push('recall_from_style_expansion');
+          addCandidates('style_expansion', 3);
+          return { summary: 'style recall added 3 candidates', candidateCount: pool.count() };
+        },
+        recall_from_trending: async () => {
+          calls.push('recall_from_trending');
+          addCandidates('trend', 2);
+          return { summary: 'trend recall added 2 candidates', candidateCount: pool.count() };
+        }
+      },
+      budget: budget({ maxLlmCalls: 10, maxSteps: 10, maxToolCalls: 10 }),
+      fallbackLogger
+    });
+
+    expect(result.status).toBe('ok');
+    expect(result.picks.every((pick) => pick.reason === 'ranked convergence')).toBe(true);
+    expect(calls).toEqual([
+      'recall_from_liked',
+      'expand_queries',
+      'recall_from_ncm_search',
+      'recall_from_style_expansion',
+      'recall_from_trending'
+    ]);
+    expect(llmClient.calls).toHaveLength(1);
+    expect(pool.list().filter((item) => !item.sources.includes('liked'))).toHaveLength(8);
+    expect(fallbackLogger).toHaveBeenCalledWith(expect.objectContaining({
+      reason: 'ranked_tool_completed',
+      status: 'ok',
+      candidateCount: 18
+    }));
+  });
+
   it('parses fenced and prose-wrapped JSON, and malformed output defaults without crashing', async () => {
     const fencedLlm = new LoopFakeLlmClient([
       '```json\n{"type":"final","say":"ok","picks":[{"id":"101","reason":"fits","source":"liked"}],"rejected":[]}\n```'

@@ -72,6 +72,14 @@ const CONVERGENCE_TOOL_NAMES = new Set<MusicAgentToolName>([
   'diversify_candidates',
   'finalize_pick'
 ]);
+const AUTO_FILL_NON_LIKED_CONVERGENCE_TARGET = 8;
+const AUTO_FILL_TOTAL_CONVERGENCE_TARGET = 18;
+const AUTO_FILL_MIX_TOOL_NAMES: MusicAgentToolName[] = [
+  'expand_queries',
+  'recall_from_ncm_search',
+  'recall_from_style_expansion',
+  'recall_from_trending'
+];
 
 export async function runMusicAgentLoop(input: RunMusicAgentLoopInput): Promise<MusicAgentRunOutput> {
   const startedAt = Date.now();
@@ -189,11 +197,49 @@ export async function runMusicAgentLoop(input: RunMusicAgentLoopInput): Promise<
       return abortedOutput(resolveMode(input), trace);
     }
 
+    if (shouldSupplementAutoFillRecall(toolName, input)) {
+      toolCalls = await supplementAutoFillRecallMix(input, observations, trace, startedAt, step, toolCalls);
+      if (input.signal?.aborted) {
+        return abortedOutput(resolveMode(input), trace);
+      }
+      if (shouldConvergeAfterAutoFillRecallMix(input)) {
+        return rankedConvergence(input, trace, startedAt, step, llmCalls, toolCalls);
+      }
+    }
+
     if (shouldConvergeAfterTool(toolName, input, llmCalls)) {
       return rankedConvergence(input, trace, startedAt, step, llmCalls, toolCalls);
     }
 
   }
+}
+
+async function supplementAutoFillRecallMix(
+  input: RunMusicAgentLoopInput,
+  observations: LoopObservation[],
+  trace: AgentTraceStep[],
+  startedAt: number,
+  step: number,
+  toolCalls: number
+): Promise<number> {
+  let nextToolCalls = toolCalls;
+  for (const toolName of AUTO_FILL_MIX_TOOL_NAMES) {
+    if (input.signal?.aborted) return nextToolCalls;
+    if (nextToolCalls >= input.budget.maxToolCalls) return nextToolCalls;
+    const tool = input.tools[toolName];
+    if (!tool) continue;
+
+    const observation = await tool({}, input.signal);
+    nextToolCalls += 1;
+    observations.push({ ...observation, tool: toolName });
+    trace.push(traceStep(step, startedAt, input.candidatePool.count(), {
+      thoughtSummary: 'auto-fill recall mix tool executed',
+      tool: toolName,
+      toolInputSummary: summarizeInput({}),
+      observationSummary: summarizeObservation(observation)
+    }));
+  }
+  return nextToolCalls;
 }
 
 function parseLoopOutput(raw: string): ParsedLoopOutput {
@@ -479,6 +525,21 @@ function shouldConvergeAfterTool(
   if (input.candidatePool.count() < 2) return false;
   if (CONVERGENCE_TOOL_NAMES.has(toolName)) return true;
   return input.budget.maxLlmCalls - llmCalls <= 1;
+}
+
+function shouldSupplementAutoFillRecall(toolName: MusicAgentToolName, input: RunMusicAgentLoopInput): boolean {
+  return modeFromContext(input.context) === 'pick_next' && toolName === 'recall_from_liked';
+}
+
+function shouldConvergeAfterAutoFillRecallMix(input: RunMusicAgentLoopInput): boolean {
+  return (
+    countNonLikedCandidates(input) >= AUTO_FILL_NON_LIKED_CONVERGENCE_TARGET ||
+    input.candidatePool.count() >= AUTO_FILL_TOTAL_CONVERGENCE_TARGET
+  );
+}
+
+function countNonLikedCandidates(input: RunMusicAgentLoopInput): number {
+  return input.candidatePool.list().filter((candidate) => candidate.sources.some((source) => source !== 'liked')).length;
 }
 
 function resolveMode(input: RunMusicAgentLoopInput): MusicAgentFinalOutput['mode'] {
