@@ -141,7 +141,7 @@ describe('music-agent ranking', () => {
 
     const ranked = rankCandidates(candidates, 3, {
       artistPenalties: new Map([
-        ['near artist', 0.18],
+        ['near artist', 0.36],
         ['far artist', 0.01]
       ])
     });

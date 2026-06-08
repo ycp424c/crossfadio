@@ -38,6 +38,7 @@ export function buildLoopMessages(input: BuildLoopMessagesInput): LlmMessage[] {
         '输出 final 时格式为 {"type":"final","say":"...","picks":[{"id":"候选池ID","reason":"...","source":"liked|playlist|plan|search|style_expansion|trend"}],"rejected":[]}。',
         'final picks 的 id 必须来自候选池；不能选择候选池外的歌曲。',
         'activeDirective/current chat 必须优先于趋势、榜单、泛化流行度。',
+        'recentArtistPenalties 中 penalty 较高的歌手需要先在 expand_queries 阶段放入 avoidArtists，并用相邻风格或不同歌手扩展召回。',
         '不要编造 NCM id；如果候选池不足，先调用白名单工具补候选。',
         '候选池已有 2 首以上且已经调用 rank_candidates/diversify_candidates/finalize_pick 后，下一步必须输出 final，不要继续调用工具。'
       ].join('\n')

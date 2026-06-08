@@ -13,8 +13,8 @@ import {
 } from './schema.js';
 
 const WEATHER_TIMEOUT_MS = 1500;
-const QUEUE_ARTIST_PENALTIES = [0.18, 0.12, 0.1, 0.08];
-const RECENT_PLAY_ARTIST_PENALTIES = [0.1, 0.08, 0.06, 0.05, 0.04, 0.03, 0.03, 0.03];
+const QUEUE_ARTIST_PENALTIES = [0.36, 0.28, 0.2, 0.14, 0.1, 0.08];
+const RECENT_PLAY_ARTIST_PENALTIES = [0.3, 0.24, 0.18, 0.12, 0.08, 0.06, 0.04, 0.04];
 
 export type BuildMusicAgentContextInput = {
   userId: string;

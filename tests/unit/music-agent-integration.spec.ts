@@ -318,6 +318,71 @@ describe('createMusicAgentTools', () => {
     });
   });
 
+  it('front-loads repeated artist penalties into query recall diversity', async () => {
+    const ncmClient = {
+      getLikedSongIds: vi.fn(async () => []),
+      getSongDetails: vi.fn(async () => []),
+      searchSongs: vi.fn(async () => [
+        { id: 'swift-1', name: 'Love Story', artists: ['Taylor Swift'] },
+        { id: 'swift-2', name: 'This Love', artists: ['Taylor Swift'] },
+        { id: 'janice-1', name: 'My Cookie Can', artists: ['卫兰'] },
+        { id: 'fresh-1', name: 'Fresh City', artists: ['Fresh Artist'] },
+        { id: 'fresh-2', name: 'Fresh Night', artists: ['Fresh Artist'] },
+        { id: 'fresh-3', name: 'Fresh Noon', artists: ['Fresh Artist'] },
+        { id: 'other-1', name: 'Other Light', artists: ['Other Artist'] }
+      ]),
+      getPlaylistDetail: vi.fn(async () => null)
+    };
+
+    const { CandidatePool } = await import('../../src/server/music-agent/candidates.js');
+    const { createMusicAgentTools } = await import('../../src/server/music-agent/tools.js');
+    const candidatePool = new CandidatePool();
+    const tools = createMusicAgentTools({
+      userId: 'user-1',
+      ncmClient: ncmClient as any,
+      context: {
+        request: 'auto-fill',
+        currentUserText: '',
+        currentMoment: { localTime: '周一 13:30', daypart: '下午', weather: null },
+        activeDirective: '',
+        currentPlanSegment: null,
+        tasteSummary: '偏好华语抒情与欧美流行女声',
+        recentPreferenceSummary: '',
+        recentPlaySignals: '',
+        queueStateSummary: '1. Love Story - Taylor Swift; 2. 晨间新闻 - 蔡健雅',
+        recentArtistPenalties: [
+          { artist: 'taylor swift', penalty: 0.36 },
+          { artist: '卫兰', penalty: 0.28 }
+        ],
+        bannedSummary: ''
+      },
+      candidatePool,
+      budget: {
+        maxMs: 10_000,
+        maxSteps: 3,
+        maxLlmCalls: 2,
+        maxToolCalls: 2,
+        maxNcmSearches: 1,
+        maxPlaylistFetches: 0,
+        maxTrendFetchMs: 0,
+        maxCandidates: 20
+      }
+    });
+
+    const plan = await tools.expand_queries?.({ queries: ['午后流行女声'] });
+    const recall = await tools.recall_from_ncm_search?.({ queries: ['Taylor Swift', '午后流行女声'], limit: 10 });
+    const rank = await tools.rank_candidates?.({ limit: 5 });
+
+    expect(plan?.summary).toContain('avoidArtists=taylor swift、卫兰');
+    expect(ncmClient.searchSongs).toHaveBeenCalledTimes(1);
+    expect(ncmClient.searchSongs.mock.calls[0][0]).toBe('午后流行女声');
+    expect(recall?.problems).toContain('skipped 1 search queries for recently repeated artists');
+    expect(recall?.problems).toContain('skipped 3 tracks from recently repeated artists');
+    expect(recall?.problems).toContain('skipped 1 tracks after per-artist recall cap');
+    expect(candidatePool.list().map((item) => item.id)).toEqual(['fresh-1', 'fresh-2', 'other-1']);
+    expect(rank?.summary).toContain('adjusted=');
+  });
+
   it('scores source candidates differently for explore and comfort discovery modes', async () => {
     const ncmClient = {
       getLikedSongIds: vi.fn(async () => ['liked-1']),

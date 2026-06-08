@@ -60,6 +60,7 @@ export const queryPlanSchema = z.object({
   planQueries: z.array(z.string()).default([]),
   trendQueries: z.array(z.string()).default([]),
   explorationQueries: z.array(z.string()).default([]),
+  avoidArtists: z.array(z.string()).default([]),
   negativeTerms: z.array(z.string()).default([]),
   rationale: z.string().default('')
 });

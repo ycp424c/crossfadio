@@ -1,6 +1,6 @@
 import type { MusicCandidate } from './schema.js';
 
-const REPEATED_ARTIST_PENALTY = 0.08;
+const REPEATED_ARTIST_PENALTY = 0.16;
 
 export type RankCandidatesOptions = {
   artistPenalties?: ReadonlyMap<string, number>;
@@ -25,6 +25,30 @@ export function scoreCandidate(candidate: MusicCandidate): number {
   );
 
   return Math.max(0, score);
+}
+
+export type CandidateScoreBreakdown = {
+  baseScore: number;
+  artistPenalty: number;
+  repeatPenalty: number;
+  adjustedScore: number;
+};
+
+export function scoreCandidateForRanking(
+  candidate: MusicCandidate,
+  options: RankCandidatesOptions = {},
+  repeatCount = 0
+): CandidateScoreBreakdown {
+  const artist = primaryArtist(candidate.artist);
+  const baseScore = scoreCandidate(candidate);
+  const artistPenalty = options.artistPenalties?.get(artist) ?? 0;
+  const repeatPenalty = repeatCount * REPEATED_ARTIST_PENALTY;
+  return {
+    baseScore,
+    artistPenalty,
+    repeatPenalty,
+    adjustedScore: Math.max(0, baseScore - artistPenalty - repeatPenalty)
+  };
 }
 
 export function rankCandidates(candidates: MusicCandidate[], limit: number, options: RankCandidatesOptions = {}): MusicCandidate[] {
@@ -96,6 +120,5 @@ function repeatedArtistAdjustedScore(
 ): number {
   const artist = primaryArtist(candidate.artist);
   const repeatCount = artistCounts.get(artist) ?? 0;
-  const recencyPenalty = options.artistPenalties?.get(artist) ?? 0;
-  return Math.max(0, scoreCandidate(candidate) - recencyPenalty - repeatCount * REPEATED_ARTIST_PENALTY);
+  return scoreCandidateForRanking(candidate, options, repeatCount).adjustedScore;
 }
