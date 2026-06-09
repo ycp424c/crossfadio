@@ -152,17 +152,23 @@ export async function runMusicAgentLoop(input: RunMusicAgentLoopInput): Promise<
     }
 
     if (toolCalls >= input.budget.maxToolCalls && !canUseReservedRankTool(output.tool, input)) {
+      const budgetedToolName = parseToolName(output.tool);
       const observation = observationFromProblem(
         `tool budget exhausted before ${output.tool}`,
         input.candidatePool.count()
       );
       observations.push({ ...observation, tool: output.tool });
       trace.push(traceStep(step, startedAt, input.candidatePool.count(), {
-        thoughtSummary: 'tool call skipped by budget',
+        thoughtSummary: shouldConvergeAfterSkippedTerminalTool(budgetedToolName, input)
+          ? 'terminal tool skipped by budget'
+          : 'tool call skipped by budget',
         tool: asTraceTool(output.tool),
         toolInputSummary: summarizeInput(output.input),
         observationSummary: summarizeObservation(observation)
       }));
+      if (shouldConvergeAfterSkippedTerminalTool(budgetedToolName, input)) {
+        return rankedConvergence(input, trace, startedAt, step, llmCalls, toolCalls);
+      }
       return rankedFallback('tool_budget_exhausted', input, trace, startedAt, step, llmCalls, toolCalls);
     }
 
@@ -707,6 +713,13 @@ function shouldConvergeAfterTool(
   if (input.candidatePool.count() < 2) return false;
   if (CONVERGENCE_TOOL_NAMES.has(toolName)) return true;
   return input.budget.maxLlmCalls - llmCalls <= 1;
+}
+
+function shouldConvergeAfterSkippedTerminalTool(
+  toolName: MusicAgentToolName | undefined,
+  input: RunMusicAgentLoopInput
+): boolean {
+  return Boolean(toolName && input.candidatePool.count() >= 2 && CONVERGENCE_TOOL_NAMES.has(toolName));
 }
 
 function shouldAskExtraFinalPick(

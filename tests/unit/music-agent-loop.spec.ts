@@ -599,6 +599,51 @@ describe('runMusicAgentLoop', () => {
     }));
   });
 
+  it('converges when a terminal ranking tool is skipped by the tool budget', async () => {
+    const pool = new CandidatePool();
+    for (let index = 0; index < 5; index += 1) {
+      pool.upsert(candidate({
+        id: String(101 + index),
+        name: `Candidate ${index + 1}`,
+        artist: `Artist ${index + 1}`,
+        sources: ['trend'],
+        scores: { ...candidate().scores, intentMatch: 0.9 - index * 0.05 }
+      }));
+    }
+    const fallbackLogger = vi.fn();
+    const llmClient = new LoopFakeLlmClient([
+      JSON.stringify({ type: 'tool_call', tool: 'recall_from_ncm_search', input: { queries: ['下午 华语'] } }),
+      JSON.stringify({ type: 'tool_call', tool: 'diversify_candidates', input: {} })
+    ]);
+    const tools: MusicAgentToolRegistry = {
+      recall_from_ncm_search: async () => ({ summary: 'search kept same candidates', candidateCount: pool.count() }),
+      diversify_candidates: async () => {
+        throw new Error('should not call terminal tool after budget is exhausted');
+      }
+    };
+
+    const result = await runMusicAgentLoop({
+      llmClient,
+      context: context({ request: 'auto-fill' }),
+      candidatePool: pool,
+      tools,
+      budget: budget({ maxLlmCalls: 3, maxSteps: 3, maxToolCalls: 1 }),
+      fallbackLogger
+    });
+
+    expect(result.status).toBe('ok');
+    expect(result.picks.every((pick) => pick.reason === 'ranked convergence')).toBe(true);
+    expect(result.trace.at(-1)).toMatchObject({
+      thoughtSummary: 'terminal tool skipped by budget'
+    });
+    expect(fallbackLogger).toHaveBeenCalledWith(expect.objectContaining({
+      reason: 'ranked_tool_completed',
+      status: 'ok',
+      candidateCount: 5,
+      pickCount: 2
+    }));
+  });
+
   it('returns aborted when the extra final-pick call is aborted', async () => {
     const pool = new CandidatePool();
     pool.upsert(candidate({ id: '101' }));
