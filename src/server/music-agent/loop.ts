@@ -82,6 +82,7 @@ const AUTO_FILL_MIX_TOOL_NAMES: MusicAgentToolName[] = [
 ];
 const AUTO_FILL_AGGREGATE_TOOL_NAME: MusicAgentToolName = 'recall_auto_fill_mix';
 const EXTRA_FINAL_PICK_MIN_CANDIDATES = 3;
+const SKIPPED_TOOL_FINAL_PICK_MIN_CANDIDATES = 2;
 const EXTRA_FINAL_PICK_REMAINING_RATIO = 0.2;
 const EXTRA_FINAL_PICK_MAX_REMAINING_MS = 20_000;
 
@@ -171,6 +172,15 @@ export async function runMusicAgentLoop(input: RunMusicAgentLoopInput): Promise<
         observationSummary: summarizeObservation(observation)
       }));
       if (shouldConvergeAfterSkippedBudget) {
+        if (hasExtraFinalPickBudget(
+          input,
+          startedAt,
+          step,
+          llmCalls,
+          SKIPPED_TOOL_FINAL_PICK_MIN_CANDIDATES
+        )) {
+          return askExtraFinalPick(input, observations, trace, startedAt, step, llmCalls, toolCalls);
+        }
         return rankedConvergence(input, trace, startedAt, step, llmCalls, toolCalls);
       }
       return rankedFallback('tool_budget_exhausted', input, trace, startedAt, step, llmCalls, toolCalls);
@@ -751,11 +761,12 @@ function hasExtraFinalPickBudget(
   input: RunMusicAgentLoopInput,
   startedAt: number,
   step: number,
-  llmCalls: number
+  llmCalls: number,
+  minCandidates = EXTRA_FINAL_PICK_MIN_CANDIDATES
 ): boolean {
   const remainingMs = input.budget.maxMs - (Date.now() - startedAt);
   return (
-    input.candidatePool.count() >= EXTRA_FINAL_PICK_MIN_CANDIDATES &&
+    input.candidatePool.count() >= minCandidates &&
     step < input.budget.maxSteps &&
     llmCalls < input.budget.maxLlmCalls &&
     remainingMs >= extraFinalPickRemainingMs(input.budget.maxMs)

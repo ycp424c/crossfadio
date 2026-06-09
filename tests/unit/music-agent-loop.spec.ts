@@ -602,7 +602,7 @@ describe('runMusicAgentLoop', () => {
     }));
   });
 
-  it('converges when a terminal ranking tool is skipped by the tool budget', async () => {
+  it('uses a final LLM call when a terminal ranking tool is skipped by the tool budget', async () => {
     const pool = new CandidatePool();
     for (let index = 0; index < 5; index += 1) {
       pool.upsert(candidate({
@@ -616,7 +616,16 @@ describe('runMusicAgentLoop', () => {
     const fallbackLogger = vi.fn();
     const llmClient = new LoopFakeLlmClient([
       JSON.stringify({ type: 'tool_call', tool: 'recall_from_ncm_search', input: { queries: ['下午 华语'] } }),
-      JSON.stringify({ type: 'tool_call', tool: 'diversify_candidates', input: {} })
+      JSON.stringify({ type: 'tool_call', tool: 'diversify_candidates', input: {} }),
+      JSON.stringify({
+        type: 'final',
+        say: '我从预算内已经排好的候选里选这两首。',
+        picks: [
+          { id: '103', reason: '更贴合下午的松弛感', source: 'trend' },
+          { id: '101', reason: '保留当前候选里的最高匹配度', source: 'trend' }
+        ],
+        rejected: []
+      })
     ]);
     const tools: MusicAgentToolRegistry = {
       recall_from_ncm_search: async () => ({ summary: 'search kept same candidates', candidateCount: pool.count() }),
@@ -635,21 +644,28 @@ describe('runMusicAgentLoop', () => {
     });
 
     expect(result.status).toBe('ok');
-    expect(result.picks.every((pick) => pick.reason === 'ranked convergence')).toBe(true);
+    expect(result.say).toBe('我从预算内已经排好的候选里选这两首。');
+    expect(result.picks.map((pick) => pick.id)).toEqual(['103', '101']);
+    expect(result.picks.every((pick) => pick.reason !== 'ranked convergence')).toBe(true);
     expect(result.trace.at(-1)).toMatchObject({
       thoughtSummary: 'terminal tool skipped by budget'
     });
+    expect(llmClient.calls).toHaveLength(3);
+    expect(llmClient.calls[2].messages.map((message) => message.content).join('\n')).not.toContain('tool_call');
+    expect(llmClient.calls[2].opts?.responseFormat).toEqual({ type: 'json_object' });
     expect(fallbackLogger).toHaveBeenCalledWith(expect.objectContaining({
       reason: 'ranked_tool_completed',
       status: 'ok',
       candidateCount: 5,
-      pickCount: 2
+      pickCount: 2,
+      step: 3,
+      llmCalls: 3
     }));
   });
 
-  it('converges when recall is skipped by tool budget after enough candidates exist', async () => {
+  it('uses a final LLM call when recall is skipped by tool budget after two candidates exist', async () => {
     const pool = new CandidatePool();
-    for (let index = 0; index < 6; index += 1) {
+    for (let index = 0; index < 2; index += 1) {
       pool.upsert(candidate({
         id: String(201 + index),
         name: `Search Candidate ${index + 1}`,
@@ -661,7 +677,16 @@ describe('runMusicAgentLoop', () => {
     const fallbackLogger = vi.fn();
     const llmClient = new LoopFakeLlmClient([
       JSON.stringify({ type: 'tool_call', tool: 'recall_from_ncm_search', input: { queries: ['afternoon jazz'] } }),
-      JSON.stringify({ type: 'tool_call', tool: 'recall_from_ncm_search', input: { queries: ['more afternoon jazz'] } })
+      JSON.stringify({ type: 'tool_call', tool: 'recall_from_ncm_search', input: { queries: ['more afternoon jazz'] } }),
+      JSON.stringify({
+        type: 'final',
+        say: '我用已有的两首搜索候选完成最终选择。',
+        picks: [
+          { id: '202', reason: '比另一首更有午后爵士质感', source: 'search' },
+          { id: '201', reason: '补足柔和背景氛围', source: 'search' }
+        ],
+        rejected: []
+      })
     ]);
     const tools: MusicAgentToolRegistry = {
       recall_from_ncm_search: async () => ({ summary: 'search kept same candidates', candidateCount: pool.count() })
@@ -672,22 +697,28 @@ describe('runMusicAgentLoop', () => {
       context: context({ request: 'auto-fill' }),
       candidatePool: pool,
       tools,
-      budget: budget({ maxLlmCalls: 4, maxSteps: 4, maxToolCalls: 1 }),
+      budget: budget({ maxLlmCalls: 3, maxSteps: 3, maxToolCalls: 1 }),
       fallbackLogger
     });
 
     expect(result.status).toBe('ok');
-    expect(result.picks).toHaveLength(2);
-    expect(result.picks.every((pick) => pick.reason === 'ranked convergence')).toBe(true);
+    expect(result.say).toBe('我用已有的两首搜索候选完成最终选择。');
+    expect(result.picks.map((pick) => pick.id)).toEqual(['202', '201']);
+    expect(result.picks.every((pick) => pick.reason !== 'ranked convergence')).toBe(true);
     expect(result.trace.at(-1)).toMatchObject({
       tool: 'recall_from_ncm_search',
       thoughtSummary: 'tool budget exhausted with sufficient candidates'
     });
+    expect(llmClient.calls).toHaveLength(3);
+    expect(llmClient.calls[2].messages.map((message) => message.content).join('\n')).not.toContain('tool_call');
+    expect(llmClient.calls[2].opts?.responseFormat).toEqual({ type: 'json_object' });
     expect(fallbackLogger).toHaveBeenCalledWith(expect.objectContaining({
       reason: 'ranked_tool_completed',
       status: 'ok',
-      candidateCount: 6,
-      pickCount: 2
+      candidateCount: 2,
+      pickCount: 2,
+      step: 3,
+      llmCalls: 3
     }));
   });
 
