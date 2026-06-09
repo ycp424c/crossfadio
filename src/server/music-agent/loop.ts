@@ -1,4 +1,4 @@
-import { buildLoopMessages } from './prompts.js';
+import { buildFinalPickMessages, buildLoopMessages, FINAL_PICK_RESPONSE_FORMAT } from './prompts.js';
 import { CandidatePool, validateFinalPicks } from './candidates.js';
 import { buildCandidateScoreTableRows, diversifyCandidates, rankCandidates, scoreCandidate } from './rank.js';
 import {
@@ -250,7 +250,7 @@ async function askExtraFinalPick(
     summary: 'ranked shortlist is ready; use one extra final-pick LLM call to choose 1-2 whitelisted candidates.',
     candidateCount: input.candidatePool.count()
   };
-  const messages = buildLoopMessages({
+  const messages = buildFinalPickMessages({
     context: input.context,
     observations: [...observations, finalObservation],
     candidateSummary: summarizeCandidatePool(input.candidatePool, input.context)
@@ -263,7 +263,8 @@ async function askExtraFinalPick(
     const response = await input.llmClient.complete(messages, {
       signal: input.signal,
       temperature: 0.2,
-      maxTokens: 1000
+      maxTokens: 1000,
+      responseFormat: FINAL_PICK_RESPONSE_FORMAT
     });
     responseContent = response.content;
   } catch {

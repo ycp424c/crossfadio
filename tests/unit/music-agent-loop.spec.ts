@@ -384,6 +384,9 @@ describe('runMusicAgentLoop', () => {
     expect(result.picks.map((pick) => pick.id)).toEqual(['103', '101']);
     expect(result.picks.every((pick) => pick.reason !== 'ranked convergence')).toBe(true);
     expect(llmClient.calls).toHaveLength(2);
+    expect(llmClient.calls[1].messages.map((message) => message.content).join('\n')).not.toContain('tool_call');
+    expect(llmClient.calls[1].messages.map((message) => message.content).join('\n')).toContain('"type":"final"');
+    expect(llmClient.calls[1].opts?.responseFormat).toEqual({ type: 'json_object' });
     expect(fallbackLogger).toHaveBeenCalledWith(expect.objectContaining({
       reason: 'ranked_tool_completed',
       status: 'ok',

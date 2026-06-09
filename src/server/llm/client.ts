@@ -25,9 +25,21 @@ export type LlmResponse = {
   usage?: LlmUsage;
 };
 
+export type LlmResponseFormat =
+  | { type: 'json_object' }
+  | {
+      type: 'json_schema';
+      json_schema: {
+        name: string;
+        strict?: boolean;
+        schema: Record<string, unknown>;
+      };
+    };
+
 export type LlmCompleteOptions = {
   temperature?: number;
   maxTokens?: number;
+  responseFormat?: LlmResponseFormat;
   signal?: AbortSignal;
 };
 
@@ -39,7 +51,8 @@ export class LlmClient {
   async complete(messages: LlmMessage[], opts: LlmCompleteOptions = {}): Promise<LlmResponse> {
     const body = buildRequestBody(this.config.model, messages, {
       temperature: opts.temperature,
-      maxTokens: opts.maxTokens
+      maxTokens: opts.maxTokens,
+      responseFormat: opts.responseFormat
     });
 
     const resp = await fetch(`${this.config.baseUrl}/chat/completions`, {
@@ -67,6 +80,7 @@ export class LlmClient {
     const body = buildRequestBody(this.config.model, messages, {
       temperature: opts.temperature,
       maxTokens: opts.maxTokens,
+      responseFormat: opts.responseFormat,
       stream: true
     });
 
@@ -131,14 +145,15 @@ function buildHeaders(apiKey: string): Record<string, string> {
 function buildRequestBody(
   model: string,
   messages: LlmMessage[],
-  opts: { temperature?: number; maxTokens?: number; stream?: boolean }
+  opts: { temperature?: number; maxTokens?: number; responseFormat?: LlmResponseFormat; stream?: boolean }
 ) {
   return {
     model,
     messages,
     ...(opts.stream !== undefined && { stream: opts.stream }),
     ...(opts.temperature !== undefined && { temperature: opts.temperature }),
-    ...(opts.maxTokens !== undefined && { max_tokens: opts.maxTokens })
+    ...(opts.maxTokens !== undefined && { max_tokens: opts.maxTokens }),
+    ...(opts.responseFormat !== undefined && { response_format: opts.responseFormat })
   };
 }
 

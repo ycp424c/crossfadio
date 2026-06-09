@@ -1,4 +1,4 @@
-import type { LlmMessage } from '../llm/client.js';
+import type { LlmMessage, LlmResponseFormat } from '../llm/client.js';
 import { musicAgentToolNameSchema, type MusicAgentContextSummary } from './schema.js';
 import type { ToolObservation } from './tools.js';
 
@@ -16,6 +16,8 @@ const TOOL_WHITELIST = musicAgentToolNameSchema.options.join(', ');
 const MAX_CONTEXT_CHARS = 1_800;
 const MAX_CANDIDATE_CHARS = 2_400;
 const MAX_OBSERVATION_CHARS = 2_000;
+
+export const FINAL_PICK_RESPONSE_FORMAT: LlmResponseFormat = { type: 'json_object' };
 
 export function buildLoopMessages(input: BuildLoopMessagesInput): LlmMessage[] {
   const context = compactJson(input.context, MAX_CONTEXT_CHARS);
@@ -41,6 +43,44 @@ export function buildLoopMessages(input: BuildLoopMessagesInput): LlmMessage[] {
         'recentArtistPenalties 中 penalty 较高的歌手需要先在 expand_queries 阶段放入 avoidArtists，并用相邻风格或不同歌手扩展召回。',
         '不要编造 NCM id；如果候选池不足，先调用白名单工具补候选。',
         '候选池已有 2 首以上且已经调用 rank_candidates/diversify_candidates/finalize_pick 后，下一步必须输出 final，不要继续调用工具。'
+      ].join('\n')
+    },
+    {
+      role: 'user',
+      content: [
+        'compact_context:',
+        context,
+        '',
+        'candidate_pool:',
+        candidatePool,
+        '',
+        'observations:',
+        observations
+      ].join('\n')
+    }
+  ];
+}
+
+export function buildFinalPickMessages(input: BuildLoopMessagesInput): LlmMessage[] {
+  const context = compactJson(input.context, MAX_CONTEXT_CHARS);
+  const candidatePool = truncate(input.candidateSummary || '[]', MAX_CANDIDATE_CHARS);
+  const observations = compactJson(input.observations.map((item) => ({
+    tool: item.tool,
+    summary: item.summary,
+    candidateCount: item.candidateCount,
+    problems: item.problems ?? []
+  })), MAX_OBSERVATION_CHARS);
+
+  return [
+    {
+      role: 'system',
+      content: [
+        '你是 Crossfadio 的最终选歌器。',
+        '只输出严格 JSON，不要 Markdown、不要解释、不要额外文本。',
+        '这次调用只能输出 {"type":"final","say":"...","picks":[{"id":"候选池ID","reason":"...","source":"liked|playlist|plan|search|style_expansion|trend"}],"rejected":[]}。',
+        'picks 必须从候选池里选择 1 到 2 首；id 必须完全来自候选池；source 必须是对应候选的来源之一。',
+        'reason 要说明为什么这首适合当前时刻、用户偏好或当前队列。',
+        '不要请求更多信息，不要继续规划，不要输出候选池外的歌曲。'
       ].join('\n')
     },
     {
