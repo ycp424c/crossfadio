@@ -208,6 +208,9 @@ export async function runMusicAgentLoop(input: RunMusicAgentLoopInput): Promise<
         return abortedOutput(resolveMode(input), trace);
       }
       if (shouldConvergeAfterAutoFillRecallMix(input)) {
+        if (hasExtraFinalPickBudget(input, startedAt, step, llmCalls)) {
+          return askExtraFinalPick(input, observations, trace, startedAt, step, llmCalls, toolCalls);
+        }
         return rankedConvergence(input, trace, startedAt, step, llmCalls, toolCalls);
       }
       if (shouldSupplementSparseRank) {
@@ -668,6 +671,17 @@ function shouldAskExtraFinalPick(
 ): boolean {
   return (
     CONVERGENCE_TOOL_NAMES.has(toolName) &&
+    hasExtraFinalPickBudget(input, startedAt, step, llmCalls)
+  );
+}
+
+function hasExtraFinalPickBudget(
+  input: RunMusicAgentLoopInput,
+  startedAt: number,
+  step: number,
+  llmCalls: number
+): boolean {
+  return (
     input.candidatePool.count() >= EXTRA_FINAL_PICK_MIN_CANDIDATES &&
     step < input.budget.maxSteps &&
     llmCalls < input.budget.maxLlmCalls &&

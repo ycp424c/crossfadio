@@ -573,7 +573,15 @@ describe('runMusicAgentLoop', () => {
     const fallbackLogger = vi.fn();
     const llmClient = new LoopFakeLlmClient([
       JSON.stringify({ type: 'tool_call', tool: 'recall_from_liked', input: { limit: 30 } }),
-      JSON.stringify({ type: 'tool_call', tool: 'recall_from_liked', input: { limit: 30 } })
+      JSON.stringify({
+        type: 'final',
+        say: '我从扩展搜索后的候选里选这两首。',
+        picks: [
+          { id: 'search-1', reason: '更贴合午后轻松的搜索结果', source: 'search' },
+          { id: 'trend-1', reason: '补一点新鲜趋势感', source: 'trend' }
+        ],
+        rejected: []
+      })
     ]);
     const calls: string[] = [];
 
@@ -624,7 +632,9 @@ describe('runMusicAgentLoop', () => {
     });
 
     expect(result.status).toBe('ok');
-    expect(result.picks.every((pick) => pick.reason === 'ranked convergence')).toBe(true);
+    expect(result.say).toBe('我从扩展搜索后的候选里选这两首。');
+    expect(result.picks.map((pick) => pick.id)).toEqual(['search-1', 'trend-1']);
+    expect(result.picks.every((pick) => pick.reason !== 'ranked convergence')).toBe(true);
     expect(calls).toEqual([
       'recall_from_liked',
       'expand_queries',
@@ -632,12 +642,14 @@ describe('runMusicAgentLoop', () => {
       'recall_from_style_expansion',
       'recall_from_trending'
     ]);
-    expect(llmClient.calls).toHaveLength(1);
+    expect(llmClient.calls).toHaveLength(2);
     expect(pool.list().filter((item) => !item.sources.includes('liked'))).toHaveLength(8);
     expect(fallbackLogger).toHaveBeenCalledWith(expect.objectContaining({
       reason: 'ranked_tool_completed',
       status: 'ok',
-      candidateCount: 18
+      candidateCount: 18,
+      step: 2,
+      llmCalls: 2
     }));
   });
 
@@ -646,7 +658,15 @@ describe('runMusicAgentLoop', () => {
     const fallbackLogger = vi.fn();
     const llmClient = new LoopFakeLlmClient([
       JSON.stringify({ type: 'tool_call', tool: 'recall_from_liked', input: {} }),
-      JSON.stringify({ type: 'tool_call', tool: 'rank_candidates', input: {} })
+      JSON.stringify({
+        type: 'final',
+        say: '我用补充搜索后的候选做了最终选择。',
+        picks: [
+          { id: 'search-11', reason: '搜索候选更符合当前指令', source: 'search' },
+          { id: 'search-12', reason: '保持同一氛围但换一位艺人', source: 'search' }
+        ],
+        rejected: []
+      })
     ]);
     const calls: string[] = [];
 
@@ -696,12 +716,17 @@ describe('runMusicAgentLoop', () => {
     });
 
     expect(result.status).toBe('ok');
-    expect(result.picks.every((pick) => pick.reason === 'ranked convergence')).toBe(true);
+    expect(result.say).toBe('我用补充搜索后的候选做了最终选择。');
+    expect(result.picks.map((pick) => pick.id)).toEqual(['search-11', 'search-12']);
+    expect(result.picks.every((pick) => pick.reason !== 'ranked convergence')).toBe(true);
     expect(calls).toEqual(['recall_from_liked', 'recall_auto_fill_mix']);
+    expect(llmClient.calls).toHaveLength(2);
     expect(fallbackLogger).toHaveBeenCalledWith(expect.objectContaining({
       reason: 'ranked_tool_completed',
       toolCalls: 2,
-      candidateCount: 18
+      candidateCount: 18,
+      step: 2,
+      llmCalls: 2
     }));
   });
 
@@ -711,7 +736,15 @@ describe('runMusicAgentLoop', () => {
     const llmClient = new LoopFakeLlmClient([
       JSON.stringify({ type: 'tool_call', tool: 'recall_from_ncm_search', input: { query: 'summer' } }),
       JSON.stringify({ type: 'tool_call', tool: 'rank_candidates', input: {} }),
-      JSON.stringify({ type: 'tool_call', tool: 'recall_from_liked', input: {} })
+      JSON.stringify({
+        type: 'final',
+        say: '我从补全后的候选里重新挑了两首。',
+        picks: [
+          { id: 'search-1', reason: '第一轮搜索已经足够贴合', source: 'search' },
+          { id: 'style_expansion-7', reason: '风格扩展补足了变化', source: 'style_expansion' }
+        ],
+        rejected: []
+      })
     ]);
     const calls: string[] = [];
 
@@ -764,7 +797,9 @@ describe('runMusicAgentLoop', () => {
     });
 
     expect(result.status).toBe('ok');
-    expect(result.picks.every((pick) => pick.reason === 'ranked convergence')).toBe(true);
+    expect(result.say).toBe('我从补全后的候选里重新挑了两首。');
+    expect(result.picks.map((pick) => pick.id)).toEqual(['search-1', 'style_expansion-7']);
+    expect(result.picks.every((pick) => pick.reason !== 'ranked convergence')).toBe(true);
     expect(calls).toEqual([
       'recall_from_ncm_search',
       'rank_candidates',
@@ -775,11 +810,13 @@ describe('runMusicAgentLoop', () => {
     ]);
     expect(pool.count()).toBe(10);
     expect(pool.list().filter((item) => !item.sources.includes('liked'))).toHaveLength(10);
-    expect(llmClient.calls).toHaveLength(2);
+    expect(llmClient.calls).toHaveLength(3);
     expect(fallbackLogger).toHaveBeenCalledWith(expect.objectContaining({
       reason: 'ranked_tool_completed',
       status: 'ok',
-      candidateCount: 10
+      candidateCount: 10,
+      step: 3,
+      llmCalls: 3
     }));
   });
 
