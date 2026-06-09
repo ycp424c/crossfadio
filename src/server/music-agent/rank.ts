@@ -1,4 +1,4 @@
-import type { MusicCandidate } from './schema.js';
+import type { CandidateScoreTableRow, MusicCandidate } from './schema.js';
 
 const REPEATED_ARTIST_PENALTY = 0.16;
 
@@ -84,6 +84,30 @@ export function rankCandidates(candidates: MusicCandidate[], limit: number, opti
   return selected;
 }
 
+export function buildCandidateScoreTableRows(
+  candidates: MusicCandidate[],
+  options: RankCandidatesOptions = {}
+): CandidateScoreTableRow[] {
+  const artistCounts = new Map<string, number>();
+  return candidates.map((candidate, index) => {
+    const artist = primaryArtist(candidate.artist);
+    const repeatCount = artistCounts.get(artist) ?? 0;
+    const breakdown = scoreCandidateForRanking(candidate, options, repeatCount);
+    artistCounts.set(artist, repeatCount + 1);
+    return {
+      rank: index + 1,
+      id: candidate.id,
+      song: candidate.name,
+      artist: candidate.artist,
+      sources: candidate.sources.join(','),
+      baseScore: roundScore(breakdown.baseScore),
+      artistPenalty: roundScore(breakdown.artistPenalty),
+      repeatPenalty: roundScore(breakdown.repeatPenalty),
+      adjustedScore: roundScore(breakdown.adjustedScore)
+    };
+  });
+}
+
 export function diversifyCandidates(candidates: MusicCandidate[], limit: number): MusicCandidate[] {
   const sorted = [...candidates].sort((left, right) => scoreCandidate(right) - scoreCandidate(left));
   const selected: MusicCandidate[] = [];
@@ -121,4 +145,8 @@ function repeatedArtistAdjustedScore(
   const artist = primaryArtist(candidate.artist);
   const repeatCount = artistCounts.get(artist) ?? 0;
   return scoreCandidateForRanking(candidate, options, repeatCount).adjustedScore;
+}
+
+function roundScore(value: number): number {
+  return Number(value.toFixed(4));
 }

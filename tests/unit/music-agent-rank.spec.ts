@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { diversifyCandidates, rankCandidates, scoreCandidate } from '../../src/server/music-agent/rank.js';
+import {
+  buildCandidateScoreTableRows,
+  diversifyCandidates,
+  rankCandidates,
+  scoreCandidate
+} from '../../src/server/music-agent/rank.js';
 import type { MusicCandidate } from '../../src/server/music-agent/schema.js';
 
 function candidate(overrides: Partial<MusicCandidate> = {}): MusicCandidate {
@@ -147,6 +152,48 @@ describe('music-agent ranking', () => {
     });
 
     expect(ranked.map((item) => item.id)).toEqual(['far', 'fresh', 'near']);
+  });
+
+  it('builds console table rows with candidate scores and penalties', () => {
+    const rows = buildCandidateScoreTableRows([
+      candidate({
+        id: 'a1',
+        name: 'First',
+        artist: 'Artist A',
+        sources: ['liked', 'search'],
+        scores: { ...candidate().scores, intentMatch: 1 }
+      }),
+      candidate({
+        id: 'a2',
+        name: 'Second',
+        artist: 'Artist A',
+        sources: ['search'],
+        scores: { ...candidate().scores, intentMatch: 0.9 }
+      })
+    ], {
+      artistPenalties: new Map([['artist a', 0.12]])
+    });
+
+    expect(rows).toEqual([
+      expect.objectContaining({
+        rank: 1,
+        id: 'a1',
+        song: 'First',
+        artist: 'Artist A',
+        sources: 'liked,search',
+        baseScore: expect.any(Number),
+        artistPenalty: 0.12,
+        repeatPenalty: 0,
+        adjustedScore: expect.any(Number)
+      }),
+      expect.objectContaining({
+        rank: 2,
+        id: 'a2',
+        repeatPenalty: 0.16
+      })
+    ]);
+    expect(rows[0].adjustedScore).toBeCloseTo(rows[0].baseScore - 0.12, 5);
+    expect(rows[1].adjustedScore).toBeCloseTo(rows[1].baseScore - 0.12 - 0.16, 5);
   });
 
   it('diversifyCandidates skips repeated artists instead of filling the limit', () => {

@@ -169,7 +169,7 @@ describe('player layout', () => {
     );
   });
 
-  it('logs DJ pick-next exclusion lists from debug events to the browser console', () => {
+  it('logs DJ pick-next debug tables to the browser console', () => {
     const source = fs.readFileSync(path.join(root, 'src/renderer/views/Player/PlayerView.tsx'), 'utf-8');
     const debugStart = source.indexOf("type === 'dj.debug'");
     const doneStart = source.indexOf("type === 'dj.pick-next.done'", debugStart);
@@ -179,6 +179,9 @@ describe('player layout', () => {
     expect(debugBlock).toContain('DJ pick-next exclusion list');
     expect(debugBlock).toContain('data.excludedIds');
     expect(debugBlock).toContain('data.excludedDedupeKeys');
+    expect(debugBlock).toContain('data.candidateScoreTable');
+    expect(debugBlock).toContain('console.table');
+    expect(debugBlock).toContain('DJ pick-next candidate scores');
   });
 
   it('includes clientRequestId in direct SSE segue payloads before the player filters them', () => {

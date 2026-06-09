@@ -125,6 +125,43 @@ describe('runMusicAgentLoop', () => {
     expect(llmClient.calls[0].opts).toMatchObject({ temperature: 0.2, maxTokens: 1000 });
   });
 
+  it('returns browser-console candidate score table rows with successful picks', async () => {
+    const llmClient = new LoopFakeLlmClient([
+      JSON.stringify({ type: 'tool_call', tool: 'recall_from_liked', input: { limit: 5 } }),
+      JSON.stringify({
+        type: 'final',
+        say: '这首来自你的红心歌单。',
+        picks: [{ id: '101', reason: '轻快女声且你喜欢过', source: 'liked' }],
+        rejected: []
+      })
+    ]);
+    const pool = new CandidatePool();
+    const tools: MusicAgentToolRegistry = {
+      recall_from_liked: async () => {
+        pool.upsert(candidate());
+        return { summary: 'recalled liked tracks', candidateCount: pool.count() };
+      }
+    };
+
+    const result = await runMusicAgentLoop({
+      llmClient,
+      context: context(),
+      candidatePool: pool,
+      tools,
+      budget: budget()
+    });
+
+    expect(result.candidateScoreTable).toEqual([
+      expect.objectContaining({
+        rank: 1,
+        id: '101',
+        song: 'Soft Song',
+        artist: 'Singer',
+        adjustedScore: expect.any(Number)
+      })
+    ]);
+  });
+
   it('falls back to ranked candidates when final picks are outside the whitelist pool', async () => {
     const pool = new CandidatePool();
     pool.upsert(candidate({ id: '101' }));

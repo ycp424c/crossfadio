@@ -115,6 +115,18 @@ type PendingSegueAudio = {
 
 type DjTrackSample = { id: string; name: string; artist: string };
 
+type CandidateScoreTableRow = {
+  rank: number;
+  id: string;
+  song: string;
+  artist: string;
+  sources: string;
+  baseScore: number;
+  artistPenalty: number;
+  repeatPenalty: number;
+  adjustedScore: number;
+};
+
 type DjPickLog = {
   likedSample: DjTrackSample[];
   searchQueries: string[];
@@ -945,12 +957,19 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
               if (type === 'dj.debug') {
                 const excludedIds = Array.isArray(data.excludedIds) ? data.excludedIds as string[] : [];
                 const excludedDedupeKeys = Array.isArray(data.excludedDedupeKeys) ? data.excludedDedupeKeys as string[] : [];
+                const candidateScoreTable = Array.isArray(data.candidateScoreTable)
+                  ? data.candidateScoreTable as CandidateScoreTableRow[]
+                  : [];
                 console.info('[Crossfadio] DJ pick-next exclusion list', {
                   excludedIds,
                   excludedDedupeKeys,
                   excludedIdCount: excludedIds.length,
                   excludedDedupeKeyCount: excludedDedupeKeys.length
                 });
+                if (candidateScoreTable.length > 0) {
+                  console.info('[Crossfadio] DJ pick-next candidate scores');
+                  console.table(candidateScoreTable);
+                }
                 setDjPickLog({
                   likedSample: Array.isArray(data.likedSample) ? data.likedSample as DjTrackSample[] : [],
                   searchQueries: Array.isArray(data.searchQueries) ? data.searchQueries as string[] : [],

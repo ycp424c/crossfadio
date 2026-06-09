@@ -457,6 +457,7 @@ async function doPickNext(
             excludedIds: Array.from(excludeState.ids),
             excludedDedupeKeys: Array.from(excludeState.dedupeKeys),
             totalCandidates: debugCandidateCount,
+            candidateScoreTable: output.candidateScoreTable,
             selectedSay: output.say
           });
           debugBroadcastSent = true;

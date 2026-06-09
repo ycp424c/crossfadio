@@ -1,6 +1,6 @@
 import { buildLoopMessages } from './prompts.js';
 import { CandidatePool, validateFinalPicks } from './candidates.js';
-import { diversifyCandidates, rankCandidates, scoreCandidate } from './rank.js';
+import { buildCandidateScoreTableRows, diversifyCandidates, rankCandidates, scoreCandidate } from './rank.js';
 import {
   musicAgentLoopOutputSchema,
   musicAgentToolNameSchema,
@@ -131,7 +131,8 @@ export async function runMusicAgentLoop(input: RunMusicAgentLoopInput): Promise<
           say: output.say,
           picks,
           rejected: output.rejected ?? [],
-          trace
+          trace,
+          candidateScoreTable: createCandidateScoreTable(input)
         };
       } catch (error) {
         const observation = observationFromProblem(
@@ -374,8 +375,9 @@ function rankedFallback(
   toolCalls: number
 ): MusicAgentRunOutput {
   const mode = resolveMode(input);
-  const ranked = rankCandidates(input.candidatePool.list(), 10, rankOptions(input.context));
-  const picks = diversifyCandidates(ranked, 2).map((candidate) => ({
+  const options = rankOptions(input.context);
+  const ranked = rankCandidates(input.candidatePool.list(), input.candidatePool.count(), options);
+  const picks = diversifyCandidates(ranked.slice(0, 10), 2).map((candidate) => ({
     id: candidate.id,
     name: candidate.name,
     artist: candidate.artist,
@@ -391,7 +393,8 @@ function rankedFallback(
       : '暂时没有可用候选，先不追加新歌。',
     picks,
     rejected: [],
-    trace
+    trace,
+    candidateScoreTable: buildCandidateScoreTableRows(ranked, options)
   };
   input.fallbackLogger?.({
     reason,
@@ -418,8 +421,9 @@ function rankedConvergence(
   toolCalls: number
 ): MusicAgentRunOutput {
   const mode = resolveMode(input);
-  const ranked = rankCandidates(input.candidatePool.list(), 10, rankOptions(input.context));
-  const picks = diversifyCandidates(ranked, 2).map((candidate) => ({
+  const options = rankOptions(input.context);
+  const ranked = rankCandidates(input.candidatePool.list(), input.candidatePool.count(), options);
+  const picks = diversifyCandidates(ranked.slice(0, 10), 2).map((candidate) => ({
     id: candidate.id,
     name: candidate.name,
     artist: candidate.artist,
@@ -435,7 +439,8 @@ function rankedConvergence(
       : '我从已经排序的候选池里收束出一首更适合现在的歌。',
     picks,
     rejected: [],
-    trace
+    trace,
+    candidateScoreTable: buildCandidateScoreTableRows(ranked, options)
   };
   input.fallbackLogger?.({
     reason: 'ranked_tool_completed',
@@ -469,8 +474,15 @@ function abortedOutput(
     say: 'aborted: music agent loop was cancelled.',
     picks: [],
     rejected: [],
-    trace
+    trace,
+    candidateScoreTable: []
   };
+}
+
+function createCandidateScoreTable(input: RunMusicAgentLoopInput) {
+  const options = rankOptions(input.context);
+  const ranked = rankCandidates(input.candidatePool.list(), input.candidatePool.count(), options);
+  return buildCandidateScoreTableRows(ranked, options);
 }
 
 function summarizeCandidatePool(pool: CandidatePool, context: MusicAgentContextSummary): string {

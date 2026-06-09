@@ -160,6 +160,20 @@ export const finalPickSchema = z.object({
 
 export type FinalPick = z.infer<typeof finalPickSchema>;
 
+export const candidateScoreTableRowSchema = z.object({
+  rank: z.number().int().positive(),
+  id: z.string().min(1),
+  song: z.string(),
+  artist: z.string(),
+  sources: z.string(),
+  baseScore: z.number(),
+  artistPenalty: z.number(),
+  repeatPenalty: z.number(),
+  adjustedScore: z.number()
+});
+
+export type CandidateScoreTableRow = z.infer<typeof candidateScoreTableRowSchema>;
+
 export const rejectedPickSchema = z.object({
   id: z.string().min(1),
   reason: z.string().min(1)
@@ -188,7 +202,8 @@ export const musicAgentFinalOutputSchema = z.object({
   say: z.string().min(1),
   picks: z.array(finalPickSchema).min(1).max(2),
   rejected: z.array(rejectedPickSchema).default([]),
-  trace: z.array(agentTraceStepSchema).default([])
+  trace: z.array(agentTraceStepSchema).default([]),
+  candidateScoreTable: z.array(candidateScoreTableRowSchema).default([])
 });
 
 export type MusicAgentFinalOutput = z.infer<typeof musicAgentFinalOutputSchema>;
@@ -203,7 +218,8 @@ export const musicAgentRunOutputSchema = z.discriminatedUnion('status', [
     say: z.string().min(1),
     picks: z.array(finalPickSchema).length(0),
     rejected: z.array(rejectedPickSchema).default([]),
-    trace: z.array(agentTraceStepSchema).default([])
+    trace: z.array(agentTraceStepSchema).default([]),
+    candidateScoreTable: z.array(candidateScoreTableRowSchema).default([])
   })
 ]);
 
