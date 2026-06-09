@@ -647,6 +647,50 @@ describe('runMusicAgentLoop', () => {
     }));
   });
 
+  it('converges when recall is skipped by tool budget after enough candidates exist', async () => {
+    const pool = new CandidatePool();
+    for (let index = 0; index < 6; index += 1) {
+      pool.upsert(candidate({
+        id: String(201 + index),
+        name: `Search Candidate ${index + 1}`,
+        artist: `Search Artist ${index + 1}`,
+        sources: ['search'],
+        scores: { ...candidate().scores, intentMatch: 0.85 - index * 0.04 }
+      }));
+    }
+    const fallbackLogger = vi.fn();
+    const llmClient = new LoopFakeLlmClient([
+      JSON.stringify({ type: 'tool_call', tool: 'recall_from_ncm_search', input: { queries: ['afternoon jazz'] } }),
+      JSON.stringify({ type: 'tool_call', tool: 'recall_from_ncm_search', input: { queries: ['more afternoon jazz'] } })
+    ]);
+    const tools: MusicAgentToolRegistry = {
+      recall_from_ncm_search: async () => ({ summary: 'search kept same candidates', candidateCount: pool.count() })
+    };
+
+    const result = await runMusicAgentLoop({
+      llmClient,
+      context: context({ request: 'auto-fill' }),
+      candidatePool: pool,
+      tools,
+      budget: budget({ maxLlmCalls: 4, maxSteps: 4, maxToolCalls: 1 }),
+      fallbackLogger
+    });
+
+    expect(result.status).toBe('ok');
+    expect(result.picks).toHaveLength(2);
+    expect(result.picks.every((pick) => pick.reason === 'ranked convergence')).toBe(true);
+    expect(result.trace.at(-1)).toMatchObject({
+      tool: 'recall_from_ncm_search',
+      thoughtSummary: 'tool budget exhausted with sufficient candidates'
+    });
+    expect(fallbackLogger).toHaveBeenCalledWith(expect.objectContaining({
+      reason: 'ranked_tool_completed',
+      status: 'ok',
+      candidateCount: 6,
+      pickCount: 2
+    }));
+  });
+
   it('returns aborted when the extra final-pick call is aborted', async () => {
     const pool = new CandidatePool();
     pool.upsert(candidate({ id: '101' }));
