@@ -315,6 +315,25 @@ describe('music agent context builder', () => {
     expect(context.bannedSummary).toContain('减少伤感');
   });
 
+  it('uses Shanghai daypart even when the server process timezone is UTC', async () => {
+    const originalTz = process.env.TZ;
+    process.env.TZ = 'UTC';
+    try {
+      const { buildMusicAgentContext } = await import('../../src/server/music-agent/context.js');
+      const context = await buildMusicAgentContext({
+        userId: 'user-timezone',
+        request: 'auto-fill',
+        now: new Date('2026-06-09T04:30:00.000Z')
+      });
+
+      expect(context.currentMoment.localTime).toBe('周二 12:30');
+      expect(context.currentMoment.daypart).toBe('中午');
+    } finally {
+      if (originalTz === undefined) delete process.env.TZ;
+      else process.env.TZ = originalTz;
+    }
+  });
+
   it('omits expired active directives', async () => {
     const userId = 'user-1';
     const { setPref } = await import('../../src/server/store/prefs.js');

@@ -421,6 +421,71 @@ describe('createMusicAgentTools', () => {
     expect(candidatePool.count()).toBe(10);
   });
 
+  it('reuses short-lived recall caches for liked, style, and trending recalls', async () => {
+    const ncmClient = {
+      getLikedSongIds: vi.fn(async () => ['liked-1']),
+      getSongDetails: vi.fn(async () => [
+        { id: 'liked-1', name: 'Liked One', artists: ['Liked Artist'] }
+      ]),
+      searchSongs: vi.fn(async (query: string) => [
+        { id: `${query}-1`, name: `${query} One`, artists: [`${query} Artist`] }
+      ]),
+      getPlaylistDetail: vi.fn(async () => null)
+    };
+
+    const { CandidatePool } = await import('../../src/server/music-agent/candidates.js');
+    const { createMusicAgentTools } = await import('../../src/server/music-agent/tools.js');
+    const candidatePool = new CandidatePool();
+    const tools = createMusicAgentTools({
+      userId: 'user-cache',
+      ncmClient: ncmClient as any,
+      context: {
+        request: 'auto-fill',
+        currentUserText: '',
+        currentMoment: { localTime: '周一 13:30', daypart: '下午', weather: null },
+        activeDirective: '下午 city pop',
+        currentPlanSegment: null,
+        tasteSummary: '偏好 city pop',
+        recentPreferenceSummary: '',
+        recentPlaySignals: '',
+        queueStateSummary: '',
+        bannedSummary: ''
+      },
+      candidatePool,
+      budget: {
+        maxMs: 10_000,
+        maxSteps: 5,
+        maxLlmCalls: 2,
+        maxToolCalls: 5,
+        maxNcmSearches: 10,
+        maxPlaylistFetches: 0,
+        maxTrendFetchMs: 0,
+        maxCandidates: 20
+      }
+    });
+
+    await tools.recall_from_liked?.({ limit: 1 });
+    await tools.recall_from_liked?.({ limit: 1 });
+    const afterLikedCalls = ncmClient.searchSongs.mock.calls.length;
+    await tools.recall_from_style_expansion?.({ queries: ['city pop'], limit: 1 });
+    const afterFirstStyleCalls = ncmClient.searchSongs.mock.calls.length;
+    await tools.recall_from_style_expansion?.({ queries: ['city pop'], limit: 1 });
+    const afterSecondStyleCalls = ncmClient.searchSongs.mock.calls.length;
+    await tools.expand_queries?.({ trendQueries: ['trend city pop'] });
+    await tools.recall_from_trending?.({ limit: 1 });
+    const afterFirstTrendCalls = ncmClient.searchSongs.mock.calls.length;
+    await tools.recall_from_trending?.({ limit: 1 });
+    const afterSecondTrendCalls = ncmClient.searchSongs.mock.calls.length;
+
+    expect(ncmClient.getLikedSongIds).toHaveBeenCalledTimes(1);
+    expect(ncmClient.getSongDetails).toHaveBeenCalledTimes(1);
+    expect(afterLikedCalls).toBe(0);
+    expect(afterFirstStyleCalls).toBeGreaterThan(0);
+    expect(afterSecondStyleCalls).toBe(afterFirstStyleCalls);
+    expect(afterFirstTrendCalls).toBeGreaterThan(afterSecondStyleCalls);
+    expect(afterSecondTrendCalls).toBe(afterFirstTrendCalls);
+  });
+
   it('front-loads repeated artist penalties into query recall diversity', async () => {
     const ncmClient = {
       getLikedSongIds: vi.fn(async () => []),

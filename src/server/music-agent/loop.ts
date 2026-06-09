@@ -80,6 +80,7 @@ const AUTO_FILL_MIX_TOOL_NAMES: MusicAgentToolName[] = [
   'recall_from_style_expansion',
   'recall_from_trending'
 ];
+const AUTO_FILL_AGGREGATE_TOOL_NAME: MusicAgentToolName = 'recall_auto_fill_mix';
 
 export async function runMusicAgentLoop(input: RunMusicAgentLoopInput): Promise<MusicAgentRunOutput> {
   const startedAt = Date.now();
@@ -146,7 +147,7 @@ export async function runMusicAgentLoop(input: RunMusicAgentLoopInput): Promise<
       }
     }
 
-    if (toolCalls >= input.budget.maxToolCalls) {
+    if (toolCalls >= input.budget.maxToolCalls && !canUseReservedRankTool(output.tool, input)) {
       const observation = observationFromProblem(
         `tool budget exhausted before ${output.tool}`,
         input.candidatePool.count()
@@ -227,6 +228,20 @@ async function supplementAutoFillRecallMix(
   step: number,
   toolCalls: number
 ): Promise<number> {
+  const aggregateTool = input.tools[AUTO_FILL_AGGREGATE_TOOL_NAME];
+  if (aggregateTool && toolCalls < input.budget.maxToolCalls) {
+    const observation = await aggregateTool({}, input.signal);
+    const nextToolCalls = toolCalls + 1;
+    observations.push({ ...observation, tool: AUTO_FILL_AGGREGATE_TOOL_NAME });
+    trace.push(traceStep(step, startedAt, input.candidatePool.count(), {
+      thoughtSummary: 'auto-fill recall mix tool executed',
+      tool: AUTO_FILL_AGGREGATE_TOOL_NAME,
+      toolInputSummary: summarizeInput({}),
+      observationSummary: summarizeObservation(observation)
+    }));
+    return nextToolCalls;
+  }
+
   let nextToolCalls = toolCalls;
   for (const toolName of AUTO_FILL_MIX_TOOL_NAMES) {
     if (input.signal?.aborted) return nextToolCalls;
@@ -245,6 +260,14 @@ async function supplementAutoFillRecallMix(
     }));
   }
   return nextToolCalls;
+}
+
+function canUseReservedRankTool(tool: string, input: RunMusicAgentLoopInput): boolean {
+  return (
+    tool === DEFAULT_TOOL_NAME &&
+    input.candidatePool.count() > 0 &&
+    Boolean(input.tools[DEFAULT_TOOL_NAME])
+  );
 }
 
 function parseLoopOutput(raw: string): ParsedLoopOutput {

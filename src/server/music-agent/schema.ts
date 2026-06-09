@@ -23,6 +23,7 @@ export const musicAgentToolNameSchema = z.enum([
   'recall_from_ncm_search',
   'recall_from_trending',
   'recall_from_style_expansion',
+  'recall_auto_fill_mix',
   'rank_candidates',
   'diversify_candidates',
   'finalize_pick'

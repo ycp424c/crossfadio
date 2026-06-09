@@ -20,6 +20,7 @@ import { getOrGenerateDailyThemeWithin } from '../../daily-theme.js';
 import { MusicAgent } from '../../music-agent/index.js';
 import type { MusicAgentRunOutput } from '../../music-agent/schema.js';
 import { buildMusicTrackDedupeKey, isMusicTrackDedupeKeyExcluded } from '../../music-agent/dedupe.js';
+import { formatShanghaiLocalTime, getDaypart, getShanghaiTimeParts } from '../../timezone.js';
 
 type AuthedRequest = Request & { userId: string; ncmClient: NcmClient };
 export type DiscoveryMode = 'explore' | 'comfort';
@@ -102,26 +103,12 @@ export type DjTimeContext = {
 };
 
 export function buildDjTimeContext(date: Date): DjTimeContext {
-  const weekdays = ['日', '一', '二', '三', '四', '五', '六'];
-  const day = weekdays[date.getDay()];
-  const hh = String(date.getHours()).padStart(2, '0');
-  const mm = String(date.getMinutes()).padStart(2, '0');
-  const daypart = getDaypart(date.getHours());
-  const localTime = `周${day} ${hh}:${mm}（${daypart}）`;
+  const daypart = getDaypart(getShanghaiTimeParts(date).hour);
+  const localTime = `${formatShanghaiLocalTime(date)}（${daypart}）`;
   const contextInstruction = `当前时间段是“${daypart}”，所有时间判断都必须以这个时间段为准；今日主题和天气只影响氛围，不能覆盖当前时间段。`;
   const sayInstruction = `say 字段必须与当前时间一致：当前时间段是“${daypart}”。不要写成晚上、夜晚、深夜、周五晚或其他不匹配的时间段。`;
 
   return { localTime, daypart, contextInstruction, sayInstruction };
-}
-
-function getDaypart(hour: number): string {
-  if (hour >= 5 && hour < 9) return '早晨';
-  if (hour >= 9 && hour < 12) return '上午';
-  if (hour >= 12 && hour < 14) return '中午';
-  if (hour >= 14 && hour < 17) return '下午';
-  if (hour >= 17 && hour < 19) return '傍晚';
-  if (hour >= 19 && hour < 23) return '晚上';
-  return '深夜';
 }
 
 function getDiscoveryMode(userId: string): DiscoveryMode {

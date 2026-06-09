@@ -20,6 +20,7 @@ describe('music-agent schema', () => {
     expect(musicAgentToolNameSchema.parse('recall_from_ncm_search')).toBe('recall_from_ncm_search');
     expect(musicAgentToolNameSchema.parse('recall_from_trending')).toBe('recall_from_trending');
     expect(musicAgentToolNameSchema.parse('recall_from_style_expansion')).toBe('recall_from_style_expansion');
+    expect(musicAgentToolNameSchema.parse('recall_auto_fill_mix')).toBe('recall_auto_fill_mix');
     expect(musicAgentToolNameSchema.parse('rank_candidates')).toBe('rank_candidates');
     expect(musicAgentToolNameSchema.parse('diversify_candidates')).toBe('diversify_candidates');
     expect(musicAgentToolNameSchema.parse('finalize_pick')).toBe('finalize_pick');

@@ -221,6 +221,20 @@ describe('DJ time context', () => {
     expect(context.sayInstruction).toContain('当前时间段是“下午”');
     expect(context.sayInstruction).toContain('不要写成晚上');
   });
+
+  it('uses Shanghai time even when the server process timezone is UTC', () => {
+    const originalTz = process.env.TZ;
+    process.env.TZ = 'UTC';
+    try {
+      const context = buildDjTimeContext(new Date('2026-06-09T04:30:00.000Z'));
+
+      expect(context.localTime).toBe('周二 12:30（中午）');
+      expect(context.daypart).toBe('中午');
+    } finally {
+      if (originalTz === undefined) delete process.env.TZ;
+      else process.env.TZ = originalTz;
+    }
+  });
 });
 
 describe('chat queue directives', () => {

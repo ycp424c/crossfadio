@@ -57,6 +57,11 @@ type ToolState = {
   playlistFetches: number;
 };
 
+type CacheEntry<T> = {
+  value: T;
+  expiresAt: number;
+};
+
 const SUMMARY_MAX_CHARS = 900;
 const DEFAULT_SEARCH_LIMIT = 8;
 const MAX_LIKED_RECALL_LIMIT = 60;
@@ -69,6 +74,10 @@ const MAX_RANK_DISPLAY_LIMIT = 20;
 const MAX_DIVERSIFY_DISPLAY_LIMIT = 5;
 const AVOID_ARTIST_PENALTY_THRESHOLD = 0.18;
 const MAX_QUERY_RECALL_PER_PRIMARY_ARTIST = 2;
+const LIKED_RECALL_CACHE_TTL_MS = 10 * 60 * 1000;
+const SEARCH_RECALL_CACHE_TTL_MS = 30 * 60 * 1000;
+const likedRecallCache = new Map<string, CacheEntry<NcmTrackLike[]>>();
+const searchRecallCache = new Map<string, CacheEntry<NcmTrackLike[]>>();
 
 export function createMusicAgentTools(input: CreateMusicAgentToolsInput): MusicAgentToolRegistry {
   const state: ToolState = {
@@ -142,17 +151,16 @@ export function createMusicAgentTools(input: CreateMusicAgentToolsInput): MusicA
       if (signal?.aborted) return abortedObservation(input.candidatePool);
       const limit = likedRecallLimit(toolInput.limit, input.context);
       try {
-        const ids = (await input.ncmClient.getLikedSongIds()).slice(0, limit).map(String);
-        if (signal?.aborted) return abortedObservation(input.candidatePool);
-        if (ids.length === 0) {
+        const tracks = await getLikedRecallTracks(input, limit, signal);
+        if (tracks === 'aborted') return abortedObservation(input.candidatePool);
+        if (tracks.length === 0) {
           return observation(input.candidatePool, 'liked recall found no liked ids.');
         }
-        const tracks = await input.ncmClient.getSongDetails(ids);
         const added = upsertTracks(input.candidatePool, tracks, 'liked', {
           evidence: '网易云红心歌曲',
           scores: sourceScores('liked', input.context)
         }).added;
-        return observation(input.candidatePool, `liked recall added ${added} candidates from ${ids.length} ids.`);
+        return observation(input.candidatePool, `liked recall added ${added} candidates from ${tracks.length} ids.`);
       } catch (error) {
         return observation(input.candidatePool, 'liked recall failed.', [formatError(error)]);
       }
@@ -245,16 +253,8 @@ export function createMusicAgentTools(input: CreateMusicAgentToolsInput): MusicA
 
     recall_from_trending: async (toolInput, signal) => {
       if (signal?.aborted) return abortedObservation(input.candidatePool);
-      const trendContext = state.trendContext;
-      const trendQueries = trendContext
-        ? [
-            ...trendContext.chartTrackHints.map((hint) => `${hint.title} ${hint.artist}`),
-            ...trendContext.hotStyles,
-            ...trendContext.hotArtists
-          ]
-        : state.queryPlan?.trendQueries ?? [];
       return recallFromQueries({
-        queries: uniqueStrings([...stringArrayValue(toolInput.queries), ...trendQueries]).slice(0, 8),
+        queries: trendRecallQueries(state, toolInput),
         source: 'trend',
         evidencePrefix: '趋势线索',
         scores: sourceScores('trend', input.context),
@@ -268,22 +268,7 @@ export function createMusicAgentTools(input: CreateMusicAgentToolsInput): MusicA
 
     recall_from_style_expansion: async (toolInput, signal) => {
       if (signal?.aborted) return abortedObservation(input.candidatePool);
-      const text = [
-        stringValue(toolInput.text),
-        input.context.currentUserText,
-        input.context.activeDirective,
-        input.context.tasteSummary,
-        input.context.recentPreferenceSummary
-      ].filter(Boolean).join(' ');
-      const knowledge = getMusicKnowledgeSlice({
-        text,
-        daypart: input.context.currentMoment.daypart
-      });
-      const queries = uniqueStrings([
-        ...knowledge.queryTemplates,
-        ...knowledge.styleAdjacency,
-        ...stringArrayValue(toolInput.queries)
-      ]).slice(0, 8);
+      const queries = styleExpansionQueries(input.context, toolInput);
       return recallFromQueries({
         queries,
         source: 'style_expansion',
@@ -295,6 +280,66 @@ export function createMusicAgentTools(input: CreateMusicAgentToolsInput): MusicA
         signal,
         limit: boundedPositiveInt(toolInput.limit, 5, MAX_STYLE_EXPANSION_RECALL_LIMIT)
       });
+    },
+
+    recall_auto_fill_mix: async (_toolInput, signal) => {
+      if (signal?.aborted) return abortedObservation(input.candidatePool);
+      if (!state.queryPlan) {
+        state.queryPlan = withContextAvoidArtists(defaultQueryPlan(input.context, {}), input.context);
+      }
+
+      const summaries: string[] = [];
+      const problems: string[] = [];
+
+      const search = await recallFromQueries({
+        queries: autoFillSearchQueries(input.context, state.queryPlan),
+        source: 'search',
+        evidencePrefix: '网易云搜索',
+        scores: sourceScores('search', input.context),
+        input,
+        state,
+        maxSearches: limits.maxNcmSearches,
+        signal,
+        limit: DEFAULT_SEARCH_LIMIT
+      });
+      summaries.push(search.summary);
+      problems.push(...(search.problems ?? []));
+      if (hasEnoughAutoFillNonLikedCandidates(input.candidatePool)) {
+        return observation(input.candidatePool, `auto-fill mix: ${summaries.join(' | ')}`, problems);
+      }
+
+      const style = await recallFromQueries({
+        queries: styleExpansionQueries(input.context, {}),
+        source: 'style_expansion',
+        evidencePrefix: '风格扩展',
+        scores: sourceScores('style_expansion', input.context),
+        input,
+        state,
+        maxSearches: limits.maxNcmSearches,
+        signal,
+        limit: 5
+      });
+      summaries.push(style.summary);
+      problems.push(...(style.problems ?? []));
+      if (hasEnoughAutoFillNonLikedCandidates(input.candidatePool)) {
+        return observation(input.candidatePool, `auto-fill mix: ${summaries.join(' | ')}`, problems);
+      }
+
+      const trend = await recallFromQueries({
+        queries: trendRecallQueries(state, {}),
+        source: 'trend',
+        evidencePrefix: '趋势线索',
+        scores: sourceScores('trend', input.context),
+        input,
+        state,
+        maxSearches: limits.maxNcmSearches,
+        signal,
+        limit: 5
+      });
+      summaries.push(trend.summary);
+      problems.push(...(trend.problems ?? []));
+
+      return observation(input.candidatePool, `auto-fill mix: ${summaries.join(' | ')}`, problems);
     },
 
     rank_candidates: async (toolInput, signal) => {
@@ -320,6 +365,71 @@ export function createMusicAgentTools(input: CreateMusicAgentToolsInput): MusicA
       return observation(input.candidatePool, summarizeCandidates('finalize candidates', top, options));
     }
   };
+}
+
+async function getLikedRecallTracks(
+  input: CreateMusicAgentToolsInput,
+  limit: number,
+  signal?: AbortSignal
+): Promise<NcmTrackLike[] | 'aborted'> {
+  const cacheKey = `${input.userId}:${limit}`;
+  const cached = readCache(likedRecallCache, cacheKey);
+  if (cached) return cached;
+
+  const ids = (await input.ncmClient.getLikedSongIds()).slice(0, limit).map(String);
+  if (signal?.aborted) return 'aborted';
+  if (ids.length === 0) {
+    writeCache(likedRecallCache, cacheKey, [], LIKED_RECALL_CACHE_TTL_MS);
+    return [];
+  }
+  const tracks = await input.ncmClient.getSongDetails(ids);
+  writeCache(likedRecallCache, cacheKey, tracks, LIKED_RECALL_CACHE_TTL_MS);
+  return tracks;
+}
+
+function autoFillSearchQueries(context: MusicAgentContextSummary, queryPlan: QueryPlan): string[] {
+  return uniqueStrings([
+    ...(context.actionQueries ?? []),
+    ...queryPlan.intentQueries,
+    ...queryPlan.tasteAnchorQueries,
+    ...queryPlan.planQueries,
+    ...queryPlan.explorationQueries
+  ]).slice(0, 8);
+}
+
+function styleExpansionQueries(context: MusicAgentContextSummary, toolInput: Record<string, unknown>): string[] {
+  const text = [
+    stringValue(toolInput.text),
+    context.currentUserText,
+    context.activeDirective,
+    context.tasteSummary,
+    context.recentPreferenceSummary
+  ].filter(Boolean).join(' ');
+  const knowledge = getMusicKnowledgeSlice({
+    text,
+    daypart: context.currentMoment.daypart
+  });
+  return uniqueStrings([
+    ...stringArrayValue(toolInput.queries),
+    ...knowledge.queryTemplates,
+    ...knowledge.styleAdjacency
+  ]).slice(0, 8);
+}
+
+function trendRecallQueries(state: ToolState, toolInput: Record<string, unknown>): string[] {
+  const trendContext = state.trendContext;
+  const trendQueries = trendContext
+    ? [
+        ...trendContext.chartTrackHints.map((hint) => `${hint.title} ${hint.artist}`),
+        ...trendContext.hotStyles,
+        ...trendContext.hotArtists
+      ]
+    : state.queryPlan?.trendQueries ?? [];
+  return uniqueStrings([...stringArrayValue(toolInput.queries), ...trendQueries]).slice(0, 8);
+}
+
+function hasEnoughAutoFillNonLikedCandidates(pool: CandidatePool): boolean {
+  return pool.list().filter((candidate) => !candidate.sources.includes('liked')).length >= 8;
 }
 
 function likedRecallLimit(value: unknown, context: MusicAgentContextSummary): number {
@@ -387,12 +497,18 @@ async function recallFromQueries(options: {
 
   for (const query of queries) {
     if (options.signal?.aborted) return abortedObservation(options.input.candidatePool);
-    if (!consumeNcmSearch(options.state, options.maxSearches)) {
-      problems.push('NCM search budget exhausted');
-      break;
-    }
     try {
-      const tracks = await options.input.ncmClient.searchSongs(query, options.limit ?? DEFAULT_SEARCH_LIMIT);
+      const limit = options.limit ?? DEFAULT_SEARCH_LIMIT;
+      const cacheKey = searchCacheKey(query, limit);
+      let tracks = readCache(searchRecallCache, cacheKey);
+      if (!tracks) {
+        if (!consumeNcmSearch(options.state, options.maxSearches)) {
+          problems.push('NCM search budget exhausted');
+          break;
+        }
+        tracks = await options.input.ncmClient.searchSongs(query, limit);
+        writeCache(searchRecallCache, cacheKey, tracks, SEARCH_RECALL_CACHE_TTL_MS);
+      }
       searched.push(query);
       const result = upsertTracks(options.input.candidatePool, tracks, options.source, {
         evidence: `${options.evidencePrefix}: ${query}`,
@@ -416,6 +532,27 @@ async function recallFromQueries(options: {
     `${options.evidencePrefix} recall searched ${searched.length} queries and added ${added} candidates: ${searched.join('、') || 'none'}.`,
     problems
   );
+}
+
+function readCache<T>(cache: Map<string, CacheEntry<T>>, key: string): T | null {
+  const entry = cache.get(key);
+  if (!entry) return null;
+  if (entry.expiresAt <= Date.now()) {
+    cache.delete(key);
+    return null;
+  }
+  return entry.value;
+}
+
+function writeCache<T>(cache: Map<string, CacheEntry<T>>, key: string, value: T, ttlMs: number): void {
+  cache.set(key, {
+    value,
+    expiresAt: Date.now() + ttlMs
+  });
+}
+
+function searchCacheKey(query: string, limit: number): string {
+  return `${query.trim().toLowerCase()}::${limit}`;
 }
 
 function upsertTracks(

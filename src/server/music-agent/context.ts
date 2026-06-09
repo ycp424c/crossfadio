@@ -7,6 +7,7 @@ import { getRecentPlays } from '../store/plays.js';
 import { getQueue } from '../store/queue.js';
 import { getPref } from '../store/prefs.js';
 import { loadLatestPlan } from '../store/plan.js';
+import { formatShanghaiDate, formatShanghaiLocalTime, getDaypart, getShanghaiTimeParts } from '../timezone.js';
 import {
   musicAgentContextSummarySchema,
   type MusicAgentContextSummary
@@ -43,8 +44,8 @@ export async function buildMusicAgentContext(input: BuildMusicAgentContextInput)
     currentUserText: input.request === 'chat-recommend' ? truncate(input.userText ?? '', 600) : '',
     ...(actionQueries.length > 0 ? { actionQueries } : {}),
     currentMoment: {
-      localTime: formatLocalTime(now),
-      daypart: getDaypart(now.getHours()),
+      localTime: formatShanghaiLocalTime(now),
+      daypart: getDaypart(getShanghaiTimeParts(now).hour),
       weather: weather ? `${weather.tempC}°C，${weather.desc}` : null,
       ...(theme ? { dailyTheme: `${theme.theme}（${theme.keywords.join('、')}）` } : {})
     },
@@ -89,24 +90,6 @@ function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T
   });
 }
 
-function formatLocalTime(date: Date): string {
-  const weekdays = ['日', '一', '二', '三', '四', '五', '六'];
-  const day = weekdays[date.getDay()];
-  const hh = String(date.getHours()).padStart(2, '0');
-  const mm = String(date.getMinutes()).padStart(2, '0');
-  return `周${day} ${hh}:${mm}`;
-}
-
-function getDaypart(hour: number): string {
-  if (hour >= 5 && hour < 9) return '早晨';
-  if (hour >= 9 && hour < 12) return '上午';
-  if (hour >= 12 && hour < 14) return '中午';
-  if (hour >= 14 && hour < 17) return '下午';
-  if (hour >= 17 && hour < 19) return '傍晚';
-  if (hour >= 19 && hour < 23) return '晚上';
-  return '深夜';
-}
-
 function getActiveDirective(userId: string, now: Date): string {
   const directive = getPref<ActiveDirectivePref>(userId, 'queue.activeDirective');
   const text = directive?.text?.trim() ?? '';
@@ -118,10 +101,11 @@ function getActiveDirective(userId: string, now: Date): string {
 }
 
 function buildCurrentPlanSegment(userId: string, now: Date): string | null {
-  const plan = loadLatestPlan(userId, formatDate(now));
+  const timeParts = getShanghaiTimeParts(now);
+  const plan = loadLatestPlan(userId, formatShanghaiDate(now));
   if (!plan) return null;
 
-  const segmentId = getPlanSegmentId(now.getHours());
+  const segmentId = getPlanSegmentId(timeParts.hour);
   const segment = plan.segments.find((item) => item.id === segmentId);
   if (!segment) return null;
 
@@ -144,13 +128,6 @@ function getPlanSegmentId(hour: number): 'morning' | 'work' | 'evening' | 'late-
   if (hour >= 9 && hour < 17) return 'work';
   if (hour >= 17 && hour < 23) return 'evening';
   return 'late-night';
-}
-
-function formatDate(date: Date): string {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, '0');
-  const day = String(date.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
 }
 
 function buildTasteSummary(userId: string): string {

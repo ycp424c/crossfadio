@@ -410,6 +410,70 @@ describe('runMusicAgentLoop', () => {
     }));
   });
 
+  it('prefers one aggregate auto-fill recall tool so rank still has budget', async () => {
+    const pool = new CandidatePool();
+    const fallbackLogger = vi.fn();
+    const llmClient = new LoopFakeLlmClient([
+      JSON.stringify({ type: 'tool_call', tool: 'recall_from_liked', input: {} }),
+      JSON.stringify({ type: 'tool_call', tool: 'rank_candidates', input: {} })
+    ]);
+    const calls: string[] = [];
+
+    function addCandidates(source: 'liked' | 'search', count: number): void {
+      const start = pool.count();
+      for (let index = 0; index < count; index += 1) {
+        pool.upsert(candidate({
+          id: `${source}-${start + index + 1}`,
+          name: `${source} ${start + index + 1}`,
+          artist: `${source} Artist ${start + index + 1}`,
+          sources: [source]
+        }));
+      }
+    }
+
+    const result = await runMusicAgentLoop({
+      llmClient,
+      context: context({ request: 'auto-fill' }),
+      candidatePool: pool,
+      tools: {
+        recall_from_liked: async () => {
+          calls.push('recall_from_liked');
+          addCandidates('liked', 10);
+          return { summary: 'liked recall added 10 candidates', candidateCount: pool.count() };
+        },
+        recall_auto_fill_mix: async () => {
+          calls.push('recall_auto_fill_mix');
+          addCandidates('search', 8);
+          return { summary: 'auto-fill mix added 8 candidates', candidateCount: pool.count() };
+        },
+        rank_candidates: async () => {
+          calls.push('rank_candidates');
+          return { summary: 'ranked candidates', candidateCount: pool.count() };
+        },
+        recall_from_ncm_search: async () => {
+          throw new Error('aggregate tool should replace separate search recall');
+        },
+        recall_from_style_expansion: async () => {
+          throw new Error('aggregate tool should replace separate style recall');
+        },
+        recall_from_trending: async () => {
+          throw new Error('aggregate tool should replace separate trend recall');
+        }
+      },
+      budget: budget({ maxLlmCalls: 10, maxSteps: 10, maxToolCalls: 3 }),
+      fallbackLogger
+    });
+
+    expect(result.status).toBe('ok');
+    expect(result.picks.every((pick) => pick.reason === 'ranked convergence')).toBe(true);
+    expect(calls).toEqual(['recall_from_liked', 'recall_auto_fill_mix']);
+    expect(fallbackLogger).toHaveBeenCalledWith(expect.objectContaining({
+      reason: 'ranked_tool_completed',
+      toolCalls: 2,
+      candidateCount: 18
+    }));
+  });
+
   it('auto-fill supplements sparse ranked candidates before converging', async () => {
     const pool = new CandidatePool();
     const fallbackLogger = vi.fn();
