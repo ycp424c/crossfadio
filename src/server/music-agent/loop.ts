@@ -197,13 +197,18 @@ export async function runMusicAgentLoop(input: RunMusicAgentLoopInput): Promise<
       return abortedOutput(resolveMode(input), trace);
     }
 
-    if (shouldSupplementAutoFillRecall(toolName, input)) {
+    const shouldSupplementSparseRank = shouldSupplementSparseAutoFillRank(toolName, input);
+
+    if (shouldSupplementAutoFillRecall(toolName, input) || shouldSupplementSparseRank) {
       toolCalls = await supplementAutoFillRecallMix(input, observations, trace, startedAt, step, toolCalls);
       if (input.signal?.aborted) {
         return abortedOutput(resolveMode(input), trace);
       }
       if (shouldConvergeAfterAutoFillRecallMix(input)) {
         return rankedConvergence(input, trace, startedAt, step, llmCalls, toolCalls);
+      }
+      if (shouldSupplementSparseRank) {
+        continue;
       }
     }
 
@@ -529,6 +534,14 @@ function shouldConvergeAfterTool(
 
 function shouldSupplementAutoFillRecall(toolName: MusicAgentToolName, input: RunMusicAgentLoopInput): boolean {
   return modeFromContext(input.context) === 'pick_next' && toolName === 'recall_from_liked';
+}
+
+function shouldSupplementSparseAutoFillRank(toolName: MusicAgentToolName, input: RunMusicAgentLoopInput): boolean {
+  return (
+    modeFromContext(input.context) === 'pick_next' &&
+    toolName === 'rank_candidates' &&
+    !shouldConvergeAfterAutoFillRecallMix(input)
+  );
 }
 
 function shouldConvergeAfterAutoFillRecallMix(input: RunMusicAgentLoopInput): boolean {

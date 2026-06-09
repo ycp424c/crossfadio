@@ -13,6 +13,19 @@ export type MusicAgentOptions = {
   llmConfig?: LlmConfig;
 };
 
+export type MusicAgentFallbackStats = {
+  totalRuns: number;
+  convergenceRuns: number;
+  fallbackRuns: number;
+  fallbackRate: number;
+  fallbackReasons: Partial<Record<MusicAgentFallbackLogEvent['reason'], number>>;
+};
+
+export type MusicAgentFallbackStatsTracker = {
+  record(event: MusicAgentFallbackLogEvent): MusicAgentFallbackStats;
+  snapshot(): MusicAgentFallbackStats;
+};
+
 export type PickNextInput = {
   userId: string;
   ncmClient: NcmClient;
@@ -48,10 +61,12 @@ export class MusicAgent {
       ? (event) => {
           const logger = getLogger();
           const message = musicAgentRunLogMessage(event);
+          const fallbackStats = musicAgentFallbackStats.record(event);
+          const logEvent = { ...event, fallbackStats };
           if (event.reason === 'ranked_tool_completed') {
-            logger.info(event, message);
+            logger.info(logEvent, message);
           } else {
-            logger.warn(event, message);
+            logger.warn(logEvent, message);
           }
         }
       : undefined;
@@ -134,6 +149,46 @@ export function musicAgentRunLogMessage(event: MusicAgentFallbackLogEvent): stri
   return event.reason === 'ranked_tool_completed'
     ? 'MusicAgent ranked convergence'
     : 'MusicAgent ranked fallback';
+}
+
+export function createMusicAgentFallbackStatsTracker(): MusicAgentFallbackStatsTracker {
+  const stats: MusicAgentFallbackStats = {
+    totalRuns: 0,
+    convergenceRuns: 0,
+    fallbackRuns: 0,
+    fallbackRate: 0,
+    fallbackReasons: {}
+  };
+
+  return {
+    record(event) {
+      stats.totalRuns += 1;
+      if (event.reason === 'ranked_tool_completed') {
+        stats.convergenceRuns += 1;
+      } else {
+        stats.fallbackRuns += 1;
+        stats.fallbackReasons[event.reason] = (stats.fallbackReasons[event.reason] ?? 0) + 1;
+      }
+      stats.fallbackRate = roundRate(stats.fallbackRuns / stats.totalRuns);
+      return cloneFallbackStats(stats);
+    },
+    snapshot() {
+      return cloneFallbackStats(stats);
+    }
+  };
+}
+
+const musicAgentFallbackStats = createMusicAgentFallbackStatsTracker();
+
+function cloneFallbackStats(stats: MusicAgentFallbackStats): MusicAgentFallbackStats {
+  return {
+    ...stats,
+    fallbackReasons: { ...stats.fallbackReasons }
+  };
+}
+
+function roundRate(value: number): number {
+  return Math.round(value * 1000) / 1000;
 }
 
 function extractActionQueries(actions: ChatRecommendAction[]): string[] {

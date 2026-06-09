@@ -81,6 +81,58 @@ describe('MusicAgent facade', () => {
       .toBe('MusicAgent ranked fallback');
   });
 
+  it('tracks fallback rate and fallback reasons for MusicAgent run logs', async () => {
+    const { createMusicAgentFallbackStatsTracker } = await import('../../src/server/music-agent/index.js');
+    const baseEvent = {
+      mode: 'pick_next',
+      status: 'ok',
+      candidateCount: 2,
+      pickCount: 2,
+      step: 1,
+      llmCalls: 1,
+      toolCalls: 1,
+      elapsedMs: 100,
+      budget: {
+        maxMs: 60_000,
+        maxSteps: 8,
+        maxLlmCalls: 4,
+        maxToolCalls: 8,
+        maxNcmSearches: 8,
+        maxPlaylistFetches: 3,
+        maxTrendFetchMs: 2_000,
+        maxCandidates: 120
+      }
+    } as const;
+    const tracker = createMusicAgentFallbackStatsTracker();
+
+    expect(tracker.record({ ...baseEvent, reason: 'ranked_tool_completed' })).toMatchObject({
+      totalRuns: 1,
+      convergenceRuns: 1,
+      fallbackRuns: 0,
+      fallbackRate: 0,
+      fallbackReasons: {}
+    });
+    expect(tracker.record({ ...baseEvent, reason: 'llm_response_timeout' })).toMatchObject({
+      totalRuns: 2,
+      convergenceRuns: 1,
+      fallbackRuns: 1,
+      fallbackRate: 0.5,
+      fallbackReasons: {
+        llm_response_timeout: 1
+      }
+    });
+    expect(tracker.record({ ...baseEvent, reason: 'tool_budget_exhausted' })).toMatchObject({
+      totalRuns: 3,
+      convergenceRuns: 1,
+      fallbackRuns: 2,
+      fallbackRate: 0.667,
+      fallbackReasons: {
+        llm_response_timeout: 1,
+        tool_budget_exhausted: 1
+      }
+    });
+  });
+
   it('recalls liked songs and returns a validated run output', async () => {
     const ncmClient = {
       getLikedSongIds: vi.fn(async () => ['101']),

@@ -410,6 +410,84 @@ describe('runMusicAgentLoop', () => {
     }));
   });
 
+  it('auto-fill supplements sparse ranked candidates before converging', async () => {
+    const pool = new CandidatePool();
+    const fallbackLogger = vi.fn();
+    const llmClient = new LoopFakeLlmClient([
+      JSON.stringify({ type: 'tool_call', tool: 'recall_from_ncm_search', input: { query: 'summer' } }),
+      JSON.stringify({ type: 'tool_call', tool: 'rank_candidates', input: {} }),
+      JSON.stringify({ type: 'tool_call', tool: 'recall_from_liked', input: {} })
+    ]);
+    const calls: string[] = [];
+
+    function addCandidates(source: 'search' | 'style_expansion' | 'trend', count: number): void {
+      const start = pool.count();
+      for (let index = 0; index < count; index += 1) {
+        pool.upsert(candidate({
+          id: `${source}-${start + index + 1}`,
+          name: `${source} ${start + index + 1}`,
+          artist: `${source} Artist ${start + index + 1}`,
+          sources: [source]
+        }));
+      }
+    }
+
+    const result = await runMusicAgentLoop({
+      llmClient,
+      context: context({ request: 'auto-fill' }),
+      candidatePool: pool,
+      tools: {
+        expand_queries: async () => {
+          calls.push('expand_queries');
+          return { summary: 'expanded queries', candidateCount: pool.count() };
+        },
+        recall_from_ncm_search: async () => {
+          calls.push('recall_from_ncm_search');
+          addCandidates('search', calls.filter((call) => call === 'recall_from_ncm_search').length === 1 ? 4 : 2);
+          return { summary: 'search recall added candidates', candidateCount: pool.count() };
+        },
+        recall_from_style_expansion: async () => {
+          calls.push('recall_from_style_expansion');
+          addCandidates('style_expansion', 2);
+          return { summary: 'style recall added candidates', candidateCount: pool.count() };
+        },
+        recall_from_trending: async () => {
+          calls.push('recall_from_trending');
+          addCandidates('trend', 2);
+          return { summary: 'trend recall added candidates', candidateCount: pool.count() };
+        },
+        rank_candidates: async () => {
+          calls.push('rank_candidates');
+          return { summary: 'ranked candidates', candidateCount: pool.count() };
+        },
+        recall_from_liked: async () => {
+          throw new Error('should converge after supplementing sparse ranked candidates');
+        }
+      },
+      budget: budget({ maxLlmCalls: 10, maxSteps: 10, maxToolCalls: 10 }),
+      fallbackLogger
+    });
+
+    expect(result.status).toBe('ok');
+    expect(result.picks.every((pick) => pick.reason === 'ranked convergence')).toBe(true);
+    expect(calls).toEqual([
+      'recall_from_ncm_search',
+      'rank_candidates',
+      'expand_queries',
+      'recall_from_ncm_search',
+      'recall_from_style_expansion',
+      'recall_from_trending'
+    ]);
+    expect(pool.count()).toBe(10);
+    expect(pool.list().filter((item) => !item.sources.includes('liked'))).toHaveLength(10);
+    expect(llmClient.calls).toHaveLength(2);
+    expect(fallbackLogger).toHaveBeenCalledWith(expect.objectContaining({
+      reason: 'ranked_tool_completed',
+      status: 'ok',
+      candidateCount: 10
+    }));
+  });
+
   it('parses fenced and prose-wrapped JSON, and malformed output defaults without crashing', async () => {
     const fencedLlm = new LoopFakeLlmClient([
       '```json\n{"type":"final","say":"ok","picks":[{"id":"101","reason":"fits","source":"liked"}],"rejected":[]}\n```'

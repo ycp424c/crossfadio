@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import { extractQueueDirectiveFromText } from '../../src/server/http/chat-sse-worker';
-import { buildDiscoveryModePromptParts, buildDjTimeContext, buildTrackDedupeKey, getCandidateSourceMix, parseDjCandidatePicks, serializeDjPickNextErrorForLog, searchCandidates } from '../../src/server/http/routes/djNext';
+import { buildDiscoveryModePromptParts, buildDjTimeContext, buildTrackDedupeKey, createDjPickNextFallbackStatsTracker, getCandidateSourceMix, parseDjCandidatePicks, serializeDjPickNextErrorForLog, searchCandidates } from '../../src/server/http/routes/djNext';
 import { LlmError } from '../../src/server/llm/client';
 import type { NcmClient } from '../../src/server/ncm/client';
 import type { NcmSong } from '../../src/shared/schema';
@@ -44,6 +44,34 @@ function mockNcmClient(songMap: Record<string, NcmSong[]>): Pick<NcmClient, 'sea
 // ── serializeDjPickNextErrorForLog ─────────────────────────────────────────
 
 describe('DJ pick-next diagnostics', () => {
+  it('tracks route-level fallback rate by fallback path', () => {
+    const tracker = createDjPickNextFallbackStatsTracker();
+
+    expect(tracker.record({ path: 'music_agent_success' })).toMatchObject({
+      totalRuns: 1,
+      fallbackRuns: 0,
+      fallbackRate: 0,
+      fallbackPaths: {}
+    });
+    expect(tracker.record({ path: 'music_agent_ranked_fallback' })).toMatchObject({
+      totalRuns: 2,
+      fallbackRuns: 1,
+      fallbackRate: 0.5,
+      fallbackPaths: {
+        music_agent_ranked_fallback: 1
+      }
+    });
+    expect(tracker.record({ path: 'legacy_random_fallback' })).toMatchObject({
+      totalRuns: 3,
+      fallbackRuns: 2,
+      fallbackRate: 0.667,
+      fallbackPaths: {
+        music_agent_ranked_fallback: 1,
+        legacy_random_fallback: 1
+      }
+    });
+  });
+
   it('keeps LLM HTTP details in structured log payloads', () => {
     const error = new LlmError(
       'LLM request failed: 400 Bad Request; response body: {"error":{"message":"bad schema"}}',
@@ -95,6 +123,9 @@ describe('DJ pick-next diagnostics', () => {
     expect(doPickNext).toContain('if (hasReachedPickTarget(userId, initialQueueLength))');
     expect(doPickNext).toContain('djPickReasonCache.set(track.ncmId, output.say.trim())');
     expect(doPickNext).toContain('broadcastAppended(userId, initialQueueLength, emit)');
+    expect(doPickNext).toContain('const debugCandidateCount = getMusicAgentDebugCandidateCount(output)');
+    expect(doPickNext).toContain('totalCandidates: debugCandidateCount');
+    expect(doPickNext).not.toContain('totalCandidates: output.picks.length');
     expect(doPickNext).toContain('MusicAgent appended fewer than target');
     expect(doPickNext).toContain('whitelisted picks appended fewer than target');
     expect(doPickNext).toContain('getRemainingPickSlots(userId, initialQueueLength) * 4');
