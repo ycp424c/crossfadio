@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from 'react';
+import { useMemo } from 'react';
 import { getActiveLyricIndex, parseSyncedLyrics } from '@renderer/audio/lyrics';
 
 type SyncedLyricsProps = {
@@ -9,11 +9,6 @@ type SyncedLyricsProps = {
 export function SyncedLyrics(props: SyncedLyricsProps): JSX.Element {
   const lines = useMemo(() => parseSyncedLyrics(props.lyric), [props.lyric]);
   const activeIndex = getActiveLyricIndex(lines, props.positionSec);
-  const activeRef = useRef<HTMLDivElement | null>(null);
-
-  useEffect(() => {
-    activeRef.current?.scrollIntoView({ block: 'center', behavior: 'smooth' });
-  }, [activeIndex]);
 
   if (lines.length === 0) {
     return (
@@ -39,7 +34,6 @@ export function SyncedLyrics(props: SyncedLyricsProps): JSX.Element {
                   : 'text-zinc-500'
               }`}
               key={`${index}-${line.timeSec}-${line.text}`}
-              ref={isActive ? activeRef : undefined}
             >
               {line.text}
             </div>

@@ -19,6 +19,12 @@ describe('player layout', () => {
     expect(source).toContain('overflow-y-auto');
   });
 
+  it('does not auto-scroll the page when the active lyric changes', () => {
+    const source = fs.readFileSync(path.join(root, 'src/renderer/components/player/SyncedLyrics.tsx'), 'utf-8');
+
+    expect(source).not.toContain('scrollIntoView');
+  });
+
   it('persists the locally selected DJ start track instead of treating it as remote queue state', () => {
     const source = fs.readFileSync(path.join(root, 'src/renderer/views/Player/PlayerView.tsx'), 'utf-8');
     const loadLikedQueueStart = source.indexOf('async function loadLikedQueue');
