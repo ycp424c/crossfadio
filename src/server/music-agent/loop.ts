@@ -264,7 +264,16 @@ async function askExtraFinalPick(
     if (input.signal?.aborted) {
       return abortedOutput(resolveMode(input), trace);
     }
-    return rankedFallback('final_rejected', input, trace, startedAt, nextStep, nextLlmCalls, toolCalls);
+    return rankedConvergenceAfterExtraFinalProblem(
+      'extra final request failed',
+      'extra final request failed',
+      input,
+      trace,
+      startedAt,
+      nextStep,
+      nextLlmCalls,
+      toolCalls
+    );
   }
 
   if (input.signal?.aborted) {
@@ -272,12 +281,30 @@ async function askExtraFinalPick(
   }
 
   if (Date.now() - startedAt >= input.budget.maxMs) {
-    return rankedFallback('llm_response_timeout', input, trace, startedAt, nextStep, nextLlmCalls, toolCalls);
+    return rankedConvergenceAfterExtraFinalProblem(
+      'extra final response exceeded loop budget',
+      'extra final exceeded loop budget',
+      input,
+      trace,
+      startedAt,
+      nextStep,
+      nextLlmCalls,
+      toolCalls
+    );
   }
 
   const output = parseLoopOutput(responseContent);
   if (output.type !== 'final') {
-    return rankedFallback('final_rejected', input, trace, startedAt, nextStep, nextLlmCalls, toolCalls);
+    return rankedConvergenceAfterExtraFinalProblem(
+      `extra final returned ${output.type}`,
+      'extra final did not return final output',
+      input,
+      trace,
+      startedAt,
+      nextStep,
+      nextLlmCalls,
+      toolCalls
+    );
   }
 
   try {
@@ -302,8 +329,26 @@ async function askExtraFinalPick(
       thoughtSummary: 'extra final rejected by candidate pool whitelist',
       observationSummary: summarizeObservation(observation)
     }));
-    return rankedFallback('final_rejected', input, trace, startedAt, nextStep, nextLlmCalls, toolCalls);
+    return rankedConvergence(input, trace, startedAt, nextStep, nextLlmCalls, toolCalls);
   }
+}
+
+function rankedConvergenceAfterExtraFinalProblem(
+  problem: string,
+  thoughtSummary: string,
+  input: RunMusicAgentLoopInput,
+  trace: AgentTraceStep[],
+  startedAt: number,
+  step: number,
+  llmCalls: number,
+  toolCalls: number
+): MusicAgentRunOutput {
+  const observation = observationFromProblem(problem, input.candidatePool.count());
+  trace.push(traceStep(step, startedAt, input.candidatePool.count(), {
+    thoughtSummary,
+    observationSummary: summarizeObservation(observation)
+  }));
+  return rankedConvergence(input, trace, startedAt, step, llmCalls, toolCalls);
 }
 
 async function supplementAutoFillRecallMix(

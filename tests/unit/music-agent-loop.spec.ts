@@ -394,6 +394,53 @@ describe('runMusicAgentLoop', () => {
     }));
   });
 
+  it('keeps ranked convergence when the extra final-pick call does not return a final answer', async () => {
+    const pool = new CandidatePool();
+    pool.upsert(candidate({ id: '101', scores: { ...candidate().scores, intentMatch: 0.9 } }));
+    pool.upsert(candidate({
+      id: '102',
+      name: 'Bright Song',
+      artist: 'Another Singer',
+      scores: { ...candidate().scores, intentMatch: 0.8 }
+    }));
+    pool.upsert(candidate({
+      id: '103',
+      name: 'Third Song',
+      artist: 'Third Singer',
+      scores: { ...candidate().scores, intentMatch: 0.7 }
+    }));
+    const fallbackLogger = vi.fn();
+    const llmClient = new LoopFakeLlmClient([
+      JSON.stringify({ type: 'tool_call', tool: 'diversify_candidates', input: {} }),
+      JSON.stringify({ type: 'tool_call', tool: 'rank_candidates', input: {} })
+    ]);
+
+    const result = await runMusicAgentLoop({
+      llmClient,
+      context: context(),
+      candidatePool: pool,
+      tools: {
+        diversify_candidates: async () => ({ summary: 'diversified candidates', candidateCount: pool.count() })
+      },
+      budget: budget({ maxLlmCalls: 2, maxSteps: 2 }),
+      fallbackLogger
+    });
+
+    expect(result.status).toBe('ok');
+    expect(result.picks.every((pick) => pick.reason === 'ranked convergence')).toBe(true);
+    expect(result.trace.at(-1)).toMatchObject({
+      thoughtSummary: 'extra final did not return final output'
+    });
+    expect(fallbackLogger).toHaveBeenCalledWith(expect.objectContaining({
+      reason: 'ranked_tool_completed',
+      status: 'ok',
+      candidateCount: 3,
+      pickCount: 2,
+      step: 2,
+      llmCalls: 2
+    }));
+  });
+
   it('does not spend an extra final-pick call when too little time remains', async () => {
     const pool = new CandidatePool();
     pool.upsert(candidate({ id: '101', scores: { ...candidate().scores, intentMatch: 0.9 } }));
