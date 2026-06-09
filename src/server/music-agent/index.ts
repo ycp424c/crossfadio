@@ -209,7 +209,7 @@ function resolveLlmClient(options: MusicAgentOptions): MusicAgentLlmClient {
 
 function pickNextBudget(): AgentBudget {
   return {
-    maxMs: 75_000,
+    maxMs: 120_000,
     maxSteps: 10,
     maxLlmCalls: 10,
     maxToolCalls: 10,

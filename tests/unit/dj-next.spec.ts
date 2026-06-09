@@ -155,6 +155,14 @@ describe('DJ pick-next diagnostics', () => {
     expectBefore(doPickNext, '{ signal: pickAbort.signal }', 'pickAbort.cleanup()');
   });
 
+  it('keeps the MusicAgent auto-fill timeout above slow final-pick windows', () => {
+    const musicAgentSource = readSource('src/server/music-agent/index.ts');
+    const djNextSource = readSource('src/server/http/routes/djNext.ts');
+
+    expect(musicAgentSource).toContain('maxMs: 120_000');
+    expect(djNextSource).toContain('const DJ_AGENT_TIMEOUT_MS = 135_000');
+  });
+
   it('does not apply stale client queue snapshots to already-running DJ jobs', () => {
     const source = readSource('src/server/http/routes/djNext.ts');
     const jsonHandler = extractBetween(source, 'export function createDjPickNextHandler', 'async function runPickNextJob');

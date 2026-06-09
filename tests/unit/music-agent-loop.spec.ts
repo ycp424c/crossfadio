@@ -394,6 +394,65 @@ describe('runMusicAgentLoop', () => {
     }));
   });
 
+  it('does not spend an extra final-pick call when too little time remains', async () => {
+    const pool = new CandidatePool();
+    pool.upsert(candidate({ id: '101', scores: { ...candidate().scores, intentMatch: 0.9 } }));
+    pool.upsert(candidate({
+      id: '102',
+      name: 'Bright Song',
+      artist: 'Another Singer',
+      scores: { ...candidate().scores, intentMatch: 0.8 }
+    }));
+    pool.upsert(candidate({
+      id: '103',
+      name: 'Third Song',
+      artist: 'Third Singer',
+      scores: { ...candidate().scores, intentMatch: 0.7 }
+    }));
+    const fallbackLogger = vi.fn();
+    let now = 0;
+    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    const llmClient = new LoopFakeLlmClient([
+      JSON.stringify({ type: 'tool_call', tool: 'rank_candidates', input: {} }),
+      JSON.stringify({
+        type: 'final',
+        say: 'should not be called',
+        picks: [{ id: '103', reason: 'should not be used', source: 'liked' }],
+        rejected: []
+      })
+    ]);
+
+    try {
+      const result = await runMusicAgentLoop({
+        llmClient,
+        context: context(),
+        candidatePool: pool,
+        tools: {
+          rank_candidates: async () => {
+            now = 8_500;
+            return { summary: 'ranked candidates', candidateCount: pool.count() };
+          }
+        },
+        budget: budget({ maxMs: 10_000, maxLlmCalls: 2, maxSteps: 2 }),
+        fallbackLogger
+      });
+
+      expect(result.status).toBe('ok');
+      expect(result.picks.every((pick) => pick.reason === 'ranked convergence')).toBe(true);
+      expect(llmClient.calls).toHaveLength(1);
+      expect(fallbackLogger).toHaveBeenCalledWith(expect.objectContaining({
+        reason: 'ranked_tool_completed',
+        status: 'ok',
+        candidateCount: 3,
+        pickCount: 2,
+        step: 1,
+        llmCalls: 1
+      }));
+    } finally {
+      nowSpy.mockRestore();
+    }
+  });
+
   it('does not spend an extra final-pick call after the LLM budget is exhausted', async () => {
     const pool = new CandidatePool();
     pool.upsert(candidate({ id: '101', scores: { ...candidate().scores, intentMatch: 0.9 } }));

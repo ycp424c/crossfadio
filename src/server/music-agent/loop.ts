@@ -82,6 +82,8 @@ const AUTO_FILL_MIX_TOOL_NAMES: MusicAgentToolName[] = [
 ];
 const AUTO_FILL_AGGREGATE_TOOL_NAME: MusicAgentToolName = 'recall_auto_fill_mix';
 const EXTRA_FINAL_PICK_MIN_CANDIDATES = 3;
+const EXTRA_FINAL_PICK_REMAINING_RATIO = 0.2;
+const EXTRA_FINAL_PICK_MAX_REMAINING_MS = 20_000;
 
 export async function runMusicAgentLoop(input: RunMusicAgentLoopInput): Promise<MusicAgentRunOutput> {
   const startedAt = Date.now();
@@ -681,12 +683,17 @@ function hasExtraFinalPickBudget(
   step: number,
   llmCalls: number
 ): boolean {
+  const remainingMs = input.budget.maxMs - (Date.now() - startedAt);
   return (
     input.candidatePool.count() >= EXTRA_FINAL_PICK_MIN_CANDIDATES &&
     step < input.budget.maxSteps &&
     llmCalls < input.budget.maxLlmCalls &&
-    Date.now() - startedAt < input.budget.maxMs
+    remainingMs >= extraFinalPickRemainingMs(input.budget.maxMs)
   );
+}
+
+function extraFinalPickRemainingMs(maxMs: number): number {
+  return Math.min(EXTRA_FINAL_PICK_MAX_REMAINING_MS, Math.ceil(maxMs * EXTRA_FINAL_PICK_REMAINING_RATIO));
 }
 
 function shouldSupplementAutoFillRecall(toolName: MusicAgentToolName, input: RunMusicAgentLoopInput): boolean {
