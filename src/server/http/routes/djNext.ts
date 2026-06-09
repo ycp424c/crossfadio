@@ -422,6 +422,7 @@ async function doPickNext(
       }
       if (output.status === 'ok') {
         const pathQueueLength = getQueue(userId).length;
+        const appendedPicks: typeof output.picks = [];
         for (const pick of output.picks) {
           if (getRemainingPickSlots(userId, initialQueueLength) <= 0) break;
           const dedupeKey = buildTrackDedupeKey(pick);
@@ -431,6 +432,7 @@ async function doPickNext(
             name: pick.name,
             artists: pick.artist ? [pick.artist] : []
           }, 'end');
+          appendedPicks.push(pick);
           excludeState.ids.add(pick.id);
           if (dedupeKey) excludeState.dedupeKeys.add(dedupeKey);
         }
@@ -453,6 +455,13 @@ async function doPickNext(
               id: pick.id,
               name: pick.name,
               artist: pick.artist
+            })),
+            selectedTracks: appendedPicks.map((pick) => ({
+              id: pick.id,
+              name: pick.name,
+              artist: pick.artist,
+              reason: pick.reason,
+              source: pick.source
             })),
             excludedIds: Array.from(excludeState.ids),
             excludedDedupeKeys: Array.from(excludeState.dedupeKeys),

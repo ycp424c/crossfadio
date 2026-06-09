@@ -339,6 +339,200 @@ describe('runMusicAgentLoop', () => {
     }));
   });
 
+  it('uses one extra LLM call to choose from ranked candidates when budget remains', async () => {
+    const pool = new CandidatePool();
+    pool.upsert(candidate({ id: '101', scores: { ...candidate().scores, intentMatch: 0.9 } }));
+    pool.upsert(candidate({
+      id: '102',
+      name: 'Bright Song',
+      artist: 'Another Singer',
+      scores: { ...candidate().scores, intentMatch: 0.8 }
+    }));
+    pool.upsert(candidate({
+      id: '103',
+      name: 'Third Song',
+      artist: 'Third Singer',
+      scores: { ...candidate().scores, intentMatch: 0.7 }
+    }));
+    const fallbackLogger = vi.fn();
+    const llmClient = new LoopFakeLlmClient([
+      JSON.stringify({ type: 'tool_call', tool: 'rank_candidates', input: {} }),
+      JSON.stringify({
+        type: 'final',
+        say: '我从排序后的候选里选这两首。',
+        picks: [
+          { id: '103', reason: '更有新鲜感', source: 'liked' },
+          { id: '101', reason: '保留用户偏好锚点', source: 'liked' }
+        ],
+        rejected: []
+      })
+    ]);
+
+    const result = await runMusicAgentLoop({
+      llmClient,
+      context: context(),
+      candidatePool: pool,
+      tools: {
+        rank_candidates: async () => ({ summary: 'ranked candidates', candidateCount: pool.count() })
+      },
+      budget: budget({ maxLlmCalls: 2, maxSteps: 2 }),
+      fallbackLogger
+    });
+
+    expect(result.status).toBe('ok');
+    expect(result.say).toBe('我从排序后的候选里选这两首。');
+    expect(result.picks.map((pick) => pick.id)).toEqual(['103', '101']);
+    expect(result.picks.every((pick) => pick.reason !== 'ranked convergence')).toBe(true);
+    expect(llmClient.calls).toHaveLength(2);
+    expect(fallbackLogger).toHaveBeenCalledWith(expect.objectContaining({
+      reason: 'ranked_tool_completed',
+      status: 'ok',
+      candidateCount: 3,
+      pickCount: 2,
+      step: 2,
+      llmCalls: 2
+    }));
+  });
+
+  it('does not spend an extra final-pick call after the LLM budget is exhausted', async () => {
+    const pool = new CandidatePool();
+    pool.upsert(candidate({ id: '101', scores: { ...candidate().scores, intentMatch: 0.9 } }));
+    pool.upsert(candidate({
+      id: '102',
+      name: 'Bright Song',
+      artist: 'Another Singer',
+      scores: { ...candidate().scores, intentMatch: 0.8 }
+    }));
+    pool.upsert(candidate({
+      id: '103',
+      name: 'Third Song',
+      artist: 'Third Singer',
+      scores: { ...candidate().scores, intentMatch: 0.7 }
+    }));
+    const fallbackLogger = vi.fn();
+    const llmClient = new LoopFakeLlmClient([
+      JSON.stringify({ type: 'tool_call', tool: 'rank_candidates', input: {} }),
+      JSON.stringify({
+        type: 'final',
+        say: 'should not be called',
+        picks: [{ id: '103', reason: 'should not be used', source: 'liked' }],
+        rejected: []
+      })
+    ]);
+
+    const result = await runMusicAgentLoop({
+      llmClient,
+      context: context(),
+      candidatePool: pool,
+      tools: {
+        rank_candidates: async () => ({ summary: 'ranked candidates', candidateCount: pool.count() })
+      },
+      budget: budget({ maxLlmCalls: 1, maxSteps: 2 }),
+      fallbackLogger
+    });
+
+    expect(result.status).toBe('ok');
+    expect(result.picks.every((pick) => pick.reason === 'ranked convergence')).toBe(true);
+    expect(llmClient.calls).toHaveLength(1);
+    expect(fallbackLogger).toHaveBeenCalledWith(expect.objectContaining({
+      reason: 'ranked_tool_completed',
+      status: 'ok',
+      candidateCount: 3,
+      pickCount: 2,
+      llmCalls: 1
+    }));
+  });
+
+  it('does not spend an extra final-pick call after the step budget is exhausted', async () => {
+    const pool = new CandidatePool();
+    pool.upsert(candidate({ id: '101', scores: { ...candidate().scores, intentMatch: 0.9 } }));
+    pool.upsert(candidate({
+      id: '102',
+      name: 'Bright Song',
+      artist: 'Another Singer',
+      scores: { ...candidate().scores, intentMatch: 0.8 }
+    }));
+    pool.upsert(candidate({
+      id: '103',
+      name: 'Third Song',
+      artist: 'Third Singer',
+      scores: { ...candidate().scores, intentMatch: 0.7 }
+    }));
+    const fallbackLogger = vi.fn();
+    const llmClient = new LoopFakeLlmClient([
+      JSON.stringify({ type: 'tool_call', tool: 'rank_candidates', input: {} }),
+      JSON.stringify({
+        type: 'final',
+        say: 'should not be called',
+        picks: [{ id: '103', reason: 'should not be used', source: 'liked' }],
+        rejected: []
+      })
+    ]);
+
+    const result = await runMusicAgentLoop({
+      llmClient,
+      context: context(),
+      candidatePool: pool,
+      tools: {
+        rank_candidates: async () => ({ summary: 'ranked candidates', candidateCount: pool.count() })
+      },
+      budget: budget({ maxLlmCalls: 2, maxSteps: 1 }),
+      fallbackLogger
+    });
+
+    expect(result.status).toBe('ok');
+    expect(result.picks.every((pick) => pick.reason === 'ranked convergence')).toBe(true);
+    expect(llmClient.calls).toHaveLength(1);
+    expect(fallbackLogger).toHaveBeenCalledWith(expect.objectContaining({
+      reason: 'ranked_tool_completed',
+      status: 'ok',
+      candidateCount: 3,
+      pickCount: 2,
+      step: 1,
+      llmCalls: 1
+    }));
+  });
+
+  it('returns aborted when the extra final-pick call is aborted', async () => {
+    const pool = new CandidatePool();
+    pool.upsert(candidate({ id: '101' }));
+    pool.upsert(candidate({ id: '102', name: 'Bright Song', artist: 'Another Singer' }));
+    pool.upsert(candidate({ id: '103', name: 'Third Song', artist: 'Third Singer' }));
+    const controller = new AbortController();
+    const fallbackLogger = vi.fn();
+    let calls = 0;
+    const llmClient: MusicAgentLlmClient = {
+      async complete() {
+        calls += 1;
+        if (calls === 1) {
+          return {
+            content: JSON.stringify({ type: 'tool_call', tool: 'rank_candidates', input: {} }),
+            model: 'fake-loop-model'
+          };
+        }
+        controller.abort(new Error('timeout'));
+        throw new Error('aborted');
+      }
+    };
+
+    const result = await runMusicAgentLoop({
+      llmClient,
+      context: context(),
+      candidatePool: pool,
+      tools: {
+        rank_candidates: async () => ({ summary: 'ranked candidates', candidateCount: pool.count() })
+      },
+      budget: budget({ maxLlmCalls: 2, maxSteps: 2 }),
+      signal: controller.signal,
+      fallbackLogger
+    });
+
+    expect(result.status).toBe('aborted');
+    expect(result.picks).toEqual([]);
+    expect(calls).toBe(2);
+    expect(fallbackLogger).not.toHaveBeenCalled();
+  });
+
   it('converges deterministically when only one LLM call remains and candidates are enough', async () => {
     const pool = new CandidatePool();
     pool.upsert(candidate({ id: '101' }));

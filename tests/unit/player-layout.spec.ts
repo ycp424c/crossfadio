@@ -182,6 +182,10 @@ describe('player layout', () => {
     expect(debugBlock).toContain('data.candidateScoreTable');
     expect(debugBlock).toContain('console.table');
     expect(debugBlock).toContain('DJ pick-next candidate scores');
+    expect(debugBlock).toContain('data.selectedTracks');
+    expect(debugBlock).toContain('as DjSelectedTrack[]');
+    expect(source).toContain('djPickLog.selectedTracks.map');
+    expect(source).toContain('track.reason');
   });
 
   it('includes clientRequestId in direct SSE segue payloads before the player filters them', () => {

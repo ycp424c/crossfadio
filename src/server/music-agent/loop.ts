@@ -81,6 +81,7 @@ const AUTO_FILL_MIX_TOOL_NAMES: MusicAgentToolName[] = [
   'recall_from_trending'
 ];
 const AUTO_FILL_AGGREGATE_TOOL_NAME: MusicAgentToolName = 'recall_auto_fill_mix';
+const EXTRA_FINAL_PICK_MIN_CANDIDATES = 3;
 
 export async function runMusicAgentLoop(input: RunMusicAgentLoopInput): Promise<MusicAgentRunOutput> {
   const startedAt = Date.now();
@@ -215,9 +216,88 @@ export async function runMusicAgentLoop(input: RunMusicAgentLoopInput): Promise<
     }
 
     if (shouldConvergeAfterTool(toolName, input, llmCalls)) {
+      if (shouldAskExtraFinalPick(toolName, input, startedAt, step, llmCalls)) {
+        return askExtraFinalPick(input, observations, trace, startedAt, step, llmCalls, toolCalls);
+      }
       return rankedConvergence(input, trace, startedAt, step, llmCalls, toolCalls);
     }
 
+  }
+}
+
+async function askExtraFinalPick(
+  input: RunMusicAgentLoopInput,
+  observations: LoopObservation[],
+  trace: AgentTraceStep[],
+  startedAt: number,
+  step: number,
+  llmCalls: number,
+  toolCalls: number
+): Promise<MusicAgentRunOutput> {
+  const finalObservation: LoopObservation = {
+    tool: DEFAULT_TOOL_NAME,
+    summary: 'ranked shortlist is ready; use one extra final-pick LLM call to choose 1-2 whitelisted candidates.',
+    candidateCount: input.candidatePool.count()
+  };
+  const messages = buildLoopMessages({
+    context: input.context,
+    observations: [...observations, finalObservation],
+    candidateSummary: summarizeCandidatePool(input.candidatePool, input.context)
+  });
+
+  const nextLlmCalls = llmCalls + 1;
+  const nextStep = step + 1;
+  let responseContent = '';
+  try {
+    const response = await input.llmClient.complete(messages, {
+      signal: input.signal,
+      temperature: 0.2,
+      maxTokens: 1000
+    });
+    responseContent = response.content;
+  } catch {
+    if (input.signal?.aborted) {
+      return abortedOutput(resolveMode(input), trace);
+    }
+    return rankedFallback('final_rejected', input, trace, startedAt, nextStep, nextLlmCalls, toolCalls);
+  }
+
+  if (input.signal?.aborted) {
+    return abortedOutput(resolveMode(input), trace);
+  }
+
+  if (Date.now() - startedAt >= input.budget.maxMs) {
+    return rankedFallback('llm_response_timeout', input, trace, startedAt, nextStep, nextLlmCalls, toolCalls);
+  }
+
+  const output = parseLoopOutput(responseContent);
+  if (output.type !== 'final') {
+    return rankedFallback('final_rejected', input, trace, startedAt, nextStep, nextLlmCalls, toolCalls);
+  }
+
+  try {
+    const picks = validateFinalPicks(output.picks, input.candidatePool);
+    const result: MusicAgentRunOutput = {
+      status: 'ok',
+      mode: resolveMode(input),
+      say: output.say,
+      picks,
+      rejected: output.rejected ?? [],
+      trace,
+      candidateScoreTable: createCandidateScoreTable(input)
+    };
+    recordRankedConvergence(input, result, trace, startedAt, nextStep, nextLlmCalls, toolCalls);
+    return result;
+  } catch (error) {
+    const observation = observationFromProblem(
+      `extra final rejected: ${error instanceof Error ? error.message : String(error)}`,
+      input.candidatePool.count()
+    );
+    trace.push(traceStep(nextStep, startedAt, input.candidatePool.count(), {
+      thoughtSummary: 'extra final rejected by candidate pool whitelist',
+      observationSummary: summarizeObservation(observation)
+    }));
+    return rankedFallback('final_rejected', input, trace, startedAt, nextStep, nextLlmCalls, toolCalls);
   }
 }
 
@@ -442,12 +522,25 @@ function rankedConvergence(
     trace,
     candidateScoreTable: buildCandidateScoreTableRows(ranked, options)
   };
+  recordRankedConvergence(input, output, trace, startedAt, step, llmCalls, toolCalls);
+  return output;
+}
+
+function recordRankedConvergence(
+  input: RunMusicAgentLoopInput,
+  output: MusicAgentRunOutput,
+  trace: AgentTraceStep[],
+  startedAt: number,
+  step: number,
+  llmCalls: number,
+  toolCalls: number
+): void {
   input.fallbackLogger?.({
     reason: 'ranked_tool_completed',
-    mode,
+    mode: output.mode,
     status: output.status,
     candidateCount: input.candidatePool.count(),
-    pickCount: picks.length,
+    pickCount: output.picks.length,
     step,
     llmCalls,
     toolCalls,
@@ -455,7 +548,6 @@ function rankedConvergence(
     budget: input.budget,
     lastTraceStep: trace.at(-1)
   });
-  return output;
 }
 
 function rankedFallbackSay(pickCount: number): string {
@@ -565,6 +657,22 @@ function shouldConvergeAfterTool(
   if (input.candidatePool.count() < 2) return false;
   if (CONVERGENCE_TOOL_NAMES.has(toolName)) return true;
   return input.budget.maxLlmCalls - llmCalls <= 1;
+}
+
+function shouldAskExtraFinalPick(
+  toolName: MusicAgentToolName,
+  input: RunMusicAgentLoopInput,
+  startedAt: number,
+  step: number,
+  llmCalls: number
+): boolean {
+  return (
+    CONVERGENCE_TOOL_NAMES.has(toolName) &&
+    input.candidatePool.count() >= EXTRA_FINAL_PICK_MIN_CANDIDATES &&
+    step < input.budget.maxSteps &&
+    llmCalls < input.budget.maxLlmCalls &&
+    Date.now() - startedAt < input.budget.maxMs
+  );
 }
 
 function shouldSupplementAutoFillRecall(toolName: MusicAgentToolName, input: RunMusicAgentLoopInput): boolean {

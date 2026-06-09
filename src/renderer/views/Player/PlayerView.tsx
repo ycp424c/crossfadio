@@ -115,6 +115,11 @@ type PendingSegueAudio = {
 
 type DjTrackSample = { id: string; name: string; artist: string };
 
+type DjSelectedTrack = DjTrackSample & {
+  reason: string;
+  source: string;
+};
+
 type CandidateScoreTableRow = {
   rank: number;
   id: string;
@@ -131,6 +136,7 @@ type DjPickLog = {
   likedSample: DjTrackSample[];
   searchQueries: string[];
   searchedTracks: DjTrackSample[];
+  selectedTracks: DjSelectedTrack[];
   totalCandidates: number;
   selectedSay: string;
 };
@@ -960,6 +966,9 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
                 const candidateScoreTable = Array.isArray(data.candidateScoreTable)
                   ? data.candidateScoreTable as CandidateScoreTableRow[]
                   : [];
+                const selectedTracks = Array.isArray(data.selectedTracks)
+                  ? data.selectedTracks as DjSelectedTrack[]
+                  : [];
                 console.info('[Crossfadio] DJ pick-next exclusion list', {
                   excludedIds,
                   excludedDedupeKeys,
@@ -974,6 +983,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
                   likedSample: Array.isArray(data.likedSample) ? data.likedSample as DjTrackSample[] : [],
                   searchQueries: Array.isArray(data.searchQueries) ? data.searchQueries as string[] : [],
                   searchedTracks: Array.isArray(data.searchedTracks) ? data.searchedTracks as DjTrackSample[] : [],
+                  selectedTracks,
                   totalCandidates: typeof data.totalCandidates === 'number' ? data.totalCandidates : 0,
                   selectedSay: typeof data.selectedSay === 'string' ? data.selectedSay : '',
                 });
@@ -1746,6 +1756,25 @@ function DjStatusDock({
             <div className="mt-3 space-y-2 rounded-lg border border-cyan-300/15 bg-cyan-950/10 px-3 py-2">
               {djPickLog.selectedSay ? (
                 <p className="text-xs leading-relaxed text-cyan-100/80">{djPickLog.selectedSay}</p>
+              ) : null}
+              {djPickLog.selectedTracks.length > 0 ? (
+                <div className="space-y-1">
+                  {djPickLog.selectedTracks.map((track) => (
+                    <div
+                      className="rounded-md border border-cyan-300/10 bg-cyan-950/20 px-2 py-1.5 text-xs"
+                      key={track.id}
+                    >
+                      <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                        <span className="font-medium text-cyan-100">{track.name || track.id}</span>
+                        <span className="text-[10px] text-zinc-500">{track.artist || '未知艺人'}</span>
+                        <span className="text-[10px] uppercase tracking-wide text-cyan-300/60">{track.source}</span>
+                      </div>
+                      {track.reason ? (
+                        <p className="mt-1 leading-relaxed text-cyan-100/70">{track.reason}</p>
+                      ) : null}
+                    </div>
+                  ))}
+                </div>
               ) : null}
               {djPickLog.searchQueries.length > 0 ? (
                 <p className="text-xs text-zinc-400">

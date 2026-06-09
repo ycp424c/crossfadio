@@ -98,6 +98,17 @@ describe('DJ pick-next diagnostics', () => {
     expect(source).toContain('excludedDedupeKeys: Array.from(excludeState.dedupeKeys)');
   });
 
+  it('includes actually appended MusicAgent final pick reasons in DJ debug events', () => {
+    const source = readSource('src/server/http/routes/djNext.ts');
+    const doPickNext = extractBetween(source, 'async function doPickNext', 'function broadcastAppended');
+
+    expect(doPickNext).toContain('const appendedPicks: typeof output.picks = [];');
+    expect(doPickNext).toContain('appendedPicks.push(pick);');
+    expect(doPickNext).toContain('selectedTracks: appendedPicks.map((pick) => ({');
+    expect(doPickNext).toContain('reason: pick.reason');
+    expect(doPickNext).toContain('source: pick.source');
+  });
+
   it('routes DJ pick-next through MusicAgent with abort and status guards', () => {
     const source = readSource('src/server/http/routes/djNext.ts');
     const runPickNextJob = extractBetween(source, 'async function runPickNextJob', 'async function doPickNext');
