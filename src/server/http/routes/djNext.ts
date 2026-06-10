@@ -423,10 +423,21 @@ async function doPickNext(
       if (output.status === 'ok') {
         const pathQueueLength = getQueue(userId).length;
         const appendedPicks: typeof output.picks = [];
+        const musicAgentSkippedPicks: SkippedPickLog[] = [];
         for (const pick of output.picks) {
-          if (getRemainingPickSlots(userId, initialQueueLength) <= 0) break;
+          if (getRemainingPickSlots(userId, initialQueueLength) <= 0) {
+            musicAgentSkippedPicks.push(createSkippedPickLog(pick, 'no_remaining_slots', buildTrackDedupeKey(pick)));
+            break;
+          }
           const dedupeKey = buildTrackDedupeKey(pick);
-          if (excludeState.ids.has(pick.id) || isTrackDedupeKeyExcluded(dedupeKey, excludeState.dedupeKeys)) continue;
+          if (excludeState.ids.has(pick.id)) {
+            musicAgentSkippedPicks.push(createSkippedPickLog(pick, 'id_excluded', dedupeKey));
+            continue;
+          }
+          if (isTrackDedupeKeyExcluded(dedupeKey, excludeState.dedupeKeys)) {
+            musicAgentSkippedPicks.push(createSkippedPickLog(pick, 'dedupe_excluded', dedupeKey));
+            continue;
+          }
           addToQueue(userId, {
             ncmId: pick.id,
             name: pick.name,
@@ -480,6 +491,7 @@ async function doPickNext(
             targetCount: DJ_PICK_TARGET_COUNT,
             appendedCount,
             requestedPickCount: output.picks.length,
+            skippedPicks: musicAgentSkippedPicks,
             fallbackPath: legacyFallbackPath,
             fallbackStats: djPickNextFallbackStats.snapshot()
           },
@@ -883,10 +895,21 @@ ${candidateList}
         if (signal?.aborted) return;
         const pathQueueLength = getQueue(userId).length;
         const excludeState = getTodayAndQueueDedupeState(userId);
+        const whitelistedSkippedPicks: SkippedPickLog[] = [];
         for (const track of pickedTracks) {
-          if (getRemainingPickSlots(userId, initialQueueLength) <= 0) break;
+          if (getRemainingPickSlots(userId, initialQueueLength) <= 0) {
+            whitelistedSkippedPicks.push(createSkippedPickLog(track, 'no_remaining_slots', buildTrackDedupeKey(track)));
+            break;
+          }
           const dedupeKey = buildTrackDedupeKey(track);
-          if (excludeState.ids.has(track.id) || isTrackDedupeKeyExcluded(dedupeKey, excludeState.dedupeKeys)) continue;
+          if (excludeState.ids.has(track.id)) {
+            whitelistedSkippedPicks.push(createSkippedPickLog(track, 'id_excluded', dedupeKey));
+            continue;
+          }
+          if (isTrackDedupeKeyExcluded(dedupeKey, excludeState.dedupeKeys)) {
+            whitelistedSkippedPicks.push(createSkippedPickLog(track, 'dedupe_excluded', dedupeKey));
+            continue;
+          }
           const detail = pickedDetailMap.get(track.id);
           addToQueue(userId, {
             ncmId: track.id,
@@ -917,6 +940,7 @@ ${candidateList}
             targetCount: DJ_PICK_TARGET_COUNT,
             appendedCount,
             pickedCount: pickedTracks.length,
+            skippedPicks: whitelistedSkippedPicks,
             fallbackPath: 'legacy_random_fallback',
             fallbackStats: djPickNextFallbackStats.snapshot()
           },
@@ -1181,6 +1205,16 @@ type TrackDedupeInput = {
   artists?: string[] | null;
 };
 
+type SkippedPickReason = 'id_excluded' | 'dedupe_excluded' | 'no_remaining_slots';
+
+type SkippedPickLog = {
+  id?: string;
+  name?: string;
+  artist?: string;
+  reason: SkippedPickReason;
+  dedupeKey?: string;
+};
+
 type DedupeState = {
   ids: Set<string>;
   dedupeKeys: Set<string>;
@@ -1192,6 +1226,21 @@ export function buildTrackDedupeKey(track: TrackDedupeInput): string {
 
 export function isTrackDedupeKeyExcluded(dedupeKey: string, excludedKeys: Set<string>): boolean {
   return isMusicTrackDedupeKeyExcluded(dedupeKey, excludedKeys);
+}
+
+function createSkippedPickLog(
+  track: TrackDedupeInput,
+  reason: SkippedPickReason,
+  dedupeKey: string
+): SkippedPickLog {
+  const artists = track.artist ?? track.artists?.filter(Boolean).join(' / ') ?? undefined;
+  return {
+    id: track.id ? String(track.id) : undefined,
+    name: track.name ?? undefined,
+    artist: artists || undefined,
+    reason,
+    dedupeKey: dedupeKey || undefined
+  };
 }
 
 function getTodayAndQueueDedupeState(userId: string): DedupeState {

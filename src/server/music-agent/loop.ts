@@ -31,6 +31,12 @@ export type MusicAgentFallbackReason =
   | 'llm_response_timeout'
   | 'final_rejected'
   | 'tool_budget_exhausted'
+  | 'empty_pool_after_forced_recall'
+  | 'insufficient_pool_after_forced_recall'
+  | 'extra_final_returned_tool_call'
+  | 'extra_final_rejected'
+  | 'extra_final_request_failed'
+  | 'extra_final_timeout'
   | 'ranked_tool_completed';
 
 export type MusicAgentFallbackLogEvent = {
@@ -45,6 +51,7 @@ export type MusicAgentFallbackLogEvent = {
   elapsedMs: number;
   budget: AgentBudget;
   lastTraceStep?: AgentTraceStep;
+  extraFinalProblem?: string;
 };
 
 export type MusicAgentFallbackLogger = (event: MusicAgentFallbackLogEvent) => void;
@@ -83,8 +90,25 @@ const AUTO_FILL_MIX_TOOL_NAMES: MusicAgentToolName[] = [
 const AUTO_FILL_AGGREGATE_TOOL_NAME: MusicAgentToolName = 'recall_auto_fill_mix';
 const EXTRA_FINAL_PICK_MIN_CANDIDATES = 3;
 const SKIPPED_TOOL_FINAL_PICK_MIN_CANDIDATES = 2;
+const FORCED_RECALL_LIKED_LIMIT = 10;
 const EXTRA_FINAL_PICK_REMAINING_RATIO = 0.2;
 const EXTRA_FINAL_PICK_MAX_REMAINING_MS = 20_000;
+const RECALL_TOOL_NAMES = new Set<MusicAgentToolName>([
+  'recall_auto_fill_mix',
+  'recall_from_liked',
+  'recall_from_ncm_search',
+  'recall_from_style_expansion',
+  'recall_from_trending',
+  'recall_from_playlists',
+  'recall_from_plan_segment'
+]);
+
+type ToolRewrite = {
+  toolName: MusicAgentToolName;
+  input: Record<string, unknown>;
+  requestedTool: string;
+  rewriteReason: string;
+};
 
 export async function runMusicAgentLoop(input: RunMusicAgentLoopInput): Promise<MusicAgentRunOutput> {
   const startedAt = Date.now();
@@ -93,6 +117,7 @@ export async function runMusicAgentLoop(input: RunMusicAgentLoopInput): Promise<
   let llmCalls = 0;
   let toolCalls = 0;
   let step = 0;
+  let forcedEmptyPoolRecallCompleted = false;
 
   while (true) {
     if (input.signal?.aborted) {
@@ -152,24 +177,42 @@ export async function runMusicAgentLoop(input: RunMusicAgentLoopInput): Promise<
       }
     }
 
-    if (toolCalls >= input.budget.maxToolCalls && !canUseReservedRankTool(output.tool, input)) {
-      const budgetedToolName = parseToolName(output.tool);
+    const requestedToolName = parseToolName(output.tool);
+    const rewrite = getEmptyPoolToolRewrite({
+      output,
+      requestedToolName,
+      input,
+      trace,
+      forcedEmptyPoolRecallCompleted
+    });
+    if (rewrite === 'fallback') {
+      return rankedFallback(forcedRecallFallbackReason(input), input, trace, startedAt, step, llmCalls, toolCalls);
+    }
+
+    const toolName = rewrite?.toolName ?? requestedToolName;
+    const toolInput = rewrite?.input ?? output.input;
+
+    if (toolCalls >= input.budget.maxToolCalls && !canUseReservedRankTool(toolName, input)) {
+      const budgetedToolName = toolName;
       const shouldConvergeAfterSkippedBudget = shouldConvergeAfterSkippedToolBudget(budgetedToolName, input);
-      const skippedBudgetThought = shouldConvergeAfterSkippedTerminalTool(budgetedToolName, input)
-        ? 'terminal tool skipped by budget'
-        : shouldConvergeAfterSkippedBudget
-          ? 'tool budget exhausted with sufficient candidates'
-          : 'tool call skipped by budget';
+      const skippedBudgetThought = skippedToolBudgetThought(
+        rewrite,
+        budgetedToolName,
+        input,
+        shouldConvergeAfterSkippedBudget
+      );
       const observation = observationFromProblem(
-        `tool budget exhausted before ${output.tool}`,
+        `tool budget exhausted before ${toolName ?? output.tool}`,
         input.candidatePool.count()
       );
-      observations.push({ ...observation, tool: output.tool });
+      observations.push({ ...observation, tool: toolName ?? output.tool });
       trace.push(traceStep(step, startedAt, input.candidatePool.count(), {
         thoughtSummary: skippedBudgetThought,
-        tool: asTraceTool(output.tool),
-        toolInputSummary: summarizeInput(output.input),
-        observationSummary: summarizeObservation(observation)
+        tool: toolName,
+        toolInputSummary: summarizeInput(toolInput),
+        observationSummary: summarizeObservation(observation),
+        requestedTool: rewrite?.requestedTool,
+        rewriteReason: rewrite?.rewriteReason
       }));
       if (shouldConvergeAfterSkippedBudget) {
         if (hasExtraFinalPickBudget(
@@ -190,7 +233,6 @@ export async function runMusicAgentLoop(input: RunMusicAgentLoopInput): Promise<
       return abortedOutput(resolveMode(input), trace);
     }
 
-    const toolName = parseToolName(output.tool);
     const tool = toolName ? input.tools[toolName] : undefined;
 
     if (!toolName || !tool) {
@@ -208,15 +250,30 @@ export async function runMusicAgentLoop(input: RunMusicAgentLoopInput): Promise<
       continue;
     }
 
-    const observation = await tool(output.input, input.signal);
+    const observation = await tool(toolInput, input.signal);
     toolCalls += 1;
     observations.push({ ...observation, tool: toolName });
     trace.push(traceStep(step, startedAt, input.candidatePool.count(), {
-      thoughtSummary: 'tool executed',
+      thoughtSummary: rewrite ? 'empty-pool tool call rewritten to recall' : 'tool executed',
       tool: toolName,
-      toolInputSummary: summarizeInput(output.input),
-      observationSummary: summarizeObservation(observation)
+      toolInputSummary: summarizeInput(toolInput),
+      observationSummary: summarizeObservation(observation),
+      requestedTool: rewrite?.requestedTool,
+      executedTool: rewrite?.toolName,
+      rewriteReason: rewrite?.rewriteReason
     }));
+
+    if (rewrite && toolName === AUTO_FILL_AGGREGATE_TOOL_NAME) {
+      toolCalls = await maybeForceLikedRecallAfterEmptyPoolRewrite(
+        input,
+        observations,
+        trace,
+        startedAt,
+        step,
+        toolCalls
+      );
+    }
+    if (rewrite) forcedEmptyPoolRecallCompleted = input.candidatePool.count() < 2;
 
     if (input.signal?.aborted) {
       return abortedOutput(resolveMode(input), trace);
@@ -288,6 +345,8 @@ async function askExtraFinalPick(
     return rankedConvergenceAfterExtraFinalProblem(
       'extra final request failed',
       'extra final request failed',
+      'extra_final_request_failed',
+      'request_failed',
       input,
       trace,
       startedAt,
@@ -305,6 +364,8 @@ async function askExtraFinalPick(
     return rankedConvergenceAfterExtraFinalProblem(
       'extra final response exceeded loop budget',
       'extra final exceeded loop budget',
+      'extra_final_timeout',
+      'timeout',
       input,
       trace,
       startedAt,
@@ -319,6 +380,8 @@ async function askExtraFinalPick(
     return rankedConvergenceAfterExtraFinalProblem(
       `extra final returned ${output.type}`,
       'extra final did not return final output',
+      'extra_final_returned_tool_call',
+      'returned_tool_call',
       input,
       trace,
       startedAt,
@@ -350,13 +413,17 @@ async function askExtraFinalPick(
       thoughtSummary: 'extra final rejected by candidate pool whitelist',
       observationSummary: summarizeObservation(observation)
     }));
-    return rankedConvergence(input, trace, startedAt, nextStep, nextLlmCalls, toolCalls);
+    return rankedFallback('extra_final_rejected', input, trace, startedAt, nextStep, nextLlmCalls, toolCalls, {
+      extraFinalProblem: 'final_rejected'
+    });
   }
 }
 
 function rankedConvergenceAfterExtraFinalProblem(
   problem: string,
   thoughtSummary: string,
+  fallbackReason: MusicAgentFallbackReason,
+  extraFinalProblem: string,
   input: RunMusicAgentLoopInput,
   trace: AgentTraceStep[],
   startedAt: number,
@@ -369,7 +436,9 @@ function rankedConvergenceAfterExtraFinalProblem(
     thoughtSummary,
     observationSummary: summarizeObservation(observation)
   }));
-  return rankedConvergence(input, trace, startedAt, step, llmCalls, toolCalls);
+  return rankedFallback(fallbackReason, input, trace, startedAt, step, llmCalls, toolCalls, {
+    extraFinalProblem
+  });
 }
 
 async function supplementAutoFillRecallMix(
@@ -414,7 +483,76 @@ async function supplementAutoFillRecallMix(
   return nextToolCalls;
 }
 
-function canUseReservedRankTool(tool: string, input: RunMusicAgentLoopInput): boolean {
+async function maybeForceLikedRecallAfterEmptyPoolRewrite(
+  input: RunMusicAgentLoopInput,
+  observations: LoopObservation[],
+  trace: AgentTraceStep[],
+  startedAt: number,
+  step: number,
+  toolCalls: number
+): Promise<number> {
+  if (input.candidatePool.count() >= 2) return toolCalls;
+  if (toolCalls >= input.budget.maxToolCalls) return toolCalls;
+  const likedTool = input.tools.recall_from_liked;
+  if (!likedTool) return toolCalls;
+
+  const toolInput = { limit: FORCED_RECALL_LIKED_LIMIT };
+  const observation = await likedTool(toolInput, input.signal);
+  const nextToolCalls = toolCalls + 1;
+  observations.push({ ...observation, tool: 'recall_from_liked' });
+  trace.push(traceStep(step, startedAt, input.candidatePool.count(), {
+    thoughtSummary: 'forced liked recall after sparse auto-fill',
+    tool: 'recall_from_liked',
+    toolInputSummary: summarizeInput(toolInput),
+    observationSummary: summarizeObservation(observation),
+    requestedTool: 'recall_from_liked',
+    executedTool: 'recall_from_liked',
+    rewriteReason: 'empty_pool_forced_liked_recall'
+  }));
+  return nextToolCalls;
+}
+
+function getEmptyPoolToolRewrite(options: {
+  output: Extract<ParsedLoopOutput, { type: 'tool_call' }>;
+  requestedToolName: MusicAgentToolName | undefined;
+  input: RunMusicAgentLoopInput;
+  trace: AgentTraceStep[];
+  forcedEmptyPoolRecallCompleted: boolean;
+}): ToolRewrite | 'fallback' | undefined {
+  const { output, requestedToolName, input, trace, forcedEmptyPoolRecallCompleted } = options;
+  if (modeFromContext(input.context) !== 'pick_next') return undefined;
+  if (input.candidatePool.count() >= 2) return undefined;
+  if (requestedToolName && RECALL_TOOL_NAMES.has(requestedToolName)) return undefined;
+  if (requestedToolName === 'expand_queries' && !hasExecutedTool(trace, 'expand_queries')) return undefined;
+  if (forcedEmptyPoolRecallCompleted) return 'fallback';
+
+  const toolName = selectForcedRecallTool(input.tools);
+  if (!toolName) return 'fallback';
+  return {
+    toolName,
+    input: toolName === 'recall_from_liked' ? { limit: FORCED_RECALL_LIKED_LIMIT } : {},
+    requestedTool: output.tool,
+    rewriteReason: 'empty_pool_non_recall_tool'
+  };
+}
+
+function selectForcedRecallTool(tools: MusicAgentToolRegistry): MusicAgentToolName | undefined {
+  if (tools[AUTO_FILL_AGGREGATE_TOOL_NAME]) return AUTO_FILL_AGGREGATE_TOOL_NAME;
+  if (tools.recall_from_liked) return 'recall_from_liked';
+  return undefined;
+}
+
+function hasExecutedTool(trace: AgentTraceStep[], toolName: MusicAgentToolName): boolean {
+  return trace.some((step) => step.tool === toolName);
+}
+
+function forcedRecallFallbackReason(input: RunMusicAgentLoopInput): MusicAgentFallbackReason {
+  return input.candidatePool.count() === 0
+    ? 'empty_pool_after_forced_recall'
+    : 'insufficient_pool_after_forced_recall';
+}
+
+function canUseReservedRankTool(tool: MusicAgentToolName | undefined, input: RunMusicAgentLoopInput): boolean {
   return (
     tool === DEFAULT_TOOL_NAME &&
     input.candidatePool.count() > 0 &&
@@ -523,7 +661,8 @@ function rankedFallback(
   startedAt: number,
   step: number,
   llmCalls: number,
-  toolCalls: number
+  toolCalls: number,
+  extra: Pick<MusicAgentFallbackLogEvent, 'extraFinalProblem'> = {}
 ): MusicAgentRunOutput {
   const mode = resolveMode(input);
   const options = rankOptions(input.context);
@@ -558,7 +697,8 @@ function rankedFallback(
     toolCalls,
     elapsedMs: Math.max(0, Date.now() - startedAt),
     budget: input.budget,
-    lastTraceStep: trace.at(-1)
+    lastTraceStep: trace.at(-1),
+    ...extra
   });
   return output;
 }
@@ -742,6 +882,18 @@ function shouldConvergeAfterSkippedToolBudget(
   input: RunMusicAgentLoopInput
 ): boolean {
   return Boolean(toolName && input.candidatePool.count() >= 2);
+}
+
+function skippedToolBudgetThought(
+  rewrite: ToolRewrite | undefined,
+  toolName: MusicAgentToolName | undefined,
+  input: RunMusicAgentLoopInput,
+  shouldConvergeAfterSkippedBudget: boolean
+): string {
+  if (rewrite) return 'forced recall skipped by budget';
+  if (shouldConvergeAfterSkippedTerminalTool(toolName, input)) return 'terminal tool skipped by budget';
+  if (shouldConvergeAfterSkippedBudget) return 'tool budget exhausted with sufficient candidates';
+  return 'tool call skipped by budget';
 }
 
 function shouldAskExtraFinalPick(

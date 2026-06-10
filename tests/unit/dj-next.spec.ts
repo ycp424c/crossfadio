@@ -109,6 +109,19 @@ describe('DJ pick-next diagnostics', () => {
     expect(doPickNext).toContain('source: pick.source');
   });
 
+  it('logs skipped pick reasons when append paths fall short of the target', () => {
+    const source = readSource('src/server/http/routes/djNext.ts');
+    const doPickNext = extractBetween(source, 'async function doPickNext', 'function broadcastAppended');
+
+    expect(doPickNext).toContain('const musicAgentSkippedPicks: SkippedPickLog[] = [];');
+    expect(doPickNext).toContain('const whitelistedSkippedPicks: SkippedPickLog[] = [];');
+    expect(doPickNext).toContain('skippedPicks: musicAgentSkippedPicks');
+    expect(doPickNext).toContain('skippedPicks: whitelistedSkippedPicks');
+    expect(doPickNext).toContain("'id_excluded'");
+    expect(doPickNext).toContain("'dedupe_excluded'");
+    expect(doPickNext).not.toContain('excludedIds: Array.from(excludeState.ids),\n            excludedDedupeKeys: Array.from(excludeState.dedupeKeys),\n            skippedPicks');
+  });
+
   it('routes DJ pick-next through MusicAgent with abort and status guards', () => {
     const source = readSource('src/server/http/routes/djNext.ts');
     const runPickNextJob = extractBetween(source, 'async function runPickNextJob', 'async function doPickNext');

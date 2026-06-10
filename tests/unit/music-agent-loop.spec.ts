@@ -397,7 +397,7 @@ describe('runMusicAgentLoop', () => {
     }));
   });
 
-  it('keeps ranked convergence when the extra final-pick call does not return a final answer', async () => {
+  it('records a ranked fallback when the extra final-pick call does not return a final answer', async () => {
     const pool = new CandidatePool();
     pool.upsert(candidate({ id: '101', scores: { ...candidate().scores, intentMatch: 0.9 } }));
     pool.upsert(candidate({
@@ -430,12 +430,13 @@ describe('runMusicAgentLoop', () => {
     });
 
     expect(result.status).toBe('ok');
-    expect(result.picks.every((pick) => pick.reason === 'ranked convergence')).toBe(true);
+    expect(result.picks.every((pick) => pick.reason === 'ranked fallback')).toBe(true);
     expect(result.trace.at(-1)).toMatchObject({
       thoughtSummary: 'extra final did not return final output'
     });
     expect(fallbackLogger).toHaveBeenCalledWith(expect.objectContaining({
-      reason: 'ranked_tool_completed',
+      reason: 'extra_final_returned_tool_call',
+      extraFinalProblem: 'returned_tool_call',
       status: 'ok',
       candidateCount: 3,
       pickCount: 2,
@@ -1046,6 +1047,177 @@ describe('runMusicAgentLoop', () => {
       candidateCount: 10,
       step: 3,
       llmCalls: 3
+    }));
+  });
+
+  it('rewrites empty-pool non-recall tools into forced auto-fill and liked recall', async () => {
+    const pool = new CandidatePool();
+    const fallbackLogger = vi.fn();
+    const llmClient = new LoopFakeLlmClient([
+      JSON.stringify({ type: 'tool_call', tool: 'rank_candidates', input: { limit: 8 } }),
+      JSON.stringify({
+        type: 'final',
+        say: '我用保底召回后的候选完成最终选择。',
+        picks: [
+          { id: 'liked-1', reason: '红心候选保证了可播性', source: 'liked' },
+          { id: 'liked-2', reason: '补足自动 DJ 的两首目标', source: 'liked' }
+        ],
+        rejected: []
+      })
+    ]);
+    const calls: Array<{ tool: string; input?: Record<string, unknown> }> = [];
+
+    const result = await runMusicAgentLoop({
+      llmClient,
+      context: context({ request: 'auto-fill' }),
+      candidatePool: pool,
+      tools: {
+        recall_auto_fill_mix: async (toolInput) => {
+          calls.push({ tool: 'recall_auto_fill_mix', input: toolInput });
+          return { summary: 'auto-fill mix added 0 candidates', candidateCount: pool.count() };
+        },
+        recall_from_liked: async (toolInput) => {
+          calls.push({ tool: 'recall_from_liked', input: toolInput });
+          pool.upsert(candidate({ id: 'liked-1', name: 'Liked One', sources: ['liked'] }));
+          pool.upsert(candidate({ id: 'liked-2', name: 'Liked Two', artist: 'Another Singer', sources: ['liked'] }));
+          return { summary: 'liked recall added 2 candidates', candidateCount: pool.count() };
+        },
+        rank_candidates: async () => {
+          throw new Error('empty pool rank should be rewritten before execution');
+        }
+      },
+      budget: budget({ maxLlmCalls: 4, maxSteps: 4, maxToolCalls: 4 }),
+      fallbackLogger
+    });
+
+    expect(result.status).toBe('ok');
+    expect(result.say).toBe('我用保底召回后的候选完成最终选择。');
+    expect(result.picks.map((pick) => pick.id)).toEqual(['liked-1', 'liked-2']);
+    expect(calls).toEqual([
+      { tool: 'recall_auto_fill_mix', input: {} },
+      { tool: 'recall_from_liked', input: { limit: 10 } }
+    ]);
+    expect(result.trace[0]).toMatchObject({
+      tool: 'recall_auto_fill_mix',
+      requestedTool: 'rank_candidates',
+      executedTool: 'recall_auto_fill_mix',
+      rewriteReason: 'empty_pool_non_recall_tool'
+    });
+    expect(result.trace[1]).toMatchObject({
+      tool: 'recall_from_liked',
+      requestedTool: 'recall_from_liked',
+      executedTool: 'recall_from_liked',
+      rewriteReason: 'empty_pool_forced_liked_recall'
+    });
+    expect(fallbackLogger).not.toHaveBeenCalled();
+  });
+
+  it('does not rewrite reserved rank into forced recall after tool budget is exhausted', async () => {
+    const pool = new CandidatePool();
+    pool.upsert(candidate({ id: 'only-1', name: 'Only Candidate' }));
+    const fallbackLogger = vi.fn();
+    const llmClient = new LoopFakeLlmClient([
+      JSON.stringify({ type: 'tool_call', tool: 'rank_candidates', input: { limit: 8 } })
+    ]);
+    let forcedRecallCalls = 0;
+
+    const result = await runMusicAgentLoop({
+      llmClient,
+      context: context({ request: 'auto-fill' }),
+      candidatePool: pool,
+      tools: {
+        recall_auto_fill_mix: async () => {
+          forcedRecallCalls += 1;
+          throw new Error('forced recall should not execute after tool budget is exhausted');
+        },
+        rank_candidates: async () => {
+          throw new Error('reserved rank should be rewritten before execution');
+        }
+      },
+      budget: budget({ maxLlmCalls: 2, maxSteps: 2, maxToolCalls: 0 }),
+      fallbackLogger
+    });
+
+    expect(result.status).toBe('ok');
+    expect(result.picks.map((pick) => pick.id)).toEqual(['only-1']);
+    expect(forcedRecallCalls).toBe(0);
+    expect(fallbackLogger).toHaveBeenCalledWith(expect.objectContaining({
+      reason: 'tool_budget_exhausted',
+      status: 'ok',
+      candidateCount: 1,
+      pickCount: 1,
+      toolCalls: 0
+    }));
+  });
+
+  it('reports empty_pool_after_forced_recall when forced recall still leaves no candidates', async () => {
+    const pool = new CandidatePool();
+    const fallbackLogger = vi.fn();
+    const llmClient = new LoopFakeLlmClient([
+      JSON.stringify({ type: 'tool_call', tool: 'rank_candidates', input: {} }),
+      JSON.stringify({ type: 'tool_call', tool: 'rank_candidates', input: {} })
+    ]);
+
+    const result = await runMusicAgentLoop({
+      llmClient,
+      context: context({ request: 'auto-fill' }),
+      candidatePool: pool,
+      tools: {
+        recall_auto_fill_mix: async () => ({ summary: 'auto-fill mix added 0 candidates', candidateCount: pool.count() }),
+        recall_from_liked: async () => ({ summary: 'liked recall added 0 candidates', candidateCount: pool.count() }),
+        rank_candidates: async () => {
+          throw new Error('empty pool rank should not execute after forced recall');
+        }
+      },
+      budget: budget({ maxLlmCalls: 4, maxSteps: 4, maxToolCalls: 4 }),
+      fallbackLogger
+    });
+
+    expect(result.status).toBe('empty_pool');
+    expect(result.picks).toEqual([]);
+    expect(fallbackLogger).toHaveBeenCalledWith(expect.objectContaining({
+      reason: 'empty_pool_after_forced_recall',
+      status: 'empty_pool',
+      candidateCount: 0,
+      pickCount: 0,
+      toolCalls: 2
+    }));
+  });
+
+  it('reports insufficient_pool_after_forced_recall when forced recall leaves one candidate', async () => {
+    const pool = new CandidatePool();
+    const fallbackLogger = vi.fn();
+    const llmClient = new LoopFakeLlmClient([
+      JSON.stringify({ type: 'tool_call', tool: 'rank_candidates', input: {} }),
+      JSON.stringify({ type: 'tool_call', tool: 'rank_candidates', input: {} })
+    ]);
+
+    const result = await runMusicAgentLoop({
+      llmClient,
+      context: context({ request: 'auto-fill' }),
+      candidatePool: pool,
+      tools: {
+        recall_auto_fill_mix: async () => ({ summary: 'auto-fill mix added 0 candidates', candidateCount: pool.count() }),
+        recall_from_liked: async () => {
+          pool.upsert(candidate({ id: 'liked-1', name: 'Liked One', sources: ['liked'] }));
+          return { summary: 'liked recall added 1 candidate', candidateCount: pool.count() };
+        },
+        rank_candidates: async () => {
+          throw new Error('sparse pool rank should not execute after forced recall');
+        }
+      },
+      budget: budget({ maxLlmCalls: 4, maxSteps: 4, maxToolCalls: 4 }),
+      fallbackLogger
+    });
+
+    expect(result.status).toBe('ok');
+    expect(result.picks.map((pick) => pick.id)).toEqual(['liked-1']);
+    expect(fallbackLogger).toHaveBeenCalledWith(expect.objectContaining({
+      reason: 'insufficient_pool_after_forced_recall',
+      status: 'ok',
+      candidateCount: 1,
+      pickCount: 1,
+      toolCalls: 2
     }));
   });
 
