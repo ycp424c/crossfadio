@@ -11,6 +11,7 @@ export type BuildLoopMessagesInput = {
   observations: LoopObservation[];
   candidateSummary: string;
   targetPickCount?: number;
+  hardFinalOnlyRetry?: boolean;
 };
 
 const TOOL_WHITELIST = musicAgentToolNameSchema.options.join(', ');
@@ -81,6 +82,12 @@ export function buildFinalPickMessages(input: BuildLoopMessagesInput): LlmMessag
       content: [
         '你是 Crossfadio 的最终选歌器。',
         '只输出严格 JSON，不要 Markdown、不要解释、不要额外文本。',
+        ...(input.hardFinalOnlyRetry
+          ? [
+              '这是一次强制 final-only 重试；上一次 extra final 返回了 tool_call，已经被服务端拒绝。',
+              '禁止输出 tool_call、tool、input 或任何非 final 字段；服务端只接受 type 为 final 的对象。'
+            ]
+          : []),
         '这次调用只能输出 {"type":"final","say":"...","picks":[{"id":"候选池ID","reason":"...","source":"liked|playlist|plan|search|style_expansion|trend"}],"rejected":[]}。',
         `picks 必须从候选池里选择 1 到 ${targetPickCount} 首；id 必须完全来自候选池；source 必须是对应候选的来源之一。`,
         '如果高质量候选不足，可以少选；不要为了凑数选择明显不适合当前队列的歌曲。',

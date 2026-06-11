@@ -25,9 +25,16 @@ const TITLE_POLLUTION_TERMS = [
   '深夜',
   'ローファイ'
 ];
+const TITLE_DIVERSITY_MOTIFS = [
+  { key: 'afternoon', pattern: /(?:午後|午后|下午|\bafternoon\b|\bno\s+gogo\b)/i }
+] as const;
 
 export type RankCandidatesOptions = {
   artistPenalties?: ReadonlyMap<string, number>;
+};
+
+export type DiversifyCandidatesOptions = {
+  blockedTitleMotifs?: ReadonlySet<string>;
 };
 
 function primaryArtist(artist: string): string {
@@ -135,12 +142,17 @@ export function buildCandidateScoreTableRows(
   });
 }
 
-export function diversifyCandidates(candidates: MusicCandidate[], limit: number): MusicCandidate[] {
+export function diversifyCandidates(
+  candidates: MusicCandidate[],
+  limit: number,
+  options: DiversifyCandidatesOptions = {}
+): MusicCandidate[] {
   const sorted = candidates
     .filter((candidate) => !isHardFilteredCandidate(candidate))
     .sort((left, right) => scoreCandidateForRanking(right).adjustedScore - scoreCandidateForRanking(left).adjustedScore);
   const selected: MusicCandidate[] = [];
   const usedArtists = new Set<string>();
+  const usedTitleMotifs = new Set(options.blockedTitleMotifs ?? []);
   const target = Math.max(0, limit);
 
   for (const candidate of sorted) {
@@ -149,16 +161,31 @@ export function diversifyCandidates(candidates: MusicCandidate[], limit: number)
     }
 
     const artist = primaryArtist(candidate.artist);
+    const titleMotifs = candidateTitleMotifKeys(candidate);
 
     if (usedArtists.has(artist)) {
       continue;
     }
 
+    if (titleMotifs.some((motif) => usedTitleMotifs.has(motif))) {
+      continue;
+    }
+
     selected.push(cloneCandidate(candidate));
     usedArtists.add(artist);
+    for (const motif of titleMotifs) {
+      usedTitleMotifs.add(motif);
+    }
   }
 
   return selected;
+}
+
+export function candidateTitleMotifKeys(candidate: Pick<MusicCandidate, 'name'>): string[] {
+  const normalized = candidate.name.normalize('NFKC').toLowerCase();
+  return TITLE_DIVERSITY_MOTIFS
+    .filter((motif) => motif.pattern.test(normalized))
+    .map((motif) => motif.key);
 }
 
 function repeatedArtistAdjustedScore(

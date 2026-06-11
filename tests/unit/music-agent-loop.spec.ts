@@ -86,6 +86,10 @@ function candidate(overrides: Partial<MusicCandidate> = {}): MusicCandidate {
   };
 }
 
+function expectProviderSafeFinalPickResponseFormat(responseFormat: LlmCompleteOptions['responseFormat'] | undefined): void {
+  expect(responseFormat).toEqual({ type: 'json_object' });
+}
+
 describe('runMusicAgentLoop', () => {
   it('calls a whitelisted tool and accepts a final pick from the candidate pool', async () => {
     const llmClient = new LoopFakeLlmClient([
@@ -193,6 +197,91 @@ describe('runMusicAgentLoop', () => {
     expect(result.status).toBe('ok');
     expect(result.picks.map((pick) => pick.id)).toEqual(['pick-1', 'pick-3', 'pick-2', 'pick-4']);
     expect(result.picks.slice(2).every((pick) => pick.reason === 'ranked backfill')).toBe(true);
+  });
+
+  it('dedupes repeated title motifs before ranked backfilling auto-fill batches', async () => {
+    const pool = new CandidatePool();
+    const baseScores = candidate().scores;
+    const tracks: Array<Partial<MusicCandidate>> = [
+      {
+        id: 'olive-afternoon',
+        name: 'オリーブの午后',
+        artist: 'Artist A',
+        scores: { ...baseScores, intentMatch: 1 }
+      },
+      {
+        id: 'museum-afternoon',
+        name: '美術館の午後 (Bijutsukan no Gogo) - Museum Afternoon',
+        artist: 'Artist B',
+        scores: { ...baseScores, intentMatch: 0.99 }
+      },
+      {
+        id: 'home',
+        name: '温暖, 安静, 回不去的家',
+        artist: 'Artist C',
+        scores: { ...baseScores, intentMatch: 0.9 }
+      },
+      {
+        id: 'evening-walk',
+        name: 'Evening Walk',
+        artist: 'Artist D',
+        scores: { ...baseScores, intentMatch: 0.86 }
+      },
+      {
+        id: 'rain-lights',
+        name: 'Rain Lights',
+        artist: 'Artist E',
+        scores: { ...baseScores, intentMatch: 0.82 }
+      },
+      {
+        id: 'cloudy-afternoon',
+        name: '中原めいこ - Cloudyな午後',
+        artist: 'Artist F',
+        scores: { ...baseScores, intentMatch: 0.98 }
+      },
+      {
+        id: 'train-window',
+        name: 'Train Window',
+        artist: 'Artist G',
+        scores: { ...baseScores, intentMatch: 0.7 }
+      }
+    ];
+    for (const track of tracks) {
+      pool.upsert(candidate(track));
+    }
+    const llmClient = new LoopFakeLlmClient([
+      JSON.stringify({
+        type: 'final',
+        say: '一次排好五首。',
+        picks: [
+          { id: 'olive-afternoon', reason: '温暖轻快', source: 'liked' },
+          { id: 'museum-afternoon', reason: '同样适合下午', source: 'liked' },
+          { id: 'home', reason: '放松过渡', source: 'liked' },
+          { id: 'evening-walk', reason: '继续舒缓', source: 'liked' },
+          { id: 'rain-lights', reason: '保持柔和', source: 'liked' }
+        ],
+        rejected: []
+      })
+    ]);
+
+    const result = await runMusicAgentLoop({
+      llmClient,
+      context: context({ request: 'auto-fill' }),
+      candidatePool: pool,
+      tools: {},
+      budget: budget(),
+      targetPickCount: 5
+    });
+
+    expect(result.status).toBe('ok');
+    expect(result.picks.map((pick) => pick.id)).toEqual([
+      'olive-afternoon',
+      'home',
+      'evening-walk',
+      'rain-lights',
+      'train-window'
+    ]);
+    expect(result.picks.at(-1)?.reason).toBe('ranked backfill');
   });
 
   it('does not ranked-backfill chat recommendations beyond the final picks', async () => {
@@ -491,7 +580,7 @@ describe('runMusicAgentLoop', () => {
     expect(llmClient.calls).toHaveLength(2);
     expect(llmClient.calls[1].messages.map((message) => message.content).join('\n')).not.toContain('tool_call');
     expect(llmClient.calls[1].messages.map((message) => message.content).join('\n')).toContain('"type":"final"');
-    expect(llmClient.calls[1].opts?.responseFormat).toEqual({ type: 'json_object' });
+    expectProviderSafeFinalPickResponseFormat(llmClient.calls[1].opts?.responseFormat);
     expect(fallbackLogger).toHaveBeenCalledWith(expect.objectContaining({
       reason: 'ranked_tool_completed',
       status: 'ok',
@@ -499,6 +588,123 @@ describe('runMusicAgentLoop', () => {
       pickCount: 2,
       step: 2,
       llmCalls: 2
+    }));
+  });
+
+  it('retries once with a hard final-only prompt when the extra final-pick call returns a tool call', async () => {
+    const pool = new CandidatePool();
+    pool.upsert(candidate({ id: '101', scores: { ...candidate().scores, intentMatch: 0.9 } }));
+    pool.upsert(candidate({
+      id: '102',
+      name: 'Bright Song',
+      artist: 'Another Singer',
+      scores: { ...candidate().scores, intentMatch: 0.8 }
+    }));
+    pool.upsert(candidate({
+      id: '103',
+      name: 'Third Song',
+      artist: 'Third Singer',
+      scores: { ...candidate().scores, intentMatch: 0.7 }
+    }));
+    const fallbackLogger = vi.fn();
+    const llmClient = new LoopFakeLlmClient([
+      JSON.stringify({ type: 'tool_call', tool: 'rank_candidates', input: {} }),
+      JSON.stringify({ type: 'tool_call', tool: 'diversify_candidates', input: {} }),
+      JSON.stringify({
+        type: 'final',
+        say: '我只返回最终选择。',
+        picks: [
+          { id: '103', reason: '重试后选择最有新鲜感的一首', source: 'liked' },
+          { id: '101', reason: '保留用户偏好的稳定锚点', source: 'liked' }
+        ],
+        rejected: []
+      })
+    ]);
+
+    const result = await runMusicAgentLoop({
+      llmClient,
+      context: context(),
+      candidatePool: pool,
+      tools: {
+        rank_candidates: async () => ({ summary: 'ranked candidates', candidateCount: pool.count() })
+      },
+      budget: budget({ maxLlmCalls: 3, maxSteps: 3 }),
+      fallbackLogger
+    });
+
+    expect(result.status).toBe('ok');
+    expect(result.say).toBe('我只返回最终选择。');
+    expect(result.picks.map((pick) => pick.id)).toEqual(['103', '101']);
+    expect(llmClient.calls).toHaveLength(3);
+    expectProviderSafeFinalPickResponseFormat(llmClient.calls[1].opts?.responseFormat);
+    expectProviderSafeFinalPickResponseFormat(llmClient.calls[2].opts?.responseFormat);
+    expect(llmClient.calls[2].messages.map((message) => message.content).join('\n')).toContain('上一次 extra final 返回了 tool_call');
+    expect(result.trace.at(-1)).toMatchObject({
+      thoughtSummary: 'extra final returned tool_call; retrying final-only output'
+    });
+    expect(fallbackLogger).toHaveBeenCalledWith(expect.objectContaining({
+      reason: 'ranked_tool_completed',
+      status: 'ok',
+      candidateCount: 3,
+      pickCount: 2,
+      step: 3,
+      llmCalls: 3
+    }));
+  });
+
+  it('falls back after exactly one hard final-only retry still returns a tool call', async () => {
+    const pool = new CandidatePool();
+    pool.upsert(candidate({ id: '101', scores: { ...candidate().scores, intentMatch: 0.9 } }));
+    pool.upsert(candidate({
+      id: '102',
+      name: 'Bright Song',
+      artist: 'Another Singer',
+      scores: { ...candidate().scores, intentMatch: 0.8 }
+    }));
+    pool.upsert(candidate({
+      id: '103',
+      name: 'Third Song',
+      artist: 'Third Singer',
+      scores: { ...candidate().scores, intentMatch: 0.7 }
+    }));
+    const fallbackLogger = vi.fn();
+    const llmClient = new LoopFakeLlmClient([
+      JSON.stringify({ type: 'tool_call', tool: 'rank_candidates', input: {} }),
+      JSON.stringify({ type: 'tool_call', tool: 'diversify_candidates', input: {} }),
+      JSON.stringify({ type: 'tool_call', tool: 'recall_from_liked', input: {} }),
+      JSON.stringify({
+        type: 'final',
+        say: 'should not spend a second retry',
+        picks: [{ id: '103', reason: 'should not be used', source: 'liked' }],
+        rejected: []
+      })
+    ]);
+
+    const result = await runMusicAgentLoop({
+      llmClient,
+      context: context(),
+      candidatePool: pool,
+      tools: {
+        rank_candidates: async () => ({ summary: 'ranked candidates', candidateCount: pool.count() })
+      },
+      budget: budget({ maxLlmCalls: 4, maxSteps: 4 }),
+      fallbackLogger
+    });
+
+    expect(result.status).toBe('ok');
+    expect(result.picks.every((pick) => pick.reason === 'ranked fallback')).toBe(true);
+    expect(llmClient.calls).toHaveLength(3);
+    expect(result.trace.at(-1)).toMatchObject({
+      thoughtSummary: 'hard final-only retry did not return final output'
+    });
+    expect(fallbackLogger).toHaveBeenCalledWith(expect.objectContaining({
+      reason: 'extra_final_returned_tool_call',
+      extraFinalProblem: 'returned_tool_call',
+      status: 'ok',
+      candidateCount: 3,
+      pickCount: 2,
+      step: 3,
+      llmCalls: 3
     }));
   });
 
@@ -758,7 +964,7 @@ describe('runMusicAgentLoop', () => {
     });
     expect(llmClient.calls).toHaveLength(3);
     expect(llmClient.calls[2].messages.map((message) => message.content).join('\n')).not.toContain('tool_call');
-    expect(llmClient.calls[2].opts?.responseFormat).toEqual({ type: 'json_object' });
+    expectProviderSafeFinalPickResponseFormat(llmClient.calls[2].opts?.responseFormat);
     expect(fallbackLogger).toHaveBeenCalledWith(expect.objectContaining({
       reason: 'ranked_tool_completed',
       status: 'ok',
@@ -766,6 +972,68 @@ describe('runMusicAgentLoop', () => {
       pickCount: 2,
       step: 3,
       llmCalls: 3
+    }));
+  });
+
+  it('retries hard final-only output after a skipped terminal tool returns a tool call', async () => {
+    const pool = new CandidatePool();
+    for (let index = 0; index < 5; index += 1) {
+      pool.upsert(candidate({
+        id: String(301 + index),
+        name: `Skipped Candidate ${index + 1}`,
+        artist: `Skipped Artist ${index + 1}`,
+        sources: ['search'],
+        scores: { ...candidate().scores, intentMatch: 0.9 - index * 0.04 }
+      }));
+    }
+    const fallbackLogger = vi.fn();
+    const llmClient = new LoopFakeLlmClient([
+      JSON.stringify({ type: 'tool_call', tool: 'recall_from_ncm_search', input: { queries: ['summer pop'] } }),
+      JSON.stringify({ type: 'tool_call', tool: 'diversify_candidates', input: {} }),
+      JSON.stringify({ type: 'tool_call', tool: 'rank_candidates', input: {} }),
+      JSON.stringify({
+        type: 'final',
+        say: '我在重试后完成最终选择。',
+        picks: [
+          { id: '301', reason: '预算内最贴合当前需求', source: 'search' },
+          { id: '302', reason: '补足同一氛围但保持差异', source: 'search' }
+        ],
+        rejected: []
+      })
+    ]);
+    const tools: MusicAgentToolRegistry = {
+      recall_from_ncm_search: async () => ({ summary: 'search kept same candidates', candidateCount: pool.count() }),
+      diversify_candidates: async () => {
+        throw new Error('should not call terminal tool after budget is exhausted');
+      }
+    };
+
+    const result = await runMusicAgentLoop({
+      llmClient,
+      context: context({ request: 'auto-fill' }),
+      candidatePool: pool,
+      tools,
+      budget: budget({ maxLlmCalls: 4, maxSteps: 4, maxToolCalls: 1 }),
+      fallbackLogger
+    });
+
+    expect(result.status).toBe('ok');
+    expect(result.say).toBe('我在重试后完成最终选择。');
+    expect(result.picks.map((pick) => pick.id)).toEqual(['301', '302']);
+    expect(llmClient.calls).toHaveLength(4);
+    expectProviderSafeFinalPickResponseFormat(llmClient.calls[2].opts?.responseFormat);
+    expectProviderSafeFinalPickResponseFormat(llmClient.calls[3].opts?.responseFormat);
+    expect(result.trace).toEqual(expect.arrayContaining([
+      expect.objectContaining({ thoughtSummary: 'terminal tool skipped by budget' }),
+      expect.objectContaining({ thoughtSummary: 'extra final returned tool_call; retrying final-only output' })
+    ]));
+    expect(fallbackLogger).toHaveBeenCalledWith(expect.objectContaining({
+      reason: 'ranked_tool_completed',
+      status: 'ok',
+      candidateCount: 5,
+      pickCount: 2,
+      step: 4,
+      llmCalls: 4
     }));
   });
 
@@ -817,7 +1085,7 @@ describe('runMusicAgentLoop', () => {
     });
     expect(llmClient.calls).toHaveLength(3);
     expect(llmClient.calls[2].messages.map((message) => message.content).join('\n')).not.toContain('tool_call');
-    expect(llmClient.calls[2].opts?.responseFormat).toEqual({ type: 'json_object' });
+    expectProviderSafeFinalPickResponseFormat(llmClient.calls[2].opts?.responseFormat);
     expect(fallbackLogger).toHaveBeenCalledWith(expect.objectContaining({
       reason: 'ranked_tool_completed',
       status: 'ok',

@@ -127,6 +127,43 @@ describe('music-agent ranking', () => {
     expect(diversifyCandidates(candidates, 3).map((item) => item.id)).toEqual(['a1', 'b1', 'c1']);
   });
 
+  it('diversifyCandidates spreads repeated title motifs when possible', () => {
+    const candidates = [
+      candidate({
+        id: 'afternoon-1',
+        name: '美術館の午後 (Bijutsukan no Gogo) - Museum Afternoon',
+        artist: 'Artist A',
+        scores: { ...candidate().scores, intentMatch: 1 }
+      }),
+      candidate({
+        id: 'afternoon-2',
+        name: 'オリーブの午后',
+        artist: 'Artist B',
+        scores: { ...candidate().scores, intentMatch: 0.98 }
+      }),
+      candidate({
+        id: 'afternoon-3',
+        name: 'Cloudy Afternoon',
+        artist: 'Artist C',
+        scores: { ...candidate().scores, intentMatch: 0.96 }
+      }),
+      candidate({
+        id: 'home',
+        name: '温暖, 安静, 回不去的家',
+        artist: 'Artist D',
+        scores: { ...candidate().scores, intentMatch: 0.7 }
+      }),
+      candidate({
+        id: 'evening',
+        name: 'Evening Walk',
+        artist: 'Artist E',
+        scores: { ...candidate().scores, intentMatch: 0.6 }
+      })
+    ];
+
+    expect(diversifyCandidates(candidates, 3).map((item) => item.id)).toEqual(['afternoon-1', 'home', 'evening']);
+  });
+
   it('rankCandidates lowers repeated artist scores when ordering picks', () => {
     const candidates = [
       candidate({ id: 'a1', artist: 'Artist A', scores: { ...candidate().scores, intentMatch: 1 } }),

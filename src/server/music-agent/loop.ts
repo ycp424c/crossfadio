@@ -3,6 +3,7 @@ import { CandidatePool, validateFinalPicks } from './candidates.js';
 import { parseAutoFillBatchSize } from '../../shared/dj.js';
 import {
   buildCandidateScoreTableRows,
+  candidateTitleMotifKeys,
   diversifyCandidates,
   isHardFilteredCandidate,
   rankCandidates,
@@ -338,9 +339,10 @@ async function askExtraFinalPick(
     summary: `ranked shortlist is ready; use one extra final-pick LLM call to choose up to ${targetPickCount(input)} whitelisted candidates.`,
     candidateCount: input.candidatePool.count()
   };
+  const finalPickObservations = [...observations, finalObservation];
   const messages = buildFinalPickMessages({
     context: input.context,
-    observations: [...observations, finalObservation],
+    observations: finalPickObservations,
     candidateSummary: summarizeCandidatePool(input.candidatePool, input.context),
     targetPickCount: targetPickCount(input)
   });
@@ -395,6 +397,16 @@ async function askExtraFinalPick(
 
   const output = parseLoopOutput(responseContent);
   if (output.type !== 'final') {
+    if (hasExtraFinalPickBudget(input, startedAt, nextStep, nextLlmCalls)) {
+      trace.push(traceStep(nextStep, startedAt, input.candidatePool.count(), {
+        thoughtSummary: 'extra final returned tool_call; retrying final-only output',
+        observationSummary: summarizeObservation(observationFromProblem(
+          'extra final returned tool_call; retrying final-only output',
+          input.candidatePool.count()
+        ))
+      }));
+      return retryHardFinalOnlyPick(input, finalPickObservations, trace, startedAt, nextStep, nextLlmCalls, toolCalls);
+    }
     return rankedConvergenceAfterExtraFinalProblem(
       `extra final returned ${output.type}`,
       'extra final did not return final output',
@@ -409,6 +421,107 @@ async function askExtraFinalPick(
     );
   }
 
+  return acceptExtraFinalPick(output, input, trace, startedAt, nextStep, nextLlmCalls, toolCalls);
+}
+
+async function retryHardFinalOnlyPick(
+  input: RunMusicAgentLoopInput,
+  observations: LoopObservation[],
+  trace: AgentTraceStep[],
+  startedAt: number,
+  step: number,
+  llmCalls: number,
+  toolCalls: number
+): Promise<MusicAgentRunOutput> {
+  const retryObservation: LoopObservation = {
+    tool: DEFAULT_TOOL_NAME,
+    summary: '上一次 extra final 返回了 tool_call；这次必须只返回 final JSON。',
+    candidateCount: input.candidatePool.count(),
+    problems: ['extra final returned tool_call']
+  };
+  const messages = buildFinalPickMessages({
+    context: input.context,
+    observations: [...observations, retryObservation],
+    candidateSummary: summarizeCandidatePool(input.candidatePool, input.context),
+    targetPickCount: targetPickCount(input),
+    hardFinalOnlyRetry: true
+  });
+  const nextLlmCalls = llmCalls + 1;
+  const nextStep = step + 1;
+  let responseContent = '';
+  try {
+    const response = await input.llmClient.complete(messages, {
+      signal: input.signal,
+      temperature: 0.1,
+      maxTokens: 800,
+      responseFormat: FINAL_PICK_RESPONSE_FORMAT
+    });
+    responseContent = response.content;
+  } catch {
+    if (input.signal?.aborted) {
+      return abortedOutput(resolveMode(input), trace);
+    }
+    return rankedConvergenceAfterExtraFinalProblem(
+      'hard final-only retry request failed',
+      'hard final-only retry request failed',
+      'extra_final_request_failed',
+      'request_failed',
+      input,
+      trace,
+      startedAt,
+      nextStep,
+      nextLlmCalls,
+      toolCalls
+    );
+  }
+
+  if (input.signal?.aborted) {
+    return abortedOutput(resolveMode(input), trace);
+  }
+
+  if (Date.now() - startedAt >= input.budget.maxMs) {
+    return rankedConvergenceAfterExtraFinalProblem(
+      'hard final-only retry exceeded loop budget',
+      'hard final-only retry exceeded loop budget',
+      'extra_final_timeout',
+      'timeout',
+      input,
+      trace,
+      startedAt,
+      nextStep,
+      nextLlmCalls,
+      toolCalls
+    );
+  }
+
+  const output = parseLoopOutput(responseContent);
+  if (output.type !== 'final') {
+    return rankedConvergenceAfterExtraFinalProblem(
+      `hard final-only retry returned ${output.type}`,
+      'hard final-only retry did not return final output',
+      'extra_final_returned_tool_call',
+      'returned_tool_call',
+      input,
+      trace,
+      startedAt,
+      nextStep,
+      nextLlmCalls,
+      toolCalls
+    );
+  }
+
+  return acceptExtraFinalPick(output, input, trace, startedAt, nextStep, nextLlmCalls, toolCalls);
+}
+
+async function acceptExtraFinalPick(
+  output: Extract<ParsedLoopOutput, { type: 'final' }>,
+  input: RunMusicAgentLoopInput,
+  trace: AgentTraceStep[],
+  startedAt: number,
+  step: number,
+  llmCalls: number,
+  toolCalls: number
+): Promise<MusicAgentRunOutput> {
   try {
     const picks = validateEligibleFinalPicks(output.picks, input);
     await prepareForRanking(input);
@@ -422,18 +535,18 @@ async function askExtraFinalPick(
       trace,
       candidateScoreTable: createCandidateScoreTable(input)
     };
-    recordRankedConvergence(input, result, trace, startedAt, nextStep, nextLlmCalls, toolCalls);
+    recordRankedConvergence(input, result, trace, startedAt, step, llmCalls, toolCalls);
     return result;
   } catch (error) {
     const observation = observationFromProblem(
       `extra final rejected: ${error instanceof Error ? error.message : String(error)}`,
       input.candidatePool.count()
     );
-    trace.push(traceStep(nextStep, startedAt, input.candidatePool.count(), {
+    trace.push(traceStep(step, startedAt, input.candidatePool.count(), {
       thoughtSummary: 'extra final rejected by candidate pool whitelist',
       observationSummary: summarizeObservation(observation)
     }));
-    return rankedFallback('extra_final_rejected', input, trace, startedAt, nextStep, nextLlmCalls, toolCalls, {
+    return rankedFallback('extra_final_rejected', input, trace, startedAt, step, llmCalls, toolCalls, {
       extraFinalProblem: 'final_rejected'
     });
   }
@@ -822,13 +935,15 @@ function completeFinalPicks(picks: FinalPick[], input: RunMusicAgentLoopInput): 
 
 function rankedBackfillFinalPicks(picks: FinalPick[], input: RunMusicAgentLoopInput): FinalPick[] {
   const target = targetPickCount(input);
-  if (picks.length >= target) return picks.slice(0, target);
+  const diversePicks = diversifyFinalPicksByTitleMotif(picks, input);
+  if (diversePicks.length >= target) return diversePicks.slice(0, target);
 
   const pickedIds = new Set(picks.map((pick) => pick.id));
+  const blockedTitleMotifs = titleMotifsFromFinalPicks(diversePicks, input);
   const options = rankOptions(input.context);
   const ranked = rankCandidates(input.candidatePool.list(), input.candidatePool.count(), options)
     .filter((candidate) => !pickedIds.has(candidate.id) && !isHardFilteredCandidate(candidate));
-  const backfill = diversifyCandidates(ranked, target - picks.length).map((candidate) => ({
+  const backfill = diversifyCandidates(ranked, target - diversePicks.length, { blockedTitleMotifs }).map((candidate) => ({
     id: candidate.id,
     name: candidate.name,
     artist: candidate.artist,
@@ -836,7 +951,41 @@ function rankedBackfillFinalPicks(picks: FinalPick[], input: RunMusicAgentLoopIn
     source: candidate.sources[0]
   }));
 
-  return [...picks, ...backfill];
+  return [...diversePicks, ...backfill];
+}
+
+function diversifyFinalPicksByTitleMotif(picks: FinalPick[], input: RunMusicAgentLoopInput): FinalPick[] {
+  const selected: FinalPick[] = [];
+  const usedTitleMotifs = new Set<string>();
+
+  for (const pick of picks) {
+    const motifs = titleMotifsFromCandidateId(pick.id, input);
+    if (motifs.some((motif) => usedTitleMotifs.has(motif))) {
+      continue;
+    }
+
+    selected.push(pick);
+    for (const motif of motifs) {
+      usedTitleMotifs.add(motif);
+    }
+  }
+
+  return selected;
+}
+
+function titleMotifsFromFinalPicks(picks: FinalPick[], input: RunMusicAgentLoopInput): Set<string> {
+  const motifs = new Set<string>();
+  for (const pick of picks) {
+    for (const motif of titleMotifsFromCandidateId(pick.id, input)) {
+      motifs.add(motif);
+    }
+  }
+  return motifs;
+}
+
+function titleMotifsFromCandidateId(id: string, input: RunMusicAgentLoopInput): string[] {
+  const candidate = input.candidatePool.get(id);
+  return candidate ? candidateTitleMotifKeys(candidate) : [];
 }
 
 function targetPickCount(input: RunMusicAgentLoopInput): number {
