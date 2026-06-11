@@ -49,6 +49,8 @@ import { TransportControls } from '@renderer/components/player/TransportControls
 import { initSseEvents, addSseListener, closeSseEvents, streamSegue, streamPickNext } from '@renderer/sse/client';
 import { useMediaQuery } from '@renderer/lib-hooks';
 import { persistQueueSnapshot, restorePersistedQueueSnapshot } from '@renderer/playerQueueCache';
+import { mergeQueueTracksById } from '@renderer/playerTemporaryBans';
+import { AUTO_FILL_LOW_WATER_MARK } from '@shared/dj';
 import type { NextTrackResponse, NowPlayingResponse, QueueTrackDto } from '@shared/schema';
 import appMark from '@renderer/assets/image2/crossfadio-mark.svg';
 
@@ -65,7 +67,6 @@ type PlayerViewProps = {
 const DEFAULT_DUCKING_HINT_SEC = 8;
 const TRACK_DEFAULT_VOLUME = 1;
 const TRACK_DUCKING_VOLUME = 0.2;
-const DJ_TARGET_QUEUE = 3;       // keep this many songs in queue at all times
 const DJ_PICK_COOLDOWN_MS = 3000; // min ms between pick-next calls
 const DJ_ALREADY_RUNNING_BACKOFF_MS = 30000;
 const SEGUE_RETRY_COOLDOWN_MS = 6000; // min ms between segue trigger retries within the same track
@@ -207,6 +208,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
   const djPickNextInFlightRef = useRef(false);
   const applyingRemoteQueueRef = useRef(false);
   const skipNextQueuePersistRef = useRef(true);
+  const pendingTemporaryBanTracksRef = useRef<QueueTrackDto[]>([]);
 
   useEffect(() => {
     if (!showNcmDropdown) return;
@@ -493,7 +495,13 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
       applyingRemoteQueueRef.current = false;
       return;
     }
-    void saveQueueState(queue, currentIndex).catch(() => {
+    const temporaryBanTracks = pendingTemporaryBanTracksRef.current;
+    pendingTemporaryBanTracksRef.current = [];
+    void saveQueueState(queue, currentIndex, temporaryBanTracks).catch(() => {
+      pendingTemporaryBanTracksRef.current = mergeQueueTracksById([
+        ...temporaryBanTracks,
+        ...pendingTemporaryBanTracksRef.current
+      ]);
       // Queue sync is best effort; playback should keep running locally.
     });
   }, [currentIndex, queue]);
@@ -849,6 +857,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
 
   function handleSkip(): void {
     if (queue.length <= 1) return;
+    rememberTemporaryBans(queue.slice(0, 1));
     if (isPlaying) shouldAutoplayNextRef.current = true;
     setQueue((q) => q.slice(1));
     setCurrentIndex(0);
@@ -856,6 +865,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
 
   function handleSelectIndex(index: number): void {
     if (index <= 0 || index >= queue.length) return;
+    rememberTemporaryBans(queue.slice(0, index));
     if (isPlaying) shouldAutoplayNextRef.current = true;
     setQueue((q) => q.slice(index));
     setCurrentIndex(0);
@@ -864,7 +874,10 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
   function handleDeleteTrack(index: number): void {
     if (index === currentIndex) return;
 
-    const deletedId = queue[index]?.id ?? null;
+    const deletedTrack = queue[index];
+    if (!deletedTrack) return;
+    rememberTemporaryBans([deletedTrack]);
+    const deletedId = deletedTrack.id;
     const isNext = deletedId !== null && deletedId === (nextTrack?.track.id ?? null);
 
     setQueue((q) => [...q.slice(0, index), ...q.slice(index + 1)]);
@@ -881,6 +894,13 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
       setNextTrack(null);
       setSegueStatusText('下一首已移除，重新生成过渡…');
     }
+  }
+
+  function rememberTemporaryBans(tracks: QueueTrackDto[]): void {
+    pendingTemporaryBanTracksRef.current = mergeQueueTracksById([
+      ...pendingTemporaryBanTracksRef.current,
+      ...tracks
+    ]);
   }
 
   function handleToggleLike(): void {
@@ -941,7 +961,9 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
       }
     }
 
-    // DJ mode: keep queue at DJ_TARGET_QUEUE songs; rate-limited by cooldown.
+    const backupTrackCount = Math.max(0, queueIds.length - currentIndex - 1);
+
+    // DJ mode: refill when the backup queue reaches the low-water mark; rate-limited by cooldown.
     // Defer while a segue request is in flight so both jobs don't compete for LLM bandwidth —
     // segue has a hard timing constraint, DJ pick-next does not.
     const segueInFlight = segueClientRequestIdRef.current !== null;
@@ -951,7 +973,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
       && !segueInFlight
       && !djPickNextInFlightRef.current
       && now >= djPickNextBackoffUntilRef.current
-      && queueIds.length < DJ_TARGET_QUEUE
+      && backupTrackCount <= AUTO_FILL_LOW_WATER_MARK
     ) {
       if (now - djPickNextLastCallRef.current >= DJ_PICK_COOLDOWN_MS) {
         djPickNextLastCallRef.current = now;

@@ -6,6 +6,7 @@ import { getPreferenceContext } from '../store/chat-preferences.js';
 import { getRecentPlays } from '../store/plays.js';
 import { getQueue } from '../store/queue.js';
 import { getPref } from '../store/prefs.js';
+import { getActiveTemporaryQueueBans } from '../store/temporary-bans.js';
 import { loadLatestPlan } from '../store/plan.js';
 import { formatShanghaiDate, formatShanghaiLocalTime, getDaypart, getShanghaiTimeParts } from '../timezone.js';
 import {
@@ -56,7 +57,7 @@ export async function buildMusicAgentContext(input: BuildMusicAgentContextInput)
     recentPlaySignals: buildRecentPlaySignals(input.userId),
     queueStateSummary: buildQueueStateSummary(input.userId),
     recentArtistPenalties: buildRecentArtistPenalties(input.userId),
-    bannedSummary: buildBannedSummary(input.userId)
+    bannedSummary: buildBannedSummary(input.userId, now)
   };
 
   return musicAgentContextSummarySchema.parse(context);
@@ -200,14 +201,27 @@ function primaryArtist(artist: string | null | undefined): string {
   return value.split(/\s*(?:\/|,|，|&| feat\.?| ft\.?| with )\s*/i)[0]?.trim().toLowerCase() ?? value.trim().toLowerCase();
 }
 
-function buildBannedSummary(userId: string): string {
+function buildBannedSummary(userId: string, now: Date): string {
   const moodOverride = getPref<unknown>(userId, 'queue.moodOverride');
   const replanHint = getPref<unknown>(userId, 'plan.replanHint');
+  const temporaryBans = getActiveTemporaryQueueBans(userId, now);
   const parts = [
     moodOverride ? `queue.moodOverride=${compactValue(moodOverride)}` : '',
-    replanHint ? `plan.replanHint=${compactValue(replanHint)}` : ''
+    replanHint ? `plan.replanHint=${compactValue(replanHint)}` : '',
+    temporaryBans.length > 0 ? `temporaryQueueBans=${formatTemporaryBans(temporaryBans)}` : ''
   ].filter(Boolean);
   return truncate(parts.join('\n'), 600);
+}
+
+function formatTemporaryBans(bans: ReturnType<typeof getActiveTemporaryQueueBans>): string {
+  return bans
+    .slice(0, 8)
+    .map((ban) => {
+      const name = ban.name || ban.id;
+      const artists = ban.artists?.length ? ` - ${ban.artists.join('/')}` : '';
+      return `${name}${artists} [${ban.id}]`;
+    })
+    .join('；');
 }
 
 function compactValue(value: unknown): string {

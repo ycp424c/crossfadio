@@ -10,6 +10,7 @@ export type BuildLoopMessagesInput = {
   context: MusicAgentContextSummary;
   observations: LoopObservation[];
   candidateSummary: string;
+  targetPickCount?: number;
 };
 
 const TOOL_WHITELIST = musicAgentToolNameSchema.options.join(', ');
@@ -22,6 +23,7 @@ export const FINAL_PICK_RESPONSE_FORMAT: LlmResponseFormat = { type: 'json_objec
 export function buildLoopMessages(input: BuildLoopMessagesInput): LlmMessage[] {
   const context = compactJson(input.context, MAX_CONTEXT_CHARS);
   const candidatePool = truncate(input.candidateSummary || '[]', MAX_CANDIDATE_CHARS);
+  const targetPickCount = input.targetPickCount ?? 2;
   const observations = compactJson(input.observations.map((item) => ({
     tool: item.tool,
     summary: item.summary,
@@ -42,7 +44,8 @@ export function buildLoopMessages(input: BuildLoopMessagesInput): LlmMessage[] {
         'activeDirective/current chat 必须优先于趋势、榜单、泛化流行度。',
         'recentArtistPenalties 中 penalty 较高的歌手需要先在 expand_queries 阶段放入 avoidArtists，并用相邻风格或不同歌手扩展召回。',
         '不要编造 NCM id；如果候选池不足，先调用白名单工具补候选。',
-        '候选池已有 2 首以上且已经调用 rank_candidates/diversify_candidates/finalize_pick 后，下一步必须输出 final，不要继续调用工具。'
+        `final picks 最多选择 ${targetPickCount} 首；高质量候选不足时可以少选，不要为了凑数选择明显不合适的歌。`,
+        `候选池已有 ${targetPickCount} 首以上且已经调用 rank_candidates/diversify_candidates/finalize_pick 后，下一步必须输出 final，不要继续调用工具。`
       ].join('\n')
     },
     {
@@ -64,6 +67,7 @@ export function buildLoopMessages(input: BuildLoopMessagesInput): LlmMessage[] {
 export function buildFinalPickMessages(input: BuildLoopMessagesInput): LlmMessage[] {
   const context = compactJson(input.context, MAX_CONTEXT_CHARS);
   const candidatePool = truncate(input.candidateSummary || '[]', MAX_CANDIDATE_CHARS);
+  const targetPickCount = input.targetPickCount ?? 2;
   const observations = compactJson(input.observations.map((item) => ({
     tool: item.tool,
     summary: item.summary,
@@ -78,7 +82,8 @@ export function buildFinalPickMessages(input: BuildLoopMessagesInput): LlmMessag
         '你是 Crossfadio 的最终选歌器。',
         '只输出严格 JSON，不要 Markdown、不要解释、不要额外文本。',
         '这次调用只能输出 {"type":"final","say":"...","picks":[{"id":"候选池ID","reason":"...","source":"liked|playlist|plan|search|style_expansion|trend"}],"rejected":[]}。',
-        'picks 必须从候选池里选择 1 到 2 首；id 必须完全来自候选池；source 必须是对应候选的来源之一。',
+        `picks 必须从候选池里选择 1 到 ${targetPickCount} 首；id 必须完全来自候选池；source 必须是对应候选的来源之一。`,
+        '如果高质量候选不足，可以少选；不要为了凑数选择明显不适合当前队列的歌曲。',
         'reason 要说明为什么这首适合当前时刻、用户偏好或当前队列。',
         '不要请求更多信息，不要继续规划，不要输出候选池外的歌曲。'
       ].join('\n')

@@ -73,15 +73,16 @@ describe('settings routes', () => {
       ok: true,
       tts: { model: DEFAULT_TTS_MODEL, voice: 'Cherry' },
       dailyThemeEnabled: true,
-      discoveryMode: 'explore'
+      discoveryMode: 'explore',
+      autoFillBatchSize: 2
     });
   });
 
-  it('PUT saves dailyThemeEnabled and discoveryMode and GET reflects them', () => {
+  it('PUT saves dailyThemeEnabled, discoveryMode and autoFillBatchSize and GET reflects them', () => {
     const saveHandler = createSaveSettingsHandler();
     const saveRes = createJsonResponse();
     saveHandler(
-      { userId: 'test-user', body: { dailyThemeEnabled: false, discoveryMode: 'comfort' } } as never,
+      { userId: 'test-user', body: { dailyThemeEnabled: false, discoveryMode: 'comfort', autoFillBatchSize: 5 } } as never,
       saveRes as never
     );
     expect(saveRes.statusCode).toBe(200);
@@ -90,7 +91,20 @@ describe('settings routes', () => {
     const getHandler = createGetSettingsHandler();
     const getRes = createJsonResponse();
     getHandler({ userId: 'test-user' } as never, getRes as never);
-    expect(getRes.body).toMatchObject({ dailyThemeEnabled: false, discoveryMode: 'comfort' });
+    expect(getRes.body).toMatchObject({ dailyThemeEnabled: false, discoveryMode: 'comfort', autoFillBatchSize: 5 });
+  });
+
+  it('rejects autoFillBatchSize outside the supported range', () => {
+    const saveHandler = createSaveSettingsHandler();
+    const saveRes = createJsonResponse();
+
+    saveHandler(
+      { userId: 'test-user', body: { autoFillBatchSize: 6 } } as never,
+      saveRes as never
+    );
+
+    expect(saveRes.statusCode).toBe(400);
+    expect(saveRes.body).toMatchObject({ ok: false, error: 'invalid body' });
   });
 
   it('POST tts-preview synthesizes a short preview with the requested voice', async () => {

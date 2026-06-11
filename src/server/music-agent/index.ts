@@ -7,6 +7,8 @@ import { runMusicAgentLoop } from './loop.js';
 import { createMusicAgentTools } from './tools.js';
 import type { MusicAgentFallbackLogEvent } from './loop.js';
 import type { AgentBudget, MusicAgentLlmClient, MusicAgentRunOutput } from './schema.js';
+import { parseAutoFillBatchSize } from '../../shared/dj.js';
+import { getActiveTemporaryQueueBanDedupeState } from '../store/temporary-bans.js';
 
 export type MusicAgentOptions = {
   llmClient?: MusicAgentLlmClient;
@@ -33,6 +35,7 @@ export type PickNextInput = {
   includeDailyTheme?: boolean;
   excludeTrackIds?: Set<string>;
   excludeTrackDedupeKeys?: Set<string>;
+  targetPickCount?: number;
   now?: Date;
 };
 
@@ -73,7 +76,8 @@ export class MusicAgent {
   }
 
   async pickNext(input: PickNextInput): Promise<MusicAgentRunOutput> {
-    const budget = pickNextBudget();
+    const targetPickCount = parseAutoFillBatchSize(input.targetPickCount);
+    const budget = pickNextBudget(targetPickCount);
     const context = await buildMusicAgentContext({
       userId: input.userId,
       ncmClient: input.ncmClient,
@@ -81,10 +85,11 @@ export class MusicAgent {
       includeDailyTheme: input.includeDailyTheme,
       now: input.now
     });
+    const temporaryBans = getActiveTemporaryQueueBanDedupeState(input.userId, input.now);
     const candidatePool = new CandidatePool({
       maxCandidates: budget.maxCandidates,
-      bannedIds: input.excludeTrackIds,
-      bannedTrackKeys: input.excludeTrackDedupeKeys
+      bannedIds: mergeSets(input.excludeTrackIds, temporaryBans.ids),
+      bannedTrackKeys: mergeSets(input.excludeTrackDedupeKeys, temporaryBans.dedupeKeys)
     });
     const tools = createMusicAgentTools({
       userId: input.userId,
@@ -101,6 +106,7 @@ export class MusicAgent {
       llmClient: this.llmClient,
       tools,
       budget,
+      targetPickCount,
       signal: input.signal,
       fallbackLogger: this.withUserIdFallbackLogger(input.userId)
     });
@@ -116,7 +122,9 @@ export class MusicAgent {
       actionQueries: extractActionQueries(input.actions ?? []),
       now: input.now
     });
-    const candidatePool = new CandidatePool({ maxCandidates: budget.maxCandidates });
+    const candidatePool = new CandidatePool({
+      maxCandidates: budget.maxCandidates
+    });
     const tools = createMusicAgentTools({
       userId: input.userId,
       ncmClient: input.ncmClient,
@@ -207,17 +215,22 @@ function resolveLlmClient(options: MusicAgentOptions): MusicAgentLlmClient {
   throw new Error('MusicAgent requires either llmClient or llmConfig.');
 }
 
-function pickNextBudget(): AgentBudget {
+function pickNextBudget(targetPickCount = 2): AgentBudget {
+  const largeBatch = targetPickCount >= 4;
   return {
-    maxMs: 120_000,
+    maxMs: largeBatch ? 150_000 : 120_000,
     maxSteps: 10,
-    maxLlmCalls: 10,
-    maxToolCalls: 10,
-    maxNcmSearches: 10,
+    maxLlmCalls: largeBatch ? 12 : 10,
+    maxToolCalls: largeBatch ? 12 : 10,
+    maxNcmSearches: largeBatch ? 12 : 10,
     maxPlaylistFetches: 3,
     maxTrendFetchMs: 2_000,
-    maxCandidates: 120
+    maxCandidates: largeBatch ? 160 : 120
   };
+}
+
+function mergeSets<T>(left: Set<T> | undefined, right: Set<T>): Set<T> {
+  return new Set([...(left ?? []), ...right]);
 }
 
 function chatRecommendBudget(): AgentBudget {

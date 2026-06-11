@@ -146,11 +146,13 @@ describe('player layout', () => {
 
   it('does not start another DJ pick-next SSE stream while one is already in flight', () => {
     const source = fs.readFileSync(path.join(root, 'src/renderer/views/Player/PlayerView.tsx'), 'utf-8');
-    const triggerStart = source.indexOf('// DJ mode: keep queue at DJ_TARGET_QUEUE songs');
+    const triggerStart = source.indexOf('// DJ mode: refill when the backup queue reaches the low-water mark');
     const startSegueAudioStart = source.indexOf('maybeStartSegueAudio();', triggerStart);
     const triggerBlock = source.slice(triggerStart, startSegueAudioStart);
 
     expect(source).toContain('const djPickNextInFlightRef = useRef(false)');
+    expect(source).toContain('AUTO_FILL_LOW_WATER_MARK');
+    expect(triggerBlock).toContain('backupTrackCount <= AUTO_FILL_LOW_WATER_MARK');
     expect(triggerBlock).toContain('!djPickNextInFlightRef.current');
     expect(triggerBlock).toContain('djPickNextInFlightRef.current = true');
     expect(triggerBlock).toContain('djPickNextInFlightRef.current = false');
@@ -158,7 +160,7 @@ describe('player layout', () => {
 
   it('backs off instead of retrying immediately when DJ pick-next is already running on the server', () => {
     const source = fs.readFileSync(path.join(root, 'src/renderer/views/Player/PlayerView.tsx'), 'utf-8');
-    const triggerStart = source.indexOf('// DJ mode: keep queue at DJ_TARGET_QUEUE songs');
+    const triggerStart = source.indexOf('// DJ mode: refill when the backup queue reaches the low-water mark');
     const startSegueAudioStart = source.indexOf('maybeStartSegueAudio();', triggerStart);
     const triggerBlock = source.slice(triggerStart, startSegueAudioStart);
     const doneStart = triggerBlock.indexOf("type === 'dj.pick-next.done'");
@@ -173,6 +175,24 @@ describe('player layout', () => {
     expect(doneBlock.indexOf("reason === 'already-running'")).toBeLessThan(
       doneBlock.indexOf('djPickNextLastCallRef.current = 0')
     );
+  });
+
+  it('sends manually skipped or removed queue tracks as temporary bans when syncing queue state', () => {
+    const source = fs.readFileSync(path.join(root, 'src/renderer/views/Player/PlayerView.tsx'), 'utf-8');
+    const skipStart = source.indexOf('function handleSkip()');
+    const selectStart = source.indexOf('function handleSelectIndex', skipStart);
+    const deleteStart = source.indexOf('function handleDeleteTrack', selectStart);
+    const likeStart = source.indexOf('function handleToggleLike', deleteStart);
+
+    const skipBlock = source.slice(skipStart, selectStart);
+    const selectBlock = source.slice(selectStart, deleteStart);
+    const deleteBlock = source.slice(deleteStart, likeStart);
+
+    expect(source).toContain('const pendingTemporaryBanTracksRef = useRef<QueueTrackDto[]>([])');
+    expect(source).toContain('saveQueueState(queue, currentIndex, temporaryBanTracks)');
+    expect(skipBlock).toContain('rememberTemporaryBans(queue.slice(0, 1))');
+    expect(selectBlock).toContain('rememberTemporaryBans(queue.slice(0, index))');
+    expect(deleteBlock).toContain('rememberTemporaryBans([deletedTrack])');
   });
 
   it('logs DJ pick-next debug tables to the browser console', () => {

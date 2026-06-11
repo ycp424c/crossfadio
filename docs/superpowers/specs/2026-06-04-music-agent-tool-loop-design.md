@@ -419,7 +419,7 @@ score =
 
 - 同一艺人最多 1 首进入最终 top 10。
 - 同一 source 不能占满 top 10。
-- `pick-next` 选 2 首时尽量不同艺人、不同 source。
+- `pick-next` 按用户配置的 auto-fill batch size 选择最多 2-5 首；同批次尽量不同艺人、不同 source。
 - `explore` 模式提高 `search` / `style_expansion` / `trend` 占比。
 - `comfort` 模式提高 `liked` / `playlist` 占比。
 
@@ -540,24 +540,39 @@ type AgentBudget = {
 默认建议：
 
 ```text
-pick-next:
-- maxMs 60s
-- maxSteps 8
-- maxLlmCalls 5
+pick-next, batch size 2-3:
+- maxMs 120s
+- maxSteps 10
+- maxLlmCalls 10
+- maxToolCalls 10
 - maxCandidates 120
 
+pick-next, batch size 4-5:
+- maxMs 150s
+- maxSteps 10
+- maxLlmCalls 12
+- maxToolCalls 12
+- maxCandidates 160
+
 chat recommend:
-- maxMs 35s
-- maxSteps 5
-- maxLlmCalls 3
+- maxMs 50s
+- maxSteps 7
+- maxLlmCalls 5
 - maxCandidates 80
 ```
+
+自动补歌配置：
+
+- `Auto-fill Batch Size`: 单次 DJ pick-next run 最多追加的歌曲数，默认 2，可选 2-5。
+- `Auto-fill Low Water Mark`: 固定为 2 首后备歌；播放器在当前播放后剩余后备歌小于等于 2 时允许触发补歌。
+- 配置作用于所有 DJ pick-next run，不影响聊天中的显式加歌请求。
 
 Fallback 分层：
 
 1. **ranked fallback**: CandidatePool 已有候选但 LLM final 失败时，服务端直接取 top diversified candidates。
-2. **recall fallback**: 候选不足时，用 liked + playlist + plan segment 快速召回，不走 LLM。
-3. **existing fallback**: NCM/LLM 都不可用时，沿用当前随机红心 fallback。
+2. **ranked backfill**: LLM final 返回少于 batch size 时，从同一 CandidatePool 的 ranked/diversified candidates 继续补齐；仍不足则接受少于目标数量。
+3. **recall fallback**: 候选不足时，用 liked + playlist + plan segment 快速召回，不走 LLM。
+4. **existing fallback**: NCM/LLM 都不可用或 agent 完全没有可用结果时，沿用当前随机红心 fallback；不要在部分成功时用 legacy fallback 强行补满。
 
 ## 11. Abort 与并发
 
@@ -630,7 +645,8 @@ type MusicAgentFinalOutput = {
 校验规则：
 
 - `picks[].id` 必须在 CandidatePool。
-- `picks` 最多 2 首。
+- `picks` 最多为当前 DJ pick-next run 的 target pick count，配置范围 2-5。
+- LLM 应尽量选满 target pick count，但候选质量不足时可以少选；后端只从同一候选池做 ranked backfill。
 - `say` 是给用户看的简短中文说明。
 - `reason` 是工程调试和后续串场可用的选歌理由。
 - `source` 必须来自候选对象的 sources。

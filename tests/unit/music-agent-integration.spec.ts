@@ -45,11 +45,13 @@ afterEach(() => {
 });
 
 describe('MusicAgent facade', () => {
-  it('allows ten LLM calls for automatic pick-next runs', () => {
+  it('keeps the base LLM budget for small auto-fill batches and raises it for large batches', () => {
     const source = fs.readFileSync(path.join(process.cwd(), 'src/server/music-agent/index.ts'), 'utf8');
     const pickNextBudget = source.slice(source.indexOf('function pickNextBudget'), source.indexOf('function chatRecommendBudget'));
 
-    expect(pickNextBudget).toContain('maxLlmCalls: 10');
+    expect(pickNextBudget).toContain('const largeBatch = targetPickCount >= 4');
+    expect(pickNextBudget).toContain('maxLlmCalls: largeBatch ? 12 : 10');
+    expect(pickNextBudget).toContain('maxCandidates: largeBatch ? 160 : 120');
   });
 
   it('labels local ranked convergence separately from fallback logs', async () => {
@@ -202,7 +204,81 @@ describe('MusicAgent facade', () => {
     expect(JSON.stringify(result.trace)).not.toContain('duplicate-id');
   });
 
-  it('prepares external quality signals before the extra final-pick prompt after auto-fill supplement', async () => {
+  it('excludes active temporary queue bans before ranking MusicAgent candidates', async () => {
+    const ncmClient = {
+      getLikedSongIds: vi.fn(async () => ['blocked-id', 'fresh-1', 'fresh-2']),
+      getSongDetails: vi.fn(async () => [
+        { id: 'blocked-id', name: 'Blocked Song', artists: ['Blocked Artist'], durationMs: 200_000 },
+        { id: 'fresh-1', name: 'Fresh One', artists: ['Fresh Artist'], durationMs: 200_000 },
+        { id: 'fresh-2', name: 'Fresh Two', artists: ['Another Artist'], durationMs: 200_000 }
+      ]),
+      searchSongs: vi.fn(async () => []),
+      getPlaylistDetail: vi.fn(async () => null),
+      getSearchHotDetail: vi.fn(async () => []),
+      getTopSongHints: vi.fn(async () => []),
+      getArtistToplist: vi.fn(async () => [])
+    };
+    const { recordTemporaryQueueBans } = await import('../../src/server/store/temporary-bans.js');
+    recordTemporaryQueueBans('user-temp-ban-agent', [
+      { id: 'blocked-id', name: 'Blocked Song', artists: ['Blocked Artist'] }
+    ], new Date('2026-06-04T07:30:00+08:00'));
+    const fake = new FakeLlmClient()
+      .queueResponse(JSON.stringify({ type: 'tool_call', tool: 'recall_from_liked', input: { limit: 10 } }))
+      .queueResponse(JSON.stringify({ type: 'tool_call', tool: 'rank_candidates', input: {} }));
+
+    const { MusicAgent } = await import('../../src/server/music-agent/index.js');
+    const agent = new MusicAgent({ llmClient: fake });
+    const result = await agent.pickNext({
+      userId: 'user-temp-ban-agent',
+      ncmClient: ncmClient as any,
+      now: new Date('2026-06-04T08:00:00+08:00')
+    });
+
+    expect(result.status).toBe('ok');
+    expect(result.picks.map((pick) => pick.id)).toEqual(['fresh-1', 'fresh-2']);
+    expect(JSON.stringify(result.trace)).not.toContain('blocked-id');
+  });
+
+  it('does not apply temporary queue bans to explicit chat recommendations', async () => {
+    const ncmClient = {
+      getLikedSongIds: vi.fn(async () => ['blocked-id', 'fresh-id']),
+      getSongDetails: vi.fn(async () => [
+        { id: 'blocked-id', name: 'Blocked Song', artists: ['Blocked Artist'], durationMs: 200_000 },
+        { id: 'fresh-id', name: 'Fresh Song', artists: ['Fresh Artist'], durationMs: 200_000 }
+      ]),
+      searchSongs: vi.fn(async () => []),
+      getPlaylistDetail: vi.fn(async () => null),
+      getSearchHotDetail: vi.fn(async () => []),
+      getTopSongHints: vi.fn(async () => []),
+      getArtistToplist: vi.fn(async () => [])
+    };
+    const { recordTemporaryQueueBans } = await import('../../src/server/store/temporary-bans.js');
+    recordTemporaryQueueBans('user-temp-ban-chat', [
+      { id: 'blocked-id', name: 'Blocked Song', artists: ['Blocked Artist'] }
+    ], new Date('2026-06-04T07:30:00+08:00'));
+    const fake = new FakeLlmClient()
+      .queueResponse(JSON.stringify({ type: 'tool_call', tool: 'recall_from_liked', input: { limit: 10 } }))
+      .queueResponse(JSON.stringify({
+        type: 'final',
+        say: '按你的请求放这首。',
+        picks: [{ id: 'blocked-id', reason: '用户明确点名想听', source: 'liked' }],
+        rejected: []
+      }));
+
+    const { MusicAgent } = await import('../../src/server/music-agent/index.js');
+    const agent = new MusicAgent({ llmClient: fake });
+    const result = await agent.recommendFromChat({
+      userId: 'user-temp-ban-chat',
+      ncmClient: ncmClient as any,
+      userText: '就放 Blocked Song',
+      now: new Date('2026-06-04T08:00:00+08:00')
+    });
+
+    expect(result.status).toBe('ok');
+    expect(result.picks.map((pick) => pick.id)).toEqual(['blocked-id']);
+  });
+
+  it('prepares external quality signals before the extra final-pick prompt and ranked backfill', async () => {
     const pollutedTitle = "90's Chill Lofi Hip Hop｜勉強・集中・睡眠 深夜のローファイ mix";
     const searchTracks = [
       { id: 'polluted-extra-final', name: pollutedTitle, artists: ['Compilation Artist'] },
@@ -255,7 +331,7 @@ describe('MusicAgent facade', () => {
     const result = await agent.pickNext({ userId: 'user-extra-final-quality', ncmClient: ncmClient as any });
 
     expect(result.status).toBe('ok');
-    expect(result.picks.map((pick) => pick.id)).toEqual(['clean-extra-1']);
+    expect(result.picks.map((pick) => pick.id)).toEqual(['clean-extra-1', 'clean-extra-2']);
     expect(ncmClient.getSongDetails).toHaveBeenCalledWith([
       'polluted-extra-final',
       ...searchTracks.slice(1).map((track) => track.id)

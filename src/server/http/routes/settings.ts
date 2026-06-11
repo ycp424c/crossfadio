@@ -10,12 +10,21 @@ import { TtsClient } from '../../tts/client.js';
 import { resolveTtsConfig } from '../../tts/config.js';
 import { buildSegueAudioUrl } from './segue.js';
 import { DEFAULT_TTS_MODEL, DEFAULT_TTS_VOICE, TTS_PREVIEW_TEXT } from '../../../shared/tts.js';
+import {
+  AUTO_FILL_BATCH_SIZE_MAX,
+  AUTO_FILL_BATCH_SIZE_MIN,
+  parseAutoFillBatchSize
+} from '../../../shared/dj.js';
 
 type AuthedRequest = Request & { userId: string; ncmClient: NcmClient };
 export type DiscoveryMode = 'explore' | 'comfort';
 
 function getDiscoveryMode(userId: string): DiscoveryMode {
   return getPref<DiscoveryMode>(userId, 'discovery.mode') === 'comfort' ? 'comfort' : 'explore';
+}
+
+function getAutoFillBatchSize(userId: string): number {
+  return parseAutoFillBatchSize(getPref<number>(userId, 'dj.autoFillBatchSize'));
 }
 
 // ── GET /api/settings ─────────────────────────────────────────────────────────
@@ -27,6 +36,7 @@ export function createGetSettingsHandler() {
     const userVoice = getPref<string>(userId, 'tts.voice');
     const dailyThemeEnabled = getPref<boolean>(userId, 'dailyTheme.enabled') !== false;
     const discoveryMode = getDiscoveryMode(userId);
+    const autoFillBatchSize = getAutoFillBatchSize(userId);
 
     res.json({
       ok: true,
@@ -43,7 +53,8 @@ export function createGetSettingsHandler() {
         voiceDefault: config.tts.voiceDefault
       },
       dailyThemeEnabled,
-      discoveryMode
+      discoveryMode,
+      autoFillBatchSize
     });
   };
 }
@@ -53,7 +64,8 @@ export function createGetSettingsHandler() {
 const settingsBodySchema = z.object({
   tts: z.object({ voice: z.string().min(1) }).optional(),
   dailyThemeEnabled: z.boolean().optional(),
-  discoveryMode: z.enum(['explore', 'comfort']).optional()
+  discoveryMode: z.enum(['explore', 'comfort']).optional(),
+  autoFillBatchSize: z.number().int().min(AUTO_FILL_BATCH_SIZE_MIN).max(AUTO_FILL_BATCH_SIZE_MAX).optional()
 });
 export function createSaveSettingsHandler() {
   return (req: Request, res: Response): void => {
@@ -71,6 +83,9 @@ export function createSaveSettingsHandler() {
     }
     if (parsed.data.discoveryMode !== undefined) {
       setPref(userId, 'discovery.mode', parsed.data.discoveryMode);
+    }
+    if (parsed.data.autoFillBatchSize !== undefined) {
+      setPref(userId, 'dj.autoFillBatchSize', parsed.data.autoFillBatchSize);
     }
     res.json({ ok: true });
   };

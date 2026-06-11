@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { LlmCompleteOptions, LlmMessage, LlmResponse } from '../llm/client.js';
 import { ncmTrackQualitySignalsSchema } from '../../shared/schema.js';
+import { AUTO_FILL_BATCH_SIZE_MAX } from '../../shared/dj.js';
 
 export const candidateSourceSchema = z.enum([
   'liked',
@@ -205,7 +206,7 @@ export const musicAgentLoopOutputSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('final'),
     say: z.string().min(1),
-    picks: z.array(finalPickSchema).min(1).max(2),
+    picks: z.array(finalPickSchema).min(1).max(AUTO_FILL_BATCH_SIZE_MAX),
     rejected: z.array(rejectedPickSchema).default([])
   })
 ]);
@@ -215,7 +216,7 @@ export type MusicAgentLoopOutput = z.infer<typeof musicAgentLoopOutputSchema>;
 export const musicAgentFinalOutputSchema = z.object({
   mode: z.enum(['pick_next', 'chat_recommend']),
   say: z.string().min(1),
-  picks: z.array(finalPickSchema).min(1).max(2),
+  picks: z.array(finalPickSchema).min(1).max(AUTO_FILL_BATCH_SIZE_MAX),
   rejected: z.array(rejectedPickSchema).default([]),
   trace: z.array(agentTraceStepSchema).default([]),
   candidateScoreTable: z.array(candidateScoreTableRowSchema).default([])

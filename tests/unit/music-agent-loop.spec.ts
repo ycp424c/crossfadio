@@ -125,6 +125,111 @@ describe('runMusicAgentLoop', () => {
     expect(llmClient.calls[0].opts).toMatchObject({ temperature: 0.2, maxTokens: 1000 });
   });
 
+  it('accepts final picks up to the target pick count', async () => {
+    const pool = new CandidatePool();
+    for (let index = 1; index <= 5; index += 1) {
+      pool.upsert(candidate({
+        id: `pick-${index}`,
+        name: `Batch Pick ${index}`,
+        artist: `Artist ${index}`
+      }));
+    }
+    const llmClient = new LoopFakeLlmClient([
+      JSON.stringify({
+        type: 'final',
+        say: '我一次排好了五首。',
+        picks: [1, 2, 3, 4, 5].map((index) => ({
+          id: `pick-${index}`,
+          reason: `第 ${index} 首适合当前队列`,
+          source: 'liked'
+        })),
+        rejected: []
+      })
+    ]);
+
+    const result = await runMusicAgentLoop({
+      llmClient,
+      context: context({ request: 'auto-fill' }),
+      candidatePool: pool,
+      tools: {},
+      budget: budget(),
+      targetPickCount: 5
+    });
+
+    expect(result.status).toBe('ok');
+    expect(result.picks.map((pick) => pick.id)).toEqual(['pick-1', 'pick-2', 'pick-3', 'pick-4', 'pick-5']);
+  });
+
+  it('ranked backfills from the same candidate pool when final picks are short of the target', async () => {
+    const pool = new CandidatePool();
+    for (let index = 1; index <= 4; index += 1) {
+      pool.upsert(candidate({
+        id: `pick-${index}`,
+        name: `Backfill Pick ${index}`,
+        artist: `Artist ${index}`
+      }));
+    }
+    const llmClient = new LoopFakeLlmClient([
+      JSON.stringify({
+        type: 'final',
+        say: '先选两首最稳的。',
+        picks: [
+          { id: 'pick-1', reason: '开头最贴合', source: 'liked' },
+          { id: 'pick-3', reason: '保持变化', source: 'liked' }
+        ],
+        rejected: []
+      })
+    ]);
+
+    const result = await runMusicAgentLoop({
+      llmClient,
+      context: context({ request: 'auto-fill' }),
+      candidatePool: pool,
+      tools: {},
+      budget: budget(),
+      targetPickCount: 4
+    });
+
+    expect(result.status).toBe('ok');
+    expect(result.picks.map((pick) => pick.id)).toEqual(['pick-1', 'pick-3', 'pick-2', 'pick-4']);
+    expect(result.picks.slice(2).every((pick) => pick.reason === 'ranked backfill')).toBe(true);
+  });
+
+  it('does not ranked-backfill chat recommendations beyond the final picks', async () => {
+    const pool = new CandidatePool();
+    pool.upsert(candidate({
+      id: 'chat-pick-1',
+      name: 'Requested Song',
+      artist: 'Requested Artist'
+    }));
+    pool.upsert(candidate({
+      id: 'chat-pick-2',
+      name: 'Adjacent Song',
+      artist: 'Adjacent Artist'
+    }));
+    const llmClient = new LoopFakeLlmClient([
+      JSON.stringify({
+        type: 'final',
+        say: '这首最符合你的请求。',
+        picks: [
+          { id: 'chat-pick-1', reason: '用户明确想听这一类', source: 'liked' }
+        ],
+        rejected: []
+      })
+    ]);
+
+    const result = await runMusicAgentLoop({
+      llmClient,
+      context: context({ request: 'chat-recommend' }),
+      candidatePool: pool,
+      tools: {},
+      budget: budget()
+    });
+
+    expect(result.status).toBe('ok');
+    expect(result.picks.map((pick) => pick.id)).toEqual(['chat-pick-1']);
+  });
+
   it('returns browser-console candidate score table rows with successful picks', async () => {
     const llmClient = new LoopFakeLlmClient([
       JSON.stringify({ type: 'tool_call', tool: 'recall_from_liked', input: { limit: 5 } }),

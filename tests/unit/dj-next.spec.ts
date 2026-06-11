@@ -137,23 +137,27 @@ describe('DJ pick-next diagnostics', () => {
 
     expect(doPickNext).toContain('new MusicAgent');
     expect(doPickNext).toContain("output.status === 'ok'");
-    expect(doPickNext).toContain('createAbortTimeoutSignal(signal, DJ_AGENT_TIMEOUT_MS)');
+    expect(doPickNext).toContain('const targetPickCount = getAutoFillBatchSize(userId)');
+    expect(doPickNext).toContain('createAbortTimeoutSignal(signal, getDjAgentTimeoutMs(targetPickCount))');
     expect(doPickNext).toContain('includeDailyTheme: dailyThemeEnabled');
     expect(doPickNext).toContain('const excludeState = getTodayAndQueueDedupeState(userId)');
     expect(doPickNext).toContain('const initialQueueLength = getQueue(userId).length');
     expect(doPickNext).toContain('excludeTrackIds: excludeState.ids');
     expect(doPickNext).toContain('excludeTrackDedupeKeys: excludeState.dedupeKeys');
-    expect(doPickNext).toContain('if (getRemainingPickSlots(userId, initialQueueLength) <= 0) break');
-    expect(doPickNext).toContain('if (hasReachedPickTarget(userId, initialQueueLength))');
+    expect(doPickNext).toContain('targetPickCount');
+    expect(doPickNext).toContain('if (getRemainingPickSlots(userId, initialQueueLength, targetPickCount) <= 0) break');
+    expect(doPickNext).toContain('if (hasReachedPickTarget(userId, initialQueueLength, targetPickCount))');
     expect(doPickNext).toContain('djPickReasonCache.set(track.ncmId, output.say.trim())');
-    expect(doPickNext).toContain('broadcastAppended(userId, initialQueueLength, emit)');
+    expect(doPickNext).toContain('broadcastAppended(');
+    expect(doPickNext).toContain('musicAgentRunMetrics(output, appendedPicks, startedAt, discoveryMode)');
+    expect(source).toContain('rankedBackfillCount: metrics.rankedBackfillCount');
     expect(doPickNext).toContain('const debugCandidateCount = getMusicAgentDebugCandidateCount(output)');
     expect(doPickNext).toContain('totalCandidates: debugCandidateCount');
     expect(doPickNext).not.toContain('totalCandidates: output.picks.length');
     expect(doPickNext).toContain('MusicAgent appended fewer than target');
     expect(doPickNext).toContain('whitelisted picks appended fewer than target');
-    expect(doPickNext).toContain('getRemainingPickSlots(userId, initialQueueLength) * 4');
-    expect(doPickNext).toContain('targetCount: DJ_PICK_TARGET_COUNT');
+    expect(doPickNext).toContain('getRemainingPickSlots(userId, initialQueueLength, targetPickCount) * 4');
+    expect(doPickNext).toContain('targetCount: targetPickCount');
 
     expect(doPickNext).toContain('const styleAbort = createAbortTimeoutSignal(signal, SEARCH_QUERY_LLM_TIMEOUT_MS)');
     expect(doPickNext).toContain('{ signal: styleAbort.signal }');
@@ -172,8 +176,9 @@ describe('DJ pick-next diagnostics', () => {
     const musicAgentSource = readSource('src/server/music-agent/index.ts');
     const djNextSource = readSource('src/server/http/routes/djNext.ts');
 
-    expect(musicAgentSource).toContain('maxMs: 120_000');
+    expect(musicAgentSource).toContain('maxMs: largeBatch ? 150_000 : 120_000');
     expect(djNextSource).toContain('const DJ_AGENT_TIMEOUT_MS = 135_000');
+    expect(djNextSource).toContain('const LARGE_BATCH_DJ_AGENT_TIMEOUT_MS = 165_000');
   });
 
   it('does not apply stale client queue snapshots to already-running DJ jobs', () => {
@@ -480,5 +485,21 @@ describe('parseDjCandidatePicks', () => {
     );
 
     expect(parsed.tracks.map((track) => track.id)).toEqual(['202', '101']);
+  });
+
+  it('keeps picks up to the configured target count', () => {
+    const batchCandidates = [1, 2, 3, 4, 5].map((id) => ({
+      id: String(id),
+      name: `Song ${id}`,
+      artist: `Artist ${id}`
+    }));
+
+    const parsed = parseDjCandidatePicks(
+      JSON.stringify({ say: '一次补五首', pickIds: ['1', '2', '3', '4', '5'] }),
+      batchCandidates,
+      5
+    );
+
+    expect(parsed.tracks.map((track) => track.id)).toEqual(['1', '2', '3', '4', '5']);
   });
 });

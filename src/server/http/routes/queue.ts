@@ -2,6 +2,7 @@ import type { Request, Response } from 'express';
 import { z } from 'zod';
 import type { NcmClient } from '../../ncm/client.js';
 import { setQueueState } from '../../store/queue.js';
+import { recordTemporaryQueueBans } from '../../store/temporary-bans.js';
 import { likedQueueResponseSchema } from '../../../shared/schema.js';
 
 type AuthedRequest = Request & { userId: string; ncmClient: NcmClient };
@@ -19,7 +20,14 @@ const queueStateBodySchema = z.object({
       })
     ])
   ),
-  currentIndex: z.number().int().nonnegative().default(0)
+  currentIndex: z.number().int().nonnegative().default(0),
+  temporaryBanTracks: z.array(
+    z.object({
+      id: z.string().min(1),
+      name: z.string().optional(),
+      artists: z.array(z.string()).optional()
+    })
+  ).optional()
 });
 
 const likeBodySchema = z.object({
@@ -38,6 +46,10 @@ export function createSetQueueStateHandler() {
     if (!parsed.success) {
       res.status(400).json({ ok: false, error: 'invalid body' });
       return;
+    }
+
+    if (parsed.data.temporaryBanTracks && parsed.data.temporaryBanTracks.length > 0) {
+      recordTemporaryQueueBans(userId, parsed.data.temporaryBanTracks);
     }
 
     setQueueState(

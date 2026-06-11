@@ -352,6 +352,25 @@ describe('music agent context builder', () => {
     expect(context.activeDirective).toBe('');
   });
 
+  it('includes active temporary queue bans in the context banned summary', async () => {
+    const userId = 'user-temp-ban-context';
+    const { recordTemporaryQueueBans } = await import('../../src/server/store/temporary-bans.js');
+    recordTemporaryQueueBans(userId, [
+      { id: 'blocked-context-id', name: 'Blocked Context Song', artists: ['Blocked Context Artist'] }
+    ], new Date('2026-06-04T07:30:00+08:00'));
+
+    const { buildMusicAgentContext } = await import('../../src/server/music-agent/context.js');
+    const context = await buildMusicAgentContext({
+      userId,
+      request: 'auto-fill',
+      now: new Date('2026-06-04T08:00:00+08:00')
+    });
+
+    expect(context.bannedSummary).toContain('temporaryQueueBans');
+    expect(context.bannedSummary).toContain('Blocked Context Song');
+    expect(context.bannedSummary).toContain('blocked-context-id');
+  });
+
   it('omits daily theme when the caller disables theme context', async () => {
     vi.doMock('../../src/server/daily-theme.js', () => ({
       getDailyTheme: () => ({

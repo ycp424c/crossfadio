@@ -7,6 +7,7 @@ import {
   type NextTrackResponse,
   type NowPlayingResponse
 } from '@shared/schema';
+import type { AutoFillBatchSize } from '@shared/dj';
 
 type RuntimeConfig = {
   baseUrl: string;
@@ -148,12 +149,13 @@ export async function toggleLikeTrack(id: string, like: boolean): Promise<void> 
 
 export async function saveQueueState(
   queue: Array<string | { id: string; name?: string; artists?: string[]; durationMs?: number; coverImgUrl?: string | null }>,
-  currentIndex: number
+  currentIndex: number,
+  temporaryBanTracks: Array<{ id: string; name?: string; artists?: string[] }> = []
 ): Promise<void> {
   const result = await requestJson<{ ok: boolean }>('/api/queue/state', {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ queue, currentIndex })
+    body: JSON.stringify({ queue, currentIndex, temporaryBanTracks })
   });
   if (!result.ok) throw new Error('Failed to save queue state');
 }
@@ -243,12 +245,14 @@ export type SettingsResponse = {
   tts: TtsSettings;
   dailyThemeEnabled: boolean;
   discoveryMode: 'explore' | 'comfort';
+  autoFillBatchSize: AutoFillBatchSize;
 };
 
 export type SaveSettingsPayload = {
   tts?: { voice: string };
   dailyThemeEnabled?: boolean;
   discoveryMode?: 'explore' | 'comfort';
+  autoFillBatchSize?: AutoFillBatchSize;
 };
 
 export async function getSettings(): Promise<SettingsResponse> {

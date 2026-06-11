@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Settings2, Check, AlertCircle, Loader2, Trash2, UserPlus, Shield, Sparkles, Volume2 } from 'lucide-react';
 import {
   getSettings,
@@ -15,6 +15,7 @@ import {
   type BlockedAttempt
 } from '@renderer/api';
 import { QWEN3_TTS_VOICES } from '@shared/tts';
+import { AUTO_FILL_BATCH_SIZE_OPTIONS, DEFAULT_AUTO_FILL_BATCH_SIZE, type AutoFillBatchSize } from '@shared/dj';
 
 type SaveStatus = { type: 'idle' } | { type: 'saving' } | { type: 'ok' } | { type: 'error'; message: string };
 type WhitelistOpStatus = { type: 'idle' } | { type: 'saving' } | { type: 'ok' } | { type: 'error'; message: string };
@@ -24,6 +25,8 @@ export function SettingsView(): JSX.Element {
   const [llm, setLlm] = useState<LlmSettings | null>(null);
   const [tts, setTts] = useState<TtsSettings | null>(null);
   const [voice, setVoice] = useState('');
+  const [autoFillBatchSize, setAutoFillBatchSize] = useState<AutoFillBatchSize>(DEFAULT_AUTO_FILL_BATCH_SIZE);
+  const [savedAutoFillBatchSize, setSavedAutoFillBatchSize] = useState<AutoFillBatchSize>(DEFAULT_AUTO_FILL_BATCH_SIZE);
   const [dailyThemeEnabled, setDailyThemeEnabled] = useState(true);
   const [saveStatus, setSaveStatus] = useState<SaveStatus>({ type: 'idle' });
   const [previewStatus, setPreviewStatus] = useState<PreviewStatus>({ type: 'idle' });
@@ -64,6 +67,8 @@ type TasteStatus = { type: 'idle' } | { type: 'analyzing' } | { type: 'ok'; tast
           setLlm(s.llm);
           setTts(s.tts);
           setVoice(s.tts.voice);
+          setAutoFillBatchSize(s.autoFillBatchSize);
+          setSavedAutoFillBatchSize(s.autoFillBatchSize);
           setDailyThemeEnabled(s.dailyThemeEnabled);
         }),
       getWhitelist()
@@ -101,7 +106,9 @@ type TasteStatus = { type: 'idle' } | { type: 'analyzing' } | { type: 'ok'; tast
   async function handleSave(): Promise<void> {
     setSaveStatus({ type: 'saving' });
     try {
-      await saveSettings({ tts: { voice } });
+      await saveSettings({ tts: { voice }, autoFillBatchSize });
+      setTts((current) => current ? { ...current, voice } : current);
+      setSavedAutoFillBatchSize(autoFillBatchSize);
       setSaveStatus({ type: 'ok' });
       setTimeout(() => setSaveStatus({ type: 'idle' }), 2000);
     } catch (err) {
@@ -140,7 +147,7 @@ type TasteStatus = { type: 'idle' } | { type: 'analyzing' } | { type: 'ok'; tast
     }
   }
 
-  const disabled = voice === tts?.voice;
+  const disabled = voice === tts?.voice && autoFillBatchSize === savedAutoFillBatchSize;
   const voiceOptions = voice && !(QWEN3_TTS_VOICES as readonly string[]).includes(voice)
     ? [voice, ...QWEN3_TTS_VOICES]
     : QWEN3_TTS_VOICES;
@@ -226,6 +233,40 @@ type TasteStatus = { type: 'idle' } | { type: 'analyzing' } | { type: 'ok'; tast
                 <p className="mt-2 text-xs text-red-400">{previewStatus.message}</p>
               )}
             </Field>
+          </div>
+        </section>
+
+        <section>
+          <h2 className="mb-4 text-sm font-medium uppercase tracking-wider text-zinc-400">
+            DJ 自动补歌
+          </h2>
+          <div className="space-y-3 rounded-xl border border-zinc-800 bg-zinc-900 p-4">
+            <div>
+              <p className="text-sm text-zinc-200">每次补歌数量</p>
+              <p className="mt-0.5 text-xs text-zinc-500">
+                自动 DJ 每次最多追加的歌曲数。较大的数量会增加候选分析和等待时间。
+              </p>
+            </div>
+            <div className="grid grid-cols-4 gap-2">
+              {AUTO_FILL_BATCH_SIZE_OPTIONS.map((size) => {
+                const active = autoFillBatchSize === size;
+                return (
+                  <button
+                    key={size}
+                    type="button"
+                    aria-pressed={active}
+                    onClick={() => setAutoFillBatchSize(size)}
+                    className={`rounded-lg border px-3 py-2 text-sm font-medium transition ${
+                      active
+                        ? 'border-cyan-500 bg-cyan-500/15 text-cyan-200'
+                        : 'border-zinc-700 bg-zinc-950 text-zinc-300 hover:border-zinc-500 hover:bg-zinc-800'
+                    }`}
+                  >
+                    {size}首
+                  </button>
+                );
+              })}
+            </div>
           </div>
         </section>
 

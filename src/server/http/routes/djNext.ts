@@ -13,6 +13,7 @@ import { fetchWeather } from '../../weather.js';
 import { searchArtistsForStyle } from '../../web-search.js';
 import { getQueue, addToQueue, setQueueState } from '../../store/queue.js';
 import { getPref } from '../../store/prefs.js';
+import { getActiveTemporaryQueueBanDedupeState } from '../../store/temporary-bans.js';
 import { broadcastToUser } from '../broadcast.js';
 import { getLogger } from '../../logger.js';
 import { initSseRes, writeSseEvent, endSse } from '../sse.js';
@@ -21,6 +22,7 @@ import { MusicAgent } from '../../music-agent/index.js';
 import type { MusicAgentRunOutput } from '../../music-agent/schema.js';
 import { buildMusicTrackDedupeKey, isMusicTrackDedupeKeyExcluded } from '../../music-agent/dedupe.js';
 import { formatShanghaiLocalTime, getDaypart, getShanghaiTimeParts } from '../../timezone.js';
+import { parseAutoFillBatchSize } from '../../../shared/dj.js';
 
 type AuthedRequest = Request & { userId: string; ncmClient: NcmClient };
 export type DiscoveryMode = 'explore' | 'comfort';
@@ -51,6 +53,7 @@ type DjNextOptions = {
 };
 
 const JOB_TIMEOUT_MS = 180_000;
+const LARGE_BATCH_JOB_TIMEOUT_MS = 210_000;
 const SEARCH_QUERY_LLM_TIMEOUT_MS = 120_000;
 const PICK_LLM_TIMEOUT_MS = 120_000;
 const LIKED_IDS_TIMEOUT_MS = 8_000;
@@ -61,11 +64,20 @@ const EXPLORE_LIKED_SAMPLE_SIZE = 8;
 const SEARCH_RESULT_SIZE = 40;
 const DAILY_THEME_CONTEXT_TIMEOUT_MS = 1_500;
 const DJ_AGENT_TIMEOUT_MS = 135_000;
-const DJ_PICK_TARGET_COUNT = 2;
+const LARGE_BATCH_DJ_AGENT_TIMEOUT_MS = 165_000;
 
 const isRunning = new Map<string, boolean>();
 const djPickNextFallbackStats = createDjPickNextFallbackStatsTracker();
 type DjEventSink = (payload: Record<string, unknown>) => void;
+
+type DjPickNextRunMetrics = {
+  agentPickCount?: number;
+  rankedBackfillCount?: number;
+  candidateCount?: number;
+  elapsedMs?: number;
+  fallbackPath?: DjPickNextFallbackPath;
+  discoveryMode?: DiscoveryMode;
+};
 
 type LikedIdsCache = { ids: string[]; fetchedAt: number };
 const likedIdsCache = new Map<string, LikedIdsCache>();
@@ -115,6 +127,18 @@ function getDiscoveryMode(userId: string): DiscoveryMode {
   return getPref<DiscoveryMode>(userId, 'discovery.mode') === 'comfort' ? 'comfort' : 'explore';
 }
 
+function getAutoFillBatchSize(userId: string): number {
+  return parseAutoFillBatchSize(getPref<number>(userId, 'dj.autoFillBatchSize'));
+}
+
+function getJobTimeoutMs(targetPickCount: number): number {
+  return targetPickCount >= 4 ? LARGE_BATCH_JOB_TIMEOUT_MS : JOB_TIMEOUT_MS;
+}
+
+function getDjAgentTimeoutMs(targetPickCount: number): number {
+  return targetPickCount >= 4 ? LARGE_BATCH_DJ_AGENT_TIMEOUT_MS : DJ_AGENT_TIMEOUT_MS;
+}
+
 export function buildDiscoveryModePromptParts(
   mode: DiscoveryMode,
   tasteHints: string[]
@@ -137,7 +161,7 @@ export function buildDiscoveryModePromptParts(
     return {
       tasteContext: `\n## 个人品味锚点\n${tasteHints.join('\n')}\n（舒适区模式：选曲时优先选择符合以上品味的风格和艺人，允许少量相邻扩展。）\n`,
       styleInstruction: '请根据以上信息（包括今日主题和个人品味偏好），推荐 2-3 个适合当下情境的音乐风格方向。优先推荐符合该用户品味偏好的风格和艺人。',
-      pickInstruction: '优先选择符合用户品味偏好的歌曲，同时兼顾当前时间、天气、今日主题和最近播放，返回 2 首候选歌曲 id。',
+      pickInstruction: '优先选择符合用户品味偏好的歌曲，同时兼顾当前时间、天气、今日主题和最近播放，返回候选歌曲 id。',
       userContextLabel: `用户品味偏好：${tasteHints.join('；')}\n`
     };
   }
@@ -145,7 +169,7 @@ export function buildDiscoveryModePromptParts(
   return {
     tasteContext: `\n## 个人品味外延\n${tasteHints.join('\n')}\n（探索模式：把个人品味当作出发点和边界，向相邻风格、陌生艺人、今日主题、时间、天气与 DJ 偏好扩展；不要只复刻用户已知偏好。）\n`,
     styleInstruction: '请根据今日主题、时间、天气、最近播放、DJ 偏好与个人品味外延，推荐 2-3 个适合当下情境且有新鲜感的音乐风格方向。',
-    pickInstruction: '选择与用户品味有可解释连接、但能由今日主题/时间/天气/DJ 偏好带出新鲜感的 2 首歌，返回候选歌曲 id。',
+    pickInstruction: '选择与用户品味有可解释连接、但能由今日主题/时间/天气/DJ 偏好带出新鲜感的歌曲，返回候选歌曲 id。',
     userContextLabel: `用户品味外延参考：${tasteHints.join('；')}\n`
   };
 }
@@ -219,12 +243,12 @@ function getAddedTrackCount(userId: string, initialQueueLength: number): number 
   return Math.max(0, getQueue(userId).length - initialQueueLength);
 }
 
-function getRemainingPickSlots(userId: string, initialQueueLength: number): number {
-  return Math.max(0, DJ_PICK_TARGET_COUNT - getAddedTrackCount(userId, initialQueueLength));
+function getRemainingPickSlots(userId: string, initialQueueLength: number, targetPickCount: number): number {
+  return Math.max(0, targetPickCount - getAddedTrackCount(userId, initialQueueLength));
 }
 
-function hasReachedPickTarget(userId: string, initialQueueLength: number): boolean {
-  return getAddedTrackCount(userId, initialQueueLength) >= DJ_PICK_TARGET_COUNT;
+function hasReachedPickTarget(userId: string, initialQueueLength: number, targetPickCount: number): boolean {
+  return getAddedTrackCount(userId, initialQueueLength) >= targetPickCount;
 }
 
 // Run parallel NCM searches, deduplicate results, exclude known IDs
@@ -272,7 +296,7 @@ export type ParsedDjCandidatePicks = {
   tracks: Track[];
 };
 
-export function parseDjCandidatePicks(raw: string, candidates: Track[]): ParsedDjCandidatePicks {
+export function parseDjCandidatePicks(raw: string, candidates: Track[], targetPickCount = 2): ParsedDjCandidatePicks {
   const cleaned = raw
     .replace(/^```(?:json)?\s*/i, '')
     .replace(/\s*```\s*$/, '')
@@ -338,7 +362,7 @@ export function parseDjCandidatePicks(raw: string, candidates: Track[]): ParsedD
     }
   }
 
-  return { say, tracks: tracks.slice(0, DJ_PICK_TARGET_COUNT) };
+  return { say, tracks: tracks.slice(0, targetPickCount) };
 }
 
 export function createDjPickNextHandler(opts: DjNextOptions): RequestHandler {
@@ -360,20 +384,22 @@ async function runPickNextJob(userId: string, ncmClient: NcmClient): Promise<voi
   isRunning.set(userId, true);
   const logger = getLogger();
   const controller = new AbortController();
+  const targetPickCount = getAutoFillBatchSize(userId);
+  const jobTimeoutMs = getJobTimeoutMs(targetPickCount);
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
 
   const jobTimer = new Promise<'timeout'>((resolve) =>
     timeoutId = setTimeout(() => {
       controller.abort(new Error('job-timeout'));
       resolve('timeout');
-    }, JOB_TIMEOUT_MS)
+    }, jobTimeoutMs)
   );
 
   try {
     const jobResult = await Promise.race([doPickNext(userId, ncmClient, undefined, controller.signal).then(() => 'done' as const), jobTimer]);
 
     if (jobResult === 'timeout') {
-      logger.warn('DJ pick-next job timed out after %dms', JOB_TIMEOUT_MS);
+      logger.warn('DJ pick-next job timed out after %dms', jobTimeoutMs);
       broadcastToUser(userId, { type: 'dj.pick-next.done', added: false, reason: 'timeout' });
     }
   } finally {
@@ -389,8 +415,11 @@ async function doPickNext(
   signal?: AbortSignal
 ): Promise<void> {
   const logger = getLogger();
+  const startedAt = Date.now();
   let debugBroadcastSent = false;
   const dailyThemeEnabled = getPref<boolean>(userId, 'dailyTheme.enabled') !== false;
+  const targetPickCount = getAutoFillBatchSize(userId);
+  const discoveryMode = getDiscoveryMode(userId);
   const dailyThemePromise = dailyThemeEnabled
     ? getOrGenerateDailyThemeWithin(DAILY_THEME_CONTEXT_TIMEOUT_MS)
     : Promise.resolve(null);
@@ -400,7 +429,7 @@ async function doPickNext(
 
   const llmConfig = resolveLlmConfig();
   if (llmConfig && !signal?.aborted) {
-    const agentAbort = createAbortTimeoutSignal(signal, DJ_AGENT_TIMEOUT_MS);
+    const agentAbort = createAbortTimeoutSignal(signal, getDjAgentTimeoutMs(targetPickCount));
     try {
       const agent = new MusicAgent({ llmConfig });
       const output = await agent.pickNext({
@@ -409,7 +438,8 @@ async function doPickNext(
         signal: agentAbort.signal,
         includeDailyTheme: dailyThemeEnabled,
         excludeTrackIds: excludeState.ids,
-        excludeTrackDedupeKeys: excludeState.dedupeKeys
+        excludeTrackDedupeKeys: excludeState.dedupeKeys,
+        targetPickCount
       });
       if (signal?.aborted) return;
       if (output.status === 'aborted') {
@@ -425,7 +455,7 @@ async function doPickNext(
         const appendedPicks: typeof output.picks = [];
         const musicAgentSkippedPicks: SkippedPickLog[] = [];
         for (const pick of output.picks) {
-          if (getRemainingPickSlots(userId, initialQueueLength) <= 0) {
+          if (getRemainingPickSlots(userId, initialQueueLength, targetPickCount) <= 0) {
             musicAgentSkippedPicks.push(createSkippedPickLog(pick, 'no_remaining_slots', buildTrackDedupeKey(pick)));
             break;
           }
@@ -455,7 +485,7 @@ async function doPickNext(
             }
           }
         }
-        if (hasReachedPickTarget(userId, initialQueueLength)) {
+        if (hasReachedPickTarget(userId, initialQueueLength, targetPickCount)) {
           const debugCandidateCount = getMusicAgentDebugCandidateCount(output);
           emit({
             type: 'dj.debug',
@@ -481,23 +511,50 @@ async function doPickNext(
             selectedSay: output.say
           });
           debugBroadcastSent = true;
-          broadcastAppended(userId, initialQueueLength, emit, getMusicAgentRoutePath(output));
+          broadcastAppended(
+            userId,
+            initialQueueLength,
+            targetPickCount,
+            emit,
+            getMusicAgentRoutePath(output),
+            musicAgentRunMetrics(output, appendedPicks, startedAt, discoveryMode)
+          );
           return;
         }
         const appendedCount = getQueue(userId).length - initialQueueLength;
+        if (appendedCount > 0) {
+          logger.warn(
+            {
+              targetCount: targetPickCount,
+              appendedCount,
+              requestedPickCount: output.picks.length,
+              skippedPicks: musicAgentSkippedPicks,
+              fallbackPath: getMusicAgentRoutePath(output),
+              fallbackStats: djPickNextFallbackStats.snapshot()
+            },
+            'DJ pick-next: MusicAgent appended fewer than target'
+          );
+          broadcastAppended(
+            userId,
+            initialQueueLength,
+            targetPickCount,
+            emit,
+            getMusicAgentRoutePath(output),
+            musicAgentRunMetrics(output, appendedPicks, startedAt, discoveryMode)
+          );
+          return;
+        }
         legacyFallbackPath = 'music_agent_legacy_fallback';
         logger.warn(
           {
-            targetCount: DJ_PICK_TARGET_COUNT,
+            targetCount: targetPickCount,
             appendedCount,
             requestedPickCount: output.picks.length,
             skippedPicks: musicAgentSkippedPicks,
             fallbackPath: legacyFallbackPath,
             fallbackStats: djPickNextFallbackStats.snapshot()
           },
-          appendedCount > 0
-            ? 'DJ pick-next: MusicAgent appended fewer than target, using legacy fallback'
-            : 'DJ pick-next: MusicAgent picks did not change queue, using legacy fallback'
+          'DJ pick-next: MusicAgent picks did not change queue, using legacy fallback'
         );
       }
     } catch (err) {
@@ -538,7 +595,6 @@ async function doPickNext(
 
   if (llmConfig && allLikedIds.length > 0) {
     try {
-      const discoveryMode = getDiscoveryMode(userId);
       const candidateMix = getCandidateSourceMix(discoveryMode);
       const corpus = loadUserCorpus(userId);
       const [weather] = await Promise.all([withTimeout(fetchWeather(userId), 4_000, null)]);
@@ -850,7 +906,7 @@ ${themeContextUser}${directiveUserContext}${tasteUserContext}</context>
 ${candidateList}
 </候选歌曲列表>
 
-从以上 ${allCandidates.length} 首候选歌曲中挑选 ${DJ_PICK_TARGET_COUNT} 首。`;
+从以上 ${allCandidates.length} 首候选歌曲中挑选最多 ${targetPickCount} 首；如果高质量候选不足，可以少选，不要为了凑数选择明显不适合的歌曲。`;
 
       let pickSay = '';
       let pickedTracks: Track[] = [];
@@ -863,7 +919,7 @@ ${candidateList}
           ],
           { signal: pickAbort.signal }
         );
-        const parsedPicks = parseDjCandidatePicks(pickResp.content, allCandidates);
+        const parsedPicks = parseDjCandidatePicks(pickResp.content, allCandidates, targetPickCount);
         pickSay = parsedPicks.say;
         pickedTracks = parsedPicks.tracks;
         if (pickedTracks.length === 0) {
@@ -897,7 +953,7 @@ ${candidateList}
         const excludeState = getTodayAndQueueDedupeState(userId);
         const whitelistedSkippedPicks: SkippedPickLog[] = [];
         for (const track of pickedTracks) {
-          if (getRemainingPickSlots(userId, initialQueueLength) <= 0) {
+          if (getRemainingPickSlots(userId, initialQueueLength, targetPickCount) <= 0) {
             whitelistedSkippedPicks.push(createSkippedPickLog(track, 'no_remaining_slots', buildTrackDedupeKey(track)));
             break;
           }
@@ -928,25 +984,64 @@ ${candidateList}
             }
           }
         }
-        if (hasReachedPickTarget(userId, initialQueueLength)) {
+        if (hasReachedPickTarget(userId, initialQueueLength, targetPickCount)) {
           emit({ type: 'dj.debug', ...phase3Debug, selectedSay: pickSay });
           debugBroadcastSent = true;
-          broadcastAppended(userId, initialQueueLength, emit, legacyFallbackPath ?? 'legacy_llm_success');
+          broadcastAppended(
+            userId,
+            initialQueueLength,
+            targetPickCount,
+            emit,
+            legacyFallbackPath ?? 'legacy_llm_success',
+            {
+              agentPickCount: pickedTracks.length,
+              rankedBackfillCount: 0,
+              candidateCount: allCandidates.length,
+              elapsedMs: Date.now() - startedAt,
+              discoveryMode
+            }
+          );
           return;
         }
         const appendedCount = getQueue(userId).length - initialQueueLength;
+        if (appendedCount > 0) {
+          logger.warn(
+            {
+              targetCount: targetPickCount,
+              appendedCount,
+              pickedCount: pickedTracks.length,
+              skippedPicks: whitelistedSkippedPicks,
+              fallbackPath: 'legacy_llm_success',
+              fallbackStats: djPickNextFallbackStats.snapshot()
+            },
+            'DJ pick-next: whitelisted picks appended fewer than target'
+          );
+          broadcastAppended(
+            userId,
+            initialQueueLength,
+            targetPickCount,
+            emit,
+            legacyFallbackPath ?? 'legacy_llm_success',
+            {
+              agentPickCount: pickedTracks.length,
+              rankedBackfillCount: 0,
+              candidateCount: allCandidates.length,
+              elapsedMs: Date.now() - startedAt,
+              discoveryMode
+            }
+          );
+          return;
+        }
         logger.warn(
           {
-            targetCount: DJ_PICK_TARGET_COUNT,
+            targetCount: targetPickCount,
             appendedCount,
             pickedCount: pickedTracks.length,
             skippedPicks: whitelistedSkippedPicks,
             fallbackPath: 'legacy_random_fallback',
             fallbackStats: djPickNextFallbackStats.snapshot()
           },
-          appendedCount > 0
-            ? 'DJ pick-next: whitelisted picks appended fewer than target, using random fallback'
-            : 'DJ pick-next: whitelisted picks did not change queue, using random fallback'
+          'DJ pick-next: whitelisted picks did not change queue, using random fallback'
         );
       } else {
         logger.warn(
@@ -982,14 +1077,21 @@ ${candidateList}
     const appendedCount = getAddedTrackCount(userId, initialQueueLength);
     logger.warn(
       {
-        targetCount: DJ_PICK_TARGET_COUNT,
+        targetCount: targetPickCount,
         appendedCount,
         fallbackStats: recordDjPickNextFallbackStats('no_candidates')
       },
       'DJ pick-next fallback: no candidates'
     );
     if (appendedCount > 0) {
-      broadcastAppended(userId, initialQueueLength, emit);
+      broadcastAppended(userId, initialQueueLength, targetPickCount, emit, undefined, {
+        agentPickCount: 0,
+        rankedBackfillCount: 0,
+        candidateCount: fallbackIds.length,
+        elapsedMs: Date.now() - startedAt,
+        fallbackPath: 'no_candidates',
+        discoveryMode
+      });
     } else {
       emit({ type: 'dj.pick-next.done', added: false, reason: 'no-candidates' });
     }
@@ -1011,7 +1113,7 @@ ${candidateList}
   }
 
   const fallbackSampleSize = Math.min(
-    Math.max(DJ_PICK_TARGET_COUNT, getRemainingPickSlots(userId, initialQueueLength) * 4),
+    Math.max(targetPickCount, getRemainingPickSlots(userId, initialQueueLength, targetPickCount) * 4),
     fallbackIds.length
   );
   const pickedIds = sampleN(fallbackIds, fallbackSampleSize);
@@ -1033,14 +1135,21 @@ ${candidateList}
     const appendedCount = getQueue(userId).length - initialQueueLength;
     logger.warn(
       {
-        targetCount: DJ_PICK_TARGET_COUNT,
+        targetCount: targetPickCount,
         appendedCount,
         fallbackStats: recordDjPickNextFallbackStats('legacy_random_fallback')
       },
       'DJ pick-next fallback: failed to fetch track details'
     );
     if (appendedCount > 0) {
-      broadcastAppended(userId, initialQueueLength, emit);
+      broadcastAppended(userId, initialQueueLength, targetPickCount, emit, undefined, {
+        agentPickCount: 0,
+        rankedBackfillCount: 0,
+        candidateCount: fallbackIds.length,
+        elapsedMs: Date.now() - startedAt,
+        fallbackPath: 'legacy_random_fallback',
+        discoveryMode
+      });
     } else {
       emit({ type: 'dj.pick-next.done', added: false, reason: 'no-candidates' });
     }
@@ -1049,7 +1158,7 @@ ${candidateList}
 
   const pathQueueLength = getQueue(userId).length;
   for (const pick of pickedDetails) {
-    if (getRemainingPickSlots(userId, initialQueueLength) <= 0) break;
+    if (getRemainingPickSlots(userId, initialQueueLength, targetPickCount) <= 0) break;
     const dedupeKey = buildTrackDedupeKey({
       id: String(pick.id),
       name: pick.name,
@@ -1067,7 +1176,7 @@ ${candidateList}
   }
   logger.info(
     {
-      targetCount: DJ_PICK_TARGET_COUNT,
+      targetCount: targetPickCount,
       appendedCount: getQueue(userId).length - initialQueueLength,
       fallbackAppendedCount: getQueue(userId).length - pathQueueLength,
       sampledCount: pickedIds.length,
@@ -1075,7 +1184,14 @@ ${candidateList}
     },
     'DJ pick-next fallback: appended tracks'
   );
-  broadcastAppended(userId, initialQueueLength, emit);
+  broadcastAppended(userId, initialQueueLength, targetPickCount, emit, undefined, {
+    agentPickCount: 0,
+    rankedBackfillCount: 0,
+    candidateCount: fallbackIds.length,
+    elapsedMs: Date.now() - startedAt,
+    fallbackPath: 'legacy_random_fallback',
+    discoveryMode
+  });
 }
 
 function getMusicAgentDebugCandidateCount(output: MusicAgentRunOutput): number {
@@ -1134,8 +1250,10 @@ function roundRate(value: number): number {
 function broadcastAppended(
   userId: string,
   prevQueueLength: number,
+  targetPickCount: number,
   emit: DjEventSink,
-  path?: DjPickNextFallbackPath
+  path?: DjPickNextFallbackPath,
+  metrics: DjPickNextRunMetrics = {}
 ): void {
   const q = getQueue(userId);
   const newTracks = q.slice(prevQueueLength);
@@ -1146,8 +1264,14 @@ function broadcastAppended(
   const fallbackStats = path ? recordDjPickNextFallbackStats(path) : djPickNextFallbackStats.snapshot();
   getLogger().info(
     {
-      targetCount: DJ_PICK_TARGET_COUNT,
+      targetCount: targetPickCount,
       appendedCount: newTracks.length,
+      agentPickCount: metrics.agentPickCount,
+      rankedBackfillCount: metrics.rankedBackfillCount,
+      candidateCount: metrics.candidateCount,
+      elapsedMs: metrics.elapsedMs,
+      fallbackPath: path ?? metrics.fallbackPath,
+      discoveryMode: metrics.discoveryMode,
       trackIds: newTracks.map((track) => track.ncmId),
       trackNames: names,
       fallbackStats
@@ -1159,6 +1283,21 @@ function broadcastAppended(
     added: newTracks.length > 0,
     trackName: names.join('、') || undefined
   });
+}
+
+function musicAgentRunMetrics(
+  output: MusicAgentRunOutput,
+  appendedPicks: MusicAgentRunOutput['picks'],
+  startedAt: number,
+  discoveryMode: DiscoveryMode
+): DjPickNextRunMetrics {
+  return {
+    agentPickCount: appendedPicks.filter((pick) => pick.reason !== 'ranked backfill').length,
+    rankedBackfillCount: appendedPicks.filter((pick) => pick.reason === 'ranked backfill').length,
+    candidateCount: getMusicAgentDebugCandidateCount(output),
+    elapsedMs: Date.now() - startedAt,
+    discoveryMode
+  };
 }
 
 export function serializeDjPickNextErrorForLog(error: unknown): unknown {
@@ -1244,8 +1383,12 @@ function createSkippedPickLog(
 }
 
 function getTodayAndQueueDedupeState(userId: string): DedupeState {
-  const ids = new Set(getTodayPlayedSongIds(userId));
+  const temporaryBans = getActiveTemporaryQueueBanDedupeState(userId);
+  const ids = new Set([...getTodayPlayedSongIds(userId), ...temporaryBans.ids]);
   const dedupeKeys = new Set<string>();
+  for (const key of temporaryBans.dedupeKeys) {
+    dedupeKeys.add(key);
+  }
 
   for (const play of getTodayPlays(userId)) {
     const key = buildTrackDedupeKey({
@@ -1323,12 +1466,14 @@ export function createSseDjPickNextHandler(opts: DjNextOptions) {
     isRunning.set(userId, true);
     const controller = new AbortController();
     req.on('close', () => controller.abort(new Error('client-disconnected')));
+    const targetPickCount = getAutoFillBatchSize(userId);
+    const jobTimeoutMs = getJobTimeoutMs(targetPickCount);
     let timeoutId: ReturnType<typeof setTimeout> | undefined;
     const jobTimer = new Promise<'timeout'>((resolve) =>
       timeoutId = setTimeout(() => {
         controller.abort(new Error('job-timeout'));
         resolve('timeout');
-      }, JOB_TIMEOUT_MS)
+      }, jobTimeoutMs)
     );
     void Promise.race([doPickNext(userId, ncmClient, emit, controller.signal).then(() => 'done' as const), jobTimer]).then((result) => {
       if (result === 'timeout' && !res.writableEnded) {

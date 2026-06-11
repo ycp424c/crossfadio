@@ -1,5 +1,6 @@
 import { buildFinalPickMessages, buildLoopMessages, FINAL_PICK_RESPONSE_FORMAT } from './prompts.js';
 import { CandidatePool, validateFinalPicks } from './candidates.js';
+import { parseAutoFillBatchSize } from '../../shared/dj.js';
 import {
   buildCandidateScoreTableRows,
   diversifyCandidates,
@@ -27,6 +28,7 @@ export type RunMusicAgentLoopInput = {
   candidatePool: CandidatePool;
   tools: MusicAgentToolRegistry;
   budget: AgentBudget;
+  targetPickCount?: number;
   mode?: MusicAgentFinalOutput['mode'];
   signal?: AbortSignal;
   fallbackLogger?: MusicAgentFallbackLogger;
@@ -138,7 +140,8 @@ export async function runMusicAgentLoop(input: RunMusicAgentLoopInput): Promise<
     const messages = buildLoopMessages({
       context: input.context,
       observations,
-      candidateSummary: summarizeCandidatePool(input.candidatePool, input.context)
+      candidateSummary: summarizeCandidatePool(input.candidatePool, input.context),
+      targetPickCount: targetPickCount(input)
     });
     const response = await input.llmClient.complete(messages, {
       signal: input.signal,
@@ -162,11 +165,12 @@ export async function runMusicAgentLoop(input: RunMusicAgentLoopInput): Promise<
       try {
         const picks = validateEligibleFinalPicks(output.picks, input);
         await prepareForRanking(input);
+        const completedPicks = completeFinalPicks(picks, input);
         return {
           status: 'ok',
           mode: resolveMode(input),
           say: output.say,
-          picks,
+          picks: completedPicks,
           rejected: output.rejected ?? [],
           trace,
           candidateScoreTable: createCandidateScoreTable(input)
@@ -331,13 +335,14 @@ async function askExtraFinalPick(
 
   const finalObservation: LoopObservation = {
     tool: DEFAULT_TOOL_NAME,
-    summary: 'ranked shortlist is ready; use one extra final-pick LLM call to choose 1-2 whitelisted candidates.',
+    summary: `ranked shortlist is ready; use one extra final-pick LLM call to choose up to ${targetPickCount(input)} whitelisted candidates.`,
     candidateCount: input.candidatePool.count()
   };
   const messages = buildFinalPickMessages({
     context: input.context,
     observations: [...observations, finalObservation],
-    candidateSummary: summarizeCandidatePool(input.candidatePool, input.context)
+    candidateSummary: summarizeCandidatePool(input.candidatePool, input.context),
+    targetPickCount: targetPickCount(input)
   });
 
   const nextLlmCalls = llmCalls + 1;
@@ -407,11 +412,12 @@ async function askExtraFinalPick(
   try {
     const picks = validateEligibleFinalPicks(output.picks, input);
     await prepareForRanking(input);
+    const completedPicks = completeFinalPicks(picks, input);
     const result: MusicAgentRunOutput = {
       status: 'ok',
       mode: resolveMode(input),
       say: output.say,
-      picks,
+      picks: completedPicks,
       rejected: output.rejected ?? [],
       trace,
       candidateScoreTable: createCandidateScoreTable(input)
@@ -682,7 +688,7 @@ async function rankedFallback(
   await prepareForRanking(input);
   const options = rankOptions(input.context);
   const ranked = rankCandidates(input.candidatePool.list(), input.candidatePool.count(), options);
-  const picks = diversifyCandidates(ranked.slice(0, 10), 2).map((candidate) => ({
+  const picks = diversifyCandidates(ranked.slice(0, 10), targetPickCount(input)).map((candidate) => ({
     id: candidate.id,
     name: candidate.name,
     artist: candidate.artist,
@@ -730,7 +736,7 @@ async function rankedConvergence(
   await prepareForRanking(input);
   const options = rankOptions(input.context);
   const ranked = rankCandidates(input.candidatePool.list(), input.candidatePool.count(), options);
-  const picks = diversifyCandidates(ranked.slice(0, 10), 2).map((candidate) => ({
+  const picks = diversifyCandidates(ranked.slice(0, 10), targetPickCount(input)).map((candidate) => ({
     id: candidate.id,
     name: candidate.name,
     artist: candidate.artist,
@@ -741,9 +747,7 @@ async function rankedConvergence(
   const output: MusicAgentRunOutput = {
     status: 'ok',
     mode,
-    say: picks.length > 1
-      ? '我从已经排序的候选池里收束出两首更适合现在的歌。'
-      : '我从已经排序的候选池里收束出一首更适合现在的歌。',
+    say: `我从已经排序的候选池里收束出${formatPickCount(picks.length)}更适合现在的歌。`,
     picks,
     rejected: [],
     trace,
@@ -779,7 +783,7 @@ function recordRankedConvergence(
 
 function rankedFallbackSay(pickCount: number): string {
   return pickCount > 1
-    ? '我从候选池里挑了两首更适合现在的歌。'
+    ? `我从候选池里挑了${formatPickCount(pickCount)}更适合现在的歌。`
     : '我从候选池里挑了一首更适合现在的歌。';
 }
 
@@ -807,7 +811,40 @@ function createCandidateScoreTable(input: RunMusicAgentLoopInput) {
 function validateEligibleFinalPicks(picks: FinalPick[], input: RunMusicAgentLoopInput): FinalPick[] {
   return validateFinalPicks(picks, input.candidatePool, {
     isCandidateEligible: (candidate) => !isHardFilteredCandidate(candidate)
-  });
+  }).slice(0, targetPickCount(input));
+}
+
+function completeFinalPicks(picks: FinalPick[], input: RunMusicAgentLoopInput): FinalPick[] {
+  return modeFromContext(input.context) === 'pick_next'
+    ? rankedBackfillFinalPicks(picks, input)
+    : picks;
+}
+
+function rankedBackfillFinalPicks(picks: FinalPick[], input: RunMusicAgentLoopInput): FinalPick[] {
+  const target = targetPickCount(input);
+  if (picks.length >= target) return picks.slice(0, target);
+
+  const pickedIds = new Set(picks.map((pick) => pick.id));
+  const options = rankOptions(input.context);
+  const ranked = rankCandidates(input.candidatePool.list(), input.candidatePool.count(), options)
+    .filter((candidate) => !pickedIds.has(candidate.id) && !isHardFilteredCandidate(candidate));
+  const backfill = diversifyCandidates(ranked, target - picks.length).map((candidate) => ({
+    id: candidate.id,
+    name: candidate.name,
+    artist: candidate.artist,
+    reason: 'ranked backfill',
+    source: candidate.sources[0]
+  }));
+
+  return [...picks, ...backfill];
+}
+
+function targetPickCount(input: RunMusicAgentLoopInput): number {
+  return parseAutoFillBatchSize(input.targetPickCount);
+}
+
+function formatPickCount(pickCount: number): string {
+  return pickCount === 1 ? '一首' : `${pickCount} 首`;
 }
 
 async function prepareForRanking(input: RunMusicAgentLoopInput): Promise<void> {
