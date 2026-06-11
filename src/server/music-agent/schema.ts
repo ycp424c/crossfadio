@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type { LlmCompleteOptions, LlmMessage, LlmResponse } from '../llm/client.js';
+import { ncmTrackQualitySignalsSchema } from '../../shared/schema.js';
 
 export const candidateSourceSchema = z.enum([
   'liked',
@@ -44,13 +45,22 @@ export const musicCandidateScoresSchema = z.object({
 
 export type MusicCandidateScores = z.infer<typeof musicCandidateScoresSchema>;
 
+export const titlePollutionSignalSchema = z.enum(['none', 'mild', 'strong']);
+
+export const musicCandidateQualitySignalsSchema = ncmTrackQualitySignalsSchema.extend({
+  titlePollution: titlePollutionSignalSchema.optional()
+});
+
+export type MusicCandidateQualitySignals = z.infer<typeof musicCandidateQualitySignalsSchema>;
+
 export const musicCandidateSchema = z.object({
   id: z.string().min(1),
   name: z.string().min(1),
   artist: z.string().min(1),
   sources: z.array(candidateSourceSchema).min(1),
   evidence: z.array(z.string()).default([]),
-  scores: musicCandidateScoresSchema
+  scores: musicCandidateScoresSchema,
+  qualitySignals: musicCandidateQualitySignalsSchema.optional()
 });
 
 export type MusicCandidate = z.infer<typeof musicCandidateSchema>;
@@ -172,6 +182,8 @@ export const candidateScoreTableRowSchema = z.object({
   baseScore: z.number(),
   artistPenalty: z.number(),
   repeatPenalty: z.number(),
+  qualityPenalty: z.number(),
+  titlePollutionPenalty: z.number(),
   adjustedScore: z.number()
 });
 

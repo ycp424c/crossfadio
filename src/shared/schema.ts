@@ -86,6 +86,21 @@ export const ncmSongSchema = z.object({
 
 export type NcmSong = z.infer<typeof ncmSongSchema>;
 
+export const ncmTrackQualitySignalsSchema = z.object({
+  popularity: z.number().min(0).max(100).optional(),
+  fee: z.number().int().optional(),
+  copyright: z.number().int().optional(),
+  noCopyrightRcmd: z.boolean().optional(),
+  privilegeSt: z.number().int().optional(),
+  privilegeToast: z.boolean().optional(),
+  albumName: z.string().optional(),
+  originCoverType: z.number().int().optional(),
+  publishTime: z.number().int().optional(),
+  mv: z.boolean().optional()
+});
+
+export type NcmTrackQualitySignals = z.infer<typeof ncmTrackQualitySignalsSchema>;
+
 export const ncmSearchResponseSchema = z
   .object({
     result: z
@@ -156,7 +171,8 @@ export const ncmPlaylistTrackSchema = z.object({
   name: z.string(),
   artists: z.array(z.string()).default([]),
   durationMs: z.number().int().nonnegative(),
-  coverImgUrl: z.string().nullable().optional()
+  coverImgUrl: z.string().nullable().optional(),
+  qualitySignals: ncmTrackQualitySignalsSchema.optional()
 });
 
 export type NcmPlaylistTrack = z.infer<typeof ncmPlaylistTrackSchema>;
@@ -189,7 +205,27 @@ export const ncmPlaylistDetailResponseSchema = z
                 ar: z
                   .array(z.object({ name: z.string().optional() }).passthrough())
                   .optional(),
-                al: z.object({ picUrl: z.string().nullable().optional() }).passthrough().optional()
+                al: z
+                  .object({
+                    name: z.string().optional(),
+                    picUrl: z.string().nullable().optional()
+                  })
+                  .passthrough()
+                  .optional(),
+                pop: z.number().optional(),
+                fee: z.number().int().optional(),
+                copyright: z.number().int().optional(),
+                noCopyrightRcmd: z.unknown().nullable().optional(),
+                privilege: z
+                  .object({
+                    st: z.number().int().optional(),
+                    toast: z.boolean().optional()
+                  })
+                  .passthrough()
+                  .optional(),
+                originCoverType: z.number().int().optional(),
+                publishTime: z.number().int().optional(),
+                mv: z.number().int().optional()
               })
               .passthrough()
           )
@@ -218,7 +254,27 @@ export const ncmSongDetailResponseSchema = z
             ar: z
               .array(z.object({ name: z.string().optional() }).passthrough())
               .optional(),
-            al: z.object({ picUrl: z.string().nullable().optional() }).passthrough().optional()
+            al: z
+              .object({
+                name: z.string().optional(),
+                picUrl: z.string().nullable().optional()
+              })
+              .passthrough()
+              .optional(),
+            pop: z.number().optional(),
+            fee: z.number().int().optional(),
+            copyright: z.number().int().optional(),
+            noCopyrightRcmd: z.unknown().nullable().optional(),
+            privilege: z
+              .object({
+                st: z.number().int().optional(),
+                toast: z.boolean().optional()
+              })
+              .passthrough()
+              .optional(),
+            originCoverType: z.number().int().optional(),
+            publishTime: z.number().int().optional(),
+            mv: z.number().int().optional()
           })
           .passthrough()
       )

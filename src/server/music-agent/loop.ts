@@ -1,6 +1,12 @@
 import { buildFinalPickMessages, buildLoopMessages, FINAL_PICK_RESPONSE_FORMAT } from './prompts.js';
 import { CandidatePool, validateFinalPicks } from './candidates.js';
-import { buildCandidateScoreTableRows, diversifyCandidates, rankCandidates, scoreCandidate } from './rank.js';
+import {
+  buildCandidateScoreTableRows,
+  diversifyCandidates,
+  isHardFilteredCandidate,
+  rankCandidates,
+  scoreCandidate
+} from './rank.js';
 import {
   musicAgentLoopOutputSchema,
   musicAgentToolNameSchema,
@@ -128,6 +134,7 @@ export async function runMusicAgentLoop(input: RunMusicAgentLoopInput): Promise<
       return rankedFallback('budget_reached', input, trace, startedAt, step, llmCalls, toolCalls);
     }
 
+    await prepareForRanking(input);
     const messages = buildLoopMessages({
       context: input.context,
       observations,
@@ -153,7 +160,8 @@ export async function runMusicAgentLoop(input: RunMusicAgentLoopInput): Promise<
 
     if (output.type === 'final') {
       try {
-        const picks = validateFinalPicks(output.picks, input.candidatePool);
+        const picks = validateEligibleFinalPicks(output.picks, input);
+        await prepareForRanking(input);
         return {
           status: 'ok',
           mode: resolveMode(input),
@@ -316,6 +324,11 @@ async function askExtraFinalPick(
   llmCalls: number,
   toolCalls: number
 ): Promise<MusicAgentRunOutput> {
+  await prepareForRanking(input);
+  if (input.signal?.aborted) {
+    return abortedOutput(resolveMode(input), trace);
+  }
+
   const finalObservation: LoopObservation = {
     tool: DEFAULT_TOOL_NAME,
     summary: 'ranked shortlist is ready; use one extra final-pick LLM call to choose 1-2 whitelisted candidates.',
@@ -392,7 +405,8 @@ async function askExtraFinalPick(
   }
 
   try {
-    const picks = validateFinalPicks(output.picks, input.candidatePool);
+    const picks = validateEligibleFinalPicks(output.picks, input);
+    await prepareForRanking(input);
     const result: MusicAgentRunOutput = {
       status: 'ok',
       mode: resolveMode(input),
@@ -419,7 +433,7 @@ async function askExtraFinalPick(
   }
 }
 
-function rankedConvergenceAfterExtraFinalProblem(
+async function rankedConvergenceAfterExtraFinalProblem(
   problem: string,
   thoughtSummary: string,
   fallbackReason: MusicAgentFallbackReason,
@@ -430,7 +444,7 @@ function rankedConvergenceAfterExtraFinalProblem(
   step: number,
   llmCalls: number,
   toolCalls: number
-): MusicAgentRunOutput {
+): Promise<MusicAgentRunOutput> {
   const observation = observationFromProblem(problem, input.candidatePool.count());
   trace.push(traceStep(step, startedAt, input.candidatePool.count(), {
     thoughtSummary,
@@ -654,7 +668,7 @@ function extractFirstJsonObject(raw: string): string | undefined {
   return undefined;
 }
 
-function rankedFallback(
+async function rankedFallback(
   reason: MusicAgentFallbackReason,
   input: RunMusicAgentLoopInput,
   trace: AgentTraceStep[],
@@ -663,8 +677,9 @@ function rankedFallback(
   llmCalls: number,
   toolCalls: number,
   extra: Pick<MusicAgentFallbackLogEvent, 'extraFinalProblem'> = {}
-): MusicAgentRunOutput {
+): Promise<MusicAgentRunOutput> {
   const mode = resolveMode(input);
+  await prepareForRanking(input);
   const options = rankOptions(input.context);
   const ranked = rankCandidates(input.candidatePool.list(), input.candidatePool.count(), options);
   const picks = diversifyCandidates(ranked.slice(0, 10), 2).map((candidate) => ({
@@ -703,15 +718,16 @@ function rankedFallback(
   return output;
 }
 
-function rankedConvergence(
+async function rankedConvergence(
   input: RunMusicAgentLoopInput,
   trace: AgentTraceStep[],
   startedAt: number,
   step: number,
   llmCalls: number,
   toolCalls: number
-): MusicAgentRunOutput {
+): Promise<MusicAgentRunOutput> {
   const mode = resolveMode(input);
+  await prepareForRanking(input);
   const options = rankOptions(input.context);
   const ranked = rankCandidates(input.candidatePool.list(), input.candidatePool.count(), options);
   const picks = diversifyCandidates(ranked.slice(0, 10), 2).map((candidate) => ({
@@ -786,6 +802,16 @@ function createCandidateScoreTable(input: RunMusicAgentLoopInput) {
   const options = rankOptions(input.context);
   const ranked = rankCandidates(input.candidatePool.list(), input.candidatePool.count(), options);
   return buildCandidateScoreTableRows(ranked, options);
+}
+
+function validateEligibleFinalPicks(picks: FinalPick[], input: RunMusicAgentLoopInput): FinalPick[] {
+  return validateFinalPicks(picks, input.candidatePool, {
+    isCandidateEligible: (candidate) => !isHardFilteredCandidate(candidate)
+  });
+}
+
+async function prepareForRanking(input: RunMusicAgentLoopInput): Promise<void> {
+  await input.tools.prepare_for_ranking?.({}, input.signal);
 }
 
 function summarizeCandidatePool(pool: CandidatePool, context: MusicAgentContextSummary): string {

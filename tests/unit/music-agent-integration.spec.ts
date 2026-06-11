@@ -202,6 +202,117 @@ describe('MusicAgent facade', () => {
     expect(JSON.stringify(result.trace)).not.toContain('duplicate-id');
   });
 
+  it('prepares external quality signals before the extra final-pick prompt after auto-fill supplement', async () => {
+    const pollutedTitle = "90's Chill Lofi Hip Hop｜勉強・集中・睡眠 深夜のローファイ mix";
+    const searchTracks = [
+      { id: 'polluted-extra-final', name: pollutedTitle, artists: ['Compilation Artist'] },
+      ...Array.from({ length: 7 }, (_, index) => ({
+        id: `clean-extra-${index + 1}`,
+        name: `Clean Extra ${index + 1}`,
+        artists: [`Clean Artist ${index + 1}`]
+      }))
+    ];
+    const ncmClient = {
+      getLikedSongIds: vi.fn(async () => ['liked-quality-seed']),
+      getSongDetails: vi.fn(async (ids: string[]) => ids.map((id) => {
+        if (id === 'liked-quality-seed') {
+          return { id, name: 'Liked Seed', artists: ['Liked Artist'], durationMs: 200_000 };
+        }
+        if (id === 'polluted-extra-final') {
+          return {
+            id,
+            name: pollutedTitle,
+            artists: ['Compilation Artist'],
+            durationMs: 180_000,
+            qualitySignals: { popularity: 5, titlePollution: 'strong' }
+          };
+        }
+        return {
+          id,
+          name: `Clean Extra ${id}`,
+          artists: [`Clean Artist ${id}`],
+          durationMs: 180_000,
+          qualitySignals: { popularity: 75, titlePollution: 'none' }
+        };
+      })),
+      searchSongs: vi.fn(async () => searchTracks),
+      getPlaylistDetail: vi.fn(async () => null),
+      getSearchHotDetail: vi.fn(async () => []),
+      getTopSongHints: vi.fn(async () => []),
+      getArtistToplist: vi.fn(async () => [])
+    };
+    const fake = new FakeLlmClient()
+      .queueResponse(JSON.stringify({ type: 'tool_call', tool: 'recall_from_liked', input: { limit: 5 } }))
+      .queueResponse(JSON.stringify({
+        type: 'final',
+        say: '从补充候选里选一首干净的。',
+        picks: [{ id: 'clean-extra-1', reason: '干净的外部候选', source: 'search' }],
+        rejected: []
+      }));
+
+    const { MusicAgent } = await import('../../src/server/music-agent/index.js');
+    const agent = new MusicAgent({ llmClient: fake });
+    const result = await agent.pickNext({ userId: 'user-extra-final-quality', ncmClient: ncmClient as any });
+
+    expect(result.status).toBe('ok');
+    expect(result.picks.map((pick) => pick.id)).toEqual(['clean-extra-1']);
+    expect(ncmClient.getSongDetails).toHaveBeenCalledWith([
+      'polluted-extra-final',
+      ...searchTracks.slice(1).map((track) => track.id)
+    ]);
+    expect(JSON.stringify(fake.completeCalls[1].messages)).not.toContain('polluted-extra-final');
+  });
+
+  it('rejects hard-filtered candidates from extra final-pick output', async () => {
+    const pollutedTitle = "90's Chill Lofi Hip Hop｜勉強・集中・睡眠 深夜のローファイ mix";
+    const searchTracks = [
+      { id: 'polluted-extra-final', name: pollutedTitle, artists: ['Compilation Artist'] },
+      ...Array.from({ length: 7 }, (_, index) => ({
+        id: `clean-reject-${index + 1}`,
+        name: `Clean Reject ${index + 1}`,
+        artists: [`Clean Reject Artist ${index + 1}`]
+      }))
+    ];
+    const ncmClient = {
+      getLikedSongIds: vi.fn(async () => ['liked-reject-seed']),
+      getSongDetails: vi.fn(async (ids: string[]) => ids.map((id) => {
+        if (id === 'liked-reject-seed') {
+          return { id, name: 'Liked Seed', artists: ['Liked Artist'], durationMs: 200_000 };
+        }
+        return {
+          id,
+          name: id === 'polluted-extra-final' ? pollutedTitle : `Clean Reject ${id}`,
+          artists: [id === 'polluted-extra-final' ? 'Compilation Artist' : `Clean Reject Artist ${id}`],
+          durationMs: 180_000,
+          qualitySignals: id === 'polluted-extra-final'
+            ? { popularity: 5, titlePollution: 'strong' }
+            : { popularity: 75, titlePollution: 'none' }
+        };
+      })),
+      searchSongs: vi.fn(async () => searchTracks),
+      getPlaylistDetail: vi.fn(async () => null),
+      getSearchHotDetail: vi.fn(async () => []),
+      getTopSongHints: vi.fn(async () => []),
+      getArtistToplist: vi.fn(async () => [])
+    };
+    const fake = new FakeLlmClient()
+      .queueResponse(JSON.stringify({ type: 'tool_call', tool: 'recall_from_liked', input: { limit: 5 } }))
+      .queueResponse(JSON.stringify({
+        type: 'final',
+        say: '错误地选中了低质候选。',
+        picks: [{ id: 'polluted-extra-final', reason: '看起来贴合', source: 'search' }],
+        rejected: []
+      }));
+
+    const { MusicAgent } = await import('../../src/server/music-agent/index.js');
+    const agent = new MusicAgent({ llmClient: fake });
+    const result = await agent.pickNext({ userId: 'user-extra-final-reject', ncmClient: ncmClient as any });
+
+    expect(result.status).toBe('ok');
+    expect(result.picks.map((pick) => pick.id)).not.toContain('polluted-extra-final');
+    expect(result.picks.every((pick) => pick.id.startsWith('clean-reject-'))).toBe(true);
+  });
+
   it('passes chat recommendation text into the tool-loop prompt', async () => {
     const ncmClient = {
       getLikedSongIds: vi.fn(async () => []),
@@ -368,6 +479,234 @@ describe('createMusicAgentTools', () => {
       artist: 'Singer',
       sources: ['search']
     });
+  });
+
+  it('enriches external search candidates with quality signals before ranking', async () => {
+    const ncmClient = {
+      getLikedSongIds: vi.fn(async () => []),
+      getSongDetails: vi.fn(async (ids: string[]) => ids.map((id) => {
+        if (id === 'polluted-low-pop') {
+          return {
+            id,
+            name: "90's Chill Lofi Hip Hop｜勉強・集中・睡眠 深夜のローファイ mix",
+            artists: ['Compilation Artist'],
+            qualitySignals: { popularity: 8, titlePollution: 'strong' }
+          };
+        }
+        return {
+          id,
+          name: 'City Light',
+          artists: ['Fresh Artist'],
+          qualitySignals: { popularity: 72, titlePollution: 'none' }
+        };
+      })),
+      searchSongs: vi.fn(async () => [
+        {
+          id: 'polluted-low-pop',
+          name: "90's Chill Lofi Hip Hop｜勉強・集中・睡眠 深夜のローファイ mix",
+          artists: ['Compilation Artist']
+        },
+        { id: 'fresh-search', name: 'City Light', artists: ['Fresh Artist'] }
+      ]),
+      getPlaylistDetail: vi.fn(async () => null)
+    };
+
+    const { CandidatePool } = await import('../../src/server/music-agent/candidates.js');
+    const { createMusicAgentTools } = await import('../../src/server/music-agent/tools.js');
+    const candidatePool = new CandidatePool();
+    const tools = createMusicAgentTools({
+      userId: 'user-quality-rank',
+      ncmClient: ncmClient as any,
+      context: {
+        request: 'auto-fill',
+        currentUserText: '',
+        currentMoment: { localTime: '周一 23:30', daypart: '深夜', weather: null },
+        activeDirective: '',
+        currentPlanSegment: null,
+        tasteSummary: '偏好安静女声和 dream pop',
+        recentPreferenceSummary: '',
+        recentPlaySignals: '',
+        queueStateSummary: '',
+        bannedSummary: ''
+      },
+      candidatePool,
+      budget: {
+        maxMs: 10_000,
+        maxSteps: 3,
+        maxLlmCalls: 2,
+        maxToolCalls: 2,
+        maxNcmSearches: 1,
+        maxPlaylistFetches: 0,
+        maxTrendFetchMs: 0,
+        maxCandidates: 20
+      }
+    });
+
+    await tools.recall_from_ncm_search?.({ queries: ['unique quality rank query'], limit: 10 });
+    const rank = await tools.rank_candidates?.({ limit: 5 });
+
+    expect(ncmClient.getSongDetails).toHaveBeenCalledWith(['polluted-low-pop', 'fresh-search']);
+    expect(rank?.summary).toContain('fresh-search:City Light-Fresh Artist');
+    expect(rank?.summary).not.toContain('polluted-low-pop');
+    expect(rank?.problems).toContain('filtered 1 low-quality external candidates');
+    expect(candidatePool.get('fresh-search')?.qualitySignals?.popularity).toBe(72);
+  });
+
+  it('enriches every external candidate batch before ranking large pools', async () => {
+    const { CandidatePool } = await import('../../src/server/music-agent/candidates.js');
+    const { createMusicAgentTools } = await import('../../src/server/music-agent/tools.js');
+    const candidatePool = new CandidatePool({ maxCandidates: 120 });
+    const baseScores = {
+      intentMatch: 0.5,
+      tasteMatch: 0.5,
+      timeFit: 0.5,
+      planFit: 0.5,
+      novelty: 0.5,
+      recentPenalty: 0,
+      skipPenalty: 0,
+      sourceConfidence: 0.5
+    };
+    for (let index = 1; index <= 85; index += 1) {
+      candidatePool.upsert({
+        id: `external-${index}`,
+        name: index === 85
+          ? "90's Chill Lofi Hip Hop｜勉強・集中・睡眠 深夜のローファイ mix"
+          : `External ${index}`,
+        artist: `External Artist ${index}`,
+        sources: ['search'],
+        evidence: ['large pool'],
+        scores: index === 85
+          ? { ...baseScores, intentMatch: 1, tasteMatch: 1, timeFit: 1, planFit: 1, novelty: 1, sourceConfidence: 1 }
+          : baseScores
+      });
+    }
+    const ncmClient = {
+      getLikedSongIds: vi.fn(async () => []),
+      getSongDetails: vi.fn(async (ids: string[]) => ids.map((id) => ({
+        id,
+        name: id,
+        artists: [id],
+        qualitySignals: id === 'external-85'
+          ? { popularity: 5, titlePollution: 'strong' }
+          : { popularity: 75, titlePollution: 'none' }
+      }))),
+      searchSongs: vi.fn(async () => []),
+      getPlaylistDetail: vi.fn(async () => null)
+    };
+    const tools = createMusicAgentTools({
+      userId: 'user-large-quality-rank',
+      ncmClient: ncmClient as any,
+      context: {
+        request: 'auto-fill',
+        currentUserText: '',
+        currentMoment: { localTime: '周一 23:30', daypart: '深夜', weather: null },
+        activeDirective: '',
+        currentPlanSegment: null,
+        tasteSummary: '偏好安静女声和 dream pop',
+        recentPreferenceSummary: '',
+        recentPlaySignals: '',
+        queueStateSummary: '',
+        bannedSummary: ''
+      },
+      candidatePool,
+      budget: {
+        maxMs: 10_000,
+        maxSteps: 3,
+        maxLlmCalls: 2,
+        maxToolCalls: 2,
+        maxNcmSearches: 1,
+        maxPlaylistFetches: 0,
+        maxTrendFetchMs: 0,
+        maxCandidates: 120
+      }
+    });
+
+    const rank = await tools.rank_candidates?.({ limit: 20 });
+
+    expect(ncmClient.getSongDetails).toHaveBeenCalledTimes(2);
+    expect(ncmClient.getSongDetails.mock.calls[0][0]).toHaveLength(80);
+    expect(ncmClient.getSongDetails.mock.calls[1][0]).toEqual([
+      'external-81',
+      'external-82',
+      'external-83',
+      'external-84',
+      'external-85'
+    ]);
+    expect(rank?.summary).not.toContain('external-85');
+    expect(rank?.problems).toContain('filtered 1 low-quality external candidates');
+  });
+
+  it('retries quality signal preparation after a detail request failure', async () => {
+    const { CandidatePool } = await import('../../src/server/music-agent/candidates.js');
+    const { createMusicAgentTools } = await import('../../src/server/music-agent/tools.js');
+    const candidatePool = new CandidatePool();
+    candidatePool.upsert({
+      id: 'retry-quality',
+      name: 'Retry Quality',
+      artist: 'Retry Artist',
+      sources: ['search'],
+      evidence: ['retry'],
+      scores: {
+        intentMatch: 1,
+        tasteMatch: 1,
+        timeFit: 1,
+        planFit: 1,
+        novelty: 1,
+        recentPenalty: 0,
+        skipPenalty: 0,
+        sourceConfidence: 1
+      }
+    });
+    const ncmClient = {
+      getLikedSongIds: vi.fn(async () => []),
+      getSongDetails: vi.fn()
+        .mockRejectedValueOnce(new Error('temporary detail outage'))
+        .mockResolvedValueOnce([
+          {
+            id: 'retry-quality',
+            name: 'Retry Quality',
+            artists: ['Retry Artist'],
+            qualitySignals: { popularity: 5, titlePollution: 'strong' }
+          }
+        ]),
+      searchSongs: vi.fn(async () => []),
+      getPlaylistDetail: vi.fn(async () => null)
+    };
+    const tools = createMusicAgentTools({
+      userId: 'user-quality-retry',
+      ncmClient: ncmClient as any,
+      context: {
+        request: 'auto-fill',
+        currentUserText: '',
+        currentMoment: { localTime: '周一 23:30', daypart: '深夜', weather: null },
+        activeDirective: '',
+        currentPlanSegment: null,
+        tasteSummary: '',
+        recentPreferenceSummary: '',
+        recentPlaySignals: '',
+        queueStateSummary: '',
+        bannedSummary: ''
+      },
+      candidatePool,
+      budget: {
+        maxMs: 10_000,
+        maxSteps: 3,
+        maxLlmCalls: 2,
+        maxToolCalls: 2,
+        maxNcmSearches: 1,
+        maxPlaylistFetches: 0,
+        maxTrendFetchMs: 0,
+        maxCandidates: 20
+      }
+    });
+
+    const firstRank = await tools.rank_candidates?.({ limit: 5 });
+    const secondRank = await tools.rank_candidates?.({ limit: 5 });
+
+    expect(firstRank?.problems?.[0]).toContain('quality detail failed');
+    expect(ncmClient.getSongDetails).toHaveBeenCalledTimes(2);
+    expect(secondRank?.summary).not.toContain('retry-quality');
+    expect(secondRank?.problems).toContain('filtered 1 low-quality external candidates');
   });
 
   it('caps auto-fill liked recall so liked songs cannot fill the whole candidate pool', async () => {

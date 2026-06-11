@@ -54,6 +54,41 @@ describe('CandidatePool', () => {
     expect(merged?.scores.recentPenalty).toBe(0.3);
   });
 
+  it('merges candidate quality signals through dedupe aliases without weakening strong flags', () => {
+    const pool = new CandidatePool();
+
+    pool.upsert(candidate({
+      id: 'canonical',
+      name: 'Same Song',
+      artist: 'Artist',
+      sources: ['search'],
+      qualitySignals: { popularity: 80, privilegeSt: -200, titlePollution: 'mild' }
+    }));
+    pool.upsert(candidate({
+      id: 'duplicate',
+      name: 'Same Song',
+      artist: 'Artist / Guest',
+      sources: ['trend'],
+      qualitySignals: { noCopyrightRcmd: true, titlePollution: 'strong' }
+    }));
+
+    pool.mergeQualitySignals('duplicate', {
+      popularity: 12,
+      privilegeSt: 0,
+      privilegeToast: true,
+      titlePollution: 'none'
+    });
+
+    expect(pool.get('canonical')?.qualitySignals).toEqual(expect.objectContaining({
+      popularity: 12,
+      noCopyrightRcmd: true,
+      privilegeSt: -200,
+      privilegeToast: true,
+      titlePollution: 'strong'
+    }));
+    expect(pool.get('duplicate')?.qualitySignals).toEqual(pool.get('canonical')?.qualitySignals);
+  });
+
   it('deduplicates same title and primary artist across different ids', () => {
     const pool = new CandidatePool();
 

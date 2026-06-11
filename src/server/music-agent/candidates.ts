@@ -5,7 +5,12 @@ import {
   isMusicTrackDedupeKeyExcluded,
   normalizeMusicTrackToken
 } from './dedupe.js';
-import type { FinalPick, MusicCandidate, MusicCandidateScores } from './schema.js';
+import type {
+  FinalPick,
+  MusicCandidate,
+  MusicCandidateQualitySignals,
+  MusicCandidateScores
+} from './schema.js';
 
 export interface CandidatePoolOptions {
   maxCandidates?: number;
@@ -22,6 +27,10 @@ type CandidateDedupeInput = {
 type CandidatePoolEntry = {
   candidate: MusicCandidate;
   dedupeKeys: Set<string>;
+};
+
+export type FinalPickValidationOptions = {
+  isCandidateEligible?: (candidate: MusicCandidate) => boolean;
 };
 
 function primaryArtist(artist: string | null | undefined): string {
@@ -42,7 +51,8 @@ function cloneCandidate(candidate: MusicCandidate): MusicCandidate {
     ...candidate,
     sources: [...candidate.sources],
     evidence: [...candidate.evidence],
-    scores: { ...candidate.scores }
+    scores: { ...candidate.scores },
+    ...(candidate.qualitySignals ? { qualitySignals: { ...candidate.qualitySignals } } : {})
   };
 }
 
@@ -68,8 +78,48 @@ function mergeCandidate(existing: MusicCandidate, incoming: MusicCandidate): Mus
     ...existing,
     sources: mergeUnique(existing.sources, incoming.sources),
     evidence: mergeUnique(existing.evidence, incoming.evidence),
-    scores: mergeScores(existing.scores, incoming.scores)
+    scores: mergeScores(existing.scores, incoming.scores),
+    ...qualitySignalsProperty(mergeCandidateQualitySignals(existing.qualitySignals, incoming.qualitySignals))
   };
+}
+
+function mergeCandidateQualitySignals(
+  existing: MusicCandidateQualitySignals | undefined,
+  incoming: MusicCandidateQualitySignals | undefined
+): MusicCandidateQualitySignals | undefined {
+  if (!existing) return incoming ? { ...incoming } : undefined;
+  if (!incoming) return { ...existing };
+  const merged: MusicCandidateQualitySignals = { ...existing, ...incoming };
+  if (existing.noCopyrightRcmd || incoming.noCopyrightRcmd) merged.noCopyrightRcmd = true;
+  if (existing.privilegeToast || incoming.privilegeToast) merged.privilegeToast = true;
+  merged.privilegeSt = stricterPrivilegeSt(existing.privilegeSt, incoming.privilegeSt);
+  merged.titlePollution = strongerTitlePollution(existing.titlePollution, incoming.titlePollution);
+  return merged;
+}
+
+function stricterPrivilegeSt(
+  left: MusicCandidateQualitySignals['privilegeSt'],
+  right: MusicCandidateQualitySignals['privilegeSt']
+): MusicCandidateQualitySignals['privilegeSt'] {
+  if (left === undefined) return right;
+  if (right === undefined) return left;
+  return Math.min(left, right);
+}
+
+function strongerTitlePollution(
+  left: MusicCandidateQualitySignals['titlePollution'],
+  right: MusicCandidateQualitySignals['titlePollution']
+): MusicCandidateQualitySignals['titlePollution'] {
+  const rank = { none: 0, mild: 1, strong: 2 } as const;
+  if (!left) return right;
+  if (!right) return left;
+  return rank[right] > rank[left] ? right : left;
+}
+
+function qualitySignalsProperty(
+  qualitySignals: MusicCandidateQualitySignals | undefined
+): { qualitySignals?: MusicCandidateQualitySignals } {
+  return qualitySignals ? { qualitySignals } : {};
 }
 
 export function buildCandidateDedupeKey(candidate: CandidateDedupeInput): string {
@@ -165,13 +215,24 @@ export class CandidatePool {
     return this.byId.size;
   }
 
+  mergeQualitySignals(id: string, qualitySignals: MusicCandidateQualitySignals | undefined): void {
+    if (!qualitySignals) return;
+    const canonicalId = this.resolveCanonicalId(id);
+    const entry = canonicalId ? this.byId.get(canonicalId) : undefined;
+    if (!entry) return;
+    entry.candidate = {
+      ...entry.candidate,
+      qualitySignals: mergeCandidateQualitySignals(entry.candidate.qualitySignals, qualitySignals)
+    };
+  }
+
   topBy(fn: (candidate: MusicCandidate) => number, limit: number): MusicCandidate[] {
     return this.list()
       .sort((left, right) => fn(right) - fn(left))
       .slice(0, Math.max(0, limit));
   }
 
-  validateFinalPicks(picks: FinalPick[]): FinalPick[] {
+  validateFinalPicks(picks: FinalPick[], options: FinalPickValidationOptions = {}): FinalPick[] {
     return picks.map((pick) => {
       const parsedPick = finalPickSchema.parse(pick);
       const canonicalId = this.resolveCanonicalId(parsedPick.id);
@@ -194,6 +255,10 @@ export class CandidatePool {
 
       if (!candidate.sources.includes(parsedPick.source)) {
         throw new Error(`Final pick ${parsedPick.id} source mismatch: ${parsedPick.source}`);
+      }
+
+      if (options.isCandidateEligible && !options.isCandidateEligible(cloneCandidate(candidate))) {
+        throw new Error(`Final pick ${parsedPick.id} is not eligible for final selection`);
       }
 
       return {
@@ -268,6 +333,10 @@ export class CandidatePool {
   }
 }
 
-export function validateFinalPicks(picks: FinalPick[], pool: CandidatePool): FinalPick[] {
-  return pool.validateFinalPicks(picks);
+export function validateFinalPicks(
+  picks: FinalPick[],
+  pool: CandidatePool,
+  options: FinalPickValidationOptions = {}
+): FinalPick[] {
+  return pool.validateFinalPicks(picks, options);
 }

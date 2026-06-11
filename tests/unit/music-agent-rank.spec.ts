@@ -196,6 +196,72 @@ describe('music-agent ranking', () => {
     expect(rows[1].adjustedScore).toBeCloseTo(rows[1].baseScore - 0.12 - 0.16, 5);
   });
 
+  it('penalizes weak external quality signals when ranking candidates', () => {
+    const clean = candidate({
+      id: 'clean',
+      artist: 'Fresh Artist',
+      sources: ['search'],
+      qualitySignals: { popularity: 80, titlePollution: 'none' }
+    });
+    const lowPopularity = candidate({
+      id: 'low-pop',
+      artist: 'Low Artist',
+      sources: ['search'],
+      qualitySignals: { popularity: 30, titlePollution: 'none' },
+      scores: { ...candidate().scores, intentMatch: 1 }
+    });
+    const noCopyright = candidate({
+      id: 'no-copyright',
+      artist: 'Unavailable Artist',
+      sources: ['trend'],
+      qualitySignals: { popularity: 70, noCopyrightRcmd: true, titlePollution: 'none' },
+      scores: { ...candidate().scores, intentMatch: 1 }
+    });
+
+    const ranked = rankCandidates([lowPopularity, noCopyright, clean], 3);
+    const rows = buildCandidateScoreTableRows(ranked);
+
+    expect(ranked.map((item) => item.id)).toEqual(['low-pop', 'clean', 'no-copyright']);
+    expect(rows.find((row) => row.id === 'low-pop')?.qualityPenalty).toBeGreaterThan(0);
+    expect(rows.find((row) => row.id === 'low-pop')?.adjustedScore).toBeLessThan(
+      rows.find((row) => row.id === 'low-pop')?.baseScore ?? 0
+    );
+    expect(rows.find((row) => row.id === 'no-copyright')?.qualityPenalty).toBeGreaterThan(
+      rows.find((row) => row.id === 'low-pop')?.qualityPenalty ?? 0
+    );
+  });
+
+  it('filters strong title pollution with very low popularity only for purely external candidates', () => {
+    const pollutedExternal = candidate({
+      id: 'polluted-external',
+      name: "90's Chill Lofi Hip Hop｜勉強・集中・睡眠 深夜のローファイ mix",
+      artist: 'Search Artist',
+      sources: ['search'],
+      qualitySignals: { popularity: 10, titlePollution: 'strong' },
+      scores: { ...candidate().scores, intentMatch: 1 }
+    });
+    const pollutedTrusted = candidate({
+      id: 'polluted-trusted',
+      name: "90's Chill Lofi Hip Hop｜勉強・集中・睡眠 深夜のローファイ mix",
+      artist: 'Liked Artist',
+      sources: ['search', 'liked'],
+      qualitySignals: { popularity: 10, titlePollution: 'strong' },
+      scores: { ...candidate().scores, intentMatch: 0.9 }
+    });
+    const clean = candidate({
+      id: 'clean',
+      artist: 'Clean Artist',
+      sources: ['search'],
+      qualitySignals: { popularity: 70, titlePollution: 'none' }
+    });
+
+    const rankedIds = rankCandidates([pollutedExternal, pollutedTrusted, clean], 5).map((item) => item.id);
+
+    expect(rankedIds).not.toContain('polluted-external');
+    expect(rankedIds).toHaveLength(2);
+    expect(rankedIds).toEqual(expect.arrayContaining(['clean', 'polluted-trusted']));
+  });
+
   it('diversifyCandidates skips repeated artists instead of filling the limit', () => {
     const candidates = [
       candidate({ id: 'a1', artist: 'Artist A', scores: { ...candidate().scores, intentMatch: 1 } }),
@@ -204,5 +270,20 @@ describe('music-agent ranking', () => {
 
     expect(diversifyCandidates(candidates, 3).map((item) => item.id)).toEqual(['a1']);
     expect(diversifyCandidates(candidates, 0)).toEqual([]);
+  });
+
+  it('returns cloned quality signals from ranking helpers', () => {
+    const original = candidate({
+      id: 'quality-clone',
+      sources: ['search'],
+      qualitySignals: { popularity: 80, titlePollution: 'none' }
+    });
+
+    const [ranked] = rankCandidates([original], 1);
+    const [diversified] = diversifyCandidates([original], 1);
+    ranked.qualitySignals!.popularity = 1;
+    diversified.qualitySignals!.titlePollution = 'strong';
+
+    expect(original.qualitySignals).toEqual({ popularity: 80, titlePollution: 'none' });
   });
 });

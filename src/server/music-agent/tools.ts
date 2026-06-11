@@ -1,12 +1,19 @@
 import type { NcmClient } from '../ncm/client.js';
 import { getMusicKnowledgeSlice } from './knowledge.js';
-import { diversifyCandidates, rankCandidates, scoreCandidateForRanking } from './rank.js';
+import {
+  diversifyCandidates,
+  isHardFilteredCandidate,
+  rankCandidates,
+  resolveTitlePollution,
+  scoreCandidateForRanking
+} from './rank.js';
 import { buildTrendContext, type TrendCapableNcmClient } from './trends.js';
 import {
   queryPlanSchema,
   type AgentBudget,
   type CandidateSource,
   type MusicAgentContextSummary,
+  type MusicCandidateQualitySignals,
   type MusicAgentToolName,
   type MusicCandidate,
   type MusicCandidateScores,
@@ -26,7 +33,9 @@ export type MusicAgentTool = (
   signal?: AbortSignal
 ) => Promise<ToolObservation>;
 
-export type MusicAgentToolRegistry = Partial<Record<MusicAgentToolName, MusicAgentTool>>;
+export type MusicAgentToolRegistry = Partial<Record<MusicAgentToolName, MusicAgentTool>> & {
+  prepare_for_ranking?: MusicAgentTool;
+};
 
 type MusicAgentNcmClient = Pick<
   NcmClient,
@@ -48,6 +57,7 @@ type NcmTrackLike = {
   id?: number | string | null;
   name?: string | null;
   artists?: string[] | null;
+  qualitySignals?: MusicCandidateQualitySignals | null;
 };
 
 type ToolState = {
@@ -55,6 +65,7 @@ type ToolState = {
   trendContext: TrendContext | null;
   ncmSearches: number;
   playlistFetches: number;
+  qualityPreparedIds: Set<string>;
 };
 
 type CacheEntry<T> = {
@@ -76,6 +87,8 @@ const AVOID_ARTIST_PENALTY_THRESHOLD = 0.18;
 const MAX_QUERY_RECALL_PER_PRIMARY_ARTIST = 2;
 const LIKED_RECALL_CACHE_TTL_MS = 10 * 60 * 1000;
 const SEARCH_RECALL_CACHE_TTL_MS = 30 * 60 * 1000;
+const QUALITY_DETAIL_BATCH_LIMIT = 80;
+const QUALITY_SOURCES = new Set<CandidateSource>(['search', 'style_expansion', 'trend']);
 const likedRecallCache = new Map<string, CacheEntry<NcmTrackLike[]>>();
 const searchRecallCache = new Map<string, CacheEntry<NcmTrackLike[]>>();
 
@@ -84,7 +97,8 @@ export function createMusicAgentTools(input: CreateMusicAgentToolsInput): MusicA
     queryPlan: null,
     trendContext: null,
     ncmSearches: 0,
-    playlistFetches: 0
+    playlistFetches: 0,
+    qualityPreparedIds: new Set()
   };
   const limits = {
     maxNcmSearches: input.maxNcmSearches ?? input.budget.maxNcmSearches,
@@ -92,7 +106,9 @@ export function createMusicAgentTools(input: CreateMusicAgentToolsInput): MusicA
     maxTrendFetchMs: input.maxTrendFetchMs ?? input.budget.maxTrendFetchMs
   };
 
-  return {
+  const registry: MusicAgentToolRegistry = {
+    prepare_for_ranking: async (_toolInput, signal) => prepareCandidateQuality(input, state, signal),
+
     get_context_summary: async (_toolInput, signal) => {
       if (signal?.aborted) return abortedObservation(input.candidatePool);
       return observation(input.candidatePool, summarizeContext(input.context));
@@ -344,27 +360,35 @@ export function createMusicAgentTools(input: CreateMusicAgentToolsInput): MusicA
 
     rank_candidates: async (toolInput, signal) => {
       if (signal?.aborted) return abortedObservation(input.candidatePool);
+      const qualityObservation = await prepareCandidateQuality(input, state, signal);
+      if (signal?.aborted) return abortedObservation(input.candidatePool);
       const limit = boundedPositiveInt(toolInput.limit, 8, MAX_RANK_DISPLAY_LIMIT);
       const options = rankOptions(input.context);
       const top = rankCandidates(input.candidatePool.list(), limit, options);
-      return observation(input.candidatePool, summarizeCandidates('ranked candidates', top, options));
+      return observation(input.candidatePool, summarizeCandidates('ranked candidates', top, options), qualityObservation.problems);
     },
 
     diversify_candidates: async (toolInput, signal) => {
       if (signal?.aborted) return abortedObservation(input.candidatePool);
+      const qualityObservation = await prepareCandidateQuality(input, state, signal);
+      if (signal?.aborted) return abortedObservation(input.candidatePool);
       const limit = boundedPositiveInt(toolInput.limit, 2, MAX_DIVERSIFY_DISPLAY_LIMIT);
       const options = rankOptions(input.context);
       const diversified = diversifyCandidates(rankCandidates(input.candidatePool.list(), 20, options), limit);
-      return observation(input.candidatePool, summarizeCandidates('diversified candidates', diversified, options));
+      return observation(input.candidatePool, summarizeCandidates('diversified candidates', diversified, options), qualityObservation.problems);
     },
 
     finalize_pick: async (_toolInput, signal) => {
       if (signal?.aborted) return abortedObservation(input.candidatePool);
+      const qualityObservation = await prepareCandidateQuality(input, state, signal);
+      if (signal?.aborted) return abortedObservation(input.candidatePool);
       const options = rankOptions(input.context);
       const top = rankCandidates(input.candidatePool.list(), 5, options);
-      return observation(input.candidatePool, summarizeCandidates('finalize candidates', top, options));
+      return observation(input.candidatePool, summarizeCandidates('finalize candidates', top, options), qualityObservation.problems);
     }
   };
+
+  return registry;
 }
 
 async function getLikedRecallTracks(
@@ -385,6 +409,50 @@ async function getLikedRecallTracks(
   const tracks = await input.ncmClient.getSongDetails(ids);
   writeCache(likedRecallCache, cacheKey, tracks, LIKED_RECALL_CACHE_TTL_MS);
   return tracks;
+}
+
+async function prepareCandidateQuality(
+  input: CreateMusicAgentToolsInput,
+  state: ToolState,
+  signal?: AbortSignal
+): Promise<ToolObservation> {
+  const candidates = input.candidatePool.list();
+  const ids = candidates
+    .filter(usesExternalQuality)
+    .map((candidate) => candidate.id)
+    .filter((id) => !state.qualityPreparedIds.has(id));
+
+  const problems: string[] = [];
+  let preparedCount = 0;
+  for (let start = 0; start < ids.length; start += QUALITY_DETAIL_BATCH_LIMIT) {
+    if (signal?.aborted) return abortedObservation(input.candidatePool);
+    const batchIds = ids.slice(start, start + QUALITY_DETAIL_BATCH_LIMIT);
+    try {
+      const details = await input.ncmClient.getSongDetails(batchIds);
+      if (signal?.aborted) return abortedObservation(input.candidatePool);
+      for (const detail of details) {
+        const id = detail.id === undefined || detail.id === null ? '' : String(detail.id);
+        input.candidatePool.mergeQualitySignals(id, detail.qualitySignals);
+      }
+      preparedCount += batchIds.length;
+      for (const id of batchIds) state.qualityPreparedIds.add(id);
+    } catch (error) {
+      problems.push(`quality detail failed: ${formatError(error)}`);
+    }
+  }
+
+  const filteredCount = input.candidatePool.list().filter(isHardFilteredCandidate).length;
+  if (filteredCount > 0) {
+    problems.push(`filtered ${filteredCount} low-quality external candidates`);
+  }
+
+  return observation(
+    input.candidatePool,
+    preparedCount > 0
+      ? `quality signals prepared for ${preparedCount} external candidates.`
+      : 'quality signals already prepared.',
+    problems
+  );
 }
 
 function autoFillSearchQueries(context: MusicAgentContextSummary, queryPlan: QueryPlan): string[] {
@@ -608,8 +676,19 @@ function candidateFromTrack(
     artist,
     sources: [source],
     evidence: [options.evidence],
-    scores: { ...options.scores }
+    scores: { ...options.scores },
+    ...qualitySignalsProperty(track.qualitySignals ?? undefined)
   };
+}
+
+function usesExternalQuality(candidate: MusicCandidate): boolean {
+  return candidate.sources.every((source) => QUALITY_SOURCES.has(source));
+}
+
+function qualitySignalsProperty(
+  qualitySignals: MusicCandidateQualitySignals | undefined
+): { qualitySignals?: MusicCandidateQualitySignals } {
+  return qualitySignals ? { qualitySignals: { ...qualitySignals } } : {};
 }
 
 function sourceScores(source: CandidateSource, context: MusicAgentContextSummary): MusicCandidateScores {
@@ -732,6 +811,8 @@ function summarizeCandidates(
         `${candidate.id}:${candidate.name}-${candidate.artist}`,
         `score=${breakdown.baseScore.toFixed(3)}`,
         breakdown.artistPenalty > 0 ? `artistPenalty=${breakdown.artistPenalty.toFixed(3)}` : '',
+        breakdown.qualityPenalty > 0 ? `qualityPenalty=${breakdown.qualityPenalty.toFixed(3)}` : '',
+        breakdown.titlePollutionPenalty > 0 ? `titlePollution=${resolveTitlePollution(candidate)}` : '',
         `adjusted=${breakdown.adjustedScore.toFixed(3)}`
       ].filter(Boolean).join(' ');
     }).join(' | ')}`,

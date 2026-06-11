@@ -10,7 +10,8 @@ import {
   type NcmLyric,
   type NcmPlaylistDetail,
   type NcmSong,
-  type NcmSongUrl
+  type NcmSongUrl,
+  type NcmTrackQualitySignals
 } from '../../shared/schema.js';
 
 type NcmClientOptions = {
@@ -295,7 +296,8 @@ export class NcmClient {
         .map((artist) => artist.name)
         .filter((name): name is string => typeof name === 'string' && name.length > 0),
       durationMs: typeof song.dt === 'number' ? song.dt : 0,
-      ...(song.al?.picUrl ? { coverImgUrl: song.al.picUrl } : {})
+      ...(song.al?.picUrl ? { coverImgUrl: song.al.picUrl } : {}),
+      ...qualitySignalsProperty(buildTrackQualitySignals(song))
     }));
   }
 
@@ -403,6 +405,47 @@ export class NcmClient {
       clearTimeout(timer);
     }
   }
+}
+
+function buildTrackQualitySignals(song: {
+  pop?: number;
+  fee?: number;
+  copyright?: number;
+  noCopyrightRcmd?: unknown | null;
+  privilege?: { st?: number; toast?: boolean } | null;
+  al?: { name?: string | null } | null;
+  originCoverType?: number;
+  publishTime?: number;
+  mv?: number;
+}): NcmTrackQualitySignals | undefined {
+  const signals: NcmTrackQualitySignals = {};
+  const popularity = clampPopularity(song.pop);
+  if (popularity !== undefined) signals.popularity = popularity;
+  if (Number.isInteger(song.fee)) signals.fee = song.fee;
+  if (Number.isInteger(song.copyright)) signals.copyright = song.copyright;
+  if (song.noCopyrightRcmd !== undefined && song.noCopyrightRcmd !== null) signals.noCopyrightRcmd = true;
+  const privilegeSt = song.privilege?.st;
+  if (Number.isInteger(privilegeSt)) signals.privilegeSt = privilegeSt;
+  const privilegeToast = song.privilege?.toast;
+  if (typeof privilegeToast === 'boolean') signals.privilegeToast = privilegeToast;
+  if (typeof song.al?.name === 'string' && song.al.name.trim()) signals.albumName = song.al.name.trim();
+  if (Number.isInteger(song.originCoverType)) signals.originCoverType = song.originCoverType;
+  if (Number.isInteger(song.publishTime)) signals.publishTime = song.publishTime;
+  const mv = song.mv;
+  if (typeof mv === 'number' && Number.isInteger(mv)) signals.mv = mv > 0;
+
+  return Object.keys(signals).length > 0 ? signals : undefined;
+}
+
+function clampPopularity(value: unknown): number | undefined {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return undefined;
+  return Math.min(100, Math.max(0, value));
+}
+
+function qualitySignalsProperty(
+  qualitySignals: NcmTrackQualitySignals | undefined
+): { qualitySignals?: NcmTrackQualitySignals } {
+  return qualitySignals ? { qualitySignals } : {};
 }
 
 function extractUserId(loginStatus: unknown): string | null {

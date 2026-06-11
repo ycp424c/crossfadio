@@ -259,7 +259,21 @@ describe('NcmClient DTO mapping', () => {
       return new Response(
         JSON.stringify({
           songs: [
-            { id: 101, name: 'Song A', dt: 210_000, ar: [{ name: 'Alice' }], al: { picUrl: 'https://img/101.jpg' } },
+            {
+              id: 101,
+              name: 'Song A',
+              dt: 210_000,
+              ar: [{ name: 'Alice' }],
+              al: { name: 'Album A', picUrl: 'https://img/101.jpg' },
+              pop: 120,
+              fee: 8,
+              copyright: 2,
+              noCopyrightRcmd: { songId: 201 },
+              privilege: { st: -200, toast: true },
+              originCoverType: 2,
+              publishTime: 1_700_000_000_000,
+              mv: 12345
+            },
             { id: 102, name: 'Song B', dt: 180_000, ar: [{ name: 'Bob' }, { name: 'Carol' }], al: { picUrl: 'https://img/102.jpg' } }
           ]
         }),
@@ -269,7 +283,25 @@ describe('NcmClient DTO mapping', () => {
     const client = new NcmClient('http://127.0.0.1:3000');
 
     expect(await client.getSongDetails(['101', '102'])).toEqual([
-      { id: 101, name: 'Song A', artists: ['Alice'], durationMs: 210_000, coverImgUrl: 'https://img/101.jpg' },
+      {
+        id: 101,
+        name: 'Song A',
+        artists: ['Alice'],
+        durationMs: 210_000,
+        coverImgUrl: 'https://img/101.jpg',
+        qualitySignals: {
+          popularity: 100,
+          fee: 8,
+          copyright: 2,
+          noCopyrightRcmd: true,
+          privilegeSt: -200,
+          privilegeToast: true,
+          albumName: 'Album A',
+          originCoverType: 2,
+          publishTime: 1_700_000_000_000,
+          mv: true
+        }
+      },
       { id: 102, name: 'Song B', artists: ['Bob', 'Carol'], durationMs: 180_000, coverImgUrl: 'https://img/102.jpg' }
     ]);
   });

@@ -1,6 +1,30 @@
-import type { CandidateScoreTableRow, MusicCandidate } from './schema.js';
+import type { CandidateScoreTableRow, MusicCandidate, MusicCandidateQualitySignals } from './schema.js';
 
 const REPEATED_ARTIST_PENALTY = 0.16;
+const LOW_POPULARITY_THRESHOLD = 40;
+const VERY_LOW_POPULARITY_THRESHOLD = 15;
+const LOW_POPULARITY_PENALTY = 0.08;
+const VERY_LOW_POPULARITY_PENALTY = 0.22;
+const NO_COPYRIGHT_RECOMMENDATION_PENALTY = 0.28;
+const MILD_TITLE_POLLUTION_PENALTY = 0.06;
+const STRONG_TITLE_POLLUTION_PENALTY = 0.16;
+const EXTERNAL_SOURCES = new Set(['search', 'style_expansion', 'trend']);
+const TITLE_POLLUTION_TERMS = [
+  'lofi',
+  'chill',
+  'study',
+  'sleep',
+  'playlist',
+  'mix',
+  'music',
+  'bgm',
+  '勉強',
+  '集中',
+  '睡眠',
+  '作業用',
+  '深夜',
+  'ローファイ'
+];
 
 export type RankCandidatesOptions = {
   artistPenalties?: ReadonlyMap<string, number>;
@@ -31,6 +55,8 @@ export type CandidateScoreBreakdown = {
   baseScore: number;
   artistPenalty: number;
   repeatPenalty: number;
+  qualityPenalty: number;
+  titlePollutionPenalty: number;
   adjustedScore: number;
 };
 
@@ -43,17 +69,21 @@ export function scoreCandidateForRanking(
   const baseScore = scoreCandidate(candidate);
   const artistPenalty = options.artistPenalties?.get(artist) ?? 0;
   const repeatPenalty = repeatCount * REPEATED_ARTIST_PENALTY;
+  const qualityPenalty = qualitySignalPenalty(candidate);
+  const titlePollutionPenalty = titlePollutionSignalPenalty(candidate);
   return {
     baseScore,
     artistPenalty,
     repeatPenalty,
-    adjustedScore: Math.max(0, baseScore - artistPenalty - repeatPenalty)
+    qualityPenalty,
+    titlePollutionPenalty,
+    adjustedScore: Math.max(0, baseScore - artistPenalty - repeatPenalty - qualityPenalty - titlePollutionPenalty)
   };
 }
 
 export function rankCandidates(candidates: MusicCandidate[], limit: number, options: RankCandidatesOptions = {}): MusicCandidate[] {
   const target = Math.max(0, limit);
-  const remaining = [...candidates];
+  const remaining = candidates.filter((candidate) => !isHardFilteredCandidate(candidate));
   const selected: MusicCandidate[] = [];
   const artistCounts = new Map<string, number>();
 
@@ -70,12 +100,7 @@ export function rankCandidates(candidates: MusicCandidate[], limit: number, opti
     }
 
     const [picked] = remaining.splice(bestIndex, 1);
-    selected.push({
-      ...picked,
-      sources: [...picked.sources],
-      evidence: [...picked.evidence],
-      scores: { ...picked.scores }
-    });
+    selected.push(cloneCandidate(picked));
 
     const artist = primaryArtist(picked.artist);
     artistCounts.set(artist, (artistCounts.get(artist) ?? 0) + 1);
@@ -103,13 +128,17 @@ export function buildCandidateScoreTableRows(
       baseScore: roundScore(breakdown.baseScore),
       artistPenalty: roundScore(breakdown.artistPenalty),
       repeatPenalty: roundScore(breakdown.repeatPenalty),
+      qualityPenalty: roundScore(breakdown.qualityPenalty),
+      titlePollutionPenalty: roundScore(breakdown.titlePollutionPenalty),
       adjustedScore: roundScore(breakdown.adjustedScore)
     };
   });
 }
 
 export function diversifyCandidates(candidates: MusicCandidate[], limit: number): MusicCandidate[] {
-  const sorted = [...candidates].sort((left, right) => scoreCandidate(right) - scoreCandidate(left));
+  const sorted = candidates
+    .filter((candidate) => !isHardFilteredCandidate(candidate))
+    .sort((left, right) => scoreCandidateForRanking(right).adjustedScore - scoreCandidateForRanking(left).adjustedScore);
   const selected: MusicCandidate[] = [];
   const usedArtists = new Set<string>();
   const target = Math.max(0, limit);
@@ -125,12 +154,7 @@ export function diversifyCandidates(candidates: MusicCandidate[], limit: number)
       continue;
     }
 
-    selected.push({
-      ...candidate,
-      sources: [...candidate.sources],
-      evidence: [...candidate.evidence],
-      scores: { ...candidate.scores }
-    });
+    selected.push(cloneCandidate(candidate));
     usedArtists.add(artist);
   }
 
@@ -145,6 +169,71 @@ function repeatedArtistAdjustedScore(
   const artist = primaryArtist(candidate.artist);
   const repeatCount = artistCounts.get(artist) ?? 0;
   return scoreCandidateForRanking(candidate, options, repeatCount).adjustedScore;
+}
+
+function cloneCandidate(candidate: MusicCandidate): MusicCandidate {
+  return {
+    ...candidate,
+    sources: [...candidate.sources],
+    evidence: [...candidate.evidence],
+    scores: { ...candidate.scores },
+    ...(candidate.qualitySignals ? { qualitySignals: { ...candidate.qualitySignals } } : {})
+  };
+}
+
+export function isHardFilteredCandidate(candidate: MusicCandidate): boolean {
+  if (!usesExternalQuality(candidate)) return false;
+  const signals = candidate.qualitySignals;
+  if (signals?.privilegeSt !== undefined && signals.privilegeSt < 0) return true;
+  if (signals?.privilegeToast === true) return true;
+  return resolveTitlePollution(candidate) === 'strong'
+    && signals?.popularity !== undefined
+    && signals.popularity < VERY_LOW_POPULARITY_THRESHOLD;
+}
+
+export function resolveTitlePollution(candidate: MusicCandidate): NonNullable<MusicCandidateQualitySignals['titlePollution']> {
+  return candidate.qualitySignals?.titlePollution ?? detectTitlePollution(candidate.name);
+}
+
+function qualitySignalPenalty(candidate: MusicCandidate): number {
+  if (!usesExternalQuality(candidate)) return 0;
+  const signals = candidate.qualitySignals;
+  if (!signals) return 0;
+
+  let penalty = 0;
+  if (signals.popularity !== undefined) {
+    if (signals.popularity < VERY_LOW_POPULARITY_THRESHOLD) penalty += VERY_LOW_POPULARITY_PENALTY;
+    else if (signals.popularity < LOW_POPULARITY_THRESHOLD) penalty += LOW_POPULARITY_PENALTY;
+  }
+  if (signals.noCopyrightRcmd) penalty += NO_COPYRIGHT_RECOMMENDATION_PENALTY;
+  return penalty;
+}
+
+function titlePollutionSignalPenalty(candidate: MusicCandidate): number {
+  if (!usesExternalQuality(candidate)) return 0;
+  const pollution = resolveTitlePollution(candidate);
+  if (pollution === 'strong') return STRONG_TITLE_POLLUTION_PENALTY;
+  if (pollution === 'mild') return MILD_TITLE_POLLUTION_PENALTY;
+  return 0;
+}
+
+function usesExternalQuality(candidate: MusicCandidate): boolean {
+  return candidate.sources.every((source) => EXTERNAL_SOURCES.has(source));
+}
+
+function detectTitlePollution(title: string): NonNullable<MusicCandidateQualitySignals['titlePollution']> {
+  const normalized = title.normalize('NFKC').toLowerCase();
+  const compact = normalized.replace(/\s+/g, '');
+  const termCount = TITLE_POLLUTION_TERMS.filter((term) => normalized.includes(term)).length;
+  const separatorCount = (title.match(/[|｜×/・_-]/g) ?? []).length;
+
+  if ((compact.length >= 42 && termCount >= 2) || (termCount >= 3 && separatorCount >= 2)) {
+    return 'strong';
+  }
+  if ((compact.length >= 32 && termCount >= 1) || termCount >= 2 || separatorCount >= 4) {
+    return 'mild';
+  }
+  return 'none';
 }
 
 function roundScore(value: number): number {
