@@ -152,10 +152,27 @@ describe('player layout', () => {
 
     expect(source).toContain('const djPickNextInFlightRef = useRef(false)');
     expect(source).toContain('AUTO_FILL_LOW_WATER_MARK');
-    expect(triggerBlock).toContain('backupTrackCount <= AUTO_FILL_LOW_WATER_MARK');
-    expect(triggerBlock).toContain('!djPickNextInFlightRef.current');
+    expect(triggerBlock).toContain('shouldTriggerDjRefill({');
+    expect(triggerBlock).toContain('pickNextInFlight: djPickNextInFlightRef.current');
+    expect(triggerBlock).toContain('lowWaterMark: AUTO_FILL_LOW_WATER_MARK');
     expect(triggerBlock).toContain('djPickNextInFlightRef.current = true');
     expect(triggerBlock).toContain('djPickNextInFlightRef.current = false');
+  });
+
+  it('uses latest queue refs and direct SSE queue-appended events to avoid stale refill retries', () => {
+    const source = fs.readFileSync(path.join(root, 'src/renderer/views/Player/PlayerView.tsx'), 'utf-8');
+    const triggerStart = source.indexOf('// DJ mode: refill when the backup queue reaches the low-water mark');
+    const startSegueAudioStart = source.indexOf('maybeStartSegueAudio();', triggerStart);
+    const triggerBlock = source.slice(triggerStart, startSegueAudioStart);
+
+    expect(source).toContain('const queueRef = useRef<QueueTrackDto[]>([])');
+    expect(source).toContain('const currentIndexRef = useRef(0)');
+    expect(source).toContain('appendRemoteQueueTrack(appended)');
+    expect(triggerBlock).toContain('const latestQueue = queueRef.current');
+    expect(triggerBlock).toContain('shouldTriggerDjRefill({');
+    expect(triggerBlock).toContain('queueLength: latestQueue.length');
+    expect(triggerBlock).toContain('currentIndex: latestCurrentIndex');
+    expect(triggerBlock).toContain("type === 'queue-appended'");
   });
 
   it('backs off instead of retrying immediately when DJ pick-next is already running on the server', () => {
@@ -168,10 +185,10 @@ describe('player layout', () => {
 
     expect(source).toContain('const DJ_ALREADY_RUNNING_BACKOFF_MS = 30000');
     expect(source).toContain('const djPickNextBackoffUntilRef = useRef<number>(0)');
-    expect(triggerBlock).toContain('now >= djPickNextBackoffUntilRef.current');
+    expect(triggerBlock).toContain('backoffUntil: djPickNextBackoffUntilRef.current');
     expect(doneBlock).toContain("reason === 'already-running'");
     expect(doneBlock).toContain('djPickNextBackoffUntilRef.current = Date.now() + DJ_ALREADY_RUNNING_BACKOFF_MS');
-    expect(doneBlock).toContain("setDjStatusText('正在补充队列…')");
+    expect(doneBlock).toContain("setDjStatusText(latestBackupTrackCount > AUTO_FILL_LOW_WATER_MARK ? '已补充队列' : '正在补充队列…')");
     expect(doneBlock.indexOf("reason === 'already-running'")).toBeLessThan(
       doneBlock.indexOf('djPickNextLastCallRef.current = 0')
     );

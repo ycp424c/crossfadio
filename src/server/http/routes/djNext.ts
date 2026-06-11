@@ -1281,6 +1281,10 @@ function broadcastAppended(
   emit({
     type: 'dj.pick-next.done',
     added: newTracks.length > 0,
+    addedCount: newTracks.length,
+    targetCount: targetPickCount,
+    trackIds: newTracks.map((track) => track.ncmId),
+    trackNames: names,
     trackName: names.join('、') || undefined
   });
 }
@@ -1454,7 +1458,7 @@ export function createSseDjPickNextHandler(opts: DjNextOptions) {
     const ncmClient = getScopedNcmClient(req, opts.ncmClient);
     initSseRes(res);
     if (isRunning.get(userId)) {
-      endSse(res, 'dj.pick-next.done', { added: false, reason: 'already-running' });
+      endSse(res, 'dj.pick-next.done', { added: false, running: true, reason: 'already-running' });
       return;
     }
     applyClientQueueSnapshot(req, userId);

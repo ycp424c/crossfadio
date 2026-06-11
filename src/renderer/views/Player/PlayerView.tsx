@@ -48,6 +48,15 @@ import { QueuePanel } from '@renderer/components/player/QueuePanel';
 import { TransportControls } from '@renderer/components/player/TransportControls';
 import { initSseEvents, addSseListener, closeSseEvents, streamSegue, streamPickNext } from '@renderer/sse/client';
 import { useMediaQuery } from '@renderer/lib-hooks';
+import {
+  appendQueueTrackIfMissing,
+  formatDjPickDoneStatus,
+  getBackupTrackCount,
+  getDjPickDoneAddedCount,
+  getDjPickDoneTrackNames,
+  queueTrackFromSsePayload,
+  shouldTriggerDjRefill
+} from '@renderer/playerDjRefill';
 import { persistQueueSnapshot, restorePersistedQueueSnapshot } from '@renderer/playerQueueCache';
 import { mergeQueueTracksById } from '@renderer/playerTemporaryBans';
 import { AUTO_FILL_LOW_WATER_MARK } from '@shared/dj';
@@ -142,6 +151,30 @@ type DjPickLog = {
   selectedSay: string;
 };
 
+function buildDjPickDoneLog(data: Record<string, unknown>): DjPickLog | null {
+  const trackNames = getDjPickDoneTrackNames(data);
+  const trackIds = Array.isArray(data.trackIds)
+    ? data.trackIds.map((id) => String(id))
+    : [];
+  const addedCount = getDjPickDoneAddedCount(data);
+  if (trackNames.length === 0 && addedCount === 0) return null;
+
+  return {
+    likedSample: [],
+    searchQueries: [],
+    searchedTracks: [],
+    selectedTracks: trackNames.map((name, index) => ({
+      id: trackIds[index] ?? `added-${index + 1}`,
+      name,
+      artist: '',
+      reason: '已加入队列',
+      source: 'done'
+    })),
+    totalCandidates: typeof data.totalCandidates === 'number' ? data.totalCandidates : 0,
+    selectedSay: addedCount > 0 ? `本次补充 ${addedCount} 首。` : ''
+  };
+}
+
 export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
   const [queue, setQueue] = useState<QueueTrackDto[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
@@ -206,6 +239,8 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
   const djPickNextLastCallRef = useRef<number>(0);
   const djPickNextBackoffUntilRef = useRef<number>(0);
   const djPickNextInFlightRef = useRef(false);
+  const queueRef = useRef<QueueTrackDto[]>([]);
+  const currentIndexRef = useRef(0);
   const applyingRemoteQueueRef = useRef(false);
   const skipNextQueuePersistRef = useRef(true);
   const pendingTemporaryBanTracksRef = useRef<QueueTrackDto[]>([]);
@@ -224,10 +259,21 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
   const queueIds = useMemo(() => queue.map((track) => track.id), [queue]);
   const currentTrack = queue[currentIndex] ?? null;
   const currentTrackId = currentTrack?.id ?? null;
+  queueRef.current = queue;
+  currentIndexRef.current = currentIndex;
   const currentTrackIdRef = useRef<string | null>(currentTrackId);
   currentTrackIdRef.current = currentTrackId;
   const nowPlayingRef = useRef<NowPlayingResponse | null>(nowPlaying);
   nowPlayingRef.current = nowPlaying;
+
+  const appendRemoteQueueTrack = useCallback((track: QueueTrackDto) => {
+    const nextQueue = appendQueueTrackIfMissing(queueRef.current, track);
+    if (nextQueue === queueRef.current) {
+      return;
+    }
+    queueRef.current = nextQueue;
+    setQueue(nextQueue);
+  }, []);
 
   const restoreTrackVolume = useCallback(() => {
     if (audioRef.current) {
@@ -354,6 +400,8 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
 
     const restoredQueue = restorePersistedQueueSnapshot();
     if (restoredQueue) {
+      queueRef.current = restoredQueue.queue;
+      currentIndexRef.current = restoredQueue.currentIndex;
       setQueue(restoredQueue.queue);
       setCurrentIndex(restoredQueue.currentIndex);
       setTrackStatusText('已恢复上次播放列表');
@@ -463,27 +511,20 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
         const nextIndex = typeof d.currentIndex === 'number' ? d.currentIndex : 0;
         applyingRemoteQueueRef.current = true;
         djPickNextBackoffUntilRef.current = 0;
+        queueRef.current = nextQueue;
+        currentIndexRef.current = nextIndex;
         setQueue(nextQueue);
         setCurrentIndex(nextIndex);
       } else if (event === 'queue-appended') {
-        const t = (data as Record<string, unknown>).track as { ncmId?: unknown; name?: unknown; artists?: unknown; durationMs?: unknown; coverImgUrl?: unknown } | null;
-        if (t && typeof t === 'object' && t.ncmId) {
-          const appended: QueueTrackDto = {
-            id: String(t.ncmId),
-            name: typeof t.name === 'string' ? t.name : `Track ${t.ncmId}`,
-            artists: Array.isArray(t.artists) ? (t.artists as string[]) : [],
-            durationMs: typeof t.durationMs === 'number' ? t.durationMs : 0,
-            coverImgUrl: typeof (t as { coverImgUrl?: unknown }).coverImgUrl === 'string'
-              ? (t as { coverImgUrl: string }).coverImgUrl
-              : null
-          };
+        const appended = queueTrackFromSsePayload((data as Record<string, unknown>).track);
+        if (appended) {
           djPickNextBackoffUntilRef.current = 0;
-          setQueue((prev) => [...prev, appended]);
+          appendRemoteQueueTrack(appended);
         }
       }
     });
     return () => { unsub(); closeSseEvents(); };
-  }, [sseToken]);
+  }, [appendRemoteQueueTrack, sseToken]);
 
   useEffect(() => {
     if (skipNextQueuePersistRef.current) {
@@ -627,6 +668,8 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
       const startTrack = payload.tracks[randomIdx];
       djPickNextLastCallRef.current = 0;
       djPickNextInFlightRef.current = false;
+      queueRef.current = [startTrack];
+      currentIndexRef.current = 0;
       setQueue([startTrack]);
       setCurrentIndex(0);
       setTrackStatusText(`DJ 模式启动：随机选中「${startTrack.name ?? startTrack.id}」`);
@@ -859,7 +902,10 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
     if (queue.length <= 1) return;
     rememberTemporaryBans(queue.slice(0, 1));
     if (isPlaying) shouldAutoplayNextRef.current = true;
-    setQueue((q) => q.slice(1));
+    const nextQueue = queue.slice(1);
+    queueRef.current = nextQueue;
+    currentIndexRef.current = 0;
+    setQueue(nextQueue);
     setCurrentIndex(0);
   }
 
@@ -867,7 +913,10 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
     if (index <= 0 || index >= queue.length) return;
     rememberTemporaryBans(queue.slice(0, index));
     if (isPlaying) shouldAutoplayNextRef.current = true;
-    setQueue((q) => q.slice(index));
+    const nextQueue = queue.slice(index);
+    queueRef.current = nextQueue;
+    currentIndexRef.current = 0;
+    setQueue(nextQueue);
     setCurrentIndex(0);
   }
 
@@ -880,10 +929,14 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
     const deletedId = deletedTrack.id;
     const isNext = deletedId !== null && deletedId === (nextTrack?.track.id ?? null);
 
-    setQueue((q) => [...q.slice(0, index), ...q.slice(index + 1)]);
+    const nextQueue = [...queue.slice(0, index), ...queue.slice(index + 1)];
+    queueRef.current = nextQueue;
+    setQueue(nextQueue);
 
     if (index < currentIndex) {
-      setCurrentIndex((i) => i - 1);
+      const nextIndex = currentIndex - 1;
+      currentIndexRef.current = nextIndex;
+      setCurrentIndex(nextIndex);
     }
 
     if (isNext) {
@@ -961,28 +1014,39 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
       }
     }
 
-    const backupTrackCount = Math.max(0, queueIds.length - currentIndex - 1);
-
     // DJ mode: refill when the backup queue reaches the low-water mark; rate-limited by cooldown.
     // Defer while a segue request is in flight so both jobs don't compete for LLM bandwidth —
     // segue has a hard timing constraint, DJ pick-next does not.
     const segueInFlight = segueClientRequestIdRef.current !== null;
     const now = Date.now();
+    const latestQueue = queueRef.current;
+    const latestCurrentIndex = currentIndexRef.current;
     if (
-      isPlaying
-      && !segueInFlight
-      && !djPickNextInFlightRef.current
-      && now >= djPickNextBackoffUntilRef.current
-      && backupTrackCount <= AUTO_FILL_LOW_WATER_MARK
+      shouldTriggerDjRefill({
+        isPlaying,
+        segueInFlight,
+        pickNextInFlight: djPickNextInFlightRef.current,
+        now,
+        backoffUntil: djPickNextBackoffUntilRef.current,
+        lastCallAt: djPickNextLastCallRef.current,
+        cooldownMs: DJ_PICK_COOLDOWN_MS,
+        queueLength: latestQueue.length,
+        currentIndex: latestCurrentIndex,
+        lowWaterMark: AUTO_FILL_LOW_WATER_MARK
+      })
     ) {
-      if (now - djPickNextLastCallRef.current >= DJ_PICK_COOLDOWN_MS) {
         djPickNextLastCallRef.current = now;
         djPickNextInFlightRef.current = true;
         setDjStatusText('正在挑选下一首…');
         void (async () => {
           try {
-            for await (const { type, data } of streamPickNext({ queue, currentIndex })) {
-              if (type === 'dj.debug') {
+            for await (const { type, data } of streamPickNext({ queue: latestQueue, currentIndex: latestCurrentIndex })) {
+              if (type === 'queue-appended') {
+                const appended = queueTrackFromSsePayload(data.track);
+                if (appended) {
+                  appendRemoteQueueTrack(appended);
+                }
+              } else if (type === 'dj.debug') {
                 const excludedIds = Array.isArray(data.excludedIds) ? data.excludedIds as string[] : [];
                 const excludedDedupeKeys = Array.isArray(data.excludedDedupeKeys) ? data.excludedDedupeKeys as string[] : [];
                 const candidateScoreTable = Array.isArray(data.candidateScoreTable)
@@ -1010,15 +1074,18 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
                   selectedSay: typeof data.selectedSay === 'string' ? data.selectedSay : '',
                 });
               } else if (type === 'dj.pick-next.done') {
+                console.info('[Crossfadio] DJ pick-next done', data);
                 if (data.added) {
                   djPickNextBackoffUntilRef.current = 0;
-                  const name = typeof data.trackName === 'string' ? data.trackName : '';
-                  setDjStatusText(name ? `已加入「${name}」` : '已补充一首');
+                  djPickNextLastCallRef.current = Date.now();
+                  setDjStatusText(formatDjPickDoneStatus(data));
+                  setDjPickLog((prev) => prev ?? buildDjPickDoneLog(data));
                 } else {
                   const reason = typeof data.reason === 'string' && data.reason.length > 0 ? data.reason : '稍后重试';
                   if (reason === 'already-running') {
                     djPickNextBackoffUntilRef.current = Date.now() + DJ_ALREADY_RUNNING_BACKOFF_MS;
-                    setDjStatusText('正在补充队列…');
+                    const latestBackupTrackCount = getBackupTrackCount(queueRef.current.length, currentIndexRef.current);
+                    setDjStatusText(latestBackupTrackCount > AUTO_FILL_LOW_WATER_MARK ? '已补充队列' : '正在补充队列…');
                   } else {
                     djPickNextBackoffUntilRef.current = 0;
                     djPickNextLastCallRef.current = 0;
@@ -1035,7 +1102,6 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
             djPickNextInFlightRef.current = false;
           }
         })();
-      }
     }
 
     maybeStartSegueAudio();
@@ -1052,12 +1118,17 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
   function onEnded(): void {
     if (queue.length > 1) {
       shouldAutoplayNextRef.current = true;
-      setQueue((q) => q.slice(1));
+      const nextQueue = queue.slice(1);
+      queueRef.current = nextQueue;
+      currentIndexRef.current = 0;
+      setQueue(nextQueue);
       setCurrentIndex(0);
       return;
     }
     setIsPlaying(false);
     shouldAutoplayNextRef.current = false;
+    queueRef.current = [];
+    currentIndexRef.current = 0;
     setQueue([]);
     setCurrentIndex(0);
     setTrackStatusText('播放完成');

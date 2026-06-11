@@ -158,6 +158,9 @@ describe('DJ pick-next diagnostics', () => {
     expect(doPickNext).toContain('whitelisted picks appended fewer than target');
     expect(doPickNext).toContain('getRemainingPickSlots(userId, initialQueueLength, targetPickCount) * 4');
     expect(doPickNext).toContain('targetCount: targetPickCount');
+    expect(source).toContain('addedCount: newTracks.length');
+    expect(source).toContain('trackNames: names');
+    expect(source).toContain('trackIds: newTracks.map((track) => track.ncmId)');
 
     expect(doPickNext).toContain('const styleAbort = createAbortTimeoutSignal(signal, SEARCH_QUERY_LLM_TIMEOUT_MS)');
     expect(doPickNext).toContain('{ signal: styleAbort.signal }');
@@ -189,7 +192,7 @@ describe('DJ pick-next diagnostics', () => {
     expectBefore(jsonHandler, 'if (isRunning.get(userId))', 'applyClientQueueSnapshot(req, userId)');
     expectBefore(sseHandler, 'if (isRunning.get(userId))', 'applyClientQueueSnapshot(req, userId)');
     expect(jsonHandler).toContain('res.json({ ok: true, running: true })');
-    expect(sseHandler).toContain("endSse(res, 'dj.pick-next.done', { added: false, reason: 'already-running' })");
+    expect(sseHandler).toContain("endSse(res, 'dj.pick-next.done', { added: false, running: true, reason: 'already-running' })");
   });
 
   it('routes chat recommendations through MusicAgent with status guards', () => {
