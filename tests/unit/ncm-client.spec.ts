@@ -1,5 +1,20 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { NcmApiError, NcmClient } from '../../src/server/ncm/client';
+
+const mockLogger = vi.hoisted(() => ({
+  warn: vi.fn()
+}));
+
+vi.mock('../../src/server/logger', () => ({
+  getLogger: () => mockLogger
+}));
+
+import {
+  NCM_SONG_URL_QUALITY_CACHE_TTL_MS,
+  NCM_SONG_URL_QUALITY_LEVELS,
+  NcmApiError,
+  NcmClient,
+  type NcmSongUrlQualityCache
+} from '../../src/server/ncm/client';
 import { NCM_ERROR_CODE } from '../../src/shared/schema';
 
 function mockFetch(handler: (url: URL, init?: RequestInit) => Promise<Response>): void {
@@ -11,6 +26,8 @@ function mockFetch(handler: (url: URL, init?: RequestInit) => Promise<Response>)
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.useRealTimers();
+  mockLogger.warn.mockClear();
 });
 
 describe('NcmClient error classification', () => {
@@ -163,6 +180,180 @@ describe('NcmClient DTO mapping', () => {
       type: 'm4a',
       expireAt: 1800
     });
+  });
+
+  it('falls back from highest song URL quality and caches the successful level per user', async () => {
+    const requestedLevels: string[] = [];
+    const cache: NcmSongUrlQualityCache = new Map();
+    mockFetch(async (url) => {
+      const level = url.searchParams.get('level') ?? '';
+      requestedLevels.push(level);
+      const id = Number(url.searchParams.get('id'));
+      return new Response(
+        JSON.stringify({
+          data: [
+            level === 'lossless'
+              ? { id, url: `https://music/${id}.flac`, br: 999000, size: 12_000_000, type: 'flac' }
+              : { id, url: null, br: null, size: null, type: null }
+          ]
+        }),
+        { status: 200 }
+      );
+    });
+    const client = new NcmClient('http://127.0.0.1:3000', { songUrlQualityCache: cache });
+
+    const result = await client.getSongUrl('42', { qualityCacheKey: 'user-1', nowMs: 1_000 });
+
+    expect(result).toMatchObject({
+      id: 42,
+      url: 'https://music/42.flac',
+      br: 999000,
+      type: 'flac'
+    });
+    expect(requestedLevels).toEqual(
+      NCM_SONG_URL_QUALITY_LEVELS.slice(0, NCM_SONG_URL_QUALITY_LEVELS.indexOf('lossless') + 1)
+    );
+
+    requestedLevels.length = 0;
+    await client.getSongUrl('43', { qualityCacheKey: 'user-1', nowMs: 2_000 });
+
+    expect(requestedLevels[0]).toBe('lossless');
+  });
+
+  it('expires cached song URL quality after one day', async () => {
+    const requestedLevels: string[] = [];
+    const cache: NcmSongUrlQualityCache = new Map();
+    mockFetch(async (url) => {
+      const level = url.searchParams.get('level') ?? '';
+      requestedLevels.push(level);
+      const id = Number(url.searchParams.get('id'));
+      return new Response(
+        JSON.stringify({
+          data: [
+            level === 'hires'
+              ? { id, url: `https://music/${id}.flac`, br: 1_411_000, size: 18_000_000, type: 'flac' }
+              : { id, url: null }
+          ]
+        }),
+        { status: 200 }
+      );
+    });
+    const client = new NcmClient('http://127.0.0.1:3000', { songUrlQualityCache: cache });
+
+    await client.getSongUrl('42', { qualityCacheKey: 'user-1', nowMs: 1_000 });
+    requestedLevels.length = 0;
+
+    await client.getSongUrl('43', {
+      qualityCacheKey: 'user-1',
+      nowMs: 1_000 + NCM_SONG_URL_QUALITY_CACHE_TTL_MS - 1
+    });
+    expect(requestedLevels[0]).toBe('hires');
+    requestedLevels.length = 0;
+
+    await client.getSongUrl('44', {
+      qualityCacheKey: 'user-1',
+      nowMs: 1_000 + NCM_SONG_URL_QUALITY_CACHE_TTL_MS + 1
+    });
+    expect(requestedLevels[0]).toBe(NCM_SONG_URL_QUALITY_LEVELS[0]);
+  });
+
+  it('keeps cached song URL quality isolated by user', async () => {
+    const requestedLevelsBySong = new Map<string, string[]>();
+    const cache: NcmSongUrlQualityCache = new Map();
+    mockFetch(async (url) => {
+      const id = url.searchParams.get('id') ?? '';
+      const level = url.searchParams.get('level') ?? '';
+      requestedLevelsBySong.set(id, [...(requestedLevelsBySong.get(id) ?? []), level]);
+      return new Response(
+        JSON.stringify({
+          data: [
+            level === 'lossless'
+              ? { id: Number(id), url: `https://music/${id}.flac`, br: 999000, size: 12_000_000, type: 'flac' }
+              : { id: Number(id), url: null }
+          ]
+        }),
+        { status: 200 }
+      );
+    });
+    const client = new NcmClient('http://127.0.0.1:3000', { songUrlQualityCache: cache });
+
+    await client.getSongUrl('42', { qualityCacheKey: 'user-1', nowMs: 1_000 });
+    await client.getSongUrl('43', { qualityCacheKey: 'user-2', nowMs: 2_000 });
+
+    expect(requestedLevelsBySong.get('43')?.[0]).toBe(NCM_SONG_URL_QUALITY_LEVELS[0]);
+  });
+
+  it('bounds song URL quality fallback by the fetch timeout budget', async () => {
+    vi.useFakeTimers();
+    const requestedLevels: string[] = [];
+    mockFetch(async (url, init) => {
+      const level = url.searchParams.get('level') ?? '';
+      requestedLevels.push(level);
+      const id = Number(url.searchParams.get('id'));
+      return new Promise<Response>((resolve, reject) => {
+        const timer = setTimeout(() => {
+          resolve(
+            new Response(
+              JSON.stringify({
+                data: [
+                  level === 'standard'
+                    ? { id, url: `https://music/${id}.m4a`, br: 192_000, size: 4_000_000, type: 'm4a' }
+                    : { id, url: null }
+                ]
+              }),
+              { status: 200 }
+            )
+          );
+        }, 30);
+        init?.signal?.addEventListener('abort', () => {
+          clearTimeout(timer);
+          const err = new Error('The operation was aborted.');
+          err.name = 'AbortError';
+          reject(err);
+        });
+      });
+    });
+    const client = new NcmClient('http://127.0.0.1:3000', { fetchTimeoutMs: 50 });
+
+    const result = client.getSongUrl('42');
+    const assertion = expect(result).rejects.toMatchObject({ code: NCM_ERROR_CODE.TIMEOUT });
+    await vi.advanceTimersByTimeAsync(300);
+
+    await assertion;
+    expect(requestedLevels).toEqual(['jymaster', 'sky']);
+  });
+
+  it('logs when malformed song URL payload falls back to a lower quality', async () => {
+    const requestedLevels: string[] = [];
+    mockFetch(async (url) => {
+      const level = url.searchParams.get('level') ?? '';
+      requestedLevels.push(level);
+      const id = Number(url.searchParams.get('id'));
+      return new Response(
+        JSON.stringify(
+          level === 'jymaster'
+            ? { data: [{ id: 'bad', url: null }] }
+            : { data: [{ id, url: `https://music/${id}.flac`, br: 999_000, size: 12_000_000, type: 'flac' }] }
+        ),
+        { status: 200 }
+      );
+    });
+    const client = new NcmClient('http://127.0.0.1:3000');
+
+    await expect(client.getSongUrl('42')).resolves.toMatchObject({
+      id: 42,
+      url: 'https://music/42.flac'
+    });
+
+    expect(requestedLevels).toEqual(['jymaster', 'sky']);
+    expect(mockLogger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: '42',
+        level: 'jymaster',
+        code: NCM_ERROR_CODE.BAD_RESPONSE
+      }),
+      'NCM song URL quality fallback after bad response'
+    );
   });
 
   it('returns null when /song/url/v1 data is empty', async () => {

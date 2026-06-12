@@ -13,11 +13,39 @@ import {
   type NcmSongUrl,
   type NcmTrackQualitySignals
 } from '../../shared/schema.js';
+import { getLogger } from '../logger.js';
 
 type NcmClientOptions = {
   getCookie?: () => string | null;
   fetchTimeoutMs?: number;
+  songUrlQualityCache?: NcmSongUrlQualityCache;
 };
+
+export const NCM_SONG_URL_QUALITY_LEVELS = [
+  'jymaster',
+  'sky',
+  'jyeffect',
+  'hires',
+  'lossless',
+  'exhigh',
+  'higher',
+  'standard'
+] as const;
+
+export const NCM_SONG_URL_QUALITY_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+
+export type NcmSongUrlQualityLevel = (typeof NCM_SONG_URL_QUALITY_LEVELS)[number];
+export type NcmSongUrlQualityCache = Map<
+  string,
+  { level: NcmSongUrlQualityLevel; cachedAtMs: number }
+>;
+
+type GetSongUrlOptions = {
+  qualityCacheKey?: string;
+  nowMs?: number;
+};
+
+const defaultSongUrlQualityCache: NcmSongUrlQualityCache = new Map();
 
 type NcmSearchHotItem = {
   searchWord?: unknown;
@@ -60,16 +88,19 @@ export class NcmApiError extends Error {
 export class NcmClient {
   private readonly getCookie: (() => string | null) | undefined;
   private readonly fetchTimeoutMs: number;
+  private readonly songUrlQualityCache: NcmSongUrlQualityCache;
 
   constructor(private readonly baseUrl: string, options?: NcmClientOptions) {
     this.getCookie = options?.getCookie;
     this.fetchTimeoutMs = options?.fetchTimeoutMs ?? 8_000;
+    this.songUrlQualityCache = options?.songUrlQualityCache ?? defaultSongUrlQualityCache;
   }
 
   withCookie(cookie: string): NcmClient {
     return new NcmClient(this.baseUrl, {
       fetchTimeoutMs: this.fetchTimeoutMs,
-      getCookie: () => cookie
+      getCookie: () => cookie,
+      songUrlQualityCache: this.songUrlQualityCache
     });
   }
 
@@ -167,11 +198,57 @@ export class NcmClient {
     }));
   }
 
-  async getSongUrl(id: string): Promise<NcmSongUrl | null> {
+  async getSongUrl(id: string, options: GetSongUrlOptions = {}): Promise<NcmSongUrl | null> {
+    const nowMs = options.nowMs ?? Date.now();
+    const deadlineAtMs = Date.now() + this.fetchTimeoutMs;
+    const levels = this.getSongUrlQualityLevels(options.qualityCacheKey, nowMs);
+    let lastFallbackError: NcmApiError | null = null;
+
+    for (const level of levels) {
+      try {
+        const remainingMs = deadlineAtMs - Date.now();
+        if (remainingMs <= 0) {
+          throw new NcmApiError(
+            NCM_ERROR_CODE.TIMEOUT,
+            `NCM song url quality fallback timed out for ncmId=${id}`
+          );
+        }
+
+        const songUrl = await this.getSongUrlAtLevel(id, level, remainingMs);
+        if (songUrl?.url) {
+          this.setCachedSongUrlQuality(options.qualityCacheKey, level, nowMs);
+          return songUrl;
+        }
+      } catch (error) {
+        if (!isSongUrlQualityFallbackError(error)) {
+          throw error;
+        }
+        if (error.code === NCM_ERROR_CODE.BAD_RESPONSE) {
+          getLogger().warn(
+            { err: error, id, level, code: error.code },
+            'NCM song URL quality fallback after bad response'
+          );
+        }
+        lastFallbackError = error;
+      }
+    }
+
+    if (lastFallbackError) {
+      throw lastFallbackError;
+    }
+
+    return null;
+  }
+
+  private async getSongUrlAtLevel(
+    id: string,
+    level: NcmSongUrlQualityLevel,
+    timeoutMs?: number
+  ): Promise<NcmSongUrl | null> {
     const json = await this.getJson('/song/url/v1', {
       id,
-      level: 'exhigh'
-    });
+      level
+    }, timeoutMs);
 
     const parsed = ncmSongUrlResponseSchema.safeParse(json);
     if (!parsed.success) {
@@ -194,6 +271,46 @@ export class NcmClient {
       type: first.type ?? null,
       expireAt: first.expi ?? null
     };
+  }
+
+  private getSongUrlQualityLevels(
+    qualityCacheKey: string | undefined,
+    nowMs: number
+  ): readonly NcmSongUrlQualityLevel[] {
+    if (!qualityCacheKey) {
+      return NCM_SONG_URL_QUALITY_LEVELS;
+    }
+
+    const cached = this.songUrlQualityCache.get(qualityCacheKey);
+    if (!cached || nowMs - cached.cachedAtMs >= NCM_SONG_URL_QUALITY_CACHE_TTL_MS) {
+      this.songUrlQualityCache.delete(qualityCacheKey);
+      return NCM_SONG_URL_QUALITY_LEVELS;
+    }
+
+    const cachedIndex = NCM_SONG_URL_QUALITY_LEVELS.indexOf(cached.level);
+    if (cachedIndex === -1) {
+      this.songUrlQualityCache.delete(qualityCacheKey);
+      return NCM_SONG_URL_QUALITY_LEVELS;
+    }
+
+    return NCM_SONG_URL_QUALITY_LEVELS.slice(cachedIndex);
+  }
+
+  private setCachedSongUrlQuality(
+    qualityCacheKey: string | undefined,
+    level: NcmSongUrlQualityLevel,
+    nowMs: number
+  ): void {
+    if (!qualityCacheKey) {
+      return;
+    }
+
+    const cached = this.songUrlQualityCache.get(qualityCacheKey);
+    if (cached?.level === level) {
+      return;
+    }
+
+    this.songUrlQualityCache.set(qualityCacheKey, { level, cachedAtMs: nowMs });
   }
 
   async getLyric(id: string): Promise<NcmLyric | null> {
@@ -366,8 +483,8 @@ export class NcmClient {
       .slice(0, 30);
   }
 
-  private async getJson(path: string, query: Record<string, string>): Promise<any> {
-    const response = await this.rawFetch(path, query);
+  private async getJson(path: string, query: Record<string, string>, timeoutMs?: number): Promise<any> {
+    const response = await this.rawFetch(path, query, timeoutMs);
 
     if (!response.ok) {
       throw classifyHttpError(path, response.status);
@@ -380,7 +497,11 @@ export class NcmClient {
     }
   }
 
-  private async rawFetch(path: string, query: Record<string, string>): Promise<Response> {
+  private async rawFetch(
+    path: string,
+    query: Record<string, string>,
+    timeoutMs = this.fetchTimeoutMs
+  ): Promise<Response> {
     const url = new URL(path, this.baseUrl);
     Object.entries(query).forEach(([key, value]) => {
       url.searchParams.set(key, value);
@@ -392,7 +513,7 @@ export class NcmClient {
     }
 
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), this.fetchTimeoutMs);
+    const timer = setTimeout(() => controller.abort(), Math.max(0, timeoutMs));
 
     try {
       return await fetch(url, { method: 'GET', signal: controller.signal });
@@ -475,6 +596,13 @@ function classifyHttpError(path: string, status: number): NcmApiError {
     return new NcmApiError(NCM_ERROR_CODE.UNAVAILABLE, `NCM upstream error on ${path} (${status})`);
   }
   return new NcmApiError(NCM_ERROR_CODE.UNKNOWN, `NCM request failed: ${path} (${status})`);
+}
+
+function isSongUrlQualityFallbackError(error: unknown): error is NcmApiError {
+  return (
+    error instanceof NcmApiError &&
+    (error.code === NCM_ERROR_CODE.BAD_RESPONSE || error.code === NCM_ERROR_CODE.UNKNOWN)
+  );
 }
 
 function isAbortError(error: unknown): boolean {

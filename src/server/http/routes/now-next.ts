@@ -40,7 +40,7 @@ export function createNowHandler(fallbackNcmClient?: NcmClient): RequestHandler 
       const ncmClient = getScopedNcmClient(req, fallbackNcmClient);
       const ncmId = parsed.data.ncmId;
       const [songUrl, lyric, details] = await Promise.all([
-        ncmClient.getSongUrl(ncmId),
+        ncmClient.getSongUrl(ncmId, songUrlQualityOptions(req)),
         ncmClient.getLyric(ncmId),
         ncmClient.getSongDetails([ncmId]).catch(() => [])
       ]);
@@ -101,7 +101,7 @@ export function createNextHandler(fallbackNcmClient?: NcmClient): RequestHandler
     try {
       const ncmClient = getScopedNcmClient(req, fallbackNcmClient);
       const [songUrl, details] = await Promise.all([
-        ncmClient.getSongUrl(nextId),
+        ncmClient.getSongUrl(nextId, songUrlQualityOptions(req)),
         ncmClient.getSongDetails([nextId]).catch(() => [])
       ]);
       const detail = details[0] ?? null;
@@ -193,6 +193,11 @@ function getScopedNcmClient(req: Request, fallback?: NcmClient): NcmClient {
     throw new Error('NCM client missing from request scope');
   }
   return ncmClient;
+}
+
+function songUrlQualityOptions(req: Request): { qualityCacheKey: string } | undefined {
+  const userId = (req as Partial<AuthedRequest>).userId;
+  return userId ? { qualityCacheKey: userId } : undefined;
 }
 
 function classifyError(error: unknown): { code: NcmErrorCode; message: string } {
