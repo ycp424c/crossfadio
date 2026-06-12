@@ -182,6 +182,24 @@ describe('NcmClient DTO mapping', () => {
     });
   });
 
+  it('starts song URL quality probing at lossless', async () => {
+    const requestedLevels: string[] = [];
+    mockFetch(async (url) => {
+      requestedLevels.push(url.searchParams.get('level') ?? '');
+      return new Response(
+        JSON.stringify({
+          data: [{ id: 42, url: 'https://music/42.flac', br: 999000, size: 12_000_000, type: 'flac' }]
+        }),
+        { status: 200 }
+      );
+    });
+    const client = new NcmClient('http://127.0.0.1:3000');
+
+    await client.getSongUrl('42');
+
+    expect(requestedLevels[0]).toBe('lossless');
+  });
+
   it('falls back from highest song URL quality and caches the successful level per user', async () => {
     const requestedLevels: string[] = [];
     const cache: NcmSongUrlQualityCache = new Map();
@@ -192,8 +210,8 @@ describe('NcmClient DTO mapping', () => {
       return new Response(
         JSON.stringify({
           data: [
-            level === 'lossless'
-              ? { id, url: `https://music/${id}.flac`, br: 999000, size: 12_000_000, type: 'flac' }
+            level === 'exhigh'
+              ? { id, url: `https://music/${id}.m4a`, br: 320000, size: 8_000_000, type: 'm4a' }
               : { id, url: null, br: null, size: null, type: null }
           ]
         }),
@@ -206,18 +224,18 @@ describe('NcmClient DTO mapping', () => {
 
     expect(result).toMatchObject({
       id: 42,
-      url: 'https://music/42.flac',
-      br: 999000,
-      type: 'flac'
+      url: 'https://music/42.m4a',
+      br: 320000,
+      type: 'm4a'
     });
     expect(requestedLevels).toEqual(
-      NCM_SONG_URL_QUALITY_LEVELS.slice(0, NCM_SONG_URL_QUALITY_LEVELS.indexOf('lossless') + 1)
+      NCM_SONG_URL_QUALITY_LEVELS.slice(0, NCM_SONG_URL_QUALITY_LEVELS.indexOf('exhigh') + 1)
     );
 
     requestedLevels.length = 0;
     await client.getSongUrl('43', { qualityCacheKey: 'user-1', nowMs: 2_000 });
 
-    expect(requestedLevels[0]).toBe('lossless');
+    expect(requestedLevels[0]).toBe('exhigh');
   });
 
   it('expires cached song URL quality after one day', async () => {
@@ -230,7 +248,7 @@ describe('NcmClient DTO mapping', () => {
       return new Response(
         JSON.stringify({
           data: [
-            level === 'hires'
+            level === 'exhigh'
               ? { id, url: `https://music/${id}.flac`, br: 1_411_000, size: 18_000_000, type: 'flac' }
               : { id, url: null }
           ]
@@ -247,7 +265,7 @@ describe('NcmClient DTO mapping', () => {
       qualityCacheKey: 'user-1',
       nowMs: 1_000 + NCM_SONG_URL_QUALITY_CACHE_TTL_MS - 1
     });
-    expect(requestedLevels[0]).toBe('hires');
+    expect(requestedLevels[0]).toBe('exhigh');
     requestedLevels.length = 0;
 
     await client.getSongUrl('44', {
@@ -320,7 +338,7 @@ describe('NcmClient DTO mapping', () => {
     await vi.advanceTimersByTimeAsync(300);
 
     await assertion;
-    expect(requestedLevels).toEqual(['jymaster', 'sky']);
+    expect(requestedLevels).toEqual(['lossless', 'exhigh']);
   });
 
   it('logs when malformed song URL payload falls back to a lower quality', async () => {
@@ -331,7 +349,7 @@ describe('NcmClient DTO mapping', () => {
       const id = Number(url.searchParams.get('id'));
       return new Response(
         JSON.stringify(
-          level === 'jymaster'
+          level === 'lossless'
             ? { data: [{ id: 'bad', url: null }] }
             : { data: [{ id, url: `https://music/${id}.flac`, br: 999_000, size: 12_000_000, type: 'flac' }] }
         ),
@@ -345,11 +363,11 @@ describe('NcmClient DTO mapping', () => {
       url: 'https://music/42.flac'
     });
 
-    expect(requestedLevels).toEqual(['jymaster', 'sky']);
+    expect(requestedLevels).toEqual(['lossless', 'exhigh']);
     expect(mockLogger.warn).toHaveBeenCalledWith(
       expect.objectContaining({
         id: '42',
-        level: 'jymaster',
+        level: 'lossless',
         code: NCM_ERROR_CODE.BAD_RESPONSE
       }),
       'NCM song URL quality fallback after bad response'

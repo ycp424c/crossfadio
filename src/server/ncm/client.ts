@@ -22,10 +22,6 @@ type NcmClientOptions = {
 };
 
 export const NCM_SONG_URL_QUALITY_LEVELS = [
-  'jymaster',
-  'sky',
-  'jyeffect',
-  'hires',
   'lossless',
   'exhigh',
   'higher',
