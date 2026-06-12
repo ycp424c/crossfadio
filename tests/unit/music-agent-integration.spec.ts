@@ -278,7 +278,7 @@ describe('MusicAgent facade', () => {
     expect(result.picks.map((pick) => pick.id)).toEqual(['blocked-id']);
   });
 
-  it('prepares external quality signals before the extra final-pick prompt and ranked backfill', async () => {
+  it('prepares external quality signals before the extra final-pick prompt', async () => {
     const pollutedTitle = "90's Chill Lofi Hip Hop｜勉強・集中・睡眠 深夜のローファイ mix";
     const searchTracks = [
       { id: 'polluted-extra-final', name: pollutedTitle, artists: ['Compilation Artist'] },
@@ -331,7 +331,7 @@ describe('MusicAgent facade', () => {
     const result = await agent.pickNext({ userId: 'user-extra-final-quality', ncmClient: ncmClient as any });
 
     expect(result.status).toBe('ok');
-    expect(result.picks.map((pick) => pick.id)).toEqual(['clean-extra-1', 'clean-extra-2']);
+    expect(result.picks.map((pick) => pick.id)).toEqual(['clean-extra-1']);
     expect(ncmClient.getSongDetails).toHaveBeenCalledWith([
       'polluted-extra-final',
       ...searchTracks.slice(1).map((track) => track.id)
@@ -555,6 +555,74 @@ describe('createMusicAgentTools', () => {
       artist: 'Singer',
       sources: ['search']
     });
+  });
+
+  it('preserves exact search queries, records a run query funnel, and persists selected query stats', async () => {
+    const ncmClient = {
+      getLikedSongIds: vi.fn(async () => []),
+      getSongDetails: vi.fn(async () => []),
+      searchSongs: vi.fn(async (query: string) => query.includes('午后')
+        ? [
+            { id: 'sky-1', name: 'Sky One', artists: ['Sky Singer'] },
+            { id: 'sky-2', name: 'Sky Two', artists: ['Sky Singer'] }
+          ]
+        : [
+            { id: 'ocean-1', name: 'Ocean One', artists: ['Ocean Singer'] }
+          ]),
+      getPlaylistDetail: vi.fn(async () => null)
+    };
+
+    const { CandidatePool } = await import('../../src/server/music-agent/candidates.js');
+    const { createMusicAgentTools } = await import('../../src/server/music-agent/tools.js');
+    const { getUserQueryStats } = await import('../../src/server/store/music-query-stats.js');
+    const candidatePool = new CandidatePool();
+    const tools = createMusicAgentTools({
+      userId: 'user-query-funnel',
+      ncmClient: ncmClient as any,
+      context: {
+        request: 'auto-fill',
+        currentUserText: '',
+        currentMoment: { localTime: '周四 15:00', daypart: '下午', weather: null },
+        activeDirective: '',
+        currentPlanSegment: null,
+        tasteSummary: '偏好轻松女声',
+        recentPreferenceSummary: '',
+        recentPlaySignals: '',
+        queueStateSummary: '',
+        bannedSummary: ''
+      },
+      candidatePool,
+      budget: {
+        maxMs: 10_000,
+        maxSteps: 3,
+        maxLlmCalls: 2,
+        maxToolCalls: 2,
+        maxNcmSearches: 2,
+        maxPlaylistFetches: 0,
+        maxTrendFetchMs: 0,
+        maxCandidates: 20
+      }
+    });
+
+    await tools.recall_from_ncm_search?.({ queries: ['午后 女声', '海洋 女声'], limit: 5 });
+    tools.recordFinalPicks?.([{ id: 'ocean-1', reason: '更贴合', source: 'search' }]);
+
+    expect(ncmClient.searchSongs.mock.calls.map((call) => call[0])).toEqual(['午后 女声', '海洋 女声']);
+    expect(tools.getQueryFunnel?.()).toEqual([
+      expect.objectContaining({
+        query: '午后 女声',
+        resultCount: 2,
+        addedCount: 2,
+        selectedCount: 0
+      }),
+      expect.objectContaining({
+        query: '海洋 女声',
+        resultCount: 1,
+        addedCount: 1,
+        selectedCount: 1
+      })
+    ]);
+    expect(getUserQueryStats('user-query-funnel').map((item) => item.normalized_query)).toContain('海洋 女声');
   });
 
   it('enriches external search candidates with quality signals before ranking', async () => {

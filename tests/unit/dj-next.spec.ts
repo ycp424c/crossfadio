@@ -151,6 +151,7 @@ describe('DJ pick-next diagnostics', () => {
     expect(doPickNext).toContain('broadcastAppended(');
     expect(doPickNext).toContain('musicAgentRunMetrics(output, appendedPicks, startedAt, discoveryMode)');
     expect(source).toContain('rankedBackfillCount: metrics.rankedBackfillCount');
+    expect(source).toContain('finalPickDiagnostics: metrics.finalPickDiagnostics');
     expect(doPickNext).toContain('const debugCandidateCount = getMusicAgentDebugCandidateCount(output)');
     expect(doPickNext).toContain('totalCandidates: debugCandidateCount');
     expect(doPickNext).not.toContain('totalCandidates: output.picks.length');

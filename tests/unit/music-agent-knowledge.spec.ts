@@ -57,4 +57,19 @@ describe('music-agent knowledge slice', () => {
     expect(slice.diversityRules.length).toBeGreaterThan(0);
     expect(slice.diversityRules.length).toBeLessThanOrEqual(4);
   });
+
+  it('uses imagery query templates instead of low-quality generic time terms', () => {
+    const afternoon = getMusicKnowledgeSlice({
+      text: '午后想听几首',
+      daypart: '下午'
+    });
+    const lateNight = getMusicKnowledgeSlice({
+      text: '深夜想听几首',
+      daypart: '深夜'
+    });
+    const templates = [...afternoon.queryTemplates, ...lateNight.queryTemplates].join(' ');
+
+    expect(templates).not.toMatch(/午后|深夜|夜里|凌晨/);
+    expect(templates).toMatch(/天空|海洋|城市|星空|海面/);
+  });
 });

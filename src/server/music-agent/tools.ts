@@ -17,10 +17,18 @@ import {
   type MusicAgentToolName,
   type MusicCandidate,
   type MusicCandidateScores,
+  type QueryFunnelEntry,
   type QueryPlan,
   type TrendContext
 } from './schema.js';
 import type { CandidatePool } from './candidates.js';
+import {
+  normalizeSearchQuery,
+  prepareSearchQueriesForRecall,
+  recordUserQueryFunnel,
+  sanitizeSearchQuery
+} from './query-stats.js';
+import type { FinalPick } from './schema.js';
 
 export type ToolObservation = {
   summary: string;
@@ -35,6 +43,8 @@ export type MusicAgentTool = (
 
 export type MusicAgentToolRegistry = Partial<Record<MusicAgentToolName, MusicAgentTool>> & {
   prepare_for_ranking?: MusicAgentTool;
+  getQueryFunnel?: () => QueryFunnelEntry[];
+  recordFinalPicks?: (picks: FinalPick[]) => void;
 };
 
 type MusicAgentNcmClient = Pick<
@@ -66,6 +76,12 @@ type ToolState = {
   ncmSearches: number;
   playlistFetches: number;
   qualityPreparedIds: Set<string>;
+  queryFunnel: Map<string, QueryFunnelAccumulator>;
+};
+
+type QueryFunnelAccumulator = QueryFunnelEntry & {
+  candidateIds: Set<string>;
+  order: number;
 };
 
 type CacheEntry<T> = {
@@ -89,6 +105,7 @@ const LIKED_RECALL_CACHE_TTL_MS = 10 * 60 * 1000;
 const SEARCH_RECALL_CACHE_TTL_MS = 30 * 60 * 1000;
 const QUALITY_DETAIL_BATCH_LIMIT = 80;
 const QUALITY_SOURCES = new Set<CandidateSource>(['search', 'style_expansion', 'trend']);
+const MAX_RECALL_QUERY_COUNT = 8;
 const likedRecallCache = new Map<string, CacheEntry<NcmTrackLike[]>>();
 const searchRecallCache = new Map<string, CacheEntry<NcmTrackLike[]>>();
 
@@ -98,7 +115,8 @@ export function createMusicAgentTools(input: CreateMusicAgentToolsInput): MusicA
     trendContext: null,
     ncmSearches: 0,
     playlistFetches: 0,
-    qualityPreparedIds: new Set()
+    qualityPreparedIds: new Set(),
+    queryFunnel: new Map()
   };
   const limits = {
     maxNcmSearches: input.maxNcmSearches ?? input.budget.maxNcmSearches,
@@ -154,10 +172,10 @@ export function createMusicAgentTools(input: CreateMusicAgentToolsInput): MusicA
     expand_queries: async (toolInput, signal) => {
       if (signal?.aborted) return abortedObservation(input.candidatePool);
       const parsed = queryPlanSchema.safeParse(toolInput);
-      state.queryPlan = withContextAvoidArtists(
+      state.queryPlan = sanitizeQueryPlan(withContextAvoidArtists(
         parsed.success ? parsed.data : defaultQueryPlan(input.context, toolInput),
         input.context
-      );
+      ));
       return observation(input.candidatePool, summarizeQueryPlan(state.queryPlan), parsed.success ? [] : [
         'invalid query plan input; using context-derived defaults'
       ]);
@@ -253,7 +271,7 @@ export function createMusicAgentTools(input: CreateMusicAgentToolsInput): MusicA
               ...state.queryPlan.explorationQueries
             ]
           : [])
-      ]).slice(0, 8);
+      ]);
       return recallFromQueries({
         queries,
         source: 'search',
@@ -301,7 +319,7 @@ export function createMusicAgentTools(input: CreateMusicAgentToolsInput): MusicA
     recall_auto_fill_mix: async (_toolInput, signal) => {
       if (signal?.aborted) return abortedObservation(input.candidatePool);
       if (!state.queryPlan) {
-        state.queryPlan = withContextAvoidArtists(defaultQueryPlan(input.context, {}), input.context);
+        state.queryPlan = sanitizeQueryPlan(withContextAvoidArtists(defaultQueryPlan(input.context, {}), input.context));
       }
 
       const summaries: string[] = [];
@@ -388,7 +406,11 @@ export function createMusicAgentTools(input: CreateMusicAgentToolsInput): MusicA
     }
   };
 
-  return registry;
+  return {
+    ...registry,
+    getQueryFunnel: () => queryFunnelSnapshot(state),
+    recordFinalPicks: (picks) => recordFinalQueryFunnel(input.userId, state, picks)
+  };
 }
 
 async function getLikedRecallTracks(
@@ -526,6 +548,17 @@ function withContextAvoidArtists(plan: QueryPlan, context: MusicAgentContextSumm
   });
 }
 
+function sanitizeQueryPlan(plan: QueryPlan): QueryPlan {
+  return queryPlanSchema.parse({
+    ...plan,
+    intentQueries: uniqueStrings(plan.intentQueries.map(sanitizeSearchQuery)),
+    tasteAnchorQueries: uniqueStrings(plan.tasteAnchorQueries.map(sanitizeSearchQuery)),
+    planQueries: uniqueStrings(plan.planQueries.map(sanitizeSearchQuery)),
+    trendQueries: uniqueStrings(plan.trendQueries.map(sanitizeSearchQuery)),
+    explorationQueries: uniqueStrings(plan.explorationQueries.map(sanitizeSearchQuery))
+  });
+}
+
 function avoidArtistsFromContext(context: MusicAgentContextSummary): string[] {
   return (context.recentArtistPenalties ?? [])
     .filter((item) => item.penalty >= AVOID_ARTIST_PENALTY_THRESHOLD)
@@ -549,7 +582,18 @@ async function recallFromQueries(options: {
       ...(options.state.queryPlan?.avoidArtists ?? [])
     ].map(primaryArtist).filter(Boolean)
   );
-  const { queries, skipped: skippedAvoidedQueries } = filterAvoidedQueries(uniqueStrings(options.queries).filter(Boolean), avoidArtists);
+  const sanitizedQueries = uniqueStrings(options.queries.map(sanitizeSearchQuery).filter(Boolean));
+  const { queries: artistFilteredQueries, skipped: skippedAvoidedQueries } = filterAvoidedQueries(sanitizedQueries, avoidArtists);
+  const preparedQueries = prepareSearchQueriesForRecall({
+    userId: options.input.userId,
+    queries: artistFilteredQueries,
+    source: options.source,
+    maxQueries: MAX_RECALL_QUERY_COUNT
+  });
+  const queries = preparedQueries.queries;
+  const funnelSeeds = new Map(
+    preparedQueries.funnelEntries.map((entry) => [entry.normalizedQuery, entry])
+  );
   if (queries.length === 0) {
     return observation(options.input.candidatePool, `${options.evidencePrefix} recall skipped: no queries.`, [
       'no search queries available',
@@ -585,6 +629,15 @@ async function recallFromQueries(options: {
         avoidArtists,
         artistCounts
       });
+      recordQueryFunnelSearch(options.state, {
+        seed: funnelSeeds.get(normalizeSearchQuery(query)),
+        query,
+        source: options.source,
+        tracks,
+        resultCount: tracks.length,
+        addedCount: result.added,
+        pool: options.input.candidatePool
+      });
       added += result.added;
       skippedAvoidedArtists += result.skippedAvoidedArtists;
       skippedArtistCap += result.skippedArtistCap;
@@ -595,12 +648,84 @@ async function recallFromQueries(options: {
   if (skippedAvoidedQueries > 0) problems.push(`skipped ${skippedAvoidedQueries} search queries for recently repeated artists`);
   if (skippedAvoidedArtists > 0) problems.push(`skipped ${skippedAvoidedArtists} tracks from recently repeated artists`);
   if (skippedArtistCap > 0) problems.push(`skipped ${skippedArtistCap} tracks after per-artist recall cap`);
+  if (preparedQueries.funnelEntries.some((entry) => entry.scoreMultiplier !== 1 || entry.repeatPenalty > 0)) {
+    problems.push('reweighted search queries with user query history');
+  }
 
   return observation(
     options.input.candidatePool,
     `${options.evidencePrefix} recall searched ${searched.length} queries and added ${added} candidates: ${searched.join('、') || 'none'}.`,
     problems
   );
+}
+
+function recordQueryFunnelSearch(
+  state: ToolState,
+  input: {
+    seed: QueryFunnelEntry | undefined;
+    query: string;
+    source: CandidateSource;
+    tracks: NcmTrackLike[];
+    resultCount: number;
+    addedCount: number;
+    pool: CandidatePool;
+  }
+): void {
+  const normalizedQuery = normalizeSearchQuery(input.query);
+  if (!normalizedQuery) return;
+  const key = queryFunnelKey(input.source, normalizedQuery);
+  const existing = state.queryFunnel.get(key);
+  const candidateIds = new Set(
+    input.tracks
+      .map((track) => track.id === undefined || track.id === null ? '' : String(track.id).trim())
+      .filter((id) => id && input.pool.has(id))
+  );
+  if (existing) {
+    existing.searchedCount += 1;
+    existing.resultCount += input.resultCount;
+    existing.addedCount += input.addedCount;
+    for (const id of candidateIds) existing.candidateIds.add(id);
+    return;
+  }
+
+  state.queryFunnel.set(key, {
+    ...(input.seed ?? {
+      query: input.query,
+      normalizedQuery,
+      source: input.source,
+      searchedCount: 0,
+      resultCount: 0,
+      addedCount: 0,
+      selectedCount: 0,
+      scoreMultiplier: 1,
+      repeatPenalty: 0,
+      selectionRate: null
+    }),
+    searchedCount: 1,
+    resultCount: input.resultCount,
+    addedCount: input.addedCount,
+    selectedCount: 0,
+    candidateIds,
+    order: state.queryFunnel.size
+  });
+}
+
+function queryFunnelSnapshot(state: ToolState): QueryFunnelEntry[] {
+  return [...state.queryFunnel.values()]
+    .sort((left, right) => left.order - right.order)
+    .map(({ candidateIds: _candidateIds, order: _order, ...entry }) => ({ ...entry }));
+}
+
+function recordFinalQueryFunnel(userId: string, state: ToolState, picks: FinalPick[]): void {
+  const pickedIds = new Set(picks.map((pick) => pick.id));
+  for (const entry of state.queryFunnel.values()) {
+    entry.selectedCount = [...entry.candidateIds].filter((id) => pickedIds.has(id)).length;
+  }
+  recordUserQueryFunnel(userId, queryFunnelSnapshot(state));
+}
+
+function queryFunnelKey(source: CandidateSource, normalizedQuery: string): string {
+  return `${source}:${normalizedQuery}`;
 }
 
 function readCache<T>(cache: Map<string, CacheEntry<T>>, key: string): T | null {

@@ -63,43 +63,43 @@ export const musicKnowledgeZhCN: MusicKnowledgeBase = {
       scene: '上午',
       aliases: ['上午', '早上', '早晨', 'morning'],
       rules: ['上午优先清爽、明亮、中低能量，避免过早进入强节拍。'],
-      queryTemplates: ['上午 清爽 女声', '早晨 indie pop', '上午 轻快 华语']
+      queryTemplates: ['天空 清爽 女声', '晨光 indie pop', '清新 轻快 华语']
     },
     {
       scene: '下午',
       aliases: ['下午', '午后', 'afternoon'],
       rules: ['下午适合中低能量、旋律清楚、不过度抢注意力的歌。'],
-      queryTemplates: ['下午 女声 轻松', '午后 city pop', '下午 indie pop 不吵']
+      queryTemplates: ['天空 女声 轻松', '城市 synth pop', '海洋 indie pop 不吵']
     },
     {
       scene: '中午',
       aliases: ['中午', '午间', 'noon'],
       rules: ['中午适合轻快但不尖锐的曲目，保持节奏感同时避免过强压迫。'],
-      queryTemplates: ['中午 轻快 pop', '午间 华语女声', '中午 city pop']
+      queryTemplates: ['阳光 轻快 pop', '海洋 华语女声', '城市 funk pop']
     },
     {
       scene: '傍晚',
       aliases: ['傍晚', '黄昏', '下班路上', 'evening commute'],
       rules: ['傍晚适合温暖、松弛、中等能量的歌，帮助从工作状态过渡。'],
-      queryTemplates: ['傍晚 轻松 女声', '黄昏 indie pop', '下班路上 粤语']
+      queryTemplates: ['橘色天空 轻松 女声', '海边 indie pop', '城市 粤语']
     },
     {
       scene: '晚上',
       aliases: ['晚上', '夜晚', '晚间', 'evening', 'night'],
       rules: ['晚上优先松弛、耐听、中低能量，避免过亮或过密的编曲。'],
-      queryTemplates: ['晚上 轻松 女声', '晚间 dream pop', '晚上 粤语 不吵']
+      queryTemplates: ['城市 轻松 女声', '星空 dream pop', '霓虹 粤语 不吵']
     },
     {
       scene: '深夜',
       aliases: ['深夜', '夜里', '凌晨', 'late night'],
       rules: ['深夜优先低动态、少打扰、留白感强的曲目。'],
-      queryTemplates: ['深夜 dream pop', '夜里 安静 女声', '凌晨 氛围流行']
+      queryTemplates: ['星空 dream pop', '海面 安静 女声', '月光 氛围流行']
     },
     {
       scene: '跑步',
       aliases: ['跑步', '运动', '慢跑', 'running'],
       rules: ['跑步场景优先稳定律动和清晰鼓点，能量随配速上调。'],
-      queryTemplates: ['跑步 节奏 pop', '慢跑 city pop', '运动 synth pop']
+      queryTemplates: ['跑步 节奏 pop', '公路 synth pop', '运动 funk pop']
     }
   ],
   queryTemplates: [
@@ -116,7 +116,7 @@ export const musicKnowledgeZhCN: MusicKnowledgeBase = {
     {
       intent: 'afternoon',
       aliases: ['下午', '午后', 'afternoon'],
-      templates: ['下午 轻松 女声', '午后 city pop', '下午 不吵 华语']
+      templates: ['天空 轻松 女声', '海洋 indie pop', '城市 不吵 华语']
     },
     {
       intent: 'focus',

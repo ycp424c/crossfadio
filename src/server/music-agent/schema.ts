@@ -180,6 +180,34 @@ export const finalPickSchema = z.object({
 
 export type FinalPick = z.infer<typeof finalPickSchema>;
 
+export const finalPickDiagnosticsSchema = z.object({
+  targetPickCount: z.number().int().nonnegative(),
+  rawPickCount: z.number().int().nonnegative(),
+  eligiblePickCount: z.number().int().nonnegative(),
+  acceptedPickCount: z.number().int().nonnegative(),
+  droppedPickCount: z.number().int().nonnegative(),
+  titleMotifDroppedCount: z.number().int().nonnegative(),
+  rankedBackfillCount: z.number().int().nonnegative(),
+  rejectedPickCount: z.number().int().nonnegative()
+});
+
+export type FinalPickDiagnostics = z.infer<typeof finalPickDiagnosticsSchema>;
+
+export const queryFunnelEntrySchema = z.object({
+  query: z.string().min(1),
+  normalizedQuery: z.string().min(1),
+  source: candidateSourceSchema,
+  searchedCount: z.number().int().nonnegative(),
+  resultCount: z.number().int().nonnegative(),
+  addedCount: z.number().int().nonnegative(),
+  selectedCount: z.number().int().nonnegative(),
+  scoreMultiplier: z.number().min(0),
+  repeatPenalty: z.number().min(0),
+  selectionRate: z.number().min(0).max(1).nullable()
+});
+
+export type QueryFunnelEntry = z.infer<typeof queryFunnelEntrySchema>;
+
 export const candidateScoreTableRowSchema = z.object({
   rank: z.number().int().positive(),
   id: z.string().min(1),
@@ -213,7 +241,7 @@ export const musicAgentLoopOutputSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('final'),
     say: z.string().min(1),
-    picks: z.array(finalPickSchema).min(1).max(AUTO_FILL_BATCH_SIZE_MAX),
+    picks: z.array(finalPickSchema).max(AUTO_FILL_BATCH_SIZE_MAX),
     rejected: z.array(rejectedPickSchema).default([])
   })
 ]);
@@ -225,6 +253,8 @@ export const musicAgentFinalOutputSchema = z.object({
   say: z.string().min(1),
   picks: z.array(finalPickSchema).min(1).max(AUTO_FILL_BATCH_SIZE_MAX),
   rejected: z.array(rejectedPickSchema).default([]),
+  finalPickDiagnostics: finalPickDiagnosticsSchema.optional(),
+  queryFunnel: z.array(queryFunnelEntrySchema).default([]),
   trace: z.array(agentTraceStepSchema).default([]),
   candidateScoreTable: z.array(candidateScoreTableRowSchema).default([])
 });
@@ -241,6 +271,8 @@ export const musicAgentRunOutputSchema = z.discriminatedUnion('status', [
     say: z.string().min(1),
     picks: z.array(finalPickSchema).length(0),
     rejected: z.array(rejectedPickSchema).default([]),
+    finalPickDiagnostics: finalPickDiagnosticsSchema.optional(),
+    queryFunnel: z.array(queryFunnelEntrySchema).default([]),
     trace: z.array(agentTraceStepSchema).default([]),
     candidateScoreTable: z.array(candidateScoreTableRowSchema).default([])
   })

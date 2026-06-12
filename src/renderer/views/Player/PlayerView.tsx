@@ -41,7 +41,10 @@ import {
 } from '@renderer/api';
 import { getPrefetchDecision } from '@renderer/audio/prefetch';
 import { shouldStartSegueAudio } from '@renderer/audio/seguePlayback';
-import { shouldTreatMediaErrorAsEnded } from '@renderer/audio/mediaError';
+import {
+  getMediaErrorRetryDecision,
+  shouldTreatMediaErrorAsEnded
+} from '@renderer/audio/mediaError';
 import { NowPlayingHero } from '@renderer/components/player/NowPlayingHero';
 import { PlaybackTimeline } from '@renderer/components/player/PlaybackTimeline';
 import { QueuePanel } from '@renderer/components/player/QueuePanel';
@@ -79,6 +82,7 @@ const TRACK_DUCKING_VOLUME = 0.2;
 const DJ_PICK_COOLDOWN_MS = 3000; // min ms between pick-next calls
 const DJ_ALREADY_RUNNING_BACKOFF_MS = 30000;
 const SEGUE_RETRY_COOLDOWN_MS = 6000; // min ms between segue trigger retries within the same track
+const TRACK_MEDIA_ERROR_MAX_RETRIES = 2;
 
 type DiscoveryMode = 'explore' | 'comfort';
 type ModeVisualConfig = {
@@ -121,6 +125,13 @@ type PendingSegueAudio = {
   estimatedDurationSec: number;
   actualDurationSec: number | null;
   started: boolean;
+};
+
+type PendingTrackMediaRetry = {
+  trackId: string;
+  requestId: number;
+  positionSec: number;
+  shouldPlay: boolean;
 };
 
 type DjTrackSample = { id: string; name: string; artist: string };
@@ -245,6 +256,9 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
   const applyingRemoteQueueRef = useRef(false);
   const skipNextQueuePersistRef = useRef(true);
   const pendingTemporaryBanTracksRef = useRef<QueueTrackDto[]>([]);
+  const trackMediaRetryAttemptsRef = useRef(0);
+  const trackMediaRetryRequestIdRef = useRef(0);
+  const pendingTrackMediaRetryRef = useRef<PendingTrackMediaRetry | null>(null);
 
   useEffect(() => {
     if (!showNcmDropdown) return;
@@ -563,12 +577,18 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
       disposeAllSegueAudio();
       setNowPlaying(null);
       resetTrackMedia();
+      trackMediaRetryAttemptsRef.current = 0;
+      trackMediaRetryRequestIdRef.current += 1;
+      pendingTrackMediaRetryRef.current = null;
       return;
     }
 
     disposeSegueAudio();
     resetTrackMedia();
     prefetchTriggeredRef.current = false;
+    trackMediaRetryAttemptsRef.current = 0;
+    trackMediaRetryRequestIdRef.current += 1;
+    pendingTrackMediaRetryRef.current = null;
     segueClientRequestIdRef.current = null;
     segueExpectedFromTrackIdRef.current = null;
     segueSatisfiedForTrackIdRef.current = null;
@@ -712,6 +732,45 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
       setNowPlaying(null);
       setTrackStatusText('加载失败');
       setError(err instanceof Error ? err.message : 'now 请求失败');
+    }
+  }
+
+  async function retryTrackPlaybackAfterError(
+    trackId: string,
+    resumeAtSec: number,
+    requestId: number,
+    shouldPlay: boolean
+  ): Promise<void> {
+    try {
+      const payload = await getNowPlaying(trackId);
+      if (currentTrackIdRef.current !== trackId || trackMediaRetryRequestIdRef.current !== requestId) {
+        return;
+      }
+      setNowPlaying(payload);
+      setError('');
+
+      const audio = audioRef.current;
+      if (!audio) {
+        return;
+      }
+
+      pendingTrackMediaRetryRef.current = {
+        trackId,
+        requestId,
+        positionSec: resumeAtSec,
+        shouldPlay
+      };
+      audio.src = payload.url;
+      audio.load();
+      setTrackStatusText(`已刷新音频流，准备从 ${Math.round(resumeAtSec)} 秒继续`);
+    } catch (err) {
+      if (currentTrackIdRef.current !== trackId || trackMediaRetryRequestIdRef.current !== requestId) {
+        return;
+      }
+      setIsPlaying(false);
+      shouldAutoplayNextRef.current = false;
+      setTrackStatusText('播放流中断');
+      setError(err instanceof Error ? `音频资源重试失败：${err.message}` : '音频资源重试失败，请稍后重试或切换下一首');
     }
   }
 
@@ -1114,6 +1173,47 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
       return;
     }
     setDurationSec(audio.duration || 0);
+
+    const pendingRetry = pendingTrackMediaRetryRef.current;
+    if (
+      !pendingRetry ||
+      pendingRetry.trackId !== currentTrackIdRef.current ||
+      pendingRetry.requestId !== trackMediaRetryRequestIdRef.current
+    ) {
+      return;
+    }
+
+    pendingTrackMediaRetryRef.current = null;
+    const maxSeekSec = Number.isFinite(audio.duration) && audio.duration > 0
+      ? Math.max(0, audio.duration - 0.5)
+      : pendingRetry.positionSec;
+    const resumeAtSec = Math.min(pendingRetry.positionSec, maxSeekSec);
+    try {
+      audio.currentTime = resumeAtSec;
+      setPositionSec(resumeAtSec);
+    } catch {
+      setPositionSec(audio.currentTime || 0);
+    }
+
+    setTrackStatusText(`已重试音频流，从 ${Math.round(resumeAtSec)} 秒继续`);
+    if (pendingRetry.shouldPlay) {
+      void audio
+        .play()
+        .then(() => {
+          maybeStartSegueAudio();
+        })
+        .catch(() => {
+          if (
+            pendingRetry.trackId !== currentTrackIdRef.current ||
+            pendingRetry.requestId !== trackMediaRetryRequestIdRef.current
+          ) {
+            return;
+          }
+          setIsPlaying(false);
+          shouldAutoplayNextRef.current = false;
+          setTrackStatusText('重试已就绪，点击 Play 继续播放');
+        });
+    }
   }
 
   function onEnded(): void {
@@ -1140,10 +1240,34 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
     if (!audio) {
       return;
     }
+    pendingTrackMediaRetryRef.current = null;
 
     if (shouldTreatMediaErrorAsEnded({ currentTime: audio.currentTime, duration: audio.duration })) {
       setTrackStatusText('音频流在结尾断开，继续下一首');
       onEnded();
+      return;
+    }
+
+    const trackId = currentTrackIdRef.current;
+    const retryDecision = getMediaErrorRetryDecision({
+      currentTime: audio.currentTime,
+      duration: audio.duration,
+      retryAttempts: trackMediaRetryAttemptsRef.current,
+      maxRetryAttempts: TRACK_MEDIA_ERROR_MAX_RETRIES
+    });
+    if (trackId && retryDecision.shouldRetry) {
+      trackMediaRetryAttemptsRef.current += 1;
+      trackMediaRetryRequestIdRef.current += 1;
+      const requestId = trackMediaRetryRequestIdRef.current;
+      const attempt = trackMediaRetryAttemptsRef.current;
+      setError('');
+      setTrackStatusText(`播放流中断，正在重试 ${attempt}/${TRACK_MEDIA_ERROR_MAX_RETRIES}`);
+      void retryTrackPlaybackAfterError(
+        trackId,
+        retryDecision.resumeAtSec,
+        requestId,
+        isPlaying || !audio.paused
+      );
       return;
     }
 

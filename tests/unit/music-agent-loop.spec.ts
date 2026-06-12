@@ -164,9 +164,55 @@ describe('runMusicAgentLoop', () => {
     expect(result.picks.map((pick) => pick.id)).toEqual(['pick-1', 'pick-2', 'pick-3', 'pick-4', 'pick-5']);
   });
 
-  it('ranked backfills from the same candidate pool when final picks are short of the target', async () => {
+  it('keeps a partial auto-fill batch when final picks cover at least half the target', async () => {
     const pool = new CandidatePool();
-    for (let index = 1; index <= 4; index += 1) {
+    for (let index = 1; index <= 5; index += 1) {
+      pool.upsert(candidate({
+        id: `pick-${index}`,
+        name: `Partial Pick ${index}`,
+        artist: `Artist ${index}`
+      }));
+    }
+    const llmClient = new LoopFakeLlmClient([
+      JSON.stringify({
+        type: 'final',
+        say: '三首已经够贴合。',
+        picks: [
+          { id: 'pick-1', reason: '开头最贴合', source: 'liked' },
+          { id: 'pick-3', reason: '保持变化', source: 'liked' },
+          { id: 'pick-5', reason: '收尾自然', source: 'liked' }
+        ],
+        rejected: []
+      })
+    ]);
+
+    const result = await runMusicAgentLoop({
+      llmClient,
+      context: context({ request: 'auto-fill' }),
+      candidatePool: pool,
+      tools: {},
+      budget: budget(),
+      targetPickCount: 5
+    });
+
+    expect(result.status).toBe('ok');
+    expect(result.picks.map((pick) => pick.id)).toEqual(['pick-1', 'pick-3', 'pick-5']);
+    expect(result.picks.some((pick) => pick.reason === 'ranked backfill')).toBe(false);
+    expect(result.finalPickDiagnostics).toEqual({
+      targetPickCount: 5,
+      rawPickCount: 3,
+      eligiblePickCount: 3,
+      acceptedPickCount: 3,
+      droppedPickCount: 0,
+      titleMotifDroppedCount: 0,
+      rankedBackfillCount: 0,
+      rejectedPickCount: 0
+    });
+  });
+
+  it('ranked backfills from the same candidate pool when final picks are below half the target', async () => {
+    const pool = new CandidatePool();
+    for (let index = 1; index <= 5; index += 1) {
       pool.upsert(candidate({
         id: `pick-${index}`,
         name: `Backfill Pick ${index}`,
@@ -191,15 +237,67 @@ describe('runMusicAgentLoop', () => {
       candidatePool: pool,
       tools: {},
       budget: budget(),
-      targetPickCount: 4
+      targetPickCount: 5
     });
 
     expect(result.status).toBe('ok');
-    expect(result.picks.map((pick) => pick.id)).toEqual(['pick-1', 'pick-3', 'pick-2', 'pick-4']);
+    expect(result.picks.map((pick) => pick.id)).toEqual(['pick-1', 'pick-3', 'pick-2', 'pick-4', 'pick-5']);
     expect(result.picks.slice(2).every((pick) => pick.reason === 'ranked backfill')).toBe(true);
+    expect(result.finalPickDiagnostics).toEqual({
+      targetPickCount: 5,
+      rawPickCount: 2,
+      eligiblePickCount: 2,
+      acceptedPickCount: 2,
+      droppedPickCount: 0,
+      titleMotifDroppedCount: 0,
+      rankedBackfillCount: 3,
+      rejectedPickCount: 0
+    });
   });
 
-  it('dedupes repeated title motifs before ranked backfilling auto-fill batches', async () => {
+  it('ranked backfills when final picks are empty', async () => {
+    const pool = new CandidatePool();
+    for (let index = 1; index <= 3; index += 1) {
+      pool.upsert(candidate({
+        id: `pick-${index}`,
+        name: `Empty Final Backfill ${index}`,
+        artist: `Artist ${index}`
+      }));
+    }
+    const llmClient = new LoopFakeLlmClient([
+      JSON.stringify({
+        type: 'final',
+        say: '没有足够明确的模型选择。',
+        picks: [],
+        rejected: []
+      })
+    ]);
+
+    const result = await runMusicAgentLoop({
+      llmClient,
+      context: context({ request: 'auto-fill' }),
+      candidatePool: pool,
+      tools: {},
+      budget: budget(),
+      targetPickCount: 3
+    });
+
+    expect(result.status).toBe('ok');
+    expect(result.picks.map((pick) => pick.id)).toEqual(['pick-1', 'pick-2', 'pick-3']);
+    expect(result.picks.every((pick) => pick.reason === 'ranked backfill')).toBe(true);
+    expect(result.finalPickDiagnostics).toEqual({
+      targetPickCount: 3,
+      rawPickCount: 0,
+      eligiblePickCount: 0,
+      acceptedPickCount: 0,
+      droppedPickCount: 0,
+      titleMotifDroppedCount: 0,
+      rankedBackfillCount: 3,
+      rejectedPickCount: 0
+    });
+  });
+
+  it('dedupes repeated title motifs before returning partial auto-fill batches', async () => {
     const pool = new CandidatePool();
     const baseScores = candidate().scores;
     const tracks: Array<Partial<MusicCandidate>> = [
@@ -278,10 +376,19 @@ describe('runMusicAgentLoop', () => {
       'olive-afternoon',
       'home',
       'evening-walk',
-      'rain-lights',
-      'train-window'
+      'rain-lights'
     ]);
-    expect(result.picks.at(-1)?.reason).toBe('ranked backfill');
+    expect(result.picks.some((pick) => pick.reason === 'ranked backfill')).toBe(false);
+    expect(result.finalPickDiagnostics).toEqual({
+      targetPickCount: 5,
+      rawPickCount: 5,
+      eligiblePickCount: 5,
+      acceptedPickCount: 4,
+      droppedPickCount: 1,
+      titleMotifDroppedCount: 1,
+      rankedBackfillCount: 0,
+      rejectedPickCount: 0
+    });
   });
 
   it('does not ranked-backfill chat recommendations beyond the final picks', async () => {
@@ -623,13 +730,23 @@ describe('runMusicAgentLoop', () => {
     expect(result.picks.every((pick) => pick.reason !== 'ranked convergence')).toBe(true);
     expect(llmClient.calls).toHaveLength(2);
     expect(llmClient.calls[1].messages.map((message) => message.content).join('\n')).not.toContain('tool_call');
-    expect(llmClient.calls[1].messages.map((message) => message.content).join('\n')).toContain('"type":"final"');
+    const finalPrompt = llmClient.calls[1].messages.map((message) => message.content).join('\n');
+    expect(finalPrompt).toContain('"type":"final"');
+    expect(finalPrompt).toContain('候选池数量达到或超过目标数量时，必须尽量返回 2 首');
+    expect(finalPrompt).toContain('如果少于 2 首，必须在 rejected 里为每个缺口说明原因');
     expectProviderSafeFinalPickResponseFormat(llmClient.calls[1].opts?.responseFormat);
     expect(fallbackLogger).toHaveBeenCalledWith(expect.objectContaining({
       reason: 'ranked_tool_completed',
       status: 'ok',
       candidateCount: 3,
       pickCount: 2,
+      finalPickDiagnostics: expect.objectContaining({
+        targetPickCount: 2,
+        rawPickCount: 2,
+        droppedPickCount: 0,
+        rankedBackfillCount: 0,
+        rejectedPickCount: 0
+      }),
       step: 2,
       llmCalls: 2
     }));

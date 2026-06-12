@@ -82,6 +82,22 @@ describe('player layout', () => {
     expect(source).toContain('resetTrackMedia();');
   });
 
+  it('retries interrupted track streams by refreshing the now-playing URL with stale guards', () => {
+    const source = fs.readFileSync(path.join(root, 'src/renderer/views/Player/PlayerView.tsx'), 'utf-8');
+    const retryStart = source.indexOf('async function retryTrackPlaybackAfterError');
+    const resetStart = source.indexOf('function resetTrackMedia', retryStart);
+    const retryBody = source.slice(retryStart, resetStart);
+
+    expect(source).toContain('const TRACK_MEDIA_ERROR_MAX_RETRIES = 2');
+    expect(source).toContain('async function retryTrackPlaybackAfterError');
+    expect(source).toContain('getMediaErrorRetryDecision({');
+    expect(source).toContain('pendingTrackMediaRetryRef.current = {');
+    expect(source).toContain('trackMediaRetryRequestIdRef.current += 1');
+    expect(source).toContain('currentTrackIdRef.current !== trackId');
+    expect(retryBody).toContain('const payload = await getNowPlaying(trackId);');
+    expect(retryBody).not.toContain('getNowPlaying(trackId, {');
+  });
+
   it('clears the restored queue snapshot when the final queued track ends', () => {
     const source = fs.readFileSync(path.join(root, 'src/renderer/views/Player/PlayerView.tsx'), 'utf-8');
     const onEndedStart = source.indexOf('function onEnded(): void');

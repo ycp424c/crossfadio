@@ -127,6 +127,25 @@ INSERT INTO plan_new (id, user_id, plan_date, version, payload_json, created_at)
   SELECT id, '__legacy__', plan_date, version, payload_json, created_at FROM plan;
 DROP TABLE plan;
 ALTER TABLE plan_new RENAME TO plan;
+`,
+  `
+CREATE TABLE IF NOT EXISTS music_query_stats (
+  user_id          TEXT NOT NULL,
+  normalized_query TEXT NOT NULL,
+  display_query    TEXT NOT NULL,
+  source           TEXT NOT NULL,
+  searched_count   INTEGER NOT NULL DEFAULT 0,
+  result_count     INTEGER NOT NULL DEFAULT 0,
+  added_count      INTEGER NOT NULL DEFAULT 0,
+  selected_count   INTEGER NOT NULL DEFAULT 0,
+  last_used_order  INTEGER NOT NULL DEFAULT 0,
+  last_used_at     TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at       TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (user_id, normalized_query, source)
+);
+
+CREATE INDEX IF NOT EXISTS idx_music_query_stats_user_recent
+  ON music_query_stats (user_id, last_used_order DESC);
 `
 ];
 

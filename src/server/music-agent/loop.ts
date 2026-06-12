@@ -13,12 +13,14 @@ import {
   musicAgentToolNameSchema,
   type AgentBudget,
   type AgentTraceStep,
+  type FinalPickDiagnostics,
   type FinalPick,
   type MusicAgentContextSummary,
   type MusicAgentFinalOutput,
   type MusicAgentLlmClient,
   type MusicAgentRunOutput,
-  type MusicAgentToolName
+  type MusicAgentToolName,
+  type QueryFunnelEntry
 } from './schema.js';
 import type { MusicAgentToolRegistry, ToolObservation } from './tools.js';
 
@@ -60,6 +62,8 @@ export type MusicAgentFallbackLogEvent = {
   budget: AgentBudget;
   lastTraceStep?: AgentTraceStep;
   extraFinalProblem?: string;
+  finalPickDiagnostics?: FinalPickDiagnostics;
+  queryFunnel?: QueryFunnelEntry[];
 };
 
 export type MusicAgentFallbackLogger = (event: MusicAgentFallbackLogEvent) => void;
@@ -70,6 +74,11 @@ type ParsedLoopOutput =
 
 type LoopObservation = ToolObservation & {
   tool?: string;
+};
+
+type CompletedFinalPicks = {
+  picks: FinalPick[];
+  finalPickDiagnostics: FinalPickDiagnostics;
 };
 
 const DEFAULT_TOOL_NAME = 'rank_candidates';
@@ -165,13 +174,21 @@ export async function runMusicAgentLoop(input: RunMusicAgentLoopInput): Promise<
       try {
         const picks = validateEligibleFinalPicks(output.picks, input);
         await prepareForRanking(input);
-        const completedPicks = completeFinalPicks(picks, input);
+        const completed = completeFinalPicks(picks, input, output.picks.length, output.rejected?.length ?? 0);
+        if (completed.picks.length === 0) {
+          return rankedFallback('final_rejected', input, trace, startedAt, step, llmCalls, toolCalls, {
+            finalPickDiagnostics: completed.finalPickDiagnostics
+          });
+        }
+        const queryFunnel = recordAndReadQueryFunnel(input, completed.picks);
         return {
           status: 'ok',
           mode: resolveMode(input),
           say: output.say,
-          picks: completedPicks,
+          picks: completed.picks,
           rejected: output.rejected ?? [],
+          finalPickDiagnostics: completed.finalPickDiagnostics,
+          queryFunnel,
           trace,
           candidateScoreTable: createCandidateScoreTable(input)
         };
@@ -185,7 +202,9 @@ export async function runMusicAgentLoop(input: RunMusicAgentLoopInput): Promise<
           thoughtSummary: 'final rejected by candidate pool whitelist',
           observationSummary: summarizeObservation(observation)
         }));
-        return rankedFallback('final_rejected', input, trace, startedAt, step, llmCalls, toolCalls);
+        return rankedFallback('final_rejected', input, trace, startedAt, step, llmCalls, toolCalls, {
+          finalPickDiagnostics: rejectedFinalPickDiagnostics(output, input)
+        });
       }
     }
 
@@ -524,13 +543,22 @@ async function acceptExtraFinalPick(
   try {
     const picks = validateEligibleFinalPicks(output.picks, input);
     await prepareForRanking(input);
-    const completedPicks = completeFinalPicks(picks, input);
+    const completed = completeFinalPicks(picks, input, output.picks.length, output.rejected?.length ?? 0);
+    if (completed.picks.length === 0) {
+      return rankedFallback('extra_final_rejected', input, trace, startedAt, step, llmCalls, toolCalls, {
+        extraFinalProblem: 'empty_final',
+        finalPickDiagnostics: completed.finalPickDiagnostics
+      });
+    }
+    const queryFunnel = recordAndReadQueryFunnel(input, completed.picks);
     const result: MusicAgentRunOutput = {
       status: 'ok',
       mode: resolveMode(input),
       say: output.say,
-      picks: completedPicks,
+      picks: completed.picks,
       rejected: output.rejected ?? [],
+      finalPickDiagnostics: completed.finalPickDiagnostics,
+      queryFunnel,
       trace,
       candidateScoreTable: createCandidateScoreTable(input)
     };
@@ -546,7 +574,8 @@ async function acceptExtraFinalPick(
       observationSummary: summarizeObservation(observation)
     }));
     return rankedFallback('extra_final_rejected', input, trace, startedAt, step, llmCalls, toolCalls, {
-      extraFinalProblem: 'final_rejected'
+      extraFinalProblem: 'final_rejected',
+      finalPickDiagnostics: rejectedFinalPickDiagnostics(output, input)
     });
   }
 }
@@ -794,7 +823,7 @@ async function rankedFallback(
   step: number,
   llmCalls: number,
   toolCalls: number,
-  extra: Pick<MusicAgentFallbackLogEvent, 'extraFinalProblem'> = {}
+  extra: Pick<MusicAgentFallbackLogEvent, 'extraFinalProblem' | 'finalPickDiagnostics'> = {}
 ): Promise<MusicAgentRunOutput> {
   const mode = resolveMode(input);
   await prepareForRanking(input);
@@ -807,6 +836,7 @@ async function rankedFallback(
     reason: 'ranked fallback',
     source: candidate.sources[0]
   }));
+  const queryFunnel = recordAndReadQueryFunnel(input, picks);
 
   const output: MusicAgentRunOutput = {
     status: picks.length > 0 ? 'ok' : 'empty_pool',
@@ -816,6 +846,8 @@ async function rankedFallback(
       : '暂时没有可用候选，先不追加新歌。',
     picks,
     rejected: [],
+    ...(extra.finalPickDiagnostics ? { finalPickDiagnostics: extra.finalPickDiagnostics } : {}),
+    queryFunnel,
     trace,
     candidateScoreTable: buildCandidateScoreTableRows(ranked, options)
   };
@@ -831,6 +863,8 @@ async function rankedFallback(
     elapsedMs: Math.max(0, Date.now() - startedAt),
     budget: input.budget,
     lastTraceStep: trace.at(-1),
+    finalPickDiagnostics: extra.finalPickDiagnostics,
+    queryFunnel,
     ...extra
   });
   return output;
@@ -862,6 +896,7 @@ async function rankedConvergence(
     say: `我从已经排序的候选池里收束出${formatPickCount(picks.length)}更适合现在的歌。`,
     picks,
     rejected: [],
+    queryFunnel: recordAndReadQueryFunnel(input, picks),
     trace,
     candidateScoreTable: buildCandidateScoreTableRows(ranked, options)
   };
@@ -889,7 +924,9 @@ function recordRankedConvergence(
     toolCalls,
     elapsedMs: Math.max(0, Date.now() - startedAt),
     budget: input.budget,
-    lastTraceStep: trace.at(-1)
+    lastTraceStep: trace.at(-1),
+    finalPickDiagnostics: output.finalPickDiagnostics,
+    queryFunnel: output.queryFunnel
   });
 }
 
@@ -909,9 +946,15 @@ function abortedOutput(
     say: 'aborted: music agent loop was cancelled.',
     picks: [],
     rejected: [],
+    queryFunnel: [],
     trace,
     candidateScoreTable: []
   };
+}
+
+function recordAndReadQueryFunnel(input: RunMusicAgentLoopInput, picks: FinalPick[]): QueryFunnelEntry[] {
+  input.tools.recordFinalPicks?.(picks);
+  return input.tools.getQueryFunnel?.() ?? [];
 }
 
 function createCandidateScoreTable(input: RunMusicAgentLoopInput) {
@@ -926,16 +969,66 @@ function validateEligibleFinalPicks(picks: FinalPick[], input: RunMusicAgentLoop
   }).slice(0, targetPickCount(input));
 }
 
-function completeFinalPicks(picks: FinalPick[], input: RunMusicAgentLoopInput): FinalPick[] {
+function completeFinalPicks(
+  picks: FinalPick[],
+  input: RunMusicAgentLoopInput,
+  rawPickCount = picks.length,
+  rejectedPickCount = 0
+): CompletedFinalPicks {
   return modeFromContext(input.context) === 'pick_next'
-    ? rankedBackfillFinalPicks(picks, input)
-    : picks;
+    ? rankedBackfillFinalPicks(picks, input, rawPickCount, rejectedPickCount)
+    : {
+        picks,
+        finalPickDiagnostics: buildFinalPickDiagnostics({
+          targetPickCount: targetPickCount(input),
+          rawPickCount,
+          eligiblePickCount: picks.length,
+          acceptedPickCount: picks.length,
+          titleMotifDroppedCount: 0,
+          rankedBackfillCount: 0,
+          rejectedPickCount
+        })
+      };
 }
 
-function rankedBackfillFinalPicks(picks: FinalPick[], input: RunMusicAgentLoopInput): FinalPick[] {
+function rankedBackfillFinalPicks(
+  picks: FinalPick[],
+  input: RunMusicAgentLoopInput,
+  rawPickCount: number,
+  rejectedPickCount: number
+): CompletedFinalPicks {
   const target = targetPickCount(input);
   const diversePicks = diversifyFinalPicksByTitleMotif(picks, input);
-  if (diversePicks.length >= target) return diversePicks.slice(0, target);
+  const titleMotifDroppedCount = Math.max(0, picks.length - diversePicks.length);
+  if (diversePicks.length >= target) {
+    const completedPicks = diversePicks.slice(0, target);
+    return {
+      picks: completedPicks,
+      finalPickDiagnostics: buildFinalPickDiagnostics({
+        targetPickCount: target,
+        rawPickCount,
+        eligiblePickCount: picks.length,
+        acceptedPickCount: completedPicks.length,
+        titleMotifDroppedCount,
+        rankedBackfillCount: 0,
+        rejectedPickCount
+      })
+    };
+  }
+  if (diversePicks.length >= minFinalPicksBeforeBackfill(target)) {
+    return {
+      picks: diversePicks,
+      finalPickDiagnostics: buildFinalPickDiagnostics({
+        targetPickCount: target,
+        rawPickCount,
+        eligiblePickCount: picks.length,
+        acceptedPickCount: diversePicks.length,
+        titleMotifDroppedCount,
+        rankedBackfillCount: 0,
+        rejectedPickCount
+      })
+    };
+  }
 
   const pickedIds = new Set(picks.map((pick) => pick.id));
   const blockedTitleMotifs = titleMotifsFromFinalPicks(diversePicks, input);
@@ -950,7 +1043,44 @@ function rankedBackfillFinalPicks(picks: FinalPick[], input: RunMusicAgentLoopIn
     source: candidate.sources[0]
   }));
 
-  return [...diversePicks, ...backfill];
+  return {
+    picks: [...diversePicks, ...backfill],
+    finalPickDiagnostics: buildFinalPickDiagnostics({
+      targetPickCount: target,
+      rawPickCount,
+      eligiblePickCount: picks.length,
+      acceptedPickCount: diversePicks.length,
+      titleMotifDroppedCount,
+      rankedBackfillCount: backfill.length,
+      rejectedPickCount
+    })
+  };
+}
+
+function minFinalPicksBeforeBackfill(target: number): number {
+  return Math.ceil(target * 0.5);
+}
+
+function buildFinalPickDiagnostics(input: Omit<FinalPickDiagnostics, 'droppedPickCount'>): FinalPickDiagnostics {
+  return {
+    ...input,
+    droppedPickCount: Math.max(0, input.rawPickCount - input.acceptedPickCount)
+  };
+}
+
+function rejectedFinalPickDiagnostics(
+  output: Extract<ParsedLoopOutput, { type: 'final' }>,
+  input: RunMusicAgentLoopInput
+): FinalPickDiagnostics {
+  return buildFinalPickDiagnostics({
+    targetPickCount: targetPickCount(input),
+    rawPickCount: output.picks.length,
+    eligiblePickCount: 0,
+    acceptedPickCount: 0,
+    titleMotifDroppedCount: 0,
+    rankedBackfillCount: 0,
+    rejectedPickCount: output.rejected?.length ?? 0
+  });
 }
 
 function diversifyFinalPicksByTitleMotif(picks: FinalPick[], input: RunMusicAgentLoopInput): FinalPick[] {

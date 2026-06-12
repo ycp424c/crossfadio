@@ -73,6 +73,8 @@ type DjEventSink = (payload: Record<string, unknown>) => void;
 type DjPickNextRunMetrics = {
   agentPickCount?: number;
   rankedBackfillCount?: number;
+  finalPickDiagnostics?: MusicAgentRunOutput['finalPickDiagnostics'];
+  queryFunnel?: MusicAgentRunOutput['queryFunnel'];
   candidateCount?: number;
   elapsedMs?: number;
   fallbackPath?: DjPickNextFallbackPath;
@@ -491,7 +493,8 @@ async function doPickNext(
             type: 'dj.debug',
             likedSample: [],
             sqRaw: JSON.stringify(output.trace),
-            searchQueries: [],
+            searchQueries: output.queryFunnel.map((entry) => entry.query),
+            queryFunnel: output.queryFunnel,
             searchedTracks: output.picks.map((pick) => ({
               id: pick.id,
               name: pick.name,
@@ -1268,6 +1271,8 @@ function broadcastAppended(
       appendedCount: newTracks.length,
       agentPickCount: metrics.agentPickCount,
       rankedBackfillCount: metrics.rankedBackfillCount,
+      finalPickDiagnostics: metrics.finalPickDiagnostics,
+      queryFunnel: metrics.queryFunnel,
       candidateCount: metrics.candidateCount,
       elapsedMs: metrics.elapsedMs,
       fallbackPath: path ?? metrics.fallbackPath,
@@ -1298,6 +1303,8 @@ function musicAgentRunMetrics(
   return {
     agentPickCount: appendedPicks.filter((pick) => pick.reason !== 'ranked backfill').length,
     rankedBackfillCount: appendedPicks.filter((pick) => pick.reason === 'ranked backfill').length,
+    finalPickDiagnostics: output.finalPickDiagnostics,
+    queryFunnel: output.queryFunnel,
     candidateCount: getMusicAgentDebugCandidateCount(output),
     elapsedMs: Date.now() - startedAt,
     discoveryMode

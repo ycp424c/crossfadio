@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
   candidateSourceSchema,
+  finalPickDiagnosticsSchema,
   musicAgentLoopOutputSchema,
   musicAgentToolNameSchema,
   musicCandidateSchema,
   musicAgentFinalOutputSchema,
-  musicAgentRunOutputSchema
+  musicAgentRunOutputSchema,
+  queryFunnelEntrySchema
 } from '../../src/server/music-agent/schema';
 
 describe('music-agent schema', () => {
@@ -82,12 +84,48 @@ describe('music-agent schema', () => {
     })).toThrow();
   });
 
-  it('rejects final loop output with empty picks', () => {
-    expect(() => musicAgentLoopOutputSchema.parse({
+  it('accepts final loop output with empty picks so auto-fill can backfill', () => {
+    const output = musicAgentLoopOutputSchema.parse({
       type: 'final',
       say: '这首更适合现在的下午状态。',
       picks: []
-    })).toThrow();
+    });
+
+    expect(output.type).toBe('final');
+    expect(output.picks).toEqual([]);
+  });
+
+  it('validates final pick diagnostics for production logs', () => {
+    const diagnostics = finalPickDiagnosticsSchema.parse({
+      targetPickCount: 5,
+      rawPickCount: 5,
+      eligiblePickCount: 5,
+      acceptedPickCount: 3,
+      droppedPickCount: 2,
+      titleMotifDroppedCount: 2,
+      rankedBackfillCount: 0,
+      rejectedPickCount: 1
+    });
+
+    expect(diagnostics.droppedPickCount).toBe(2);
+  });
+
+  it('validates query funnel entries for search diagnostics', () => {
+    const entry = queryFunnelEntrySchema.parse({
+      query: '天空 女声',
+      normalizedQuery: '天空 女声',
+      source: 'search',
+      searchedCount: 1,
+      resultCount: 6,
+      addedCount: 3,
+      selectedCount: 1,
+      scoreMultiplier: 0.92,
+      repeatPenalty: 0.12,
+      selectionRate: 0.33
+    });
+
+    expect(entry.query).toBe('天空 女声');
+    expect(entry.selectedCount).toBe(1);
   });
 
   it('validates final MusicAgent output', () => {
@@ -96,11 +134,24 @@ describe('music-agent schema', () => {
       say: '补两首轻一点的。',
       picks: [{ id: '101', name: 'Soft Song', artist: 'Singer', reason: '符合下午低能量', source: 'liked' }],
       rejected: [],
+      queryFunnel: [{
+        query: '天空 女声',
+        normalizedQuery: '天空 女声',
+        source: 'search',
+        searchedCount: 1,
+        resultCount: 6,
+        addedCount: 3,
+        selectedCount: 1,
+        scoreMultiplier: 0.92,
+        repeatPenalty: 0.12,
+        selectionRate: 0.33
+      }],
       trace: [{ step: 1, thoughtSummary: '需要女声候选', candidateCount: 1, elapsedMs: 20 }]
     });
 
     expect(finalOutput.mode).toBe('pick_next');
     expect(finalOutput.picks[0].source).toBe('liked');
+    expect(finalOutput.queryFunnel[0].selectedCount).toBe(1);
   });
 
   it('rejects final MusicAgent output with empty say', () => {
@@ -139,11 +190,22 @@ describe('music-agent schema', () => {
       say: '补一首轻一点的。',
       picks: [{ id: '101', name: 'Soft Song', artist: 'Singer', reason: '符合下午低能量', source: 'liked' }],
       rejected: [],
+      finalPickDiagnostics: {
+        targetPickCount: 2,
+        rawPickCount: 1,
+        eligiblePickCount: 1,
+        acceptedPickCount: 1,
+        droppedPickCount: 0,
+        titleMotifDroppedCount: 0,
+        rankedBackfillCount: 0,
+        rejectedPickCount: 0
+      },
       trace: []
     });
 
     expect(output.status).toBe('ok');
     expect(output.picks[0].id).toBe('101');
+    expect(output.finalPickDiagnostics?.rawPickCount).toBe(1);
   });
 
   it('rejects ok run output with empty picks', () => {

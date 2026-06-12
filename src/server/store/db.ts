@@ -30,5 +30,6 @@ export function getDb(): Database.Database {
 }
 
 export function _resetDbForTest(): void {
+  dbInstance?.close();
   dbInstance = null;
 }
