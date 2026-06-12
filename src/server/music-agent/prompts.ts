@@ -44,6 +44,7 @@ export function buildLoopMessages(input: BuildLoopMessagesInput): LlmMessage[] {
         'final picks 的 id 必须来自候选池；不能选择候选池外的歌曲。',
         'activeDirective/current chat 必须优先于趋势、榜单、泛化流行度。',
         'recentArtistPenalties 中 penalty 较高的歌手需要先在 expand_queries 阶段放入 avoidArtists，并用相邻风格或不同歌手扩展召回。',
+        'recentTrackPenalties 是同一首歌的长周期重复惩罚；penalty 高的候选除非明显最贴合，否则应优先让位给相邻风格的新候选。',
         '不要编造 NCM id；如果候选池不足，先调用白名单工具补候选。',
         `final picks 最多选择 ${targetPickCount} 首；高质量候选不足时可以少选，不要为了凑数选择明显不合适的歌。`,
         `候选池已有 ${targetPickCount} 首以上且已经调用 rank_candidates/diversify_candidates/finalize_pick 后，下一步必须输出 final，不要继续调用工具。`

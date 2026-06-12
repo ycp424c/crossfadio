@@ -1,4 +1,5 @@
 import type { CandidateScoreTableRow, MusicCandidate, MusicCandidateQualitySignals } from './schema.js';
+import { areMusicTrackDedupeKeysSimilar, buildMusicTrackDedupeKey } from './dedupe.js';
 
 const REPEATED_ARTIST_PENALTY = 0.16;
 const LOW_POPULARITY_THRESHOLD = 40;
@@ -31,6 +32,7 @@ const TITLE_DIVERSITY_MOTIFS = [
 
 export type RankCandidatesOptions = {
   artistPenalties?: ReadonlyMap<string, number>;
+  trackPenalties?: ReadonlyMap<string, number>;
 };
 
 export type DiversifyCandidatesOptions = {
@@ -61,6 +63,7 @@ export function scoreCandidate(candidate: MusicCandidate): number {
 export type CandidateScoreBreakdown = {
   baseScore: number;
   artistPenalty: number;
+  trackPenalty: number;
   repeatPenalty: number;
   qualityPenalty: number;
   titlePollutionPenalty: number;
@@ -75,16 +78,18 @@ export function scoreCandidateForRanking(
   const artist = primaryArtist(candidate.artist);
   const baseScore = scoreCandidate(candidate);
   const artistPenalty = options.artistPenalties?.get(artist) ?? 0;
+  const trackPenalty = resolveTrackPenalty(candidate, options.trackPenalties);
   const repeatPenalty = repeatCount * REPEATED_ARTIST_PENALTY;
   const qualityPenalty = qualitySignalPenalty(candidate);
   const titlePollutionPenalty = titlePollutionSignalPenalty(candidate);
   return {
     baseScore,
     artistPenalty,
+    trackPenalty,
     repeatPenalty,
     qualityPenalty,
     titlePollutionPenalty,
-    adjustedScore: Math.max(0, baseScore - artistPenalty - repeatPenalty - qualityPenalty - titlePollutionPenalty)
+    adjustedScore: Math.max(0, baseScore - artistPenalty - trackPenalty - repeatPenalty - qualityPenalty - titlePollutionPenalty)
   };
 }
 
@@ -134,6 +139,7 @@ export function buildCandidateScoreTableRows(
       sources: candidate.sources.join(','),
       baseScore: roundScore(breakdown.baseScore),
       artistPenalty: roundScore(breakdown.artistPenalty),
+      trackPenalty: roundScore(breakdown.trackPenalty),
       repeatPenalty: roundScore(breakdown.repeatPenalty),
       qualityPenalty: roundScore(breakdown.qualityPenalty),
       titlePollutionPenalty: roundScore(breakdown.titlePollutionPenalty),
@@ -148,8 +154,7 @@ export function diversifyCandidates(
   options: DiversifyCandidatesOptions = {}
 ): MusicCandidate[] {
   const sorted = candidates
-    .filter((candidate) => !isHardFilteredCandidate(candidate))
-    .sort((left, right) => scoreCandidateForRanking(right).adjustedScore - scoreCandidateForRanking(left).adjustedScore);
+    .filter((candidate) => !isHardFilteredCandidate(candidate));
   const selected: MusicCandidate[] = [];
   const usedArtists = new Set<string>();
   const usedTitleMotifs = new Set(options.blockedTitleMotifs ?? []);
@@ -246,6 +251,22 @@ function titlePollutionSignalPenalty(candidate: MusicCandidate): number {
 
 function usesExternalQuality(candidate: MusicCandidate): boolean {
   return candidate.sources.every((source) => EXTERNAL_SOURCES.has(source));
+}
+
+function resolveTrackPenalty(candidate: MusicCandidate, penalties: ReadonlyMap<string, number> | undefined): number {
+  if (!penalties || penalties.size === 0) return 0;
+  const dedupeKey = buildMusicTrackDedupeKey({ name: candidate.name, artist: candidate.artist });
+  if (!dedupeKey) return 0;
+  const exactPenalty = penalties.get(dedupeKey);
+  if (exactPenalty !== undefined) return exactPenalty;
+
+  let penalty = 0;
+  for (const [penalizedKey, value] of penalties.entries()) {
+    if (areMusicTrackDedupeKeysSimilar(dedupeKey, penalizedKey)) {
+      penalty = Math.max(penalty, value);
+    }
+  }
+  return penalty;
 }
 
 function detectTitlePollution(title: string): NonNullable<MusicCandidateQualitySignals['titlePollution']> {

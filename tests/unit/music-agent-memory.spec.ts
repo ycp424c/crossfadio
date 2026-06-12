@@ -315,6 +315,46 @@ describe('music agent context builder', () => {
     expect(context.bannedSummary).toContain('减少伤感');
   });
 
+  it('builds long-lived track penalties from repeated play history with slow decay', async () => {
+    const userId = 'track-repeat-user';
+    const { getDb } = await import('../../src/server/store/db.js');
+    const db = getDb();
+    const insertPlay = db.prepare(
+      `INSERT INTO plays (user_id, song_id, song_name, artist_name, started_at)
+       VALUES (?, ?, ?, ?, ?)`
+    );
+    insertPlay.run(userId, '659423', 'プラスティック・ラヴ', '竹内まりや', '2026-06-11 02:00:00');
+    insertPlay.run(userId, '659423', 'プラスティック・ラヴ', '竹内まりや', '2026-06-05 02:00:00');
+    insertPlay.run(userId, '659423', 'プラスティック・ラヴ', '竹内まりや', '2026-05-22 02:00:00');
+    insertPlay.run(userId, '26127770', 'Plastic Love (New-Remix)', '竹内まりや', '2026-04-01 02:00:00');
+    insertPlay.run(userId, '22707008', '真夜中のドア〜stay with me', '松原みき', '2026-05-08 02:00:00');
+    insertPlay.run(userId, 'old-only', 'Old Theme Song', 'Old Artist', '2026-03-01 02:00:00');
+
+    const { buildMusicAgentContext } = await import('../../src/server/music-agent/context.js');
+    const context = await buildMusicAgentContext({
+      userId,
+      request: 'auto-fill',
+      now: new Date('2026-06-12T02:00:00.000Z')
+    });
+
+    const penalties = context.recentTrackPenalties ?? [];
+    const plasticLove = penalties.find((item) => item.trackKey === 'プラスティックラヴ::竹内まりや');
+    const stayWithMe = penalties.find((item) => item.trackKey === '真夜中のドアstaywithme::松原みき');
+
+    expect(plasticLove).toMatchObject({
+      title: 'プラスティック・ラヴ',
+      artist: '竹内まりや'
+    });
+    expect(stayWithMe).toMatchObject({
+      title: '真夜中のドア〜stay with me',
+      artist: '松原みき'
+    });
+    expect(plasticLove?.penalty).toBeGreaterThan(stayWithMe?.penalty ?? 0);
+    expect(plasticLove?.penalty).toBeLessThan(0.28);
+    expect(stayWithMe?.penalty).toBeGreaterThan(0);
+    expect(penalties.some((item) => item.title === 'Old Theme Song')).toBe(false);
+  });
+
   it('uses Shanghai daypart even when the server process timezone is UTC', async () => {
     const originalTz = process.env.TZ;
     process.env.TZ = 'UTC';

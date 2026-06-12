@@ -509,7 +509,8 @@ function likedRecallLimit(value: unknown, context: MusicAgentContextSummary): nu
 
 function rankOptions(context: MusicAgentContextSummary) {
   return {
-    artistPenalties: new Map((context.recentArtistPenalties ?? []).map((item) => [item.artist, item.penalty]))
+    artistPenalties: new Map((context.recentArtistPenalties ?? []).map((item) => [item.artist, item.penalty])),
+    trackPenalties: new Map((context.recentTrackPenalties ?? []).map((item) => [item.trackKey, item.penalty]))
   };
 }
 
@@ -801,7 +802,7 @@ function summarizeQueryPlan(plan: QueryPlan): string {
 function summarizeCandidates(
   label: string,
   candidates: MusicCandidate[],
-  options: ReturnType<typeof rankOptions> = { artistPenalties: new Map() }
+  options: ReturnType<typeof rankOptions> = { artistPenalties: new Map(), trackPenalties: new Map() }
 ): string {
   if (candidates.length === 0) return `${label}: candidate pool is empty.`;
   return truncate(
@@ -811,6 +812,7 @@ function summarizeCandidates(
         `${candidate.id}:${candidate.name}-${candidate.artist}`,
         `score=${breakdown.baseScore.toFixed(3)}`,
         breakdown.artistPenalty > 0 ? `artistPenalty=${breakdown.artistPenalty.toFixed(3)}` : '',
+        breakdown.trackPenalty > 0 ? `trackPenalty=${breakdown.trackPenalty.toFixed(3)}` : '',
         breakdown.qualityPenalty > 0 ? `qualityPenalty=${breakdown.qualityPenalty.toFixed(3)}` : '',
         breakdown.titlePollutionPenalty > 0 ? `titlePollution=${resolveTitlePollution(candidate)}` : '',
         `adjusted=${breakdown.adjustedScore.toFixed(3)}`

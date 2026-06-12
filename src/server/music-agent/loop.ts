@@ -6,8 +6,7 @@ import {
   candidateTitleMotifKeys,
   diversifyCandidates,
   isHardFilteredCandidate,
-  rankCandidates,
-  scoreCandidate
+  rankCandidates
 } from './rank.js';
 import {
   musicAgentLoopOutputSchema,
@@ -1001,19 +1000,32 @@ async function prepareForRanking(input: RunMusicAgentLoopInput): Promise<void> {
 }
 
 function summarizeCandidatePool(pool: CandidatePool, context: MusicAgentContextSummary): string {
-  return JSON.stringify(rankCandidates(pool.list(), 20, rankOptions(context)).map((candidate) => ({
-    id: candidate.id,
-    name: candidate.name,
-    artist: candidate.artist,
-    sources: candidate.sources,
-    score: Number(scoreCandidate(candidate).toFixed(4)),
-    evidence: candidate.evidence.slice(0, 3)
-  })));
+  const options = rankOptions(context);
+  const ranked = rankCandidates(pool.list(), 20, options);
+  const scoreRows = buildCandidateScoreTableRows(ranked, options);
+  return JSON.stringify(ranked.map((candidate, index) => {
+    const row = scoreRows[index];
+    return {
+      id: candidate.id,
+      name: candidate.name,
+      artist: candidate.artist,
+      sources: candidate.sources,
+      baseScore: row?.baseScore,
+      artistPenalty: row?.artistPenalty,
+      trackPenalty: row?.trackPenalty,
+      repeatPenalty: row?.repeatPenalty,
+      qualityPenalty: row?.qualityPenalty,
+      titlePollutionPenalty: row?.titlePollutionPenalty,
+      adjustedScore: row?.adjustedScore,
+      evidence: candidate.evidence.slice(0, 3)
+    };
+  }));
 }
 
 function rankOptions(context: MusicAgentContextSummary) {
   return {
-    artistPenalties: new Map((context.recentArtistPenalties ?? []).map((item) => [item.artist, item.penalty]))
+    artistPenalties: new Map((context.recentArtistPenalties ?? []).map((item) => [item.artist, item.penalty])),
+    trackPenalties: new Map((context.recentTrackPenalties ?? []).map((item) => [item.trackKey, item.penalty]))
   };
 }
 

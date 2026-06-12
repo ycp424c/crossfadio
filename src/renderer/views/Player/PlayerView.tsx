@@ -138,6 +138,7 @@ type CandidateScoreTableRow = {
   sources: string;
   baseScore: number;
   artistPenalty: number;
+  trackPenalty: number;
   repeatPenalty: number;
   adjustedScore: number;
 };

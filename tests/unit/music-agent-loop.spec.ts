@@ -356,6 +356,50 @@ describe('runMusicAgentLoop', () => {
     ]);
   });
 
+  it('includes track penalty and adjusted score in the LLM candidate summary', async () => {
+    const llmClient = new LoopFakeLlmClient([
+      JSON.stringify({
+        type: 'final',
+        say: '选择未被长周期重复惩罚压低的候选。',
+        picks: [{ id: 'stay-with-me', reason: '重复惩罚更低且仍贴合当前请求', source: 'liked' }],
+        rejected: []
+      })
+    ]);
+    const pool = new CandidatePool();
+    pool.upsert(candidate({
+      id: 'plastic-love',
+      name: 'プラスティック・ラヴ',
+      artist: '竹内まりや',
+      scores: { ...candidate().scores, intentMatch: 1 }
+    }));
+    pool.upsert(candidate({
+      id: 'stay-with-me',
+      name: '真夜中のドア〜stay with me',
+      artist: '松原みき',
+      scores: { ...candidate().scores, intentMatch: 0.92 }
+    }));
+
+    await runMusicAgentLoop({
+      llmClient,
+      context: context({
+        recentTrackPenalties: [
+          { trackKey: 'プラスティックラヴ::竹内まりや', title: 'プラスティック・ラヴ', artist: '竹内まりや', penalty: 0.22 },
+          { trackKey: '真夜中のドアstaywithme::松原みき', title: '真夜中のドア〜stay with me', artist: '松原みき', penalty: 0.04 }
+        ]
+      }),
+      candidatePool: pool,
+      tools: {},
+      budget: budget()
+    });
+
+    const prompt = llmClient.calls[0].messages.map((message) => message.content).join('\n');
+    expect(prompt).toContain('"trackPenalty":0.04');
+    expect(prompt).toContain('"artistPenalty":0');
+    expect(prompt).toContain('"repeatPenalty":0');
+    expect(prompt).toContain('"adjustedScore"');
+    expect(prompt).not.toContain('"id":"plastic-love","name":"プラスティック・ラヴ","artist":"竹内まりや","sources":["liked"],"score"');
+  });
+
   it('falls back to ranked candidates when final picks are outside the whitelist pool', async () => {
     const pool = new CandidatePool();
     pool.upsert(candidate({ id: '101' }));

@@ -144,6 +144,12 @@ export const musicAgentContextSummarySchema = z.object({
     artist: z.string().min(1),
     penalty: z.number().min(0)
   })).optional(),
+  recentTrackPenalties: z.array(z.object({
+    trackKey: z.string().min(1),
+    title: z.string().min(1),
+    artist: z.string().default(''),
+    penalty: z.number().min(0)
+  })).optional(),
   bannedSummary: z.string().default('')
 });
 
@@ -182,6 +188,7 @@ export const candidateScoreTableRowSchema = z.object({
   sources: z.string(),
   baseScore: z.number(),
   artistPenalty: z.number(),
+  trackPenalty: z.number(),
   repeatPenalty: z.number(),
   qualityPenalty: z.number(),
   titlePollutionPenalty: z.number(),

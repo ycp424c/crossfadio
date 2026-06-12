@@ -191,6 +191,71 @@ describe('music-agent ranking', () => {
     expect(ranked.map((item) => item.id)).toEqual(['far', 'fresh', 'near']);
   });
 
+  it('rankCandidates applies long-lived track penalties by normalized song key', () => {
+    const candidates = [
+      candidate({
+        id: 'plastic-love',
+        name: 'プラスティック・ラヴ',
+        artist: '竹内まりや',
+        scores: { ...candidate().scores, intentMatch: 1 }
+      }),
+      candidate({
+        id: 'stay-with-me',
+        name: '真夜中のドア〜stay with me',
+        artist: '松原みき',
+        scores: { ...candidate().scores, intentMatch: 0.92 }
+      }),
+      candidate({
+        id: 'fresh-city-pop',
+        name: 'September',
+        artist: '竹内まりや',
+        scores: { ...candidate().scores, intentMatch: 0.75 }
+      })
+    ];
+
+    const ranked = rankCandidates(candidates, 3, {
+      trackPenalties: new Map([
+        ['プラスティックラヴ::竹内まりや', 0.22],
+        ['真夜中のドアstaywithme::松原みき', 0.04]
+      ])
+    });
+
+    expect(ranked.map((item) => item.id)).toEqual(['stay-with-me', 'fresh-city-pop', 'plastic-love']);
+  });
+
+  it('diversifyCandidates keeps the penalty-aware ranked order', () => {
+    const candidates = [
+      candidate({
+        id: 'plastic-love',
+        name: 'プラスティック・ラヴ',
+        artist: '竹内まりや',
+        scores: { ...candidate().scores, intentMatch: 1 }
+      }),
+      candidate({
+        id: 'stay-with-me',
+        name: '真夜中のドア〜stay with me',
+        artist: '松原みき',
+        scores: { ...candidate().scores, intentMatch: 0.92 }
+      }),
+      candidate({
+        id: 'fresh-city-pop',
+        name: 'September',
+        artist: '竹内まりや',
+        scores: { ...candidate().scores, intentMatch: 0.75 }
+      })
+    ];
+    const options = {
+      trackPenalties: new Map([
+        ['プラスティックラヴ::竹内まりや', 0.22],
+        ['真夜中のドアstaywithme::松原みき', 0.04]
+      ])
+    };
+
+    const ranked = rankCandidates(candidates, 3, options);
+
+    expect(diversifyCandidates(ranked, 2).map((item) => item.id)).toEqual(['stay-with-me', 'fresh-city-pop']);
+  });
+
   it('builds console table rows with candidate scores and penalties', () => {
     const rows = buildCandidateScoreTableRows([
       candidate({
