@@ -7,6 +7,7 @@ import {
   musicCandidateSchema,
   musicAgentFinalOutputSchema,
   musicAgentRunOutputSchema,
+  queryPlanSchema,
   queryFunnelEntrySchema
 } from '../../src/server/music-agent/schema';
 
@@ -20,6 +21,7 @@ describe('music-agent schema', () => {
     expect(musicAgentToolNameSchema.parse('recall_from_playlists')).toBe('recall_from_playlists');
     expect(musicAgentToolNameSchema.parse('recall_from_plan_segment')).toBe('recall_from_plan_segment');
     expect(musicAgentToolNameSchema.parse('recall_from_ncm_search')).toBe('recall_from_ncm_search');
+    expect(musicAgentToolNameSchema.parse('recall_from_entities')).toBe('recall_from_entities');
     expect(musicAgentToolNameSchema.parse('recall_from_trending')).toBe('recall_from_trending');
     expect(musicAgentToolNameSchema.parse('recall_from_style_expansion')).toBe('recall_from_style_expansion');
     expect(musicAgentToolNameSchema.parse('recall_auto_fill_mix')).toBe('recall_auto_fill_mix');
@@ -126,6 +128,19 @@ describe('music-agent schema', () => {
 
     expect(entry.query).toBe('天空 女声');
     expect(entry.selectedCount).toBe(1);
+  });
+
+  it('separates exact track queries from semantic discovery hints in query plans', () => {
+    const plan = queryPlanSchema.parse({
+      exactTrackQueries: ['Candy 具島直子'],
+      styleHints: ['city pop'],
+      listeningConstraints: ['下午', '中低能量']
+    });
+
+    expect(plan.exactTrackQueries).toEqual(['Candy 具島直子']);
+    expect(plan.styleHints).toEqual(['city pop']);
+    expect(plan.listeningConstraints).toEqual(['下午', '中低能量']);
+    expect(plan.intentQueries).toEqual([]);
   });
 
   it('validates final MusicAgent output', () => {

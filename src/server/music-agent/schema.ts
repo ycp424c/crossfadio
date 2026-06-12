@@ -23,6 +23,7 @@ export const musicAgentToolNameSchema = z.enum([
   'recall_from_playlists',
   'recall_from_plan_segment',
   'recall_from_ncm_search',
+  'recall_from_entities',
   'recall_from_trending',
   'recall_from_style_expansion',
   'recall_auto_fill_mix',
@@ -67,11 +68,14 @@ export const musicCandidateSchema = z.object({
 export type MusicCandidate = z.infer<typeof musicCandidateSchema>;
 
 export const queryPlanSchema = z.object({
+  exactTrackQueries: z.array(z.string()).default([]),
   intentQueries: z.array(z.string()).default([]),
   tasteAnchorQueries: z.array(z.string()).default([]),
   planQueries: z.array(z.string()).default([]),
   trendQueries: z.array(z.string()).default([]),
   explorationQueries: z.array(z.string()).default([]),
+  styleHints: z.array(z.string()).default([]),
+  listeningConstraints: z.array(z.string()).default([]),
   avoidArtists: z.array(z.string()).default([]),
   negativeTerms: z.array(z.string()).default([]),
   rationale: z.string().default('')

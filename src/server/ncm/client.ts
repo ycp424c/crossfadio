@@ -1,14 +1,24 @@
 import {
   NCM_ERROR_CODE,
+  ncmAlbumDetailResponseSchema,
+  ncmAlbumSearchResponseSchema,
+  ncmArtistAlbumsResponseSchema,
+  ncmArtistSearchResponseSchema,
+  ncmArtistTopSongsResponseSchema,
   ncmLyricResponseSchema,
   ncmLikedIdsResponseSchema,
+  ncmPlaylistSearchResponseSchema,
   ncmPlaylistDetailResponseSchema,
   ncmSearchResponseSchema,
   ncmSongDetailResponseSchema,
   ncmSongUrlResponseSchema,
+  type NcmAlbumDetail,
+  type NcmAlbumSearchResult,
+  type NcmArtistSearchResult,
   type NcmErrorCode,
   type NcmLyric,
   type NcmPlaylistDetail,
+  type NcmPlaylistSearchResult,
   type NcmSong,
   type NcmSongUrl,
   type NcmTrackQualitySignals
@@ -194,6 +204,74 @@ export class NcmClient {
     }));
   }
 
+  async searchArtists(keywords: string, limit = 10): Promise<NcmArtistSearchResult[]> {
+    const json = await this.getJson('/cloudsearch', {
+      keywords,
+      type: '100',
+      limit: String(limit)
+    });
+
+    const parsed = ncmArtistSearchResponseSchema.safeParse(json);
+    if (!parsed.success) {
+      throw new NcmApiError(
+        NCM_ERROR_CODE.BAD_RESPONSE,
+        `NCM artist search returned malformed payload: ${parsed.error.message}`
+      );
+    }
+
+    return (parsed.data.result?.artists ?? [])
+      .map((artist) => ({
+        id: artist.id,
+        name: artist.name.trim()
+      }))
+      .filter((artist) => artist.name.length > 0);
+  }
+
+  async searchAlbums(keywords: string, limit = 10): Promise<NcmAlbumSearchResult[]> {
+    const json = await this.getJson('/cloudsearch', {
+      keywords,
+      type: '10',
+      limit: String(limit)
+    });
+
+    const parsed = ncmAlbumSearchResponseSchema.safeParse(json);
+    if (!parsed.success) {
+      throw new NcmApiError(
+        NCM_ERROR_CODE.BAD_RESPONSE,
+        `NCM album search returned malformed payload: ${parsed.error.message}`
+      );
+    }
+
+    return (parsed.data.result?.albums ?? [])
+      .map(mapAlbumSummary)
+      .filter((album) => album.name.length > 0);
+  }
+
+  async searchPlaylists(keywords: string, limit = 10): Promise<NcmPlaylistSearchResult[]> {
+    const json = await this.getJson('/cloudsearch', {
+      keywords,
+      type: '1000',
+      limit: String(limit)
+    });
+
+    const parsed = ncmPlaylistSearchResponseSchema.safeParse(json);
+    if (!parsed.success) {
+      throw new NcmApiError(
+        NCM_ERROR_CODE.BAD_RESPONSE,
+        `NCM playlist search returned malformed payload: ${parsed.error.message}`
+      );
+    }
+
+    return (parsed.data.result?.playlists ?? [])
+      .map((playlist) => ({
+        id: playlist.id,
+        name: playlist.name.trim(),
+        trackCount: typeof playlist.trackCount === 'number' ? playlist.trackCount : 0,
+        coverImgUrl: playlist.coverImgUrl ?? null
+      }))
+      .filter((playlist) => playlist.name.length > 0);
+  }
+
   async getSongUrl(id: string, options: GetSongUrlOptions = {}): Promise<NcmSongUrl | null> {
     const nowMs = options.nowMs ?? Date.now();
     const deadlineAtMs = Date.now() + this.fetchTimeoutMs;
@@ -347,15 +425,7 @@ export class NcmClient {
       return null;
     }
 
-    const tracks = playlist.tracks.map((track) => ({
-      id: track.id,
-      name: track.name,
-      artists: (track.ar ?? [])
-        .map((artist) => artist.name)
-        .filter((name): name is string => typeof name === 'string' && name.length > 0),
-      durationMs: typeof track.dt === 'number' ? track.dt : 0,
-      ...(track.al?.picUrl ? { coverImgUrl: track.al.picUrl } : {})
-    }));
+    const tracks = playlist.tracks.map(mapNcmTrack);
 
     return {
       id: playlist.id,
@@ -402,16 +472,55 @@ export class NcmClient {
       );
     }
 
-    return parsed.data.songs.map((song) => ({
-      id: song.id,
-      name: song.name,
-      artists: (song.ar ?? [])
-        .map((artist) => artist.name)
-        .filter((name): name is string => typeof name === 'string' && name.length > 0),
-      durationMs: typeof song.dt === 'number' ? song.dt : 0,
-      ...(song.al?.picUrl ? { coverImgUrl: song.al.picUrl } : {}),
-      ...qualitySignalsProperty(buildTrackQualitySignals(song))
-    }));
+    return parsed.data.songs.map(mapNcmTrack);
+  }
+
+  async getArtistTopSongs(id: string): Promise<NcmPlaylistDetail['tracks']> {
+    const json = await this.getJson('/artist/top/song', { id });
+    const parsed = ncmArtistTopSongsResponseSchema.safeParse(json);
+    if (!parsed.success) {
+      throw new NcmApiError(
+        NCM_ERROR_CODE.BAD_RESPONSE,
+        `NCM artist/top/song returned malformed payload: ${parsed.error.message}`
+      );
+    }
+
+    return parsed.data.songs.map(mapNcmTrack);
+  }
+
+  async getArtistAlbums(id: string, limit = 10): Promise<NcmAlbumSearchResult[]> {
+    const json = await this.getJson('/artist/album', { id, limit: String(limit) });
+    const parsed = ncmArtistAlbumsResponseSchema.safeParse(json);
+    if (!parsed.success) {
+      throw new NcmApiError(
+        NCM_ERROR_CODE.BAD_RESPONSE,
+        `NCM artist/album returned malformed payload: ${parsed.error.message}`
+      );
+    }
+
+    return parsed.data.hotAlbums
+      .map(mapAlbumSummary)
+      .filter((album) => album.name.length > 0);
+  }
+
+  async getAlbumDetail(id: string): Promise<NcmAlbumDetail | null> {
+    const json = await this.getJson('/album', { id });
+    const parsed = ncmAlbumDetailResponseSchema.safeParse(json);
+    if (!parsed.success) {
+      throw new NcmApiError(
+        NCM_ERROR_CODE.BAD_RESPONSE,
+        `NCM album returned malformed payload: ${parsed.error.message}`
+      );
+    }
+
+    const album = parsed.data.album;
+    if (!album) return null;
+    return {
+      id: album.id,
+      name: album.name,
+      artist: album.artist?.name?.trim() || null,
+      tracks: parsed.data.songs.map(mapNcmTrack)
+    };
   }
 
   async likeTrack(id: string, like: boolean): Promise<void> {
@@ -522,6 +631,45 @@ export class NcmClient {
       clearTimeout(timer);
     }
   }
+}
+
+function mapAlbumSummary(album: {
+  id: number;
+  name: string;
+  artist?: { name?: string } | null;
+}): NcmAlbumSearchResult {
+  return {
+    id: album.id,
+    name: album.name.trim(),
+    artist: album.artist?.name?.trim() || null
+  };
+}
+
+function mapNcmTrack(song: {
+  id: number;
+  name: string;
+  dt?: number;
+  ar?: Array<{ name?: string }>;
+  al?: { name?: string | null; picUrl?: string | null } | null;
+  pop?: number;
+  fee?: number;
+  copyright?: number;
+  noCopyrightRcmd?: unknown | null;
+  privilege?: { st?: number; toast?: boolean } | null;
+  originCoverType?: number;
+  publishTime?: number;
+  mv?: number;
+}): NcmPlaylistDetail['tracks'][number] {
+  return {
+    id: song.id,
+    name: song.name,
+    artists: (song.ar ?? [])
+      .map((artist) => artist.name)
+      .filter((name): name is string => typeof name === 'string' && name.length > 0),
+    durationMs: typeof song.dt === 'number' ? song.dt : 0,
+    ...(song.al?.picUrl ? { coverImgUrl: song.al.picUrl } : {}),
+    ...qualitySignalsProperty(buildTrackQualitySignals(song))
+  };
 }
 
 function buildTrackQualitySignals(song: {

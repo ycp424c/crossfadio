@@ -49,6 +49,8 @@ Crossfadio 是一个本地运行的 AI DJ Web App（Node.js + React + TypeScript
 - `CROSSFADIO_JWT_SECRET`: JWT HS256 签名密钥
 - `CROSSFADIO_LLM_BASE_URL` / `CROSSFADIO_LLM_API_KEY` / `CROSSFADIO_LLM_MODEL`
 - `CROSSFADIO_TTS_BASE_URL` / `CROSSFADIO_TTS_API_KEY`
+- `CROSSFADIO_EMBEDDING_API_KEY`（可选，语义发现向量化；第一版可使用同一个阿里云百炼/DashScope key）
+- `CROSSFADIO_EMBEDDING_BASE_URL` / `CROSSFADIO_EMBEDDING_MODEL` / `CROSSFADIO_EMBEDDING_DIMENSIONS`（可选，默认 DashScope compatible `text-embedding-v4` / `1024`）
 - `CROSSFADIO_ADMIN_NCM_ID`（可选，白名单管理员 NCM 用户 ID）
 
 白名单：在数据目录下创建 `allowlist.json`（数组），或配置 `CROSSFADIO_ADMIN_NCM_ID` 后通过 Web UI「设置 → 白名单管理」页面操作。

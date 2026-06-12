@@ -28,6 +28,7 @@ import {
   recordUserQueryFunnel,
   sanitizeSearchQuery
 } from './query-stats.js';
+import { normalizeMusicTrackToken } from './dedupe.js';
 import type { FinalPick } from './schema.js';
 
 export type ToolObservation = {
@@ -48,10 +49,20 @@ export type MusicAgentToolRegistry = Partial<Record<MusicAgentToolName, MusicAge
   recordFinalPicks?: (picks: FinalPick[]) => void;
 };
 
+type EntityCapableNcmClient = Pick<
+  NcmClient,
+  'searchArtists'
+  | 'getArtistTopSongs'
+  | 'searchAlbums'
+  | 'getArtistAlbums'
+  | 'getAlbumDetail'
+  | 'searchPlaylists'
+>;
+
 type MusicAgentNcmClient = Pick<
   NcmClient,
   'getLikedSongIds' | 'getSongDetails' | 'searchSongs' | 'getPlaylistDetail'
-> & Partial<TrendCapableNcmClient>;
+> & Partial<TrendCapableNcmClient> & Partial<EntityCapableNcmClient>;
 
 export type CreateMusicAgentToolsInput = {
   userId: string;
@@ -70,6 +81,24 @@ type NcmTrackLike = {
   name?: string | null;
   artists?: string[] | null;
   qualitySignals?: MusicCandidateQualitySignals | null;
+};
+
+type NcmAlbumLike = {
+  id: number | string;
+  name: string;
+  artist?: string | null;
+};
+
+type MusicEntityType = 'track' | 'artist' | 'album' | 'playlist';
+
+type MusicEntityHypothesis = {
+  type: MusicEntityType;
+  title?: string;
+  name?: string;
+  artist?: string;
+  id?: string;
+  providerId?: string;
+  query?: string;
 };
 
 type ToolState = {
@@ -99,6 +128,10 @@ const AUTO_FILL_MAX_LIKED_RECALL_LIMIT = 10;
 const MAX_SEARCH_RECALL_LIMIT = 20;
 const MAX_TREND_RECALL_LIMIT = 10;
 const MAX_STYLE_EXPANSION_RECALL_LIMIT = 10;
+const DEFAULT_ENTITY_RECALL_LIMIT = 5;
+const DEFAULT_ENTITY_SEARCH_LIMIT = 3;
+const MAX_ENTITY_RECALL_LIMIT = 10;
+const MAX_ENTITY_RECALL_COUNT = 8;
 const MAX_RANK_DISPLAY_LIMIT = 20;
 const MAX_DIVERSIFY_DISPLAY_LIMIT = 5;
 const AVOID_ARTIST_PENALTY_THRESHOLD = 0.18;
@@ -109,6 +142,15 @@ const QUALITY_DETAIL_BATCH_LIMIT = 80;
 const QUALITY_SOURCES = new Set<CandidateSource>(['search', 'style_expansion', 'trend']);
 const MAX_RECALL_QUERY_COUNT = 8;
 const AUTO_FILL_MIN_RECALL_NON_LIKED_TARGET = 8;
+const SEMANTIC_ONLY_QUERY_PROBLEM = 'skipped semantic-only queries; use semantic discovery before NCM song search';
+const SEMANTIC_SONG_SEARCH_PATTERNS = [
+  /\b(city\s*pop|indie\s*pop|dream\s*pop|synth[-\s]*pop|cantopop|neo\s*soul|nu\s*jazz|downtempo|electropop)\b/i,
+  /\b(indie\s*rock|alternative\s*rock|soft\s*rock|j[-\s]*pop|k[-\s]*pop|c[-\s]*pop)\b/i,
+  /\b(female\s*(vocal|singer|artist)|male\s*(vocal|singer|artist)|low\s*energy|medium[-\s]*low\s*energy)\b/i,
+  /\b(chill|quiet|focus|workout|relax(?:ed|ing)?|soft|mellow|synth|band|guitar)\b/i,
+  /午后|下午|上午|早晨|清晨|晚上|夜晚|深夜|工作|学习|专注|轻松|柔和|不吵|安静|中低能量|低能量|高能量/,
+  /女声|男声|女歌手|男歌手|女生唱|男生唱|乐队|律动|合成器|清爽|明亮|提神|低人声|少人声|粤语|华语/
+];
 const likedRecallCache = new Map<string, CacheEntry<NcmTrackLike[]>>();
 const searchRecallCache = new Map<string, CacheEntry<NcmTrackLike[]>>();
 
@@ -274,6 +316,7 @@ export function createMusicAgentTools(input: CreateMusicAgentToolsInput): MusicA
         ...(input.context.actionQueries ?? []),
         ...(state.queryPlan
           ? [
+              ...state.queryPlan.exactTrackQueries,
               ...state.queryPlan.intentQueries,
               ...state.queryPlan.tasteAnchorQueries,
               ...state.queryPlan.planQueries,
@@ -292,6 +335,52 @@ export function createMusicAgentTools(input: CreateMusicAgentToolsInput): MusicA
         signal,
         limit: boundedPositiveInt(toolInput.limit, DEFAULT_SEARCH_LIMIT, MAX_SEARCH_RECALL_LIMIT)
       });
+    },
+
+    recall_from_entities: async (toolInput, signal) => {
+      if (signal?.aborted) return abortedObservation(input.candidatePool);
+      const entities = parseEntityHypotheses(toolInput).slice(0, MAX_ENTITY_RECALL_COUNT);
+      if (entities.length === 0) {
+        return observation(input.candidatePool, 'entity recall skipped: no entities.', [
+          'no music entities provided'
+        ]);
+      }
+
+      const limit = boundedPositiveInt(toolInput.limit, DEFAULT_ENTITY_RECALL_LIMIT, MAX_ENTITY_RECALL_LIMIT);
+      const searchLimit = Math.min(limit, DEFAULT_ENTITY_SEARCH_LIMIT);
+      const avoidArtists = new Set(
+        [
+          ...avoidArtistsFromContext(input.context),
+          ...(state.queryPlan?.avoidArtists ?? [])
+        ].map(primaryArtist).filter(Boolean)
+      );
+      const artistCounts = countPrimaryArtists(input.candidatePool.list());
+      const problems: string[] = [];
+      let added = 0;
+
+      for (const entity of entities) {
+        if (signal?.aborted) return abortedObservation(input.candidatePool);
+        const result = await recallFromEntity({
+          entity,
+          input,
+          state,
+          limit,
+          searchLimit,
+          maxSearches: limits.maxNcmSearches,
+          maxPlaylistFetches: limits.maxPlaylistFetches,
+          avoidArtists,
+          artistCounts,
+          signal
+        });
+        added += result.added;
+        problems.push(...result.problems);
+      }
+
+      return observation(
+        input.candidatePool,
+        `entity recall expanded ${entities.length} entities and added ${added} candidates.`,
+        problems
+      );
     },
 
     recall_from_trending: async (toolInput, signal) => {
@@ -491,6 +580,7 @@ async function prepareCandidateQuality(
 function autoFillSearchQueries(context: MusicAgentContextSummary, queryPlan: QueryPlan): string[] {
   return uniqueStrings([
     ...(context.actionQueries ?? []),
+    ...queryPlan.exactTrackQueries,
     ...queryPlan.intentQueries,
     ...queryPlan.tasteAnchorQueries,
     ...queryPlan.planQueries,
@@ -594,16 +684,20 @@ function withContextAvoidArtists(plan: QueryPlan, context: MusicAgentContextSumm
 function sanitizeQueryPlan(plan: QueryPlan): QueryPlan {
   return queryPlanSchema.parse({
     ...plan,
+    exactTrackQueries: uniqueStrings(plan.exactTrackQueries.map(sanitizeSearchQuery)),
     intentQueries: uniqueStrings(plan.intentQueries.map(sanitizeSearchQuery)),
     tasteAnchorQueries: uniqueStrings(plan.tasteAnchorQueries.map(sanitizeSearchQuery)),
     planQueries: uniqueStrings(plan.planQueries.map(sanitizeSearchQuery)),
     trendQueries: uniqueStrings(plan.trendQueries.map(sanitizeSearchQuery)),
-    explorationQueries: uniqueStrings(plan.explorationQueries.map(sanitizeSearchQuery))
+    explorationQueries: uniqueStrings(plan.explorationQueries.map(sanitizeSearchQuery)),
+    styleHints: uniqueStrings(plan.styleHints.map(sanitizeSearchQuery)),
+    listeningConstraints: uniqueStrings(plan.listeningConstraints.map(sanitizeSearchQuery))
   });
 }
 
 function hasQueryPlanRecallQueries(plan: QueryPlan): boolean {
   return [
+    ...plan.exactTrackQueries,
     ...plan.intentQueries,
     ...plan.tasteAnchorQueries,
     ...plan.planQueries,
@@ -614,11 +708,14 @@ function hasQueryPlanRecallQueries(plan: QueryPlan): boolean {
 
 function mergeQueryPlans(base: QueryPlan, overlay: QueryPlan): QueryPlan {
   return queryPlanSchema.parse({
+    exactTrackQueries: overlay.exactTrackQueries.length > 0 ? overlay.exactTrackQueries : base.exactTrackQueries,
     intentQueries: overlay.intentQueries.length > 0 ? overlay.intentQueries : base.intentQueries,
     tasteAnchorQueries: overlay.tasteAnchorQueries.length > 0 ? overlay.tasteAnchorQueries : base.tasteAnchorQueries,
     planQueries: overlay.planQueries.length > 0 ? overlay.planQueries : base.planQueries,
     trendQueries: overlay.trendQueries.length > 0 ? overlay.trendQueries : base.trendQueries,
     explorationQueries: overlay.explorationQueries.length > 0 ? overlay.explorationQueries : base.explorationQueries,
+    styleHints: uniqueStrings([...base.styleHints, ...overlay.styleHints]),
+    listeningConstraints: uniqueStrings([...base.listeningConstraints, ...overlay.listeningConstraints]),
     avoidArtists: uniqueStrings([...base.avoidArtists, ...overlay.avoidArtists]),
     negativeTerms: uniqueStrings([...base.negativeTerms, ...overlay.negativeTerms]),
     rationale: overlay.rationale || base.rationale
@@ -629,6 +726,338 @@ function avoidArtistsFromContext(context: MusicAgentContextSummary): string[] {
   return (context.recentArtistPenalties ?? [])
     .filter((item) => item.penalty >= AVOID_ARTIST_PENALTY_THRESHOLD)
     .map((item) => item.artist);
+}
+
+async function recallFromEntity(options: {
+  entity: MusicEntityHypothesis;
+  input: CreateMusicAgentToolsInput;
+  state: ToolState;
+  limit: number;
+  searchLimit: number;
+  maxSearches: number;
+  maxPlaylistFetches: number;
+  avoidArtists: ReadonlySet<string>;
+  artistCounts: Map<string, number>;
+  signal?: AbortSignal;
+}): Promise<{ added: number; problems: string[] }> {
+  try {
+    if (options.entity.type === 'track') return recallTrackEntity(options);
+    if (options.entity.type === 'artist') return recallArtistEntity(options);
+    if (options.entity.type === 'album') return recallAlbumEntity(options);
+    return recallPlaylistEntity(options);
+  } catch (error) {
+    return {
+      added: 0,
+      problems: [`${options.entity.type} entity ${entityLabel(options.entity)}: ${formatError(error)}`]
+    };
+  }
+}
+
+async function recallTrackEntity(options: {
+  entity: MusicEntityHypothesis;
+  input: CreateMusicAgentToolsInput;
+  state: ToolState;
+  limit: number;
+  maxSearches: number;
+  avoidArtists: ReadonlySet<string>;
+  artistCounts: Map<string, number>;
+  signal?: AbortSignal;
+}): Promise<{ added: number; problems: string[] }> {
+  const title = entityTitle(options.entity);
+  if (!title) {
+    return { added: 0, problems: ['track entity skipped: missing title'] };
+  }
+  if (!consumeNcmSearch(options.state, options.maxSearches)) {
+    return { added: 0, problems: ['NCM search budget exhausted'] };
+  }
+
+  const query = uniqueStrings([title, options.entity.artist ?? '']).join(' ');
+  const tracks = await options.input.ncmClient.searchSongs(query, options.limit);
+  if (options.signal?.aborted) return { added: 0, problems: ['aborted'] };
+
+  const verifiedTracks = tracks.filter((track) => isVerifiedTrackEntity(options.entity, track));
+  if (verifiedTracks.length === 0) {
+    return { added: 0, problems: [`track entity rejected: ${entityLabel(options.entity)}`] };
+  }
+
+  const result = upsertTracks(options.input.candidatePool, verifiedTracks, 'search', {
+    evidence: `实体曲目: ${entityLabel(options.entity)}`,
+    scores: sourceScores('search', options.input.context),
+    avoidArtists: options.avoidArtists,
+    artistCounts: options.artistCounts
+  });
+  return {
+    added: result.added,
+    problems: skippedRecallProblems(result)
+  };
+}
+
+async function recallArtistEntity(options: {
+  entity: MusicEntityHypothesis;
+  input: CreateMusicAgentToolsInput;
+  state: ToolState;
+  limit: number;
+  searchLimit: number;
+  maxSearches: number;
+  avoidArtists: ReadonlySet<string>;
+  artistCounts: Map<string, number>;
+  signal?: AbortSignal;
+}): Promise<{ added: number; problems: string[] }> {
+  const artistName = entityArtistName(options.entity);
+  if (!artistName) {
+    return { added: 0, problems: ['artist entity skipped: missing name'] };
+  }
+  if (!options.input.ncmClient.searchArtists || !options.input.ncmClient.getArtistTopSongs) {
+    return { added: 0, problems: ['artist entity skipped: NCM artist expansion unavailable'] };
+  }
+
+  const artistId = await resolveArtistEntity(options);
+  if (!artistId) {
+    return { added: 0, problems: [`artist entity rejected: ${artistName}`] };
+  }
+  if (!consumeNcmSearch(options.state, options.maxSearches)) {
+    return { added: 0, problems: ['NCM search budget exhausted'] };
+  }
+
+  const tracks = await options.input.ncmClient.getArtistTopSongs(artistId);
+  if (options.signal?.aborted) return { added: 0, problems: ['aborted'] };
+  const verifiedTracks = tracks
+    .filter((track) => trackMatchesArtist(track, artistName))
+    .slice(0, options.limit);
+  const result = upsertTracks(options.input.candidatePool, verifiedTracks, 'search', {
+    evidence: `实体艺人: ${artistName}`,
+    scores: sourceScores('search', options.input.context),
+    avoidArtists: options.avoidArtists,
+    artistCounts: options.artistCounts
+  });
+  return {
+    added: result.added,
+    problems: [
+      ...(verifiedTracks.length === 0 ? [`artist entity rejected: ${artistName}`] : []),
+      ...skippedRecallProblems(result)
+    ]
+  };
+}
+
+async function recallAlbumEntity(options: {
+  entity: MusicEntityHypothesis;
+  input: CreateMusicAgentToolsInput;
+  state: ToolState;
+  limit: number;
+  searchLimit: number;
+  maxSearches: number;
+  avoidArtists: ReadonlySet<string>;
+  artistCounts: Map<string, number>;
+  signal?: AbortSignal;
+}): Promise<{ added: number; problems: string[] }> {
+  const title = entityTitle(options.entity);
+  if (!title) {
+    return { added: 0, problems: ['album entity skipped: missing title'] };
+  }
+  if (!options.input.ncmClient.searchAlbums || !options.input.ncmClient.getAlbumDetail) {
+    return { added: 0, problems: ['album entity skipped: NCM album expansion unavailable'] };
+  }
+  if (!consumeNcmSearch(options.state, options.maxSearches)) {
+    return { added: 0, problems: ['NCM search budget exhausted'] };
+  }
+
+  const query = uniqueStrings([title, options.entity.artist ?? '']).join(' ');
+  const albums = await options.input.ncmClient.searchAlbums(query, options.searchLimit);
+  if (options.signal?.aborted) return { added: 0, problems: ['aborted'] };
+  const album = findVerifiedAlbum(options.entity, albums);
+  if (!album) {
+    return { added: 0, problems: [`album entity rejected: ${entityLabel(options.entity)}`] };
+  }
+  if (!consumeNcmSearch(options.state, options.maxSearches)) {
+    return { added: 0, problems: ['NCM search budget exhausted'] };
+  }
+
+  const detail = await options.input.ncmClient.getAlbumDetail(String(album.id));
+  if (options.signal?.aborted) return { added: 0, problems: ['aborted'] };
+  if (!detail || !albumMatchesEntity(options.entity, detail)) {
+    return { added: 0, problems: [`album entity rejected: ${entityLabel(options.entity)}`] };
+  }
+
+  const result = upsertTracks(options.input.candidatePool, detail.tracks.slice(0, options.limit), 'search', {
+    evidence: `实体专辑: ${detail.name}`,
+    scores: sourceScores('search', options.input.context),
+    avoidArtists: options.avoidArtists,
+    artistCounts: options.artistCounts
+  });
+  return {
+    added: result.added,
+    problems: skippedRecallProblems(result)
+  };
+}
+
+async function recallPlaylistEntity(options: {
+  entity: MusicEntityHypothesis;
+  input: CreateMusicAgentToolsInput;
+  state: ToolState;
+  limit: number;
+  searchLimit: number;
+  maxSearches: number;
+  maxPlaylistFetches: number;
+  avoidArtists: ReadonlySet<string>;
+  artistCounts: Map<string, number>;
+  signal?: AbortSignal;
+}): Promise<{ added: number; problems: string[] }> {
+  const name = entityTitle(options.entity) || options.entity.query;
+  if (!name) {
+    return { added: 0, problems: ['playlist entity skipped: missing name'] };
+  }
+  if (!options.input.ncmClient.searchPlaylists) {
+    return { added: 0, problems: ['playlist entity skipped: NCM playlist search unavailable'] };
+  }
+  if (!consumeNcmSearch(options.state, options.maxSearches)) {
+    return { added: 0, problems: ['NCM search budget exhausted'] };
+  }
+
+  const playlists = await options.input.ncmClient.searchPlaylists(name, options.searchLimit);
+  if (options.signal?.aborted) return { added: 0, problems: ['aborted'] };
+  const playlistId = entityId(options.entity) || String(playlists[0]?.id ?? '');
+  if (!playlistId) {
+    return { added: 0, problems: [`playlist entity rejected: ${name}`] };
+  }
+  if (!consumePlaylistFetch(options.state, options.maxPlaylistFetches)) {
+    return { added: 0, problems: ['playlist fetch budget exhausted'] };
+  }
+
+  const detail = await options.input.ncmClient.getPlaylistDetail(playlistId);
+  if (options.signal?.aborted) return { added: 0, problems: ['aborted'] };
+  if (!detail) {
+    return { added: 0, problems: [`playlist entity rejected: ${name}`] };
+  }
+
+  const result = upsertTracks(options.input.candidatePool, detail.tracks.slice(0, options.limit), 'playlist', {
+    evidence: `实体歌单: ${detail.name}`,
+    scores: sourceScores('playlist', options.input.context),
+    avoidArtists: options.avoidArtists,
+    artistCounts: options.artistCounts
+  });
+  return {
+    added: result.added,
+    problems: skippedRecallProblems(result)
+  };
+}
+
+async function resolveArtistEntity(options: {
+  entity: MusicEntityHypothesis;
+  input: CreateMusicAgentToolsInput;
+  state: ToolState;
+  searchLimit: number;
+  maxSearches: number;
+  signal?: AbortSignal;
+}): Promise<string | null> {
+  const explicitId = entityId(options.entity);
+  if (explicitId) return explicitId;
+  const name = entityArtistName(options.entity);
+  if (!name || !options.input.ncmClient.searchArtists) return null;
+  if (!consumeNcmSearch(options.state, options.maxSearches)) return null;
+
+  const artists = await options.input.ncmClient.searchArtists(name, options.searchLimit);
+  if (options.signal?.aborted) return null;
+  const verified = artists.find((artist) => tokenMatches(name, artist.name));
+  return verified ? String(verified.id) : null;
+}
+
+function parseEntityHypotheses(input: Record<string, unknown>): MusicEntityHypothesis[] {
+  return [
+    ...objectArrayValue(input.entities).map(parseEntityHypothesis),
+    ...objectArrayValue(input.tracks).map((item) => parseEntityHypothesis({ ...item, type: 'track' })),
+    ...objectArrayValue(input.artists).map((item) => parseEntityHypothesis({ ...item, type: 'artist' })),
+    ...objectArrayValue(input.albums).map((item) => parseEntityHypothesis({ ...item, type: 'album' })),
+    ...objectArrayValue(input.playlists).map((item) => parseEntityHypothesis({ ...item, type: 'playlist' }))
+  ].filter((entity): entity is MusicEntityHypothesis => Boolean(entity));
+}
+
+function parseEntityHypothesis(input: Record<string, unknown>): MusicEntityHypothesis | null {
+  const type = parseEntityType(stringValue(input.type));
+  if (!type) return null;
+  const title = stringValue(input.title);
+  const name = stringValue(input.name);
+  const artist = stringValue(input.artist);
+  const id = stringValue(input.id);
+  const providerId = stringValue(input.providerId);
+  const query = stringValue(input.query);
+  return {
+    type,
+    ...(title ? { title } : {}),
+    ...(name ? { name } : {}),
+    ...(artist ? { artist } : {}),
+    ...(id ? { id } : {}),
+    ...(providerId ? { providerId } : {}),
+    ...(query ? { query } : {})
+  };
+}
+
+function parseEntityType(value: string): MusicEntityType | null {
+  const normalized = value.toLowerCase();
+  if (normalized === 'track' || normalized === 'song') return 'track';
+  if (normalized === 'artist' || normalized === 'singer') return 'artist';
+  if (normalized === 'album') return 'album';
+  if (normalized === 'playlist') return 'playlist';
+  return null;
+}
+
+function objectArrayValue(value: unknown): Array<Record<string, unknown>> {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object' && !Array.isArray(item));
+}
+
+function entityTitle(entity: MusicEntityHypothesis): string {
+  return entity.title ?? entity.name ?? '';
+}
+
+function entityArtistName(entity: MusicEntityHypothesis): string {
+  return entity.name ?? entity.artist ?? entity.title ?? '';
+}
+
+function entityId(entity: MusicEntityHypothesis): string {
+  return entity.providerId ?? entity.id ?? '';
+}
+
+function entityLabel(entity: MusicEntityHypothesis): string {
+  const title = entityTitle(entity) || entity.query || entityArtistName(entity) || entity.type;
+  return entity.artist ? `${title} - ${entity.artist}` : title;
+}
+
+function isVerifiedTrackEntity(entity: MusicEntityHypothesis, track: NcmTrackLike): boolean {
+  const title = entityTitle(entity);
+  if (!title || !track.name || !tokenMatches(title, track.name)) return false;
+  return !entity.artist || trackMatchesArtist(track, entity.artist);
+}
+
+function findVerifiedAlbum(entity: MusicEntityHypothesis, albums: NcmAlbumLike[]): NcmAlbumLike | null {
+  return albums.find((album) => albumMatchesEntity(entity, album)) ?? null;
+}
+
+function albumMatchesEntity(entity: MusicEntityHypothesis, album: NcmAlbumLike): boolean {
+  const title = entityTitle(entity);
+  if (!title || !album.name || !tokenMatches(title, album.name)) return false;
+  return !entity.artist || tokenMatches(entity.artist, album.artist ?? '');
+}
+
+function trackMatchesArtist(track: NcmTrackLike, artist: string): boolean {
+  const expected = primaryArtist(artist);
+  if (!expected) return false;
+  return (track.artists ?? []).some((candidate) => tokenMatches(expected, primaryArtist(candidate)));
+}
+
+function tokenMatches(expected: string, actual: string): boolean {
+  const left = normalizeMusicTrackToken(expected);
+  const right = normalizeMusicTrackToken(actual);
+  if (!left || !right) return false;
+  if (left === right) return true;
+  const [shorter, longer] = left.length <= right.length ? [left, right] : [right, left];
+  return shorter.length >= 4 && longer.includes(shorter);
+}
+
+function skippedRecallProblems(result: { skippedAvoidedArtists: number; skippedArtistCap: number }): string[] {
+  return [
+    ...(result.skippedAvoidedArtists > 0 ? [`skipped ${result.skippedAvoidedArtists} tracks from recently repeated artists`] : []),
+    ...(result.skippedArtistCap > 0 ? [`skipped ${result.skippedArtistCap} tracks after per-artist recall cap`] : [])
+  ];
 }
 
 async function recallFromQueries(options: {
@@ -650,9 +1079,10 @@ async function recallFromQueries(options: {
   );
   const sanitizedQueries = uniqueStrings(options.queries.map(sanitizeSearchQuery).filter(Boolean));
   const { queries: artistFilteredQueries, skipped: skippedAvoidedQueries } = filterAvoidedQueries(sanitizedQueries, avoidArtists);
+  const { queries: exactTrackQueries, skipped: skippedSemanticQueries } = filterExactSongSearchQueries(artistFilteredQueries);
   const preparedQueries = prepareSearchQueriesForRecall({
     userId: options.input.userId,
-    queries: artistFilteredQueries,
+    queries: exactTrackQueries,
     source: options.source,
     maxQueries: MAX_RECALL_QUERY_COUNT
   });
@@ -663,6 +1093,7 @@ async function recallFromQueries(options: {
   if (queries.length === 0) {
     return observation(options.input.candidatePool, `${options.evidencePrefix} recall skipped: no queries.`, [
       'no search queries available',
+      ...(skippedSemanticQueries > 0 ? [SEMANTIC_ONLY_QUERY_PROBLEM] : []),
       ...(skippedAvoidedQueries > 0 ? [`skipped ${skippedAvoidedQueries} search queries for recently repeated artists`] : [])
     ]);
   }
@@ -712,6 +1143,7 @@ async function recallFromQueries(options: {
     }
   }
   if (skippedAvoidedQueries > 0) problems.push(`skipped ${skippedAvoidedQueries} search queries for recently repeated artists`);
+  if (skippedSemanticQueries > 0) problems.push(SEMANTIC_ONLY_QUERY_PROBLEM);
   if (skippedAvoidedArtists > 0) problems.push(`skipped ${skippedAvoidedArtists} tracks from recently repeated artists`);
   if (skippedArtistCap > 0) problems.push(`skipped ${skippedArtistCap} tracks after per-artist recall cap`);
   if (preparedQueries.funnelEntries.some((entry) => entry.scoreMultiplier !== 1 || entry.repeatPenalty > 0)) {
@@ -980,11 +1412,14 @@ function summarizeTrendContext(context: TrendContext): string {
 
 function summarizeQueryPlan(plan: QueryPlan): string {
   return truncate([
+    plan.exactTrackQueries.length ? `exactTracks=${plan.exactTrackQueries.join('、')}` : '',
     plan.intentQueries.length ? `intent=${plan.intentQueries.join('、')}` : '',
     plan.tasteAnchorQueries.length ? `taste=${plan.tasteAnchorQueries.join('、')}` : '',
     plan.planQueries.length ? `plan=${plan.planQueries.join('、')}` : '',
     plan.trendQueries.length ? `trend=${plan.trendQueries.join('、')}` : '',
     plan.explorationQueries.length ? `explore=${plan.explorationQueries.join('、')}` : '',
+    plan.styleHints.length ? `styleHints=${plan.styleHints.join('、')}` : '',
+    plan.listeningConstraints.length ? `constraints=${plan.listeningConstraints.join('、')}` : '',
     plan.avoidArtists.length ? `avoidArtists=${plan.avoidArtists.join('、')}` : '',
     plan.negativeTerms.length ? `negative=${plan.negativeTerms.join('、')}` : '',
     plan.rationale ? `rationale=${plan.rationale}` : ''
@@ -1031,18 +1466,32 @@ function defaultQueryPlan(
     text: queryText,
     daypart: context.currentMoment.daypart
   });
+  const explicitQueries = uniqueStrings([
+    ...stringArrayValue(input.queries),
+    stringValue(input.query),
+    ...(context.actionQueries ?? [])
+  ]);
+  const planQueries = extractPlanQueries(context.currentPlanSegment);
+  const exactTrackQueries = filterExactSongSearchQueries([
+    ...explicitQueries,
+    ...planQueries
+  ]).queries;
 
   return queryPlanSchema.parse({
-    intentQueries: uniqueStrings([
-      ...stringArrayValue(input.queries),
-      stringValue(input.query),
-      ...(context.actionQueries ?? []),
-      ...knowledge.queryTemplates.slice(0, 2)
-    ]),
-    tasteAnchorQueries: uniqueStrings(knowledge.styleAdjacency.slice(0, 3)),
-    planQueries: extractPlanQueries(context.currentPlanSegment),
+    exactTrackQueries,
+    intentQueries: explicitQueries,
+    tasteAnchorQueries: [],
+    planQueries,
     trendQueries: [],
-    explorationQueries: uniqueStrings(sourceStyleSeedQueries(knowledge.sourceStyleSeeds, queryText).slice(0, 6)),
+    explorationQueries: [],
+    styleHints: uniqueStrings([
+      ...knowledge.styleAdjacency,
+      ...knowledge.sourceStyleSeeds
+    ]),
+    listeningConstraints: uniqueStrings([
+      context.currentMoment.daypart,
+      ...styleSeedQueryModifiers(queryText)
+    ]),
     avoidArtists: avoidArtistsFromContext(context),
     negativeTerms: knowledge.negativeMappings,
     rationale: 'context-derived fallback query plan'
@@ -1072,6 +1521,31 @@ function filterAvoidedQueries(queries: string[], avoidArtists: ReadonlySet<strin
     kept.push(query);
   }
   return { queries: kept, skipped };
+}
+
+function filterExactSongSearchQueries(queries: string[]): { queries: string[]; skipped: number } {
+  const kept: string[] = [];
+  let skipped = 0;
+  for (const query of uniqueStrings(queries)) {
+    if (isExactSongSearchQuery(query)) {
+      kept.push(query);
+    } else {
+      skipped += 1;
+    }
+  }
+  return { queries: kept, skipped };
+}
+
+function isExactSongSearchQuery(query: string): boolean {
+  const value = sanitizeSearchQuery(query);
+  if (!value) return false;
+  if (SEMANTIC_SONG_SEARCH_PATTERNS.some((pattern) => pattern.test(value))) return false;
+  if (/^[\p{L}\p{N}'’().]+(?:\s+[—-]\s+|\s+--\s+)[\p{L}\p{N}'’().]+/u.test(value)) return true;
+  if (value.includes(':')) return false;
+  const parts = value.split(/\s+/).filter(Boolean);
+  if (parts.length < 2) return false;
+  if (parts.length > 8) return false;
+  return parts.some((part) => /[A-Z]/.test(part) || /[\u3400-\u9fffぁ-ゟ゠-ヿ가-힣]/.test(part));
 }
 
 function primaryArtist(artist: string): string {

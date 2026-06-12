@@ -318,7 +318,11 @@ describe('MusicAgent facade', () => {
       getArtistToplist: vi.fn(async () => [])
     };
     const fake = new FakeLlmClient()
-      .queueResponse(JSON.stringify({ type: 'tool_call', tool: 'recall_from_liked', input: { limit: 5 } }))
+      .queueResponse(JSON.stringify({
+        type: 'tool_call',
+        tool: 'recall_from_ncm_search',
+        input: { queries: ['Clean Extra 1 Clean Artist 1'], limit: 8 }
+      }))
       .queueResponse(JSON.stringify({
         type: 'final',
         say: '从补充候选里选一首干净的。',
@@ -372,7 +376,11 @@ describe('MusicAgent facade', () => {
       getArtistToplist: vi.fn(async () => [])
     };
     const fake = new FakeLlmClient()
-      .queueResponse(JSON.stringify({ type: 'tool_call', tool: 'recall_from_liked', input: { limit: 5 } }))
+      .queueResponse(JSON.stringify({
+        type: 'tool_call',
+        tool: 'recall_from_ncm_search',
+        input: { queries: ['Clean Reject 1 Clean Reject Artist 1'], limit: 8 }
+      }))
       .queueResponse(JSON.stringify({
         type: 'final',
         say: '错误地选中了低质候选。',
@@ -543,10 +551,10 @@ describe('createMusicAgentTools', () => {
       }
     });
 
-    const observation = await tools.recall_from_ncm_search?.({ queries: ['city pop'], limit: 9999 });
+    const observation = await tools.recall_from_ncm_search?.({ queries: ['City Light Singer'], limit: 9999 });
 
     expect(ncmClient.searchSongs).toHaveBeenCalledTimes(1);
-    expect(ncmClient.searchSongs.mock.calls[0][0]).toBe('city pop');
+    expect(ncmClient.searchSongs.mock.calls[0][0]).toBe('City Light Singer');
     expect(ncmClient.searchSongs.mock.calls[0][1]).toBeLessThanOrEqual(20);
     expect(observation?.candidateCount).toBe(1);
     expect(candidatePool.get('201')).toMatchObject({
@@ -557,11 +565,196 @@ describe('createMusicAgentTools', () => {
     });
   });
 
+  it('verifies track entities through exact NCM search before adding candidates', async () => {
+    const ncmClient = {
+      getLikedSongIds: vi.fn(async () => []),
+      getSongDetails: vi.fn(async () => []),
+      searchSongs: vi.fn(async () => [
+        { id: 301, name: 'Candy', artists: ['具島直子'] },
+        { id: 302, name: 'Candy', artists: ['Wrong Artist'] }
+      ]),
+      getPlaylistDetail: vi.fn(async () => null)
+    };
+
+    const { CandidatePool } = await import('../../src/server/music-agent/candidates.js');
+    const { createMusicAgentTools } = await import('../../src/server/music-agent/tools.js');
+    const candidatePool = new CandidatePool();
+    const tools = createMusicAgentTools({
+      userId: 'entity-track-verify',
+      ncmClient: ncmClient as any,
+      context: {
+        request: 'chat-recommend',
+        currentUserText: '下午 city pop 女声',
+        currentMoment: { localTime: '周四 15:00', daypart: '下午', weather: null },
+        activeDirective: '',
+        currentPlanSegment: null,
+        tasteSummary: '',
+        recentPreferenceSummary: '',
+        recentPlaySignals: '',
+        queueStateSummary: '',
+        bannedSummary: ''
+      },
+      candidatePool,
+      budget: {
+        maxMs: 10_000,
+        maxSteps: 3,
+        maxLlmCalls: 2,
+        maxToolCalls: 2,
+        maxNcmSearches: 2,
+        maxPlaylistFetches: 0,
+        maxTrendFetchMs: 0,
+        maxCandidates: 20
+      }
+    });
+
+    const observation = await tools.recall_from_entities?.({
+      entities: [{ type: 'track', title: 'Candy', artist: '具島直子' }]
+    });
+
+    expect(ncmClient.searchSongs).toHaveBeenCalledWith('Candy 具島直子', 5);
+    expect(observation?.summary).toContain('entity recall expanded 1 entities and added 1 candidates');
+    expect(candidatePool.get('301')).toMatchObject({
+      id: '301',
+      name: 'Candy',
+      artist: '具島直子',
+      sources: ['search']
+    });
+    expect(candidatePool.get('302')).toBeUndefined();
+  });
+
+  it('rejects unverified track entities before CandidatePool admission', async () => {
+    const ncmClient = {
+      getLikedSongIds: vi.fn(async () => []),
+      getSongDetails: vi.fn(async () => []),
+      searchSongs: vi.fn(async () => [
+        { id: 401, name: 'Candy', artists: ['Wrong Artist'] }
+      ]),
+      getPlaylistDetail: vi.fn(async () => null)
+    };
+
+    const { CandidatePool } = await import('../../src/server/music-agent/candidates.js');
+    const { createMusicAgentTools } = await import('../../src/server/music-agent/tools.js');
+    const { getUserQueryStats } = await import('../../src/server/store/music-query-stats.js');
+    const candidatePool = new CandidatePool();
+    const tools = createMusicAgentTools({
+      userId: 'entity-track-reject',
+      ncmClient: ncmClient as any,
+      context: {
+        request: 'chat-recommend',
+        currentUserText: '下午 city pop 女声',
+        currentMoment: { localTime: '周四 15:00', daypart: '下午', weather: null },
+        activeDirective: '',
+        currentPlanSegment: null,
+        tasteSummary: '',
+        recentPreferenceSummary: '',
+        recentPlaySignals: '',
+        queueStateSummary: '',
+        bannedSummary: ''
+      },
+      candidatePool,
+      budget: {
+        maxMs: 10_000,
+        maxSteps: 3,
+        maxLlmCalls: 2,
+        maxToolCalls: 2,
+        maxNcmSearches: 2,
+        maxPlaylistFetches: 0,
+        maxTrendFetchMs: 0,
+        maxCandidates: 20
+      }
+    });
+
+    const observation = await tools.recall_from_entities?.({
+      entities: [{ type: 'track', title: 'Candy', artist: '具島直子' }]
+    });
+
+    expect(observation?.candidateCount).toBe(0);
+    expect(observation?.problems).toContain('track entity rejected: Candy - 具島直子');
+    expect(getUserQueryStats('entity-track-reject')).toEqual([]);
+  });
+
+  it('expands artist album and playlist entities only after NCM verification', async () => {
+    const ncmClient = {
+      getLikedSongIds: vi.fn(async () => []),
+      getSongDetails: vi.fn(async () => []),
+      searchSongs: vi.fn(async () => []),
+      searchArtists: vi.fn(async () => [{ id: 501, name: '具島直子' }]),
+      getArtistTopSongs: vi.fn(async () => [
+        { id: 601, name: 'Candy', artists: ['具島直子'] }
+      ]),
+      searchAlbums: vi.fn(async () => [{ id: 701, name: 'miss.G', artist: '具島直子' }]),
+      getAlbumDetail: vi.fn(async () => ({
+        id: 701,
+        name: 'miss.G',
+        artist: '具島直子',
+        tracks: [{ id: 702, name: 'no no no', artists: ['具島直子'], durationMs: 240_000 }]
+      })),
+      searchPlaylists: vi.fn(async () => [{ id: 801, name: 'City Pop Selection', trackCount: 20, coverImgUrl: null }]),
+      getPlaylistDetail: vi.fn(async () => ({
+        id: 801,
+        name: 'City Pop Selection',
+        coverImgUrl: null,
+        trackCount: 1,
+        tracks: [{ id: 802, name: 'Friday Night', artists: ['J-City Artist'], durationMs: 210_000 }]
+      }))
+    };
+
+    const { CandidatePool } = await import('../../src/server/music-agent/candidates.js');
+    const { createMusicAgentTools } = await import('../../src/server/music-agent/tools.js');
+    const candidatePool = new CandidatePool();
+    const tools = createMusicAgentTools({
+      userId: 'entity-expansion',
+      ncmClient: ncmClient as any,
+      context: {
+        request: 'auto-fill',
+        currentUserText: '下午 city pop 女声',
+        currentMoment: { localTime: '周四 15:00', daypart: '下午', weather: null },
+        activeDirective: '',
+        currentPlanSegment: null,
+        tasteSummary: '',
+        recentPreferenceSummary: '',
+        recentPlaySignals: '',
+        queueStateSummary: '',
+        bannedSummary: ''
+      },
+      candidatePool,
+      budget: {
+        maxMs: 10_000,
+        maxSteps: 3,
+        maxLlmCalls: 2,
+        maxToolCalls: 2,
+        maxNcmSearches: 8,
+        maxPlaylistFetches: 2,
+        maxTrendFetchMs: 0,
+        maxCandidates: 20
+      }
+    });
+
+    const observation = await tools.recall_from_entities?.({
+      entities: [
+        { type: 'artist', name: '具島直子' },
+        { type: 'album', title: 'miss.G', artist: '具島直子' },
+        { type: 'playlist', name: 'city pop' }
+      ],
+      limit: 3
+    });
+
+    expect(ncmClient.searchArtists).toHaveBeenCalledWith('具島直子', 3);
+    expect(ncmClient.getArtistTopSongs).toHaveBeenCalledWith('501');
+    expect(ncmClient.searchAlbums).toHaveBeenCalledWith('miss.G 具島直子', 3);
+    expect(ncmClient.getAlbumDetail).toHaveBeenCalledWith('701');
+    expect(ncmClient.searchPlaylists).toHaveBeenCalledWith('city pop', 3);
+    expect(ncmClient.getPlaylistDetail).toHaveBeenCalledWith('801');
+    expect(observation?.summary).toContain('entity recall expanded 3 entities and added 3 candidates');
+    expect(candidatePool.list().map((candidate) => candidate.id).sort()).toEqual(['601', '702', '802']);
+    expect(candidatePool.get('802')?.sources).toEqual(['playlist']);
+  });
+
   it('preserves exact search queries, records a run query funnel, and persists selected query stats', async () => {
     const ncmClient = {
       getLikedSongIds: vi.fn(async () => []),
       getSongDetails: vi.fn(async () => []),
-      searchSongs: vi.fn(async (query: string) => query.includes('午后')
+      searchSongs: vi.fn(async (query: string) => query.includes('Sky')
         ? [
             { id: 'sky-1', name: 'Sky One', artists: ['Sky Singer'] },
             { id: 'sky-2', name: 'Sky Two', artists: ['Sky Singer'] }
@@ -604,25 +797,25 @@ describe('createMusicAgentTools', () => {
       }
     });
 
-    await tools.recall_from_ncm_search?.({ queries: ['午后 女声', '海洋 女声'], limit: 5 });
+    await tools.recall_from_ncm_search?.({ queries: ['Sky One Sky Singer', 'Ocean One Ocean Singer'], limit: 5 });
     tools.recordFinalPicks?.([{ id: 'ocean-1', reason: '更贴合', source: 'search' }]);
 
-    expect(ncmClient.searchSongs.mock.calls.map((call) => call[0])).toEqual(['午后 女声', '海洋 女声']);
+    expect(ncmClient.searchSongs.mock.calls.map((call) => call[0])).toEqual(['Sky One Sky Singer', 'Ocean One Ocean Singer']);
     expect(tools.getQueryFunnel?.()).toEqual([
       expect.objectContaining({
-        query: '午后 女声',
+        query: 'Sky One Sky Singer',
         resultCount: 2,
         addedCount: 2,
         selectedCount: 0
       }),
       expect.objectContaining({
-        query: '海洋 女声',
+        query: 'Ocean One Ocean Singer',
         resultCount: 1,
         addedCount: 1,
         selectedCount: 1
       })
     ]);
-    expect(getUserQueryStats('user-query-funnel').map((item) => item.normalized_query)).toContain('海洋 女声');
+    expect(getUserQueryStats('user-query-funnel').map((item) => item.normalized_query)).toContain('ocean one ocean singer');
   });
 
   it('records fallback search history without adding selection credit', async () => {
@@ -674,7 +867,7 @@ describe('createMusicAgentTools', () => {
       }
     });
 
-    await tools.recall_from_ncm_search?.({ queries: ['轻快 女声'], limit: 5 });
+    await tools.recall_from_ncm_search?.({ queries: ['Fallback One Fallback Singer'], limit: 5 });
     await runMusicAgentLoop({
       llmClient: { complete: vi.fn(async () => ({ content: '{}', model: 'unused' })) },
       context: {
@@ -706,7 +899,7 @@ describe('createMusicAgentTools', () => {
 
     expect(getUserQueryStats('fallback-query-history')).toEqual([
       expect.objectContaining({
-        normalized_query: '轻快 女声',
+        normalized_query: 'fallback one fallback singer',
         searched_count: 1,
         result_count: 2,
         added_count: 2,
@@ -715,13 +908,13 @@ describe('createMusicAgentTools', () => {
     ]);
     expect(prepareSearchQueriesForRecall({
       userId: 'fallback-query-history',
-      queries: ['轻快 女声', 'fresh 女声'],
+      queries: ['Fallback One Fallback Singer', 'Fresh One Fresh Singer'],
       source: 'search',
       maxQueries: 2
-    }).queries).toEqual(['fresh 女声', '轻快 女声']);
+    }).queries).toEqual(['Fresh One Fresh Singer', 'Fallback One Fallback Singer']);
   });
 
-  it('uses explicit style seed queries before daypart defaults in style expansion', async () => {
+  it('keeps style seed queries out of NCM song search before semantic discovery resolves entities', async () => {
     const ncmClient = {
       getLikedSongIds: vi.fn(async () => []),
       getSongDetails: vi.fn(async () => []),
@@ -760,14 +953,11 @@ describe('createMusicAgentTools', () => {
       }
     });
 
-    await tools.recall_from_style_expansion?.({ limit: 5 });
+    const observation = await tools.recall_from_style_expansion?.({ limit: 5 });
 
     const queries = ncmClient.searchSongs.mock.calls.map((call) => call[0]);
-    expect(queries.slice(0, 3)).toEqual([
-      'indie rock 乐队',
-      'alternative rock 乐队',
-      'soft rock 乐队'
-    ]);
+    expect(queries).toEqual([]);
+    expect(observation?.problems).toContain('skipped semantic-only queries; use semantic discovery before NCM song search');
     expect(queries).not.toContain('city pop');
     expect(queries).not.toContain('neo-city pop');
   });
@@ -819,13 +1009,19 @@ describe('createMusicAgentTools', () => {
     const queries = ncmClient.searchSongs.mock.calls.map((call) => call[0]);
     expect(plan?.problems).toContain('empty query plan input; using context-derived defaults');
     expect(plan?.summary).not.toBe('query plan is empty.');
-    expect(queries.slice(0, 3)).toEqual(['女声 轻松', 'city pop 柔和', 'Spain — Chick Corea']);
+    expect(queries).toEqual([
+      'Spain — Chick Corea',
+      "Armando's Rhumba — Chick Corea",
+      'Daylight — Taylor Swift'
+    ]);
+    expect(queries).not.toContain('女声 轻松');
+    expect(queries).not.toContain('city pop 柔和');
     expect(queries).not.toContain('清爽 女声');
     expect(queries).not.toContain('indie pop 明亮');
     expect(new Set(queries).size).toBe(queries.length);
   });
 
-  it('keeps long-term taste summaries out of no-input style expansion modifiers', async () => {
+  it('keeps semantic style constraints out of no-input NCM song search', async () => {
     const ncmClient = {
       getLikedSongIds: vi.fn(async () => []),
       getSongDetails: vi.fn(async () => []),
@@ -865,15 +1061,15 @@ describe('createMusicAgentTools', () => {
       }
     });
 
-    await tools.recall_from_style_expansion?.({ limit: 5 });
+    const observation = await tools.recall_from_style_expansion?.({ limit: 5 });
 
     const queries = ncmClient.searchSongs.mock.calls.map((call) => call[0]);
-    expect(queries.slice(0, 3)).toEqual([
+    expect(queries).toEqual([]);
+    expect(observation?.problems).toContain('skipped semantic-only queries; use semantic discovery before NCM song search');
+    expect(queries).not.toEqual(expect.arrayContaining([
       'indie pop 中低能量',
       'dream pop 中低能量',
-      'city pop 中低能量'
-    ]);
-    expect(queries).not.toEqual(expect.arrayContaining([
+      'city pop 中低能量',
       'electropop 乐队',
       'electropop synth',
       'indie pop 低人声',
@@ -903,7 +1099,10 @@ describe('createMusicAgentTools', () => {
       searchSongs: vi.fn(async () => {
         const title = titles[trackIndex] ?? `Extra Song ${trackIndex}`;
         trackIndex += 1;
-        return [{ id: `candidate-${trackIndex}`, name: title, artists: [`Artist ${trackIndex}`] }];
+        return [
+          { id: `candidate-${trackIndex}-a`, name: title, artists: [`Artist ${trackIndex}`] },
+          { id: `candidate-${trackIndex}-b`, name: `${title} Alt`, artists: [`Artist ${trackIndex} Alt`] }
+        ];
       }),
       getPlaylistDetail: vi.fn(async () => null)
     };
@@ -940,13 +1139,21 @@ describe('createMusicAgentTools', () => {
       targetPickCount: 5
     });
     await tools.expand_queries?.({
-      intentQueries: ['afternoon-q1', 'afternoon-q2', 'afternoon-q3', 'afternoon-q4'],
-      explorationQueries: ['afternoon-q5', 'afternoon-q6', 'afternoon-q7', 'afternoon-q8']
+      exactTrackQueries: [
+        'Amber Lantern Artist 1',
+        'Blue Harbor Artist 2',
+        'Copper Window Artist 3',
+        'Distant Signal Artist 4',
+        'Evening Circuit Artist 5',
+        'Forest Radio Artist 6',
+        'Glass Skyline Artist 7',
+        'Hidden Avenue Artist 8'
+      ]
     });
 
     const observation = await tools.recall_auto_fill_mix?.({});
 
-    expect(observation?.summary).toContain('风格扩展 recall searched');
+    expect(observation?.summary).toContain('网易云搜索 recall searched 8 queries');
     expect(candidatePool.count()).toBeGreaterThan(8);
   });
 
@@ -1011,7 +1218,7 @@ describe('createMusicAgentTools', () => {
       }
     });
 
-    await tools.recall_from_ncm_search?.({ queries: ['unique quality rank query'], limit: 10 });
+    await tools.recall_from_ncm_search?.({ queries: ['City Light Fresh Artist'], limit: 10 });
     const rank = await tools.rank_candidates?.({ limit: 5 });
 
     expect(ncmClient.getSongDetails).toHaveBeenCalledWith(['polluted-low-pop', 'fresh-search']);
@@ -1279,7 +1486,7 @@ describe('createMusicAgentTools', () => {
     const afterFirstStyleCalls = ncmClient.searchSongs.mock.calls.length;
     await tools.recall_from_style_expansion?.({ queries: ['city pop'], limit: 1 });
     const afterSecondStyleCalls = ncmClient.searchSongs.mock.calls.length;
-    await tools.expand_queries?.({ trendQueries: ['trend city pop'] });
+    await tools.expand_queries?.({ trendQueries: ['Trend Song Trend Artist'] });
     await tools.recall_from_trending?.({ limit: 1 });
     const afterFirstTrendCalls = ncmClient.searchSongs.mock.calls.length;
     await tools.recall_from_trending?.({ limit: 1 });
@@ -1288,7 +1495,7 @@ describe('createMusicAgentTools', () => {
     expect(ncmClient.getLikedSongIds).toHaveBeenCalledTimes(1);
     expect(ncmClient.getSongDetails).toHaveBeenCalledTimes(1);
     expect(afterLikedCalls).toBe(0);
-    expect(afterFirstStyleCalls).toBeGreaterThan(0);
+    expect(afterFirstStyleCalls).toBe(afterLikedCalls);
     expect(afterSecondStyleCalls).toBe(afterFirstStyleCalls);
     expect(afterFirstTrendCalls).toBeGreaterThan(afterSecondStyleCalls);
     expect(afterSecondTrendCalls).toBe(afterFirstTrendCalls);
@@ -1346,13 +1553,17 @@ describe('createMusicAgentTools', () => {
     });
 
     const plan = await tools.expand_queries?.({ queries: ['午后流行女声'] });
-    const recall = await tools.recall_from_ncm_search?.({ queries: ['Taylor Swift', '午后流行女声'], limit: 10 });
+    const recall = await tools.recall_from_ncm_search?.({
+      queries: ['Love Story Taylor Swift', '午后流行女声', 'Fresh City Fresh Artist'],
+      limit: 10
+    });
     const rank = await tools.rank_candidates?.({ limit: 5 });
 
     expect(plan?.summary).toContain('avoidArtists=taylor swift、卫兰');
     expect(ncmClient.searchSongs).toHaveBeenCalledTimes(1);
-    expect(ncmClient.searchSongs.mock.calls[0][0]).toBe('午后流行女声');
+    expect(ncmClient.searchSongs.mock.calls[0][0]).toBe('Fresh City Fresh Artist');
     expect(recall?.problems).toContain('skipped 1 search queries for recently repeated artists');
+    expect(recall?.problems).toContain('skipped semantic-only queries; use semantic discovery before NCM song search');
     expect(recall?.problems).toContain('skipped 3 tracks from recently repeated artists');
     expect(recall?.problems).toContain('skipped 1 tracks after per-artist recall cap');
     expect(candidatePool.list().map((item) => item.id)).toEqual(['fresh-1', 'fresh-2', 'other-1']);
@@ -1404,7 +1615,7 @@ describe('createMusicAgentTools', () => {
         }
       });
       await tools.recall_from_liked?.({ limit: 1 });
-      await tools.recall_from_ncm_search?.({ query: 'fresh', limit: 1 });
+      await tools.recall_from_ncm_search?.({ query: 'Fresh Search Search Artist', limit: 1 });
       return candidatePool.topBy((candidate) => candidate.scores.intentMatch * 0.3
         + candidate.scores.tasteMatch * 0.2
         + candidate.scores.timeFit * 0.15

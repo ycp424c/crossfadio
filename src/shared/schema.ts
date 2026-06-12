@@ -121,6 +121,84 @@ export const ncmSearchResponseSchema = z
   })
   .passthrough();
 
+export const ncmArtistSearchResponseSchema = z
+  .object({
+    result: z
+      .object({
+        artists: z
+          .array(z.object({
+            id: z.number().int().positive(),
+            name: z.string()
+          }).passthrough())
+          .optional()
+      })
+      .optional()
+  })
+  .passthrough();
+
+export type NcmArtistSearchResult = {
+  id: number;
+  name: string;
+};
+
+export const ncmAlbumSearchResponseSchema = z
+  .object({
+    result: z
+      .object({
+        albums: z
+          .array(z.object({
+            id: z.number().int().positive(),
+            name: z.string(),
+            artist: z.object({ name: z.string().optional() }).passthrough().optional()
+          }).passthrough())
+          .optional()
+      })
+      .optional()
+  })
+  .passthrough();
+
+export const ncmArtistAlbumsResponseSchema = z
+  .object({
+    hotAlbums: z
+      .array(z.object({
+        id: z.number().int().positive(),
+        name: z.string(),
+        artist: z.object({ name: z.string().optional() }).passthrough().optional()
+      }).passthrough())
+      .default([])
+  })
+  .passthrough();
+
+export type NcmAlbumSearchResult = {
+  id: number;
+  name: string;
+  artist: string | null;
+};
+
+export const ncmPlaylistSearchResponseSchema = z
+  .object({
+    result: z
+      .object({
+        playlists: z
+          .array(z.object({
+            id: z.number().int().positive(),
+            name: z.string(),
+            trackCount: z.number().int().nonnegative().optional(),
+            coverImgUrl: z.string().nullable().optional()
+          }).passthrough())
+          .optional()
+      })
+      .optional()
+  })
+  .passthrough();
+
+export type NcmPlaylistSearchResult = {
+  id: number;
+  name: string;
+  trackCount: number;
+  coverImgUrl: string | null;
+};
+
 export const ncmSongUrlSchema = z.object({
   id: z.number().int().positive(),
   url: z.string().url().nullable(),
@@ -281,6 +359,67 @@ export const ncmSongDetailResponseSchema = z
       .default([])
   })
   .passthrough();
+
+export const ncmArtistTopSongsResponseSchema = z
+  .object({
+    songs: z
+      .array(
+        z
+          .object({
+            id: z.number().int().positive(),
+            name: z.string(),
+            dt: z.number().int().nonnegative().optional(),
+            ar: z
+              .array(z.object({ name: z.string().optional() }).passthrough())
+              .optional(),
+            al: z
+              .object({
+                name: z.string().optional(),
+                picUrl: z.string().nullable().optional()
+              })
+              .passthrough()
+              .optional(),
+            pop: z.number().optional(),
+            fee: z.number().int().optional(),
+            copyright: z.number().int().optional(),
+            noCopyrightRcmd: z.unknown().nullable().optional(),
+            privilege: z
+              .object({
+                st: z.number().int().optional(),
+                toast: z.boolean().optional()
+              })
+              .passthrough()
+              .optional(),
+            originCoverType: z.number().int().optional(),
+            publishTime: z.number().int().optional(),
+            mv: z.number().int().optional()
+          })
+          .passthrough()
+      )
+      .default([])
+  })
+  .passthrough();
+
+export const ncmAlbumDetailResponseSchema = z
+  .object({
+    album: z
+      .object({
+        id: z.number().int().positive(),
+        name: z.string(),
+        artist: z.object({ name: z.string().optional() }).passthrough().optional()
+      })
+      .passthrough()
+      .optional(),
+    songs: ncmArtistTopSongsResponseSchema.shape.songs
+  })
+  .passthrough();
+
+export type NcmAlbumDetail = {
+  id: number;
+  name: string;
+  artist: string | null;
+  tracks: NcmPlaylistTrack[];
+};
 
 export const queueTrackSchema = z.object({
   id: z.string().min(1),

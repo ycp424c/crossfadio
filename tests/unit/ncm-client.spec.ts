@@ -515,6 +515,146 @@ describe('NcmClient DTO mapping', () => {
     ]);
   });
 
+  it('searches artists through /cloudsearch type 100', async () => {
+    mockFetch(async (url) => {
+      expect(url.pathname).toBe('/cloudsearch');
+      expect(url.searchParams.get('keywords')).toBe('具島直子');
+      expect(url.searchParams.get('type')).toBe('100');
+      expect(url.searchParams.get('limit')).toBe('5');
+      return new Response(
+        JSON.stringify({
+          result: {
+            artists: [
+              { id: 301, name: '具島直子' },
+              { id: 302, name: '' }
+            ]
+          }
+        }),
+        { status: 200 }
+      );
+    });
+    const client = new NcmClient('http://127.0.0.1:3000');
+
+    expect(await client.searchArtists('具島直子', 5)).toEqual([
+      { id: 301, name: '具島直子' }
+    ]);
+  });
+
+  it('fetches artist top songs as playable tracks', async () => {
+    mockFetch(async (url) => {
+      expect(url.pathname).toBe('/artist/top/song');
+      expect(url.searchParams.get('id')).toBe('301');
+      return new Response(
+        JSON.stringify({
+          songs: [
+            { id: 401, name: 'Candy', dt: 260_000, ar: [{ name: '具島直子' }], al: { picUrl: 'https://img/candy.jpg' } }
+          ]
+        }),
+        { status: 200 }
+      );
+    });
+    const client = new NcmClient('http://127.0.0.1:3000');
+
+    expect(await client.getArtistTopSongs('301')).toEqual([
+      { id: 401, name: 'Candy', artists: ['具島直子'], durationMs: 260_000, coverImgUrl: 'https://img/candy.jpg' }
+    ]);
+  });
+
+  it('searches albums and fetches album tracks', async () => {
+    const paths: string[] = [];
+    mockFetch(async (url) => {
+      paths.push(url.pathname);
+      if (url.pathname === '/cloudsearch') {
+        expect(url.searchParams.get('keywords')).toBe('miss.G');
+        expect(url.searchParams.get('type')).toBe('10');
+        return new Response(
+          JSON.stringify({
+            result: {
+              albums: [
+                { id: 501, name: 'miss.G', artist: { name: '具島直子' } }
+              ]
+            }
+          }),
+          { status: 200 }
+        );
+      }
+      if (url.pathname === '/album') {
+        expect(url.searchParams.get('id')).toBe('501');
+        return new Response(
+          JSON.stringify({
+            album: { id: 501, name: 'miss.G', artist: { name: '具島直子' } },
+            songs: [
+              { id: 601, name: 'Candy', dt: 260_000, ar: [{ name: '具島直子' }] }
+            ]
+          }),
+          { status: 200 }
+        );
+      }
+      return new Response('{}', { status: 404 });
+    });
+    const client = new NcmClient('http://127.0.0.1:3000');
+
+    expect(await client.searchAlbums('miss.G', 3)).toEqual([
+      { id: 501, name: 'miss.G', artist: '具島直子' }
+    ]);
+    expect(await client.getAlbumDetail('501')).toEqual({
+      id: 501,
+      name: 'miss.G',
+      artist: '具島直子',
+      tracks: [
+        { id: 601, name: 'Candy', artists: ['具島直子'], durationMs: 260_000 }
+      ]
+    });
+    expect(paths).toEqual(['/cloudsearch', '/album']);
+  });
+
+  it('fetches artist albums for album expansion', async () => {
+    mockFetch(async (url) => {
+      expect(url.pathname).toBe('/artist/album');
+      expect(url.searchParams.get('id')).toBe('301');
+      expect(url.searchParams.get('limit')).toBe('2');
+      return new Response(
+        JSON.stringify({
+          hotAlbums: [
+            { id: 501, name: 'miss.G', artist: { name: '具島直子' } },
+            { id: 502, name: 'Quiet Emotion', artist: { name: '具島直子' } }
+          ]
+        }),
+        { status: 200 }
+      );
+    });
+    const client = new NcmClient('http://127.0.0.1:3000');
+
+    expect(await client.getArtistAlbums('301', 2)).toEqual([
+      { id: 501, name: 'miss.G', artist: '具島直子' },
+      { id: 502, name: 'Quiet Emotion', artist: '具島直子' }
+    ]);
+  });
+
+
+  it('searches playlists through /cloudsearch type 1000', async () => {
+    mockFetch(async (url) => {
+      expect(url.pathname).toBe('/cloudsearch');
+      expect(url.searchParams.get('keywords')).toBe('city pop');
+      expect(url.searchParams.get('type')).toBe('1000');
+      return new Response(
+        JSON.stringify({
+          result: {
+            playlists: [
+              { id: 701, name: 'City Pop Selection', trackCount: 42, coverImgUrl: 'https://cover/701.jpg' }
+            ]
+          }
+        }),
+        { status: 200 }
+      );
+    });
+    const client = new NcmClient('http://127.0.0.1:3000');
+
+    expect(await client.searchPlaylists('city pop', 4)).toEqual([
+      { id: 701, name: 'City Pop Selection', trackCount: 42, coverImgUrl: 'https://cover/701.jpg' }
+    ]);
+  });
+
   it('rejects malformed search payload as BAD_RESPONSE', async () => {
     mockFetch(async () =>
       new Response(

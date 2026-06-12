@@ -113,6 +113,7 @@ const EXTRA_FINAL_PICK_MAX_REMAINING_MS = 20_000;
 const RECALL_TOOL_NAMES = new Set<MusicAgentToolName>([
   'recall_auto_fill_mix',
   'recall_from_liked',
+  'recall_from_entities',
   'recall_from_ncm_search',
   'recall_from_style_expansion',
   'recall_from_trending',
