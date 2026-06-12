@@ -917,6 +917,45 @@ describe('runMusicAgentLoop', () => {
     }));
   });
 
+  it('does not reward query funnel entries from ranked fallback picks', async () => {
+    const pool = new CandidatePool();
+    pool.upsert(candidate({ id: '101', scores: { ...candidate().scores, intentMatch: 0.9 } }));
+    pool.upsert(candidate({
+      id: '102',
+      name: 'Bright Song',
+      artist: 'Another Singer',
+      scores: { ...candidate().scores, intentMatch: 0.8 }
+    }));
+    const recordFinalPicks = vi.fn();
+    const queryFunnel = [{
+      query: '城市 synth pop',
+      normalizedQuery: '城市 synth pop',
+      source: 'search' as const,
+      searchedCount: 1,
+      resultCount: 8,
+      addedCount: 2,
+      selectedCount: 0,
+      scoreMultiplier: 1,
+      repeatPenalty: 0,
+      selectionRate: null
+    }];
+
+    const result = await runMusicAgentLoop({
+      llmClient: new LoopFakeLlmClient([]),
+      context: context(),
+      candidatePool: pool,
+      tools: {
+        getQueryFunnel: () => queryFunnel,
+        recordFinalPicks
+      },
+      budget: budget({ maxLlmCalls: 0 })
+    });
+
+    expect(result.picks.every((pick) => pick.reason === 'ranked fallback')).toBe(true);
+    expect(result.queryFunnel).toEqual(queryFunnel);
+    expect(recordFinalPicks).not.toHaveBeenCalled();
+  });
+
   it('does not spend an extra final-pick call when too little time remains', async () => {
     const pool = new CandidatePool();
     pool.upsert(candidate({ id: '101', scores: { ...candidate().scores, intentMatch: 0.9 } }));

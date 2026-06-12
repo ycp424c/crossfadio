@@ -44,6 +44,7 @@ export type MusicAgentTool = (
 export type MusicAgentToolRegistry = Partial<Record<MusicAgentToolName, MusicAgentTool>> & {
   prepare_for_ranking?: MusicAgentTool;
   getQueryFunnel?: () => QueryFunnelEntry[];
+  recordQueryFunnel?: () => void;
   recordFinalPicks?: (picks: FinalPick[]) => void;
 };
 
@@ -409,6 +410,7 @@ export function createMusicAgentTools(input: CreateMusicAgentToolsInput): MusicA
   return {
     ...registry,
     getQueryFunnel: () => queryFunnelSnapshot(state),
+    recordQueryFunnel: () => recordUserQueryFunnel(input.userId, queryFunnelSnapshot(state)),
     recordFinalPicks: (picks) => recordFinalQueryFunnel(input.userId, state, picks)
   };
 }
@@ -488,6 +490,7 @@ function autoFillSearchQueries(context: MusicAgentContextSummary, queryPlan: Que
 }
 
 function styleExpansionQueries(context: MusicAgentContextSummary, toolInput: Record<string, unknown>): string[] {
+  const explicitQueries = stringArrayValue(toolInput.queries);
   const text = [
     stringValue(toolInput.text),
     context.currentUserText,
@@ -499,11 +502,33 @@ function styleExpansionQueries(context: MusicAgentContextSummary, toolInput: Rec
     text,
     daypart: context.currentMoment.daypart
   });
+  const seedQueries = sourceStyleSeedQueries(knowledge.sourceStyleSeeds, text);
+  const fallbackQueries = explicitQueries.length > 0
+    ? [...seedQueries, ...knowledge.styleAdjacency]
+    : [...seedQueries, ...knowledge.styleAdjacency, ...knowledge.queryTemplates.slice(0, 2)];
   return uniqueStrings([
-    ...stringArrayValue(toolInput.queries),
-    ...knowledge.queryTemplates,
-    ...knowledge.styleAdjacency
+    ...explicitQueries,
+    ...fallbackQueries
   ]).slice(0, 8);
+}
+
+function sourceStyleSeedQueries(styleSeeds: string[], text: string): string[] {
+  const modifiers = styleSeedQueryModifiers(text);
+  return uniqueStrings(styleSeeds.flatMap((style) => modifiers.map((modifier) => `${style} ${modifier}`)));
+}
+
+function styleSeedQueryModifiers(text: string): string[] {
+  const normalized = text.toLowerCase();
+  const modifiers: string[] = [];
+  if (/rock|摇滚|乐队|guitar|吉他/.test(normalized)) modifiers.push('乐队');
+  if (/电子|electronic|synth|合成器/.test(normalized)) modifiers.push('synth');
+  if (/女声|女歌手|女生唱|female vocal|female-vocal/.test(normalized)) modifiers.push('女声');
+  if (/粤语|港乐|广东歌|cantonese/.test(normalized)) modifiers.push('粤语');
+  if (/华语|中文|mandarin/.test(normalized)) modifiers.push('华语');
+  if (/别太吵|不要太吵|不吵|安静|轻一点|轻松|quiet|chill/.test(normalized)) modifiers.push('不吵');
+  if (/专注|工作|学习|focus|少人声|低人声/.test(normalized)) modifiers.push('低人声');
+  if (/跑步|运动|running|workout|高能量|提神/.test(normalized)) modifiers.push('律动');
+  return uniqueStrings(modifiers.length > 0 ? modifiers : ['中低能量']);
 }
 
 function trendRecallQueries(state: ToolState, toolInput: Record<string, unknown>): string[] {
@@ -894,6 +919,7 @@ function summarizeKnowledge(slice: ReturnType<typeof getMusicKnowledgeSlice>): s
     slice.styleAdjacency.length ? `styleAdjacency=${slice.styleAdjacency.join('、')}` : '',
     slice.sceneRules.length ? `sceneRules=${slice.sceneRules.join('；')}` : '',
     slice.queryTemplates.length ? `queryTemplates=${slice.queryTemplates.join('、')}` : '',
+    slice.sourceStyleSeeds.length ? `sourceStyleSeeds=${slice.sourceStyleSeeds.join('、')}` : '',
     slice.diversityRules.length ? `diversityRules=${slice.diversityRules.join('；')}` : '',
     slice.negativeMappings.length ? `negativeMappings=${slice.negativeMappings.join('；')}` : ''
   ].filter(Boolean).join('; ') || 'no focused music knowledge matched.', SUMMARY_MAX_CHARS);
@@ -959,8 +985,7 @@ function defaultQueryPlan(
     context.activeDirective,
     context.currentPlanSegment ?? '',
     context.tasteSummary,
-    context.recentPreferenceSummary,
-    context.currentMoment.daypart
+    context.recentPreferenceSummary
   ].filter(Boolean).join(' ');
   const knowledge = getMusicKnowledgeSlice({
     text: baseText,
@@ -972,12 +997,12 @@ function defaultQueryPlan(
       ...stringArrayValue(input.queries),
       stringValue(input.query),
       ...(context.actionQueries ?? []),
-      ...knowledge.queryTemplates.slice(0, 4)
+      ...knowledge.queryTemplates.slice(0, 2)
     ]),
-    tasteAnchorQueries: uniqueStrings(knowledge.styleAdjacency.slice(0, 4)),
+    tasteAnchorQueries: uniqueStrings(knowledge.styleAdjacency.slice(0, 3)),
     planQueries: extractPlanQueries(context.currentPlanSegment),
     trendQueries: [],
-    explorationQueries: uniqueStrings(knowledge.styleAdjacency.slice(0, 3)),
+    explorationQueries: uniqueStrings(sourceStyleSeedQueries(knowledge.sourceStyleSeeds, baseText).slice(0, 6)),
     avoidArtists: avoidArtistsFromContext(context),
     negativeTerms: knowledge.negativeMappings,
     rationale: 'context-derived fallback query plan'

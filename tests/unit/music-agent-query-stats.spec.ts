@@ -115,4 +115,40 @@ describe('music-agent query stats', () => {
       prepared.funnelEntries[1].selectionRate ?? -1
     );
   });
+
+  it('keeps very recent repeats behind fresh alternatives even after a warm selection boost', async () => {
+    const {
+      prepareSearchQueriesForRecall,
+      recordUserQueryFunnel
+    } = await import('../../src/server/music-agent/query-stats.js');
+
+    recordUserQueryFunnel('query-user-repeat-boost', [
+      {
+        query: '城市 synth pop',
+        normalizedQuery: '城市 synth pop',
+        source: 'search',
+        searchedCount: 1,
+        resultCount: 8,
+        addedCount: 2,
+        selectedCount: 1,
+        scoreMultiplier: 1,
+        repeatPenalty: 0,
+        selectionRate: null
+      }
+    ]);
+
+    const prepared = prepareSearchQueriesForRecall({
+      userId: 'query-user-repeat-boost',
+      queries: ['城市 synth pop', '华语女声'],
+      source: 'search',
+      maxQueries: 2
+    });
+
+    expect(prepared.queries).toEqual(['华语女声', '城市 synth pop']);
+    expect(prepared.funnelEntries[1]).toMatchObject({
+      query: '城市 synth pop',
+      selectionRate: 0.5
+    });
+    expect(prepared.funnelEntries[1].repeatPenalty).toBeGreaterThan(0.25);
+  });
 });

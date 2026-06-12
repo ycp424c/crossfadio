@@ -21,9 +21,9 @@ type ScoredQuery = QueryFunnelEntry & {
   index: number;
 };
 
-const RECENT_REPEAT_PENALTY = 0.18;
-const RECENT_WINDOW_PENALTY = 0.1;
-const SEEN_BEFORE_PENALTY = 0.04;
+const RECENT_REPEAT_PENALTY = 0.32;
+const RECENT_WINDOW_PENALTY = 0.2;
+const SEEN_BEFORE_PENALTY = 0.08;
 const GOOD_SELECTION_BOOST = 0.12;
 const OK_SELECTION_BOOST = 0.06;
 const LOW_SELECTION_PENALTY = 0.08;

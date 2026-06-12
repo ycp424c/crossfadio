@@ -117,6 +117,7 @@ export const musicKnowledgeSliceSchema = z.object({
   styleAdjacency: z.array(z.string()).default([]),
   sceneRules: z.array(z.string()).default([]),
   queryTemplates: z.array(z.string()).default([]),
+  sourceStyleSeeds: z.array(z.string()).default([]),
   diversityRules: z.array(z.string()).default([]),
   negativeMappings: z.array(z.string()).default([])
 });

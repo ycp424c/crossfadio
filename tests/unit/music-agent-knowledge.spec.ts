@@ -42,6 +42,7 @@ describe('music-agent knowledge slice', () => {
 
     expect(slice.sceneRules.length).toBeGreaterThan(0);
     expect(slice.queryTemplates.length).toBeGreaterThan(0);
+    expect(slice.sourceStyleSeeds.length).toBeGreaterThan(0);
     expect(musicKnowledgeSliceSchema.parse(slice)).toEqual(slice);
   });
 
@@ -58,7 +59,7 @@ describe('music-agent knowledge slice', () => {
     expect(slice.diversityRules.length).toBeLessThanOrEqual(4);
   });
 
-  it('uses imagery query templates instead of low-quality generic time terms', () => {
+  it('uses music-attribute query templates instead of abstract imagery terms', () => {
     const afternoon = getMusicKnowledgeSlice({
       text: '午后想听几首',
       daypart: '下午'
@@ -69,7 +70,54 @@ describe('music-agent knowledge slice', () => {
     });
     const templates = [...afternoon.queryTemplates, ...lateNight.queryTemplates].join(' ');
 
-    expect(templates).not.toMatch(/午后|深夜|夜里|凌晨/);
-    expect(templates).toMatch(/天空|海洋|城市|星空|海面/);
+    expect(templates).not.toMatch(/天空|海洋|城市|星空|海面|月光|霓虹/);
+    expect(templates).not.toMatch(/上午|早晨|中午|午间|下午|午后|傍晚|黄昏|下班路上|晚上|晚间|深夜|夜里|凌晨/);
+    expect(templates).toMatch(/女声|city pop|dream pop|indie pop|粤语/);
+    expect(afternoon.sourceStyleSeeds).not.toEqual(expect.arrayContaining([
+      'neo-city pop',
+      'shibuya-kei',
+      'future funk'
+    ]));
+  });
+
+  it('does not let daypart style seeds crowd out explicit styles', () => {
+    const rock = getMusicKnowledgeSlice({
+      text: '想听摇滚 乐队 guitar',
+      daypart: '下午'
+    });
+    const electronic = getMusicKnowledgeSlice({
+      text: '电子 synth',
+      daypart: '晚上'
+    });
+
+    expect(rock.sourceStyleSeeds).toEqual(expect.arrayContaining([
+      'indie rock',
+      'alternative rock',
+      'soft rock'
+    ]));
+    expect(rock.sourceStyleSeeds).not.toEqual(expect.arrayContaining([
+      'neo-city pop',
+      'shibuya-kei',
+      'future funk'
+    ]));
+    expect(electronic.sourceStyleSeeds).toEqual(expect.arrayContaining([
+      'electropop',
+      'synth-pop',
+      'new wave'
+    ]));
+  });
+
+  it('exposes source-backed style seeds without flooding the compact slice', () => {
+    const slice = getMusicKnowledgeSlice({
+      text: '想听 city pop 女声，稍微探索一点',
+      daypart: '下午'
+    });
+
+    expect(slice.sourceStyleSeeds).toEqual(expect.arrayContaining([
+      'city pop',
+      'neo-city pop',
+      'shibuya-kei'
+    ]));
+    expect(slice.sourceStyleSeeds.length).toBeLessThanOrEqual(12);
   });
 });

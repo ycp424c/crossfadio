@@ -836,7 +836,7 @@ async function rankedFallback(
     reason: 'ranked fallback',
     source: candidate.sources[0]
   }));
-  const queryFunnel = recordAndReadQueryFunnel(input, picks);
+  const queryFunnel = recordSearchHistoryAndReadQueryFunnel(input);
 
   const output: MusicAgentRunOutput = {
     status: picks.length > 0 ? 'ok' : 'empty_pool',
@@ -954,6 +954,15 @@ function abortedOutput(
 
 function recordAndReadQueryFunnel(input: RunMusicAgentLoopInput, picks: FinalPick[]): QueryFunnelEntry[] {
   input.tools.recordFinalPicks?.(picks);
+  return readQueryFunnel(input);
+}
+
+function recordSearchHistoryAndReadQueryFunnel(input: RunMusicAgentLoopInput): QueryFunnelEntry[] {
+  input.tools.recordQueryFunnel?.();
+  return readQueryFunnel(input);
+}
+
+function readQueryFunnel(input: RunMusicAgentLoopInput): QueryFunnelEntry[] {
   return input.tools.getQueryFunnel?.() ?? [];
 }
 

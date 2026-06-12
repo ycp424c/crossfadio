@@ -625,6 +625,153 @@ describe('createMusicAgentTools', () => {
     expect(getUserQueryStats('user-query-funnel').map((item) => item.normalized_query)).toContain('海洋 女声');
   });
 
+  it('records fallback search history without adding selection credit', async () => {
+    const ncmClient = {
+      getLikedSongIds: vi.fn(async () => []),
+      getSongDetails: vi.fn(async () => []),
+      searchSongs: vi.fn(async () => [
+        { id: 'fallback-1', name: 'Fallback One', artists: ['Fallback Singer'] },
+        { id: 'fallback-2', name: 'Fallback Two', artists: ['Another Singer'] }
+      ]),
+      getPlaylistDetail: vi.fn(async () => null)
+    };
+
+    const { CandidatePool } = await import('../../src/server/music-agent/candidates.js');
+    const { runMusicAgentLoop } = await import('../../src/server/music-agent/loop.js');
+    const { createMusicAgentTools } = await import('../../src/server/music-agent/tools.js');
+    const {
+      getUserQueryStats
+    } = await import('../../src/server/store/music-query-stats.js');
+    const {
+      prepareSearchQueriesForRecall
+    } = await import('../../src/server/music-agent/query-stats.js');
+    const candidatePool = new CandidatePool();
+    const tools = createMusicAgentTools({
+      userId: 'fallback-query-history',
+      ncmClient: ncmClient as any,
+      context: {
+        request: 'auto-fill',
+        currentUserText: '想听轻快女声',
+        currentMoment: { localTime: '周四 15:00', daypart: '下午', weather: null },
+        activeDirective: '',
+        currentPlanSegment: null,
+        tasteSummary: '偏好轻松女声',
+        recentPreferenceSummary: '',
+        recentPlaySignals: '',
+        queueStateSummary: '',
+        bannedSummary: ''
+      },
+      candidatePool,
+      budget: {
+        maxMs: 10_000,
+        maxSteps: 3,
+        maxLlmCalls: 0,
+        maxToolCalls: 2,
+        maxNcmSearches: 2,
+        maxPlaylistFetches: 0,
+        maxTrendFetchMs: 0,
+        maxCandidates: 20
+      }
+    });
+
+    await tools.recall_from_ncm_search?.({ queries: ['轻快 女声'], limit: 5 });
+    await runMusicAgentLoop({
+      llmClient: { complete: vi.fn(async () => ({ content: '{}', model: 'unused' })) },
+      context: {
+        request: 'auto-fill',
+        currentUserText: '想听轻快女声',
+        currentMoment: { localTime: '周四 15:00', daypart: '下午', weather: null },
+        activeDirective: '',
+        currentPlanSegment: null,
+        tasteSummary: '偏好轻松女声',
+        recentPreferenceSummary: '',
+        recentPlaySignals: '',
+        queueStateSummary: '',
+        bannedSummary: ''
+      },
+      candidatePool,
+      tools,
+      budget: {
+        maxMs: 10_000,
+        maxSteps: 3,
+        maxLlmCalls: 0,
+        maxToolCalls: 2,
+        maxNcmSearches: 2,
+        maxPlaylistFetches: 0,
+        maxTrendFetchMs: 0,
+        maxCandidates: 20
+      },
+      targetPickCount: 2
+    });
+
+    expect(getUserQueryStats('fallback-query-history')).toEqual([
+      expect.objectContaining({
+        normalized_query: '轻快 女声',
+        searched_count: 1,
+        result_count: 2,
+        added_count: 2,
+        selected_count: 0
+      })
+    ]);
+    expect(prepareSearchQueriesForRecall({
+      userId: 'fallback-query-history',
+      queries: ['轻快 女声', 'fresh 女声'],
+      source: 'search',
+      maxQueries: 2
+    }).queries).toEqual(['fresh 女声', '轻快 女声']);
+  });
+
+  it('uses explicit style seed queries before daypart defaults in style expansion', async () => {
+    const ncmClient = {
+      getLikedSongIds: vi.fn(async () => []),
+      getSongDetails: vi.fn(async () => []),
+      searchSongs: vi.fn(async () => []),
+      getPlaylistDetail: vi.fn(async () => null)
+    };
+
+    const { CandidatePool } = await import('../../src/server/music-agent/candidates.js');
+    const { createMusicAgentTools } = await import('../../src/server/music-agent/tools.js');
+    const candidatePool = new CandidatePool();
+    const tools = createMusicAgentTools({
+      userId: 'style-seed-priority',
+      ncmClient: ncmClient as any,
+      context: {
+        request: 'chat-recommend',
+        currentUserText: '想听摇滚 乐队 guitar',
+        currentMoment: { localTime: '周四 15:00', daypart: '下午', weather: null },
+        activeDirective: '',
+        currentPlanSegment: null,
+        tasteSummary: '',
+        recentPreferenceSummary: '',
+        recentPlaySignals: '',
+        queueStateSummary: '',
+        bannedSummary: ''
+      },
+      candidatePool,
+      budget: {
+        maxMs: 10_000,
+        maxSteps: 3,
+        maxLlmCalls: 2,
+        maxToolCalls: 2,
+        maxNcmSearches: 8,
+        maxPlaylistFetches: 0,
+        maxTrendFetchMs: 0,
+        maxCandidates: 20
+      }
+    });
+
+    await tools.recall_from_style_expansion?.({ limit: 5 });
+
+    const queries = ncmClient.searchSongs.mock.calls.map((call) => call[0]);
+    expect(queries.slice(0, 3)).toEqual([
+      'indie rock 乐队',
+      'alternative rock 乐队',
+      'soft rock 乐队'
+    ]);
+    expect(queries).not.toContain('city pop');
+    expect(queries).not.toContain('neo-city pop');
+  });
+
   it('enriches external search candidates with quality signals before ranking', async () => {
     const ncmClient = {
       getLikedSongIds: vi.fn(async () => []),
