@@ -772,6 +772,184 @@ describe('createMusicAgentTools', () => {
     expect(queries).not.toContain('neo-city pop');
   });
 
+  it('falls back to context-derived queries when expand_queries receives an empty object', async () => {
+    const ncmClient = {
+      getLikedSongIds: vi.fn(async () => []),
+      getSongDetails: vi.fn(async () => []),
+      searchSongs: vi.fn(async () => []),
+      getPlaylistDetail: vi.fn(async () => null)
+    };
+
+    const { CandidatePool } = await import('../../src/server/music-agent/candidates.js');
+    const { createMusicAgentTools } = await import('../../src/server/music-agent/tools.js');
+    const candidatePool = new CandidatePool();
+    const tools = createMusicAgentTools({
+      userId: 'empty-query-plan-defaults',
+      ncmClient: ncmClient as any,
+      context: {
+        request: 'auto-fill',
+        currentUserText: '',
+        discoveryMode: 'explore',
+        currentMoment: { localTime: '周五 16:25', daypart: '下午', weather: '9°C，Mist' },
+        activeDirective: '',
+        currentPlanSegment: "上午工作 09:00-12:00；mood=清醒专注；energy=60；tracks=Spain — Chick Corea、Armando's Rhumba — Chick Corea、Daylight — Taylor Swift",
+        tasteSummary: '偏好电子、抒情摇滚、华语/英语/日语/韩语、高强度专注、提神。',
+        recentPreferenceSummary: '近期偏好 J-Pop、英文歌，上班时间要提神、有节奏感、明亮不催眠，有人声/独立/有棱角。',
+        recentPlaySignals: '',
+        queueStateSummary: '',
+        bannedSummary: ''
+      },
+      candidatePool,
+      budget: {
+        maxMs: 10_000,
+        maxSteps: 3,
+        maxLlmCalls: 2,
+        maxToolCalls: 2,
+        maxNcmSearches: 12,
+        maxPlaylistFetches: 0,
+        maxTrendFetchMs: 0,
+        maxCandidates: 40
+      },
+      targetPickCount: 5
+    });
+
+    const plan = await tools.expand_queries?.({});
+    await tools.recall_auto_fill_mix?.({});
+
+    const queries = ncmClient.searchSongs.mock.calls.map((call) => call[0]);
+    expect(plan?.problems).toContain('empty query plan input; using context-derived defaults');
+    expect(plan?.summary).not.toBe('query plan is empty.');
+    expect(queries.slice(0, 3)).toEqual(['女声 轻松', 'city pop 柔和', 'Spain — Chick Corea']);
+    expect(queries).not.toContain('清爽 女声');
+    expect(queries).not.toContain('indie pop 明亮');
+    expect(new Set(queries).size).toBe(queries.length);
+  });
+
+  it('keeps long-term taste summaries out of no-input style expansion modifiers', async () => {
+    const ncmClient = {
+      getLikedSongIds: vi.fn(async () => []),
+      getSongDetails: vi.fn(async () => []),
+      searchSongs: vi.fn(async () => []),
+      getPlaylistDetail: vi.fn(async () => null)
+    };
+
+    const { CandidatePool } = await import('../../src/server/music-agent/candidates.js');
+    const { createMusicAgentTools } = await import('../../src/server/music-agent/tools.js');
+    const candidatePool = new CandidatePool();
+    const tools = createMusicAgentTools({
+      userId: 'style-expansion-current-input-only',
+      ncmClient: ncmClient as any,
+      context: {
+        request: 'auto-fill',
+        currentUserText: '',
+        discoveryMode: 'explore',
+        currentMoment: { localTime: '周五 16:25', daypart: '下午', weather: null },
+        activeDirective: '',
+        currentPlanSegment: null,
+        tasteSummary: '长期偏好包含电子、抒情摇滚、华语、提神、工作专注、低人声。',
+        recentPreferenceSummary: '近期偏好包含 J-Pop、英文歌、乐队、synth、律动、不要太吵。',
+        recentPlaySignals: '',
+        queueStateSummary: '',
+        bannedSummary: ''
+      },
+      candidatePool,
+      budget: {
+        maxMs: 10_000,
+        maxSteps: 3,
+        maxLlmCalls: 2,
+        maxToolCalls: 2,
+        maxNcmSearches: 8,
+        maxPlaylistFetches: 0,
+        maxTrendFetchMs: 0,
+        maxCandidates: 40
+      }
+    });
+
+    await tools.recall_from_style_expansion?.({ limit: 5 });
+
+    const queries = ncmClient.searchSongs.mock.calls.map((call) => call[0]);
+    expect(queries.slice(0, 3)).toEqual([
+      'indie pop 中低能量',
+      'dream pop 中低能量',
+      'city pop 中低能量'
+    ]);
+    expect(queries).not.toEqual(expect.arrayContaining([
+      'electropop 乐队',
+      'electropop synth',
+      'indie pop 低人声',
+      'indie pop 律动'
+    ]));
+  });
+
+  it('does not stop auto-fill mix after only eight non-liked candidates', async () => {
+    const titles = [
+      'Amber Lantern',
+      'Blue Harbor',
+      'Copper Window',
+      'Distant Signal',
+      'Evening Circuit',
+      'Forest Radio',
+      'Glass Skyline',
+      'Hidden Avenue',
+      'Ivory Pulse',
+      'Jade Station',
+      'Kinetic Letter',
+      'Lunar Street'
+    ];
+    let trackIndex = 0;
+    const ncmClient = {
+      getLikedSongIds: vi.fn(async () => []),
+      getSongDetails: vi.fn(async () => []),
+      searchSongs: vi.fn(async () => {
+        const title = titles[trackIndex] ?? `Extra Song ${trackIndex}`;
+        trackIndex += 1;
+        return [{ id: `candidate-${trackIndex}`, name: title, artists: [`Artist ${trackIndex}`] }];
+      }),
+      getPlaylistDetail: vi.fn(async () => null)
+    };
+
+    const { CandidatePool } = await import('../../src/server/music-agent/candidates.js');
+    const { createMusicAgentTools } = await import('../../src/server/music-agent/tools.js');
+    const candidatePool = new CandidatePool({ maxCandidates: 40 });
+    const tools = createMusicAgentTools({
+      userId: 'auto-fill-mix-more-than-eight',
+      ncmClient: ncmClient as any,
+      context: {
+        request: 'auto-fill',
+        currentUserText: '',
+        currentMoment: { localTime: '周五 16:25', daypart: '下午', weather: null },
+        activeDirective: '',
+        currentPlanSegment: null,
+        tasteSummary: '',
+        recentPreferenceSummary: '',
+        recentPlaySignals: '',
+        queueStateSummary: '',
+        bannedSummary: ''
+      },
+      candidatePool,
+      budget: {
+        maxMs: 10_000,
+        maxSteps: 3,
+        maxLlmCalls: 2,
+        maxToolCalls: 2,
+        maxNcmSearches: 12,
+        maxPlaylistFetches: 0,
+        maxTrendFetchMs: 0,
+        maxCandidates: 40
+      },
+      targetPickCount: 5
+    });
+    await tools.expand_queries?.({
+      intentQueries: ['afternoon-q1', 'afternoon-q2', 'afternoon-q3', 'afternoon-q4'],
+      explorationQueries: ['afternoon-q5', 'afternoon-q6', 'afternoon-q7', 'afternoon-q8']
+    });
+
+    const observation = await tools.recall_auto_fill_mix?.({});
+
+    expect(observation?.summary).toContain('风格扩展 recall searched');
+    expect(candidatePool.count()).toBeGreaterThan(8);
+  });
+
   it('enriches external search candidates with quality signals before ranking', async () => {
     const ncmClient = {
       getLikedSongIds: vi.fn(async () => []),

@@ -62,6 +62,7 @@ export type CreateMusicAgentToolsInput = {
   maxTrendFetchMs?: number;
   maxNcmSearches?: number;
   maxPlaylistFetches?: number;
+  targetPickCount?: number;
 };
 
 type NcmTrackLike = {
@@ -107,6 +108,7 @@ const SEARCH_RECALL_CACHE_TTL_MS = 30 * 60 * 1000;
 const QUALITY_DETAIL_BATCH_LIMIT = 80;
 const QUALITY_SOURCES = new Set<CandidateSource>(['search', 'style_expansion', 'trend']);
 const MAX_RECALL_QUERY_COUNT = 8;
+const AUTO_FILL_MIN_RECALL_NON_LIKED_TARGET = 8;
 const likedRecallCache = new Map<string, CacheEntry<NcmTrackLike[]>>();
 const searchRecallCache = new Map<string, CacheEntry<NcmTrackLike[]>>();
 
@@ -173,12 +175,18 @@ export function createMusicAgentTools(input: CreateMusicAgentToolsInput): MusicA
     expand_queries: async (toolInput, signal) => {
       if (signal?.aborted) return abortedObservation(input.candidatePool);
       const parsed = queryPlanSchema.safeParse(toolInput);
+      const emptyParsedPlan = parsed.success && !hasQueryPlanRecallQueries(parsed.data);
       state.queryPlan = sanitizeQueryPlan(withContextAvoidArtists(
-        parsed.success ? parsed.data : defaultQueryPlan(input.context, toolInput),
+        parsed.success
+          ? (emptyParsedPlan
+              ? mergeQueryPlans(defaultQueryPlan(input.context, toolInput), parsed.data)
+              : parsed.data)
+          : defaultQueryPlan(input.context, toolInput),
         input.context
       ));
-      return observation(input.candidatePool, summarizeQueryPlan(state.queryPlan), parsed.success ? [] : [
-        'invalid query plan input; using context-derived defaults'
+      return observation(input.candidatePool, summarizeQueryPlan(state.queryPlan), [
+        ...(parsed.success ? [] : ['invalid query plan input; using context-derived defaults']),
+        ...(emptyParsedPlan ? ['empty query plan input; using context-derived defaults'] : [])
       ]);
     },
 
@@ -326,8 +334,9 @@ export function createMusicAgentTools(input: CreateMusicAgentToolsInput): MusicA
       const summaries: string[] = [];
       const problems: string[] = [];
 
+      const searchQueries = autoFillSearchQueries(input.context, state.queryPlan);
       const search = await recallFromQueries({
-        queries: autoFillSearchQueries(input.context, state.queryPlan),
+        queries: searchQueries,
         source: 'search',
         evidencePrefix: '网易云搜索',
         scores: sourceScores('search', input.context),
@@ -339,12 +348,12 @@ export function createMusicAgentTools(input: CreateMusicAgentToolsInput): MusicA
       });
       summaries.push(search.summary);
       problems.push(...(search.problems ?? []));
-      if (hasEnoughAutoFillNonLikedCandidates(input.candidatePool)) {
+      if (hasEnoughAutoFillNonLikedCandidates(input.candidatePool, input.targetPickCount)) {
         return observation(input.candidatePool, `auto-fill mix: ${summaries.join(' | ')}`, problems);
       }
 
       const style = await recallFromQueries({
-        queries: styleExpansionQueries(input.context, {}),
+        queries: styleExpansionQueries(input.context, { excludeQueries: searchQueries }),
         source: 'style_expansion',
         evidencePrefix: '风格扩展',
         scores: sourceScores('style_expansion', input.context),
@@ -356,7 +365,7 @@ export function createMusicAgentTools(input: CreateMusicAgentToolsInput): MusicA
       });
       summaries.push(style.summary);
       problems.push(...(style.problems ?? []));
-      if (hasEnoughAutoFillNonLikedCandidates(input.candidatePool)) {
+      if (hasEnoughAutoFillNonLikedCandidates(input.candidatePool, input.targetPickCount)) {
         return observation(input.candidatePool, `auto-fill mix: ${summaries.join(' | ')}`, problems);
       }
 
@@ -491,12 +500,14 @@ function autoFillSearchQueries(context: MusicAgentContextSummary, queryPlan: Que
 
 function styleExpansionQueries(context: MusicAgentContextSummary, toolInput: Record<string, unknown>): string[] {
   const explicitQueries = stringArrayValue(toolInput.queries);
+  const excludedQueries = new Set(stringArrayValue(toolInput.excludeQueries).map(normalizeSearchQuery));
   const text = [
     stringValue(toolInput.text),
+    stringValue(toolInput.userText),
+    ...explicitQueries,
     context.currentUserText,
-    context.activeDirective,
-    context.tasteSummary,
-    context.recentPreferenceSummary
+    ...(context.actionQueries ?? []),
+    context.activeDirective
   ].filter(Boolean).join(' ');
   const knowledge = getMusicKnowledgeSlice({
     text,
@@ -509,7 +520,9 @@ function styleExpansionQueries(context: MusicAgentContextSummary, toolInput: Rec
   return uniqueStrings([
     ...explicitQueries,
     ...fallbackQueries
-  ]).slice(0, 8);
+  ])
+    .filter((query) => !excludedQueries.has(normalizeSearchQuery(query)))
+    .slice(0, 8);
 }
 
 function sourceStyleSeedQueries(styleSeeds: string[], text: string): string[] {
@@ -543,8 +556,13 @@ function trendRecallQueries(state: ToolState, toolInput: Record<string, unknown>
   return uniqueStrings([...stringArrayValue(toolInput.queries), ...trendQueries]).slice(0, 8);
 }
 
-function hasEnoughAutoFillNonLikedCandidates(pool: CandidatePool): boolean {
-  return pool.list().filter((candidate) => !candidate.sources.includes('liked')).length >= 8;
+function hasEnoughAutoFillNonLikedCandidates(pool: CandidatePool, targetPickCount: number | undefined): boolean {
+  return pool.list().filter((candidate) => !candidate.sources.includes('liked')).length >= autoFillRecallNonLikedTarget(targetPickCount);
+}
+
+function autoFillRecallNonLikedTarget(targetPickCount: number | undefined): number {
+  const parsedTarget = Number.isFinite(targetPickCount) && targetPickCount ? Math.max(1, Math.floor(targetPickCount)) : 2;
+  return Math.max(AUTO_FILL_MIN_RECALL_NON_LIKED_TARGET, parsedTarget * 3);
 }
 
 function likedRecallLimit(value: unknown, context: MusicAgentContextSummary): number {
@@ -581,6 +599,29 @@ function sanitizeQueryPlan(plan: QueryPlan): QueryPlan {
     planQueries: uniqueStrings(plan.planQueries.map(sanitizeSearchQuery)),
     trendQueries: uniqueStrings(plan.trendQueries.map(sanitizeSearchQuery)),
     explorationQueries: uniqueStrings(plan.explorationQueries.map(sanitizeSearchQuery))
+  });
+}
+
+function hasQueryPlanRecallQueries(plan: QueryPlan): boolean {
+  return [
+    ...plan.intentQueries,
+    ...plan.tasteAnchorQueries,
+    ...plan.planQueries,
+    ...plan.trendQueries,
+    ...plan.explorationQueries
+  ].some((query) => sanitizeSearchQuery(query).length > 0);
+}
+
+function mergeQueryPlans(base: QueryPlan, overlay: QueryPlan): QueryPlan {
+  return queryPlanSchema.parse({
+    intentQueries: overlay.intentQueries.length > 0 ? overlay.intentQueries : base.intentQueries,
+    tasteAnchorQueries: overlay.tasteAnchorQueries.length > 0 ? overlay.tasteAnchorQueries : base.tasteAnchorQueries,
+    planQueries: overlay.planQueries.length > 0 ? overlay.planQueries : base.planQueries,
+    trendQueries: overlay.trendQueries.length > 0 ? overlay.trendQueries : base.trendQueries,
+    explorationQueries: overlay.explorationQueries.length > 0 ? overlay.explorationQueries : base.explorationQueries,
+    avoidArtists: uniqueStrings([...base.avoidArtists, ...overlay.avoidArtists]),
+    negativeTerms: uniqueStrings([...base.negativeTerms, ...overlay.negativeTerms]),
+    rationale: overlay.rationale || base.rationale
   });
 }
 
@@ -977,18 +1018,17 @@ function defaultQueryPlan(
   context: MusicAgentContextSummary,
   input: Record<string, unknown>
 ): QueryPlan {
-  const baseText = [
+  const queryText = [
     stringValue(input.text),
     stringValue(input.userText),
+    ...stringArrayValue(input.queries),
+    stringValue(input.query),
     context.currentUserText,
     ...(context.actionQueries ?? []),
-    context.activeDirective,
-    context.currentPlanSegment ?? '',
-    context.tasteSummary,
-    context.recentPreferenceSummary
+    context.activeDirective
   ].filter(Boolean).join(' ');
   const knowledge = getMusicKnowledgeSlice({
-    text: baseText,
+    text: queryText,
     daypart: context.currentMoment.daypart
   });
 
@@ -1002,7 +1042,7 @@ function defaultQueryPlan(
     tasteAnchorQueries: uniqueStrings(knowledge.styleAdjacency.slice(0, 3)),
     planQueries: extractPlanQueries(context.currentPlanSegment),
     trendQueries: [],
-    explorationQueries: uniqueStrings(sourceStyleSeedQueries(knowledge.sourceStyleSeeds, baseText).slice(0, 6)),
+    explorationQueries: uniqueStrings(sourceStyleSeedQueries(knowledge.sourceStyleSeeds, queryText).slice(0, 6)),
     avoidArtists: avoidArtistsFromContext(context),
     negativeTerms: knowledge.negativeMappings,
     rationale: 'context-derived fallback query plan'

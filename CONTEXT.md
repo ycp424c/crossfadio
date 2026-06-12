@@ -39,3 +39,27 @@ _Avoid_: scores, ranking score
 **Title Pollution Signal**:
 Evidence that a recalled song candidate's title appears to be assembled from search terms, scene words, or collection-style descriptors rather than naming a specific song.
 _Avoid_: title duplicate penalty, same-song dedupe
+
+**Listening Constraint**:
+A non-entity listening preference that describes fit for the current moment, such as energy, scene, vocal presence, or novelty. It should guide discovery and ranking without being treated as a literal platform search phrase.
+_Avoid_: search keyword, query modifier
+
+**Music Entity**:
+A verifiable music object that can lead to playable candidates, such as a track, artist, album, playlist, or chart item.
+_Avoid_: search term, vibe, style word
+
+**Semantic Discovery**:
+The step that turns listening constraints and style hints into concrete music entities before platform recall.
+_Avoid_: NCM search, style search, query expansion
+
+**Exact Recall**:
+Platform retrieval using a concrete music entity or identifier rather than a mood, scene, or style phrase.
+_Avoid_: semantic search, fuzzy search
+
+**Seed Catalog**:
+A curated set of high-confidence music entities used as cold-start entry points for discovery. It is an entry map, not a fixed recommendation library.
+_Avoid_: recommendation list, fallback playlist
+
+**Semantic Index**:
+A searchable collection of known music entities and their listening-fit descriptions, used to find entities similar to the current intent.
+_Avoid_: vector database, recommendation model

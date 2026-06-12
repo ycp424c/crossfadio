@@ -96,7 +96,8 @@ export class MusicAgent {
       ncmClient: input.ncmClient,
       context,
       candidatePool,
-      budget
+      budget,
+      targetPickCount
     });
 
     return runMusicAgentLoop({

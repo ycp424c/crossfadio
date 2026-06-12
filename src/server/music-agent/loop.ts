@@ -96,8 +96,8 @@ const CONVERGENCE_TOOL_NAMES = new Set<MusicAgentToolName>([
   'diversify_candidates',
   'finalize_pick'
 ]);
-const AUTO_FILL_NON_LIKED_CONVERGENCE_TARGET = 8;
-const AUTO_FILL_TOTAL_CONVERGENCE_TARGET = 18;
+const AUTO_FILL_MIN_NON_LIKED_CONVERGENCE_TARGET = 8;
+const AUTO_FILL_MIN_TOTAL_CONVERGENCE_TARGET = 18;
 const AUTO_FILL_MIX_TOOL_NAMES: MusicAgentToolName[] = [
   'expand_queries',
   'recall_from_ncm_search',
@@ -1306,9 +1306,17 @@ function shouldSupplementSparseAutoFillRank(toolName: MusicAgentToolName, input:
 
 function shouldConvergeAfterAutoFillRecallMix(input: RunMusicAgentLoopInput): boolean {
   return (
-    countNonLikedCandidates(input) >= AUTO_FILL_NON_LIKED_CONVERGENCE_TARGET ||
-    input.candidatePool.count() >= AUTO_FILL_TOTAL_CONVERGENCE_TARGET
+    countNonLikedCandidates(input) >= autoFillNonLikedConvergenceTarget(input) ||
+    input.candidatePool.count() >= autoFillTotalConvergenceTarget(input)
   );
+}
+
+function autoFillNonLikedConvergenceTarget(input: RunMusicAgentLoopInput): number {
+  return Math.max(AUTO_FILL_MIN_NON_LIKED_CONVERGENCE_TARGET, targetPickCount(input) * 3);
+}
+
+function autoFillTotalConvergenceTarget(input: RunMusicAgentLoopInput): number {
+  return Math.max(AUTO_FILL_MIN_TOTAL_CONVERGENCE_TARGET, targetPickCount(input) * 4);
 }
 
 function countNonLikedCandidates(input: RunMusicAgentLoopInput): number {

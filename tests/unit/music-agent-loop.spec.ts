@@ -1533,6 +1533,136 @@ describe('runMusicAgentLoop', () => {
     }));
   });
 
+  it('does not converge after only eight aggregate auto-fill candidates for five-pick batches', async () => {
+    const pool = new CandidatePool();
+    const fallbackLogger = vi.fn();
+    const llmClient = new LoopFakeLlmClient([
+      JSON.stringify({ type: 'tool_call', tool: 'recall_auto_fill_mix', input: {} }),
+      JSON.stringify({ type: 'tool_call', tool: 'recall_from_ncm_search', input: { query: 'wider recall' } }),
+      JSON.stringify({
+        type: 'final',
+        say: '我等扩展候选补足后再选五首。',
+        picks: [
+          { id: 'search-1', reason: '第一轮候选贴合', source: 'search' },
+          { id: 'search-3', reason: '第一轮候选保持变化', source: 'search' },
+          { id: 'search-5', reason: '第一轮候选补足节奏', source: 'search' },
+          { id: 'search-9', reason: '扩展候选提高质量余量', source: 'search' },
+          { id: 'search-12', reason: '扩展候选避免八选五过紧', source: 'search' }
+        ],
+        rejected: []
+      })
+    ]);
+    const calls: string[] = [];
+
+    function addSearchCandidates(count: number): void {
+      const start = pool.count();
+      for (let index = 0; index < count; index += 1) {
+        const number = start + index + 1;
+        pool.upsert(candidate({
+          id: `search-${number}`,
+          name: `Search ${number}`,
+          artist: `Search Artist ${number}`,
+          sources: ['search']
+        }));
+      }
+    }
+
+    const result = await runMusicAgentLoop({
+      llmClient,
+      context: context({ request: 'auto-fill' }),
+      candidatePool: pool,
+      tools: {
+        recall_auto_fill_mix: async () => {
+          calls.push('recall_auto_fill_mix');
+          addSearchCandidates(8);
+          return { summary: 'auto-fill mix added 8 candidates', candidateCount: pool.count() };
+        },
+        recall_from_ncm_search: async () => {
+          calls.push('recall_from_ncm_search');
+          addSearchCandidates(7);
+          return { summary: 'search recall added 7 wider candidates', candidateCount: pool.count() };
+        }
+      },
+      budget: budget({ maxLlmCalls: 6, maxSteps: 6, maxToolCalls: 4 }),
+      targetPickCount: 5,
+      fallbackLogger
+    });
+
+    expect(result.status).toBe('ok');
+    expect(result.say).toBe('我等扩展候选补足后再选五首。');
+    expect(result.picks.map((pick) => pick.id)).toEqual(['search-1', 'search-3', 'search-5', 'search-9', 'search-12']);
+    expect(calls).toEqual(['recall_auto_fill_mix', 'recall_from_ncm_search']);
+    expect(llmClient.calls).toHaveLength(3);
+    expect(fallbackLogger).not.toHaveBeenCalled();
+  });
+
+  it('keeps looping after liked recall supplements only eight candidates for five-pick batches', async () => {
+    const pool = new CandidatePool();
+    const fallbackLogger = vi.fn();
+    const llmClient = new LoopFakeLlmClient([
+      JSON.stringify({ type: 'tool_call', tool: 'recall_from_liked', input: {} }),
+      JSON.stringify({ type: 'tool_call', tool: 'recall_from_ncm_search', input: { query: 'wider recall' } }),
+      JSON.stringify({
+        type: 'final',
+        say: '我等补充搜索扩大候选池后再选五首。',
+        picks: [
+          { id: 'search-1', reason: '第一轮候选贴合', source: 'search' },
+          { id: 'search-3', reason: '第一轮候选保持变化', source: 'search' },
+          { id: 'search-5', reason: '第一轮候选补足节奏', source: 'search' },
+          { id: 'search-9', reason: '第二轮候选提高质量余量', source: 'search' },
+          { id: 'search-12', reason: '第二轮候选避免八选五过紧', source: 'search' }
+        ],
+        rejected: []
+      })
+    ]);
+    const calls: string[] = [];
+
+    function addSearchCandidates(count: number): void {
+      const start = pool.count();
+      for (let index = 0; index < count; index += 1) {
+        const number = start + index + 1;
+        pool.upsert(candidate({
+          id: `search-${number}`,
+          name: `Search ${number}`,
+          artist: `Search Artist ${number}`,
+          sources: ['search']
+        }));
+      }
+    }
+
+    const result = await runMusicAgentLoop({
+      llmClient,
+      context: context({ request: 'auto-fill' }),
+      candidatePool: pool,
+      tools: {
+        recall_from_liked: async () => {
+          calls.push('recall_from_liked');
+          return { summary: 'liked recall added 0 candidates', candidateCount: pool.count() };
+        },
+        recall_auto_fill_mix: async () => {
+          calls.push('recall_auto_fill_mix');
+          addSearchCandidates(8);
+          return { summary: 'auto-fill mix added 8 candidates', candidateCount: pool.count() };
+        },
+        recall_from_ncm_search: async () => {
+          calls.push('recall_from_ncm_search');
+          addSearchCandidates(7);
+          return { summary: 'search recall added 7 wider candidates', candidateCount: pool.count() };
+        }
+      },
+      budget: budget({ maxLlmCalls: 6, maxSteps: 6, maxToolCalls: 4 }),
+      targetPickCount: 5,
+      fallbackLogger
+    });
+
+    expect(result.status).toBe('ok');
+    expect(result.say).toBe('我等补充搜索扩大候选池后再选五首。');
+    expect(result.picks.map((pick) => pick.id)).toEqual(['search-1', 'search-3', 'search-5', 'search-9', 'search-12']);
+    expect(calls).toEqual(['recall_from_liked', 'recall_auto_fill_mix', 'recall_from_ncm_search']);
+    expect(llmClient.calls).toHaveLength(3);
+    expect(fallbackLogger).not.toHaveBeenCalled();
+  });
+
   it('auto-fill supplements sparse ranked candidates before converging', async () => {
     const pool = new CandidatePool();
     const fallbackLogger = vi.fn();
