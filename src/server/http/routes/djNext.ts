@@ -298,6 +298,7 @@ export async function searchCandidates(
 export type ParsedDjCandidatePicks = {
   say: string;
   tracks: Track[];
+  reasonsById: Record<string, string>;
 };
 
 export function parseDjCandidatePicks(raw: string, candidates: Track[], targetPickCount = 2): ParsedDjCandidatePicks {
@@ -306,44 +307,56 @@ export function parseDjCandidatePicks(raw: string, candidates: Track[], targetPi
     .replace(/\s*```\s*$/, '')
     .trim();
   const match = cleaned.match(/\{[\s\S]*\}/);
-  if (!match) return { say: '', tracks: [] };
+  if (!match) return { say: '', tracks: [], reasonsById: {} };
 
   let parsed: unknown;
   try {
     parsed = JSON.parse(match[0]);
   } catch {
-    return { say: '', tracks: [] };
+    return { say: '', tracks: [], reasonsById: {} };
   }
 
-  if (!parsed || typeof parsed !== 'object') return { say: '', tracks: [] };
+  if (!parsed || typeof parsed !== 'object') return { say: '', tracks: [], reasonsById: {} };
 
   const obj = parsed as Record<string, unknown>;
   const say = typeof obj.say === 'string' ? obj.say : '';
   const byId = new Map(candidates.map((track) => [track.id, track]));
   const seen = new Set<string>();
   const tracks: Track[] = [];
+  const reasonsById: Record<string, string> = {};
 
-  const addById = (value: unknown): void => {
-    const id = typeof value === 'number' ? String(value) : typeof value === 'string' ? value.trim() : '';
-    const track = id ? byId.get(id) : undefined;
-    if (track && !seen.has(track.id)) {
+  const addTrack = (track: Track | undefined, reason?: unknown): void => {
+    if (!track) return;
+    const normalizedReason = typeof reason === 'string' ? reason.trim() : '';
+    if (!seen.has(track.id)) {
       seen.add(track.id);
       tracks.push(track);
     }
+    if (normalizedReason && !reasonsById[track.id]) {
+      reasonsById[track.id] = normalizedReason;
+    }
   };
 
-  const addByIndex = (value: unknown): void => {
+  const resolveById = (value: unknown): Track | undefined => {
+    const id = typeof value === 'number' ? String(value) : typeof value === 'string' ? value.trim() : '';
+    return id ? byId.get(id) : undefined;
+  };
+
+  const resolveByIndex = (value: unknown): Track | undefined => {
     const index = typeof value === 'number'
       ? value
       : typeof value === 'string' && /^\d+$/.test(value.trim())
         ? Number(value.trim())
         : NaN;
-    if (!Number.isInteger(index)) return;
-    const track = candidates[index - 1];
-    if (track && !seen.has(track.id)) {
-      seen.add(track.id);
-      tracks.push(track);
-    }
+    return Number.isInteger(index) ? candidates[index - 1] : undefined;
+  };
+
+  const addById = (value: unknown): void => {
+    addTrack(resolveById(value));
+  };
+
+  const addByIndex = (value: unknown): void => {
+    addTrack(resolveByIndex(value));
   };
 
   for (const key of ['pickIds', 'ids', 'trackIds']) {
@@ -357,8 +370,7 @@ export function parseDjCandidatePicks(raw: string, candidates: Track[], targetPi
       for (const value of values) {
         if (value && typeof value === 'object') {
           const pick = value as Record<string, unknown>;
-          addById(pick.id);
-          addByIndex(pick.index);
+          addTrack(resolveById(pick.id) ?? resolveByIndex(pick.index), pick.reason);
         } else {
           addByIndex(value);
         }
@@ -366,7 +378,23 @@ export function parseDjCandidatePicks(raw: string, candidates: Track[], targetPi
     }
   }
 
-  return { say, tracks: tracks.slice(0, targetPickCount) };
+  for (const key of ['reasons', 'pickReasons', 'reasonsById']) {
+    const reasons = obj[key];
+    if (!reasons || typeof reasons !== 'object' || Array.isArray(reasons)) continue;
+    for (const [id, reason] of Object.entries(reasons as Record<string, unknown>)) {
+      const track = byId.get(id);
+      if (track && seen.has(track.id)) addTrack(track, reason);
+    }
+  }
+
+  const selectedTracks = tracks.slice(0, targetPickCount);
+  const selectedIds = new Set(selectedTracks.map((track) => track.id));
+  const selectedReasonsById: Record<string, string> = {};
+  for (const [id, reason] of Object.entries(reasonsById)) {
+    if (selectedIds.has(id)) selectedReasonsById[id] = reason;
+  }
+
+  return { say, tracks: selectedTracks, reasonsById: selectedReasonsById };
 }
 
 export function createDjPickNextHandler(opts: DjNextOptions): RequestHandler {
@@ -838,7 +866,8 @@ async function doPickNext(
         searchedTracks: searchedTracks.map((t) => ({ id: t.id, name: t.name, artist: t.artist })),
         excludedIds: Array.from(excludeState.ids),
         excludedDedupeKeys: Array.from(excludeState.dedupeKeys),
-        totalCandidates: allCandidates.length
+        totalCandidates: allCandidates.length,
+        candidateScoreTable: createLegacyCandidateScoreTable(allCandidates, likedSampleIds)
       };
 
       logger.info(
@@ -877,7 +906,10 @@ ${timeContext.sayInstruction}
 输出格式：严格 JSON，不要包裹 markdown 代码块。
 {
   "say": "选曲理由（一句话中文）",
-  "pickIds": ["候选歌曲id1", "候选歌曲id2"]
+  "picks": [
+    { "id": "候选歌曲id1", "reason": "为什么这首歌适合当前时段/主题/用户品味（一句话中文）" },
+    { "id": "候选歌曲id2", "reason": "为什么这首歌适合当前时段/主题/用户品味（一句话中文）" }
+  ]
 }`;
 
       const themeContextUser = dailyTheme
@@ -903,6 +935,7 @@ ${candidateList}
 
       let pickSay = '';
       let pickedTracks: Track[] = [];
+      let pickReasonsById: Record<string, string> = {};
       const pickAbort = createAbortTimeoutSignal(signal, PICK_LLM_TIMEOUT_MS);
       try {
         const pickResp = await new LlmClient(llmConfig).complete(
@@ -915,6 +948,7 @@ ${candidateList}
         const parsedPicks = parseDjCandidatePicks(pickResp.content, allCandidates, targetPickCount);
         pickSay = parsedPicks.say;
         pickedTracks = parsedPicks.tracks;
+        pickReasonsById = parsedPicks.reasonsById;
         if (pickedTracks.length === 0) {
           logger.warn({ raw: pickResp.content.slice(0, 300) }, 'DJ pick-next: failed to extract whitelisted picks from LLM response');
         }
@@ -978,14 +1012,21 @@ ${candidateList}
         }
         if (getQueue(userId).length > pathQueueLength) {
           const pathNewTracks = getQueue(userId).slice(pathQueueLength);
-          if (pickSay.trim()) {
-            for (const track of pathNewTracks) {
-              djPickReasonCache.set(track.ncmId, pickSay.trim());
-            }
+          for (const track of pathNewTracks) {
+            const trackReason = pickReasonsById[track.ncmId]?.trim() || pickSay.trim();
+            if (trackReason) djPickReasonCache.set(track.ncmId, trackReason);
           }
         }
         if (hasReachedPickTarget(userId, initialQueueLength, targetPickCount)) {
-          emit({ type: 'dj.debug', ...phase3Debug, selectedSay: pickSay });
+          emit(buildLegacyDebugPayload({
+            phase3Debug,
+            selectedTracks: createLegacySelectedTrackDebug(appendedWhitelistedTracks, pickSay, pickReasonsById),
+            selectedSay: pickSay,
+            targetCount: targetPickCount,
+            appendedCount: getQueue(userId).length - initialQueueLength,
+            pickedCount: pickedTracks.length,
+            skippedPicks: whitelistedSkippedPicks
+          }));
           debugBroadcastSent = true;
           broadcastAppended(
             userId,
@@ -1007,7 +1048,7 @@ ${candidateList}
         if (appendedCount > 0) {
           emit(buildLegacyDebugPayload({
             phase3Debug,
-            selectedTracks: createLegacySelectedTrackDebug(appendedWhitelistedTracks, pickSay),
+            selectedTracks: createLegacySelectedTrackDebug(appendedWhitelistedTracks, pickSay, pickReasonsById),
             selectedSay: pickSay,
             partial: true,
             targetCount: targetPickCount,
@@ -1022,7 +1063,7 @@ ${candidateList}
               appendedCount,
               pickedCount: pickedTracks.length,
               skippedPicks: whitelistedSkippedPicks,
-              selectedTracks: createLegacySelectedTrackDebug(appendedWhitelistedTracks, pickSay),
+              selectedTracks: createLegacySelectedTrackDebug(appendedWhitelistedTracks, pickSay, pickReasonsById),
               selectedSay: pickSay,
               searchedCount: searchedTracks.length,
               totalCandidates: allCandidates.length,
@@ -1327,16 +1368,52 @@ function buildLegacyDebugPayload(input: {
   };
 }
 
+function createLegacyCandidateScoreTable(candidates: Track[], likedSampleIds: Set<string>): Array<{
+  rank: number;
+  id: string;
+  song: string;
+  artist: string;
+  sources: string;
+  baseScore: number;
+  artistPenalty: number;
+  trackPenalty: number;
+  repeatPenalty: number;
+  qualityPenalty: number;
+  titlePollutionPenalty: number;
+  adjustedScore: number;
+}> {
+  const denominator = Math.max(1, candidates.length - 1);
+  return candidates.map((track, index) => {
+    const rankScore = candidates.length === 1 ? 1 : 1 - (index / denominator);
+    const score = Number(rankScore.toFixed(4));
+    return {
+      rank: index + 1,
+      id: track.id,
+      song: track.name ?? track.id,
+      artist: track.artist ?? '未知艺人',
+      sources: likedSampleIds.has(track.id) ? 'liked' : 'search',
+      baseScore: score,
+      artistPenalty: 0,
+      trackPenalty: 0,
+      repeatPenalty: 0,
+      qualityPenalty: 0,
+      titlePollutionPenalty: 0,
+      adjustedScore: score
+    };
+  });
+}
+
 function createLegacySelectedTrackDebug(
   tracks: Track[],
-  pickSay: string
+  pickSay: string,
+  reasonsById: Record<string, string> = {}
 ): Array<{ id: string; name: string; artist: string; reason: string; source: string }> {
   const reason = pickSay.trim() || 'legacy LLM pick';
   return tracks.map((track) => ({
     id: track.id,
     name: track.name ?? track.id,
     artist: track.artist ?? '未知艺人',
-    reason,
+    reason: reasonsById[track.id]?.trim() || reason,
     source: 'legacy_llm'
   }));
 }

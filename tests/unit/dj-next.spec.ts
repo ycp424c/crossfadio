@@ -144,6 +144,38 @@ describe('DJ pick-next diagnostics', () => {
     expectBefore(legacyPartialAppendBlock, 'emit(buildLegacyDebugPayload({', 'broadcastAppended(');
   });
 
+  it('emits legacy selected track details before broadcasting full append success', () => {
+    const source = readSource('src/server/http/routes/djNext.ts');
+    const doPickNext = extractBetween(source, 'async function doPickNext', 'function broadcastAppended');
+    const legacyStart = doPickNext.indexOf('if (pickedTracks.length > 0) {');
+    expect(legacyStart).toBeGreaterThanOrEqual(0);
+    const legacySection = doPickNext.slice(legacyStart);
+    const legacyFullAppendBlock = extractBetween(
+      legacySection,
+      'if (hasReachedPickTarget(userId, initialQueueLength, targetPickCount)) {',
+      'const appendedCount = getQueue(userId).length - initialQueueLength;'
+    );
+
+    expect(legacyFullAppendBlock).toContain('emit(buildLegacyDebugPayload({');
+    expect(legacyFullAppendBlock).toContain('selectedTracks: createLegacySelectedTrackDebug(appendedWhitelistedTracks, pickSay, pickReasonsById)');
+    expect(legacyFullAppendBlock).not.toContain("emit({ type: 'dj.debug', ...phase3Debug, selectedSay: pickSay })");
+    expectBefore(legacyFullAppendBlock, 'emit(buildLegacyDebugPayload({', 'broadcastAppended(');
+  });
+
+  it('includes a console-table friendly candidate table in legacy debug events', () => {
+    const source = readSource('src/server/http/routes/djNext.ts');
+    const doPickNext = extractBetween(source, 'async function doPickNext', 'function broadcastAppended');
+    const phase3DebugBlock = extractBetween(
+      doPickNext,
+      'const phase3Debug = {',
+      '};\n\n      logger.info('
+    );
+
+    expect(source).toContain('function createLegacyCandidateScoreTable');
+    expect(phase3DebugBlock).toContain('candidateScoreTable: createLegacyCandidateScoreTable(allCandidates, likedSampleIds)');
+    expect(source).toContain("sources: likedSampleIds.has(track.id) ? 'liked' : 'search'");
+  });
+
   it('summarizes MusicAgent candidate sources for production diagnostics', () => {
     expect(getMusicAgentCandidateSourceDiagnostics({
       candidateScoreTable: [
@@ -556,5 +588,24 @@ describe('parseDjCandidatePicks', () => {
     );
 
     expect(parsed.tracks.map((track) => track.id)).toEqual(['1', '2', '3', '4', '5']);
+  });
+
+  it('keeps per-track reasons from structured LLM picks', () => {
+    const parsed = parseDjCandidatePicks(
+      JSON.stringify({
+        say: '整体偏轻快',
+        picks: [
+          { id: '202', reason: '节奏轻快，适合周一上午提神' },
+          { index: 1, reason: '旋律明亮，和夏日主题贴合' }
+        ]
+      }),
+      candidates
+    );
+
+    expect(parsed.tracks.map((track) => track.id)).toEqual(['202', '101']);
+    expect(parsed.reasonsById).toEqual({
+      '202': '节奏轻快，适合周一上午提神',
+      '101': '旋律明亮，和夏日主题贴合'
+    });
   });
 });
