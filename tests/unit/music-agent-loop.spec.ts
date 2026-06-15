@@ -1651,6 +1651,54 @@ describe('runMusicAgentLoop', () => {
     expect(fallbackLogger).not.toHaveBeenCalled();
   });
 
+  it('converges after ranking a target-sized non-liked auto-fill pool', async () => {
+    const pool = new CandidatePool();
+    const fallbackLogger = vi.fn();
+    const llmClient = new LoopFakeLlmClient([
+      JSON.stringify({ type: 'tool_call', tool: 'recall_auto_fill_mix', input: {} }),
+      JSON.stringify({ type: 'tool_call', tool: 'rank_candidates', input: {} }),
+      JSON.stringify({ type: 'tool_call', tool: 'rank_candidates', input: {} })
+    ]);
+    const calls: string[] = [];
+
+    const result = await runMusicAgentLoop({
+      llmClient,
+      context: context({ request: 'auto-fill' }),
+      candidatePool: pool,
+      tools: {
+        recall_auto_fill_mix: async () => {
+          calls.push('recall_auto_fill_mix');
+          for (let index = 1; index <= 5; index += 1) {
+            pool.upsert(candidate({
+              id: `search-${index}`,
+              name: `Search ${index}`,
+              artist: index > 3 ? `Search Artist ${index - 3}` : `Search Artist ${index}`,
+              sources: ['search']
+            }));
+          }
+          return { summary: 'auto-fill mix added 5 candidates', candidateCount: pool.count() };
+        },
+        rank_candidates: async () => {
+          calls.push('rank_candidates');
+          return { summary: 'ranked candidates', candidateCount: pool.count() };
+        }
+      },
+      budget: budget({ maxLlmCalls: 3, maxSteps: 6, maxToolCalls: 4 }),
+      targetPickCount: 5,
+      fallbackLogger
+    });
+
+    expect(result.status).toBe('ok');
+    expect(result.picks).toHaveLength(5);
+    expect(calls).toEqual(['recall_auto_fill_mix', 'rank_candidates']);
+    expect(llmClient.calls).toHaveLength(3);
+    expect(fallbackLogger).toHaveBeenCalledWith(expect.objectContaining({
+      status: 'ok',
+      candidateCount: 5,
+      pickCount: 5
+    }));
+  });
+
   it('keeps looping after liked recall supplements only eight candidates for five-pick batches', async () => {
     const pool = new CandidatePool();
     const fallbackLogger = vi.fn();

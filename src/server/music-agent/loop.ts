@@ -1334,7 +1334,15 @@ function shouldSupplementSparseAutoFillRank(toolName: MusicAgentToolName, input:
   return (
     modeFromContext(input.context) === 'pick_next' &&
     toolName === 'rank_candidates' &&
-    !shouldConvergeAfterAutoFillRecallMix(input)
+    !hasEnoughAutoFillRankedCandidates(input)
+  );
+}
+
+function hasEnoughAutoFillRankedCandidates(input: RunMusicAgentLoopInput): boolean {
+  const explicitTargetPickCount = input.targetPickCount === undefined ? null : targetPickCount(input);
+  return (
+    (explicitTargetPickCount !== null && countNonLikedCandidates(input) >= explicitTargetPickCount) ||
+    shouldConvergeAfterAutoFillRecallMix(input)
   );
 }
 
