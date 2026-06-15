@@ -101,12 +101,47 @@ describe('DJ pick-next diagnostics', () => {
   it('includes actually appended MusicAgent final pick reasons in DJ debug events', () => {
     const source = readSource('src/server/http/routes/djNext.ts');
     const doPickNext = extractBetween(source, 'async function doPickNext', 'function broadcastAppended');
+    const musicAgentDebugHelper = extractBetween(source, 'function buildMusicAgentDebugPayload', 'function getMusicAgentRoutePath');
 
     expect(doPickNext).toContain('const appendedPicks: typeof output.picks = [];');
     expect(doPickNext).toContain('appendedPicks.push(pick);');
-    expect(doPickNext).toContain('selectedTracks: appendedPicks.map((pick) => ({');
-    expect(doPickNext).toContain('reason: pick.reason');
-    expect(doPickNext).toContain('source: pick.source');
+    expect(doPickNext).toContain('emit(buildMusicAgentDebugPayload({ output, appendedPicks, excludeState })');
+    expect(musicAgentDebugHelper).toContain('selectedTracks: createMusicAgentSelectedTrackDebug(appendedPicks)');
+    expect(musicAgentDebugHelper).toContain('reason: pick.reason');
+    expect(musicAgentDebugHelper).toContain('source: pick.source');
+  });
+
+  it('emits MusicAgent debug details before broadcasting partial append success', () => {
+    const source = readSource('src/server/http/routes/djNext.ts');
+    const doPickNext = extractBetween(source, 'async function doPickNext', 'function broadcastAppended');
+    const partialAppendBlock = extractBetween(
+      doPickNext,
+      'if (appendedCount > 0) {',
+      "legacyFallbackPath = 'music_agent_legacy_fallback';"
+    );
+
+    expect(partialAppendBlock).toContain('emit(buildMusicAgentDebugPayload({');
+    expect(partialAppendBlock).toContain('partial: true');
+    expect(partialAppendBlock).toContain('skippedPicks: musicAgentSkippedPicks');
+    expectBefore(partialAppendBlock, 'emit(buildMusicAgentDebugPayload({', 'broadcastAppended(');
+  });
+
+  it('emits legacy selected track details before broadcasting partial append success', () => {
+    const source = readSource('src/server/http/routes/djNext.ts');
+    const doPickNext = extractBetween(source, 'async function doPickNext', 'function broadcastAppended');
+    const legacyStart = doPickNext.indexOf('if (pickedTracks.length > 0) {');
+    expect(legacyStart).toBeGreaterThanOrEqual(0);
+    const legacySection = doPickNext.slice(legacyStart);
+    const legacyPartialAppendBlock = extractBetween(
+      legacySection,
+      'if (appendedCount > 0) {',
+      "logger.warn(\n          {\n            targetCount: targetPickCount,\n            appendedCount,\n            pickedCount: pickedTracks.length"
+    );
+
+    expect(legacyPartialAppendBlock).toContain('emit(buildLegacyDebugPayload({');
+    expect(legacyPartialAppendBlock).toContain('selectedTracks: createLegacySelectedTrackDebug');
+    expect(legacyPartialAppendBlock).toContain('partial: true');
+    expectBefore(legacyPartialAppendBlock, 'emit(buildLegacyDebugPayload({', 'broadcastAppended(');
   });
 
   it('summarizes MusicAgent candidate sources for production diagnostics', () => {
@@ -169,8 +204,7 @@ describe('DJ pick-next diagnostics', () => {
     expect(doPickNext).toContain('musicAgentRunMetrics(output, appendedPicks, startedAt, discoveryMode)');
     expect(source).toContain('rankedBackfillCount: metrics.rankedBackfillCount');
     expect(source).toContain('finalPickDiagnostics: metrics.finalPickDiagnostics');
-    expect(doPickNext).toContain('const debugCandidateCount = getMusicAgentDebugCandidateCount(output)');
-    expect(doPickNext).toContain('totalCandidates: debugCandidateCount');
+    expect(source).toContain('totalCandidates: getMusicAgentDebugCandidateCount(output)');
     expect(doPickNext).not.toContain('totalCandidates: output.picks.length');
     expect(doPickNext).toContain('MusicAgent appended fewer than target');
     expect(doPickNext).toContain('whitelisted picks appended fewer than target');

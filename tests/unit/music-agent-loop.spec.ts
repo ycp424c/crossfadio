@@ -543,7 +543,14 @@ describe('runMusicAgentLoop', () => {
       pickCount: 1,
       lastTraceStep: expect.objectContaining({
         thoughtSummary: 'final rejected by candidate pool whitelist'
-      })
+      }),
+      traceLastSteps: expect.arrayContaining([
+        expect.objectContaining({ thoughtSummary: 'final rejected by candidate pool whitelist' })
+      ]),
+      candidateScoreTablePreview: [
+        expect.objectContaining({ id: '101', song: 'Soft Song' })
+      ],
+      candidateScoreTableCount: 1
     }));
   });
 

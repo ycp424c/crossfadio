@@ -21,7 +21,7 @@ import {
   type QueryPlan,
   type TrendContext
 } from './schema.js';
-import type { CandidatePool } from './candidates.js';
+import type { CandidatePool, CandidatePoolRejectReason } from './candidates.js';
 import {
   normalizeSearchQuery,
   prepareSearchQueriesForRecall,
@@ -121,6 +121,19 @@ type ToolState = {
   playlistFetches: number;
   qualityPreparedIds: Set<string>;
   queryFunnel: Map<string, QueryFunnelAccumulator>;
+};
+
+type UpsertTracksResult = {
+  added: number;
+  inserted: number;
+  mergedById: number;
+  mergedByDedupe: number;
+  mergedByIdAndDedupe: number;
+  invalid: number;
+  rejectedByPool: number;
+  rejectedReasons: Partial<Record<CandidatePoolRejectReason, number>>;
+  skippedAvoidedArtists: number;
+  skippedArtistCap: number;
 };
 
 type QueryFunnelAccumulator = QueryFunnelEntry & {
@@ -1202,6 +1215,7 @@ async function recallFromQueries(options: {
   let skippedArtistCap = 0;
   const searched: string[] = [];
   const problems: string[] = [];
+  const admissionTotals = emptyUpsertTracksResult();
   const artistCounts = countPrimaryArtists(options.input.candidatePool.list());
 
   for (const query of queries) {
@@ -1237,6 +1251,7 @@ async function recallFromQueries(options: {
       added += result.added;
       skippedAvoidedArtists += result.skippedAvoidedArtists;
       skippedArtistCap += result.skippedArtistCap;
+      mergeUpsertTracksResult(admissionTotals, result);
     } catch (error) {
       problems.push(`${query}: ${formatError(error)}`);
     }
@@ -1245,6 +1260,8 @@ async function recallFromQueries(options: {
   if (skippedSemanticQueries > 0) problems.push(SEMANTIC_ONLY_QUERY_PROBLEM);
   if (skippedAvoidedArtists > 0) problems.push(`skipped ${skippedAvoidedArtists} tracks from recently repeated artists`);
   if (skippedArtistCap > 0) problems.push(`skipped ${skippedArtistCap} tracks after per-artist recall cap`);
+  const admissionSummary = summarizeCandidateAdmission(admissionTotals);
+  if (admissionSummary) problems.push(admissionSummary);
   if (preparedQueries.funnelEntries.some((entry) => entry.scoreMultiplier !== 1 || entry.repeatPenalty > 0)) {
     problems.push('reweighted search queries with user query history');
   }
@@ -1461,31 +1478,105 @@ function upsertTracks(
     avoidArtists?: ReadonlySet<string>;
     artistCounts?: Map<string, number>;
   }
-): { added: number; skippedAvoidedArtists: number; skippedArtistCap: number } {
-  let added = 0;
-  let skippedAvoidedArtists = 0;
-  let skippedArtistCap = 0;
+): UpsertTracksResult {
+  const result = emptyUpsertTracksResult();
   const artistCounts = options.artistCounts ?? new Map<string, number>();
   for (const track of tracks) {
     const candidate = candidateFromTrack(track, source, options);
-    if (!candidate) continue;
+    if (!candidate) {
+      result.invalid += 1;
+      continue;
+    }
     const artist = primaryArtist(candidate.artist);
     if (artist && options.avoidArtists?.has(artist)) {
-      skippedAvoidedArtists += 1;
+      result.skippedAvoidedArtists += 1;
       continue;
     }
     if (artist && (artistCounts.get(artist) ?? 0) >= MAX_QUERY_RECALL_PER_PRIMARY_ARTIST) {
-      skippedArtistCap += 1;
+      result.skippedArtistCap += 1;
       continue;
     }
-    const before = pool.count();
-    pool.upsert(candidate);
-    if (pool.count() > before || pool.has(candidate.id)) {
-      added += 1;
+    const upsertResult = pool.upsert(candidate);
+    if (upsertResult.status === 'inserted') {
+      result.added += 1;
+      result.inserted += 1;
       if (artist) artistCounts.set(artist, (artistCounts.get(artist) ?? 0) + 1);
+    } else if (upsertResult.status === 'merged_by_id') {
+      result.added += 1;
+      result.mergedById += 1;
+      if (artist) artistCounts.set(artist, (artistCounts.get(artist) ?? 0) + 1);
+    } else if (upsertResult.status === 'merged_by_dedupe') {
+      result.added += 1;
+      result.mergedByDedupe += 1;
+      if (artist) artistCounts.set(artist, (artistCounts.get(artist) ?? 0) + 1);
+    } else if (upsertResult.status === 'merged_by_id_and_dedupe') {
+      result.added += 1;
+      result.mergedByIdAndDedupe += 1;
+      if (artist) artistCounts.set(artist, (artistCounts.get(artist) ?? 0) + 1);
+    } else {
+      result.rejectedByPool += 1;
+      result.rejectedReasons[upsertResult.reason] = (result.rejectedReasons[upsertResult.reason] ?? 0) + 1;
     }
   }
-  return { added, skippedAvoidedArtists, skippedArtistCap };
+  return result;
+}
+
+function emptyUpsertTracksResult(): UpsertTracksResult {
+  return {
+    added: 0,
+    inserted: 0,
+    mergedById: 0,
+    mergedByDedupe: 0,
+    mergedByIdAndDedupe: 0,
+    invalid: 0,
+    rejectedByPool: 0,
+    rejectedReasons: {},
+    skippedAvoidedArtists: 0,
+    skippedArtistCap: 0
+  };
+}
+
+function mergeUpsertTracksResult(target: UpsertTracksResult, source: UpsertTracksResult): void {
+  target.added += source.added;
+  target.inserted += source.inserted;
+  target.mergedById += source.mergedById;
+  target.mergedByDedupe += source.mergedByDedupe;
+  target.mergedByIdAndDedupe += source.mergedByIdAndDedupe;
+  target.invalid += source.invalid;
+  target.rejectedByPool += source.rejectedByPool;
+  target.skippedAvoidedArtists += source.skippedAvoidedArtists;
+  target.skippedArtistCap += source.skippedArtistCap;
+  for (const [reason, count] of Object.entries(source.rejectedReasons)) {
+    if (!count) continue;
+    const key = reason as CandidatePoolRejectReason;
+    target.rejectedReasons[key] = (target.rejectedReasons[key] ?? 0) + count;
+  }
+}
+
+function summarizeCandidateAdmission(result: UpsertTracksResult): string | null {
+  const parts = [
+    result.inserted > 0 ? `inserted=${result.inserted}` : '',
+    result.mergedById > 0 ? `mergedById=${result.mergedById}` : '',
+    result.mergedByDedupe > 0 ? `mergedByDedupe=${result.mergedByDedupe}` : '',
+    result.mergedByIdAndDedupe > 0 ? `mergedByIdAndDedupe=${result.mergedByIdAndDedupe}` : '',
+    result.invalid > 0 ? `invalid=${result.invalid}` : '',
+    rejectedByPoolSummary(result),
+    result.skippedAvoidedArtists > 0 ? `skippedAvoidedArtists=${result.skippedAvoidedArtists}` : '',
+    result.skippedArtistCap > 0 ? `skippedArtistCap=${result.skippedArtistCap}` : ''
+  ].filter(Boolean);
+
+  return parts.length > 0 ? `candidate admission: ${parts.join('; ')}` : null;
+}
+
+function rejectedByPoolSummary(result: UpsertTracksResult): string {
+  if (result.rejectedByPool === 0) return '';
+  const reasons = Object.entries(result.rejectedReasons)
+    .filter(([, count]) => count > 0)
+    .map(([reason, count]) => `${reason}=${count}`)
+    .join(', ');
+  return reasons
+    ? `rejectedByPool=${result.rejectedByPool} (${reasons})`
+    : `rejectedByPool=${result.rejectedByPool}`;
 }
 
 function candidateFromTrack(

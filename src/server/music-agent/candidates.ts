@@ -19,6 +19,19 @@ export interface CandidatePoolOptions {
   bannedTrackKeys?: Set<string>;
 }
 
+export type CandidatePoolRejectReason =
+  | 'banned_id'
+  | 'banned_dedupe'
+  | 'banned_artist'
+  | 'pool_full';
+
+export type CandidatePoolUpsertResult =
+  | { status: 'inserted' }
+  | { status: 'merged_by_id' }
+  | { status: 'merged_by_dedupe' }
+  | { status: 'merged_by_id_and_dedupe' }
+  | { status: 'rejected'; reason: CandidatePoolRejectReason };
+
 type CandidateDedupeInput = {
   name?: string | null;
   artist?: string | null;
@@ -142,11 +155,12 @@ export class CandidatePool {
     this.bannedTrackKeys = new Set(options.bannedTrackKeys ?? []);
   }
 
-  upsert(candidate: MusicCandidate): void {
+  upsert(candidate: MusicCandidate): CandidatePoolUpsertResult {
     const dedupeKey = buildCandidateDedupeKey(candidate);
+    const rejectReason = this.rejectReason(candidate, dedupeKey);
 
-    if (this.isBanned(candidate, dedupeKey)) {
-      return;
+    if (rejectReason) {
+      return { status: 'rejected', reason: rejectReason };
     }
 
     const existingById = this.byId.get(candidate.id);
@@ -167,25 +181,25 @@ export class CandidatePool {
       this.reassignAliases(dedupedId, existingEntryId);
       this.addAlias(candidate.id, existingEntryId);
       this.byId.delete(dedupedId);
-      return;
+      return { status: 'merged_by_id_and_dedupe' };
     }
 
     if (existingEntry) {
       existingEntry.candidate = mergeCandidate(existingEntry.candidate, candidate);
       this.addDedupeKey(existingEntry, existingEntryId, dedupeKey);
       this.addAlias(candidate.id, existingEntryId);
-      return;
+      return { status: 'merged_by_id' };
     }
 
     if (dedupedEntry && dedupedId) {
       dedupedEntry.candidate = mergeCandidate(dedupedEntry.candidate, candidate);
       this.addDedupeKey(dedupedEntry, dedupedId, dedupeKey);
       this.addAlias(candidate.id, dedupedId);
-      return;
+      return { status: 'merged_by_dedupe' };
     }
 
     if (this.byId.size >= this.maxCandidates) {
-      return;
+      return { status: 'rejected', reason: 'pool_full' };
     }
 
     this.byId.set(candidate.id, {
@@ -195,6 +209,7 @@ export class CandidatePool {
     if (dedupeKey) {
       this.idByDedupeKey.set(dedupeKey, candidate.id);
     }
+    return { status: 'inserted' };
   }
 
   get(id: string): MusicCandidate | undefined {
@@ -305,16 +320,18 @@ export class CandidatePool {
     }
   }
 
-  private isBanned(candidate: MusicCandidate, dedupeKey: string): boolean {
+  private rejectReason(candidate: MusicCandidate, dedupeKey: string): CandidatePoolRejectReason | null {
     if (this.bannedIds.has(candidate.id)) {
-      return true;
+      return 'banned_id';
     }
 
     if (isMusicTrackDedupeKeyExcluded(dedupeKey, this.bannedTrackKeys)) {
-      return true;
+      return 'banned_dedupe';
     }
 
-    return artistParts(candidate.artist).some((artist) => this.bannedArtists.has(artist));
+    return artistParts(candidate.artist).some((artist) => this.bannedArtists.has(artist))
+      ? 'banned_artist'
+      : null;
   }
 
   private findDedupedId(dedupeKey: string): string | undefined {

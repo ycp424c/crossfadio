@@ -61,9 +61,12 @@ export type MusicAgentFallbackLogEvent = {
   elapsedMs: number;
   budget: AgentBudget;
   lastTraceStep?: AgentTraceStep;
+  traceLastSteps?: AgentTraceStep[];
   extraFinalProblem?: string;
   finalPickDiagnostics?: FinalPickDiagnostics;
   queryFunnel?: QueryFunnelEntry[];
+  candidateScoreTablePreview?: MusicAgentRunOutput['candidateScoreTable'];
+  candidateScoreTableCount?: number;
 };
 
 export type MusicAgentFallbackLogger = (event: MusicAgentFallbackLogEvent) => void;
@@ -864,8 +867,11 @@ async function rankedFallback(
     elapsedMs: Math.max(0, Date.now() - startedAt),
     budget: input.budget,
     lastTraceStep: trace.at(-1),
+    traceLastSteps: trace.slice(-3),
     finalPickDiagnostics: extra.finalPickDiagnostics,
     queryFunnel,
+    candidateScoreTablePreview: output.candidateScoreTable.slice(0, 20),
+    candidateScoreTableCount: output.candidateScoreTable.length,
     ...extra
   });
   return output;
@@ -926,8 +932,11 @@ function recordRankedConvergence(
     elapsedMs: Math.max(0, Date.now() - startedAt),
     budget: input.budget,
     lastTraceStep: trace.at(-1),
+    traceLastSteps: trace.slice(-3),
     finalPickDiagnostics: output.finalPickDiagnostics,
-    queryFunnel: output.queryFunnel
+    queryFunnel: output.queryFunnel,
+    candidateScoreTablePreview: output.candidateScoreTable.slice(0, 20),
+    candidateScoreTableCount: output.candidateScoreTable.length
   });
 }
 

@@ -565,6 +565,65 @@ describe('createMusicAgentTools', () => {
     });
   });
 
+  it('reports candidate admission diagnostics for NCM search recall', async () => {
+    const ncmClient = {
+      getLikedSongIds: vi.fn(async () => []),
+      getSongDetails: vi.fn(async () => []),
+      searchSongs: vi.fn(async () => [
+        { id: 'invalid', name: '', artists: [] },
+        { id: 'banned-id', name: 'Banned Song', artists: ['Banned Singer'] },
+        { id: 'banned-dedupe', name: 'Blocked', artists: ['Other'] },
+        { id: 'fresh-1', name: 'Fresh Song', artists: ['Fresh Artist'] },
+        { id: 'fresh-duplicate', name: 'Fresh Song', artists: ['Fresh Artist / Guest'] },
+        { id: 'cap-1', name: 'Cap One', artists: ['Cap Artist'] },
+        { id: 'cap-2', name: 'Cap Two', artists: ['Cap Artist'] },
+        { id: 'cap-3', name: 'Cap Three', artists: ['Cap Artist'] }
+      ]),
+      getPlaylistDetail: vi.fn(async () => null)
+    };
+
+    const { buildCandidateDedupeKey, CandidatePool } = await import('../../src/server/music-agent/candidates.js');
+    const { createMusicAgentTools } = await import('../../src/server/music-agent/tools.js');
+    const candidatePool = new CandidatePool({
+      bannedIds: ['banned-id'],
+      bannedTrackKeys: new Set([buildCandidateDedupeKey({ name: 'Blocked', artist: 'Other' })])
+    });
+    const tools = createMusicAgentTools({
+      userId: 'admission-diagnostics',
+      ncmClient: ncmClient as any,
+      context: {
+        request: 'chat-recommend',
+        currentUserText: '',
+        currentMoment: { localTime: '周四 15:00', daypart: '下午', weather: null },
+        activeDirective: '',
+        currentPlanSegment: null,
+        tasteSummary: '',
+        recentPreferenceSummary: '',
+        recentPlaySignals: '',
+        queueStateSummary: '',
+        bannedSummary: ''
+      },
+      candidatePool,
+      budget: {
+        maxMs: 10_000,
+        maxSteps: 3,
+        maxLlmCalls: 2,
+        maxToolCalls: 2,
+        maxNcmSearches: 1,
+        maxPlaylistFetches: 0,
+        maxTrendFetchMs: 0,
+        maxCandidates: 20
+      }
+    });
+
+    const observation = await tools.recall_from_ncm_search?.({ queries: ['Diagnostic Song Artist'], limit: 20 });
+
+    expect(observation?.candidateCount).toBe(3);
+    expect(observation?.problems).toContain(
+      'candidate admission: inserted=3; mergedByDedupe=1; invalid=1; rejectedByPool=2 (banned_id=1, banned_dedupe=1); skippedArtistCap=1'
+    );
+  });
+
   it('accepts lowercase exact track and artist queries for NCM song search', async () => {
     const ncmClient = {
       getLikedSongIds: vi.fn(async () => []),

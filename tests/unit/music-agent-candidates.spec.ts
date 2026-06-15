@@ -31,18 +31,18 @@ describe('CandidatePool', () => {
   it('merges candidates by id and keeps all sources/evidence', () => {
     const pool = new CandidatePool();
 
-    pool.upsert(candidate({
+    expect(pool.upsert(candidate({
       id: 'same',
       sources: ['liked'],
       evidence: ['liked evidence'],
       scores: { ...candidate().scores, intentMatch: 0.4, recentPenalty: 0.1 }
-    }));
-    pool.upsert(candidate({
+    }))).toEqual({ status: 'inserted' });
+    expect(pool.upsert(candidate({
       id: 'same',
       sources: ['trend', 'liked'],
       evidence: ['trend evidence', 'liked evidence'],
       scores: { ...candidate().scores, intentMatch: 0.9, tasteMatch: 0.8, recentPenalty: 0.3 }
-    }));
+    }))).toEqual({ status: 'merged_by_id' });
 
     const merged = pool.get('same');
 
@@ -93,7 +93,9 @@ describe('CandidatePool', () => {
     const pool = new CandidatePool();
 
     pool.upsert(candidate({ id: 'track-1', name: 'Song', artist: 'Artist / Other', sources: ['liked'] }));
-    pool.upsert(candidate({ id: 'track-2', name: 'Song', artist: 'Artist', sources: ['search'], evidence: ['search hit'] }));
+    expect(pool.upsert(candidate({ id: 'track-2', name: 'Song', artist: 'Artist', sources: ['search'], evidence: ['search hit'] }))).toEqual({
+      status: 'merged_by_dedupe'
+    });
 
     expect(pool.count()).toBe(1);
     expect(pool.has('track-1')).toBe(true);
@@ -152,9 +154,15 @@ describe('CandidatePool', () => {
       bannedTrackKeys: new Set([buildCandidateDedupeKey({ name: 'Blocked', artist: 'Other' })])
     });
 
-    pool.upsert(candidate({ id: 'different-id', name: 'Blocked', artist: 'Other / Guest' }));
-    pool.upsert(candidate({ id: 'artist-track', artist: 'Blocked Artist / Guest' }));
-    pool.upsert(candidate({ id: 'allowed-track', artist: 'Allowed Artist' }));
+    expect(pool.upsert(candidate({ id: 'different-id', name: 'Blocked', artist: 'Other / Guest' }))).toEqual({
+      status: 'rejected',
+      reason: 'banned_dedupe'
+    });
+    expect(pool.upsert(candidate({ id: 'artist-track', artist: 'Blocked Artist / Guest' }))).toEqual({
+      status: 'rejected',
+      reason: 'banned_artist'
+    });
+    expect(pool.upsert(candidate({ id: 'allowed-track', artist: 'Allowed Artist' }))).toEqual({ status: 'inserted' });
 
     expect(pool.list().map((item) => item.id)).toEqual(['allowed-track']);
   });
@@ -279,8 +287,11 @@ describe('CandidatePool', () => {
 
   it('returns cloned list entries and respects maxCandidates for new candidates', () => {
     const pool = new CandidatePool({ maxCandidates: 1 });
-    pool.upsert(candidate({ id: 'one' }));
-    pool.upsert(candidate({ id: 'two' }));
+    expect(pool.upsert(candidate({ id: 'one' }))).toEqual({ status: 'inserted' });
+    expect(pool.upsert(candidate({ id: 'two', name: 'Other Song', artist: 'Other Artist' }))).toEqual({
+      status: 'rejected',
+      reason: 'pool_full'
+    });
 
     const [first] = pool.list();
     first.sources.push('trend');
