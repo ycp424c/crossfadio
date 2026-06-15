@@ -151,6 +151,7 @@ const DEFAULT_SEARCH_LIMIT = 8;
 const MAX_LIKED_RECALL_LIMIT = 60;
 const AUTO_FILL_DEFAULT_LIKED_RECALL_LIMIT = 8;
 const AUTO_FILL_MAX_LIKED_RECALL_LIMIT = 10;
+const AUTO_FILL_LIKED_RECALL_SCAN_MULTIPLIER = 3;
 const MAX_SEARCH_RECALL_LIMIT = 20;
 const MAX_TREND_RECALL_LIMIT = 10;
 const MAX_STYLE_EXPANSION_RECALL_LIMIT = 10;
@@ -163,6 +164,7 @@ const MAX_RANK_DISPLAY_LIMIT = 20;
 const MAX_DIVERSIFY_DISPLAY_LIMIT = 5;
 const AVOID_ARTIST_PENALTY_THRESHOLD = 0.18;
 const MAX_QUERY_RECALL_PER_PRIMARY_ARTIST = 2;
+const MAX_ARTIST_FALLBACKS_PER_RECALL = 2;
 const LIKED_RECALL_CACHE_TTL_MS = 10 * 60 * 1000;
 const SEARCH_RECALL_CACHE_TTL_MS = 30 * 60 * 1000;
 const QUALITY_DETAIL_BATCH_LIMIT = 80;
@@ -262,15 +264,17 @@ export function createMusicAgentTools(input: CreateMusicAgentToolsInput): MusicA
     recall_from_liked: async (toolInput, signal) => {
       if (signal?.aborted) return abortedObservation(input.candidatePool);
       const limit = likedRecallLimit(toolInput.limit, input.context);
+      const scanLimit = likedRecallScanLimit(limit, input.context);
       try {
-        const tracks = await getLikedRecallTracks(input, limit, signal);
+        const tracks = await getLikedRecallTracks(input, scanLimit, signal);
         if (tracks === 'aborted') return abortedObservation(input.candidatePool);
         if (tracks.length === 0) {
           return observation(input.candidatePool, 'liked recall found no liked ids.');
         }
         const added = upsertTracks(input.candidatePool, tracks, 'liked', {
           evidence: '网易云红心歌曲',
-          scores: sourceScores('liked', input.context)
+          scores: sourceScores('liked', input.context),
+          maxAccepted: limit
         }).added;
         return observation(input.candidatePool, `liked recall added ${added} candidates from ${tracks.length} ids.`);
       } catch (error) {
@@ -687,6 +691,11 @@ function likedRecallLimit(value: unknown, context: MusicAgentContextSummary): nu
     return boundedPositiveInt(value, 30, MAX_LIKED_RECALL_LIMIT);
   }
   return boundedPositiveInt(value, AUTO_FILL_DEFAULT_LIKED_RECALL_LIMIT, AUTO_FILL_MAX_LIKED_RECALL_LIMIT);
+}
+
+function likedRecallScanLimit(limit: number, context: MusicAgentContextSummary): number {
+  if (context.request !== 'auto-fill') return limit;
+  return Math.min(MAX_LIKED_RECALL_LIMIT, Math.max(limit, limit * AUTO_FILL_LIKED_RECALL_SCAN_MULTIPLIER));
 }
 
 function rankOptions(context: MusicAgentContextSummary) {
@@ -1214,9 +1223,12 @@ async function recallFromQueries(options: {
   let skippedAvoidedArtists = 0;
   let skippedArtistCap = 0;
   const searched: string[] = [];
+  const artistFallbacks: string[] = [];
+  let artistFallbackAdded = 0;
   const problems: string[] = [];
   const admissionTotals = emptyUpsertTracksResult();
   const artistCounts = countPrimaryArtists(options.input.candidatePool.list());
+  const attemptedArtistFallbacks = new Set<string>();
 
   for (const query of queries) {
     if (options.signal?.aborted) return abortedObservation(options.input.candidatePool);
@@ -1252,6 +1264,33 @@ async function recallFromQueries(options: {
       skippedAvoidedArtists += result.skippedAvoidedArtists;
       skippedArtistCap += result.skippedArtistCap;
       mergeUpsertTracksResult(admissionTotals, result);
+      if (
+        result.added === 0 &&
+        tracks.length > 0 &&
+        attemptedArtistFallbacks.size < MAX_ARTIST_FALLBACKS_PER_RECALL
+      ) {
+        const artist = artistFallbackNameFromQuery(query, tracks);
+        const artistKey = artist ? primaryArtist(artist) : '';
+        if (artist && artistKey && !attemptedArtistFallbacks.has(artistKey) && !avoidArtists.has(artistKey)) {
+          attemptedArtistFallbacks.add(artistKey);
+          const fallback = await recallFromEntity({
+            entity: { type: 'artist', name: artist },
+            input: options.input,
+            state: options.state,
+            limit: Math.min(options.limit ?? DEFAULT_SEARCH_LIMIT, DEFAULT_ENTITY_RECALL_LIMIT),
+            searchLimit: DEFAULT_ENTITY_SEARCH_LIMIT,
+            maxSearches: options.maxSearches,
+            maxPlaylistFetches: options.input.budget.maxPlaylistFetches,
+            avoidArtists,
+            artistCounts,
+            signal: options.signal
+          });
+          added += fallback.added;
+          artistFallbackAdded += fallback.added;
+          if (fallback.added > 0) artistFallbacks.push(artist);
+          problems.push(...fallback.problems);
+        }
+      }
     } catch (error) {
       problems.push(`${query}: ${formatError(error)}`);
     }
@@ -1268,9 +1307,23 @@ async function recallFromQueries(options: {
 
   return observation(
     options.input.candidatePool,
-    `${options.evidencePrefix} recall searched ${searched.length} queries and added ${added} candidates: ${searched.join('、') || 'none'}.`,
+    `${options.evidencePrefix} recall searched ${searched.length} queries and added ${added} candidates: ${searched.join('、') || 'none'}.` +
+      (artistFallbacks.length > 0 ? ` artist fallback added ${artistFallbackAdded} candidates from ${artistFallbacks.join('、')}.` : ''),
     problems
   );
+}
+
+function artistFallbackNameFromQuery(query: string, tracks: NcmTrackLike[]): string {
+  const withoutParenthetical = query.replace(/[（(][^）)]*[）)]/g, ' ').trim();
+  const dashParts = withoutParenthetical.split(/\s+(?:—|-|–)\s+/).map((part) => part.trim()).filter(Boolean);
+  const queryArtist = dashParts.length >= 2 ? dashParts.at(-1) ?? '' : '';
+  if (queryArtist) return queryArtist;
+
+  for (const track of tracks) {
+    const artist = track.artists?.find((item) => item?.trim());
+    if (artist) return artist.trim();
+  }
+  return '';
 }
 
 async function recallFromSemanticEntities(options: {
@@ -1477,11 +1530,14 @@ function upsertTracks(
     scores: MusicCandidateScores;
     avoidArtists?: ReadonlySet<string>;
     artistCounts?: Map<string, number>;
+    maxAccepted?: number;
   }
 ): UpsertTracksResult {
   const result = emptyUpsertTracksResult();
   const artistCounts = options.artistCounts ?? new Map<string, number>();
+  const maxAccepted = options.maxAccepted ?? Number.POSITIVE_INFINITY;
   for (const track of tracks) {
+    if (result.added >= maxAccepted) break;
     const candidate = candidateFromTrack(track, source, options);
     if (!candidate) {
       result.invalid += 1;

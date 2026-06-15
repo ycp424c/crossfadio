@@ -100,7 +100,7 @@ const CONVERGENCE_TOOL_NAMES = new Set<MusicAgentToolName>([
   'finalize_pick'
 ]);
 const AUTO_FILL_MIN_NON_LIKED_CONVERGENCE_TARGET = 8;
-const AUTO_FILL_MIN_TOTAL_CONVERGENCE_TARGET = 18;
+const AUTO_FILL_MIN_TOTAL_CONVERGENCE_TARGET = 10;
 const AUTO_FILL_MIX_TOOL_NAMES: MusicAgentToolName[] = [
   'expand_queries',
   'recall_from_ncm_search',
@@ -1264,7 +1264,7 @@ function shouldConvergeAfterSkippedToolBudget(
 function hasEnoughAutoFillSkippedRecallCandidates(input: RunMusicAgentLoopInput): boolean {
   return (
     countNonLikedCandidates(input) >= targetPickCount(input) ||
-    shouldConvergeAfterAutoFillRecallMix(input)
+    (countNonLikedCandidates(input) > 0 && shouldConvergeAfterAutoFillRecallMix(input))
   );
 }
 
@@ -1337,7 +1337,7 @@ function autoFillNonLikedConvergenceTarget(input: RunMusicAgentLoopInput): numbe
 }
 
 function autoFillTotalConvergenceTarget(input: RunMusicAgentLoopInput): number {
-  return Math.max(AUTO_FILL_MIN_TOTAL_CONVERGENCE_TARGET, targetPickCount(input) * 4);
+  return Math.max(AUTO_FILL_MIN_TOTAL_CONVERGENCE_TARGET, targetPickCount(input) * 2);
 }
 
 function countNonLikedCandidates(input: RunMusicAgentLoopInput): number {

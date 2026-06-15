@@ -1670,6 +1670,64 @@ describe('runMusicAgentLoop', () => {
     expect(fallbackLogger).not.toHaveBeenCalled();
   });
 
+  it('converges after liked recall supplies ten candidates for five-pick batches', async () => {
+    const pool = new CandidatePool();
+    const fallbackLogger = vi.fn();
+    const llmClient = new LoopFakeLlmClient([
+      JSON.stringify({ type: 'tool_call', tool: 'recall_from_liked', input: {} }),
+      JSON.stringify({
+        type: 'final',
+        say: '红心深扫已经给到足够候选，我从里面选五首。',
+        picks: [1, 2, 3, 4, 5].map((index) => ({
+          id: `liked-${index}`,
+          reason: `红心候选 ${index} 适合当前补队列`,
+          source: 'liked'
+        })),
+        rejected: []
+      })
+    ]);
+    const calls: string[] = [];
+
+    const result = await runMusicAgentLoop({
+      llmClient,
+      context: context({ request: 'auto-fill' }),
+      candidatePool: pool,
+      tools: {
+        recall_from_liked: async () => {
+          calls.push('recall_from_liked');
+          for (let index = 1; index <= 10; index += 1) {
+            pool.upsert(candidate({
+              id: `liked-${index}`,
+              name: `Liked ${index}`,
+              artist: `Liked Artist ${index}`,
+              sources: ['liked']
+            }));
+          }
+          return { summary: 'liked recall added 10 candidates', candidateCount: pool.count() };
+        },
+        recall_auto_fill_mix: async () => {
+          calls.push('recall_auto_fill_mix');
+          return { summary: 'auto-fill mix added 0 candidates', candidateCount: pool.count() };
+        }
+      },
+      budget: budget({ maxLlmCalls: 5, maxSteps: 5, maxToolCalls: 4 }),
+      targetPickCount: 5,
+      fallbackLogger
+    });
+
+    expect(result.status).toBe('ok');
+    expect(result.picks.map((pick) => pick.id)).toEqual(['liked-1', 'liked-2', 'liked-3', 'liked-4', 'liked-5']);
+    expect(calls).toEqual(['recall_from_liked', 'recall_auto_fill_mix']);
+    expect(llmClient.calls).toHaveLength(2);
+    expectProviderSafeFinalPickResponseFormat(llmClient.calls[1]?.opts?.responseFormat);
+    expect(fallbackLogger).toHaveBeenCalledWith(expect.objectContaining({
+      reason: 'ranked_tool_completed',
+      status: 'ok',
+      candidateCount: 10,
+      pickCount: 5
+    }));
+  });
+
   it('does not treat liked-only auto-fill candidates as enough when tool budget blocks expansion', async () => {
     const pool = new CandidatePool();
     const fallbackLogger = vi.fn();

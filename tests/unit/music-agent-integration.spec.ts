@@ -624,6 +624,67 @@ describe('createMusicAgentTools', () => {
     );
   });
 
+  it('falls back to artist expansion when exact-track search results are all banned', async () => {
+    const ncmClient = {
+      getLikedSongIds: vi.fn(async () => []),
+      getSongDetails: vi.fn(async () => []),
+      searchSongs: vi.fn(async () => [
+        { id: 'blocked-cover', name: '日出时让街灯安睡', artists: ['李幸倪'] },
+        { id: 'blocked-live', name: '日出时让街灯安睡 (Live)', artists: ['李幸倪 / 张学友'] }
+      ]),
+      searchArtists: vi.fn(async () => [{ id: 501, name: '李幸倪' }]),
+      getArtistTopSongs: vi.fn(async () => [
+        { id: 'fresh-gin-1', name: '双双', artists: ['李幸倪'] },
+        { id: 'fresh-gin-2', name: '月球下的人', artists: ['李幸倪'] }
+      ]),
+      getPlaylistDetail: vi.fn(async () => null)
+    };
+
+    const { CandidatePool, buildCandidateDedupeKey } = await import('../../src/server/music-agent/candidates.js');
+    const { createMusicAgentTools } = await import('../../src/server/music-agent/tools.js');
+    const candidatePool = new CandidatePool({
+      bannedTrackKeys: new Set([
+        buildCandidateDedupeKey({ name: '日出时让街灯安睡', artist: '李幸倪' })
+      ])
+    });
+    const tools = createMusicAgentTools({
+      userId: 'artist-fallback-after-banned-exact',
+      ncmClient: ncmClient as any,
+      context: {
+        request: 'auto-fill',
+        currentUserText: '',
+        discoveryMode: 'explore',
+        currentMoment: { localTime: '周五 16:25', daypart: '下午', weather: null },
+        activeDirective: '',
+        currentPlanSegment: null,
+        tasteSummary: '',
+        recentPreferenceSummary: '',
+        recentPlaySignals: '',
+        queueStateSummary: '',
+        bannedSummary: ''
+      },
+      candidatePool,
+      budget: {
+        maxMs: 10_000,
+        maxSteps: 3,
+        maxLlmCalls: 2,
+        maxToolCalls: 2,
+        maxNcmSearches: 4,
+        maxPlaylistFetches: 0,
+        maxTrendFetchMs: 0,
+        maxCandidates: 40
+      }
+    });
+
+    const observation = await tools.recall_from_ncm_search?.({ queries: ['日出时让街灯安睡 — 李幸倪'], limit: 8 });
+
+    expect(ncmClient.searchArtists).toHaveBeenCalledWith('李幸倪', 3);
+    expect(ncmClient.getArtistTopSongs).toHaveBeenCalledWith('501');
+    expect(candidatePool.list().map((candidate) => candidate.id)).toEqual(['fresh-gin-1', 'fresh-gin-2']);
+    expect(observation?.summary).toContain('artist fallback added 2 candidates');
+    expect(observation?.problems).toContain('candidate admission: rejectedByPool=2 (banned_dedupe=2)');
+  });
+
   it('accepts lowercase exact track and artist queries for NCM song search', async () => {
     const ncmClient = {
       getLikedSongIds: vi.fn(async () => []),
@@ -1698,9 +1759,62 @@ describe('createMusicAgentTools', () => {
 
     const observation = await tools.recall_from_liked?.({ limit: 30 });
 
-    expect(ncmClient.getSongDetails).toHaveBeenCalledWith(likedIds.slice(0, 10));
+    expect(ncmClient.getSongDetails).toHaveBeenCalledWith(likedIds.slice(0, 30));
     expect(observation?.candidateCount).toBe(10);
     expect(candidatePool.count()).toBe(10);
+  });
+
+  it('scans deeper liked ids when the first auto-fill liked window is banned', async () => {
+    const likedIds = Array.from({ length: 30 }, (_, index) => `liked-${index + 1}`);
+    const bannedIds = new Set(likedIds.slice(0, 10));
+    const ncmClient = {
+      getLikedSongIds: vi.fn(async () => likedIds),
+      getSongDetails: vi.fn(async (ids: string[]) => ids.map((id) => ({
+        id,
+        name: `Liked ${id}`,
+        artists: [`Artist ${id}`]
+      }))),
+      searchSongs: vi.fn(async () => []),
+      getPlaylistDetail: vi.fn(async () => null)
+    };
+
+    const { CandidatePool } = await import('../../src/server/music-agent/candidates.js');
+    const { createMusicAgentTools } = await import('../../src/server/music-agent/tools.js');
+    const candidatePool = new CandidatePool({ bannedIds });
+    const tools = createMusicAgentTools({
+      userId: 'deeper-liked-window',
+      ncmClient: ncmClient as any,
+      context: {
+        request: 'auto-fill',
+        currentUserText: '',
+        currentMoment: { localTime: '周一 13:30', daypart: '下午', weather: null },
+        activeDirective: '',
+        currentPlanSegment: null,
+        tasteSummary: '偏好华语抒情与欧美流行女声',
+        recentPreferenceSummary: '',
+        recentPlaySignals: '',
+        queueStateSummary: '',
+        bannedSummary: ''
+      },
+      candidatePool,
+      budget: {
+        maxMs: 10_000,
+        maxSteps: 3,
+        maxLlmCalls: 2,
+        maxToolCalls: 2,
+        maxNcmSearches: 1,
+        maxPlaylistFetches: 0,
+        maxTrendFetchMs: 0,
+        maxCandidates: 20
+      }
+    });
+
+    const observation = await tools.recall_from_liked?.({ limit: 10 });
+
+    expect(ncmClient.getSongDetails).toHaveBeenCalledWith(likedIds.slice(0, 30));
+    expect(observation?.summary).toContain('liked recall added 10 candidates from 30 ids');
+    expect(candidatePool.count()).toBe(10);
+    expect(candidatePool.list().map((candidate) => candidate.id)).toEqual(likedIds.slice(10, 20));
   });
 
   it('reuses short-lived recall caches for liked, style, and trending recalls', async () => {
