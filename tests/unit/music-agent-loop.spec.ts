@@ -1663,6 +1663,51 @@ describe('runMusicAgentLoop', () => {
     expect(fallbackLogger).not.toHaveBeenCalled();
   });
 
+  it('does not treat liked-only auto-fill candidates as enough when tool budget blocks expansion', async () => {
+    const pool = new CandidatePool();
+    const fallbackLogger = vi.fn();
+    const llmClient = new LoopFakeLlmClient([
+      JSON.stringify({ type: 'tool_call', tool: 'expand_queries', input: { context: 'summer pop' } })
+    ]);
+    const calls: string[] = [];
+
+    for (let index = 1; index <= 10; index += 1) {
+      pool.upsert(candidate({
+        id: `liked-${index}`,
+        name: `Liked ${index}`,
+        artist: `Liked Artist ${index}`,
+        sources: ['liked']
+      }));
+    }
+
+    const result = await runMusicAgentLoop({
+      llmClient,
+      context: context({ request: 'auto-fill' }),
+      candidatePool: pool,
+      tools: {
+        expand_queries: async () => {
+          calls.push('expand_queries');
+          return { summary: 'expanded queries', candidateCount: pool.count() };
+        }
+      },
+      budget: budget({ maxLlmCalls: 1, maxSteps: 6, maxToolCalls: 0 }),
+      targetPickCount: 5,
+      fallbackLogger
+    });
+
+    expect(result.status).toBe('ok');
+    expect(result.picks).toHaveLength(5);
+    expect(result.picks.every((pick) => pick.reason === 'ranked fallback')).toBe(true);
+    expect(calls).toEqual([]);
+    expect(fallbackLogger).toHaveBeenCalledWith(expect.objectContaining({
+      reason: 'tool_budget_exhausted',
+      status: 'ok',
+      candidateCount: 10,
+      pickCount: 5,
+      toolCalls: 0
+    }));
+  });
+
   it('auto-fill supplements sparse ranked candidates before converging', async () => {
     const pool = new CandidatePool();
     const fallbackLogger = vi.fn();

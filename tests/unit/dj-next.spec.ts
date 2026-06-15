@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import { extractQueueDirectiveFromText } from '../../src/server/http/chat-sse-worker';
-import { buildDiscoveryModePromptParts, buildDjTimeContext, buildTrackDedupeKey, createDjPickNextFallbackStatsTracker, getCandidateSourceMix, parseDjCandidatePicks, serializeDjPickNextErrorForLog, searchCandidates } from '../../src/server/http/routes/djNext';
+import { buildDiscoveryModePromptParts, buildDjTimeContext, buildTrackDedupeKey, createDjPickNextFallbackStatsTracker, getCandidateSourceMix, getMusicAgentCandidateSourceDiagnostics, parseDjCandidatePicks, serializeDjPickNextErrorForLog, searchCandidates } from '../../src/server/http/routes/djNext';
 import { LlmError } from '../../src/server/llm/client';
 import type { NcmClient } from '../../src/server/ncm/client';
 import type { NcmSong } from '../../src/shared/schema';
@@ -107,6 +107,23 @@ describe('DJ pick-next diagnostics', () => {
     expect(doPickNext).toContain('selectedTracks: appendedPicks.map((pick) => ({');
     expect(doPickNext).toContain('reason: pick.reason');
     expect(doPickNext).toContain('source: pick.source');
+  });
+
+  it('summarizes MusicAgent candidate sources for production diagnostics', () => {
+    expect(getMusicAgentCandidateSourceDiagnostics({
+      candidateScoreTable: [
+        { rank: 1, id: '1', song: 'Liked', artist: 'A', sources: 'liked', baseScore: 1, artistPenalty: 0, trackPenalty: 0, repeatPenalty: 0, qualityPenalty: 0, titlePollutionPenalty: 0, adjustedScore: 1 },
+        { rank: 2, id: '2', song: 'Merged', artist: 'B', sources: 'liked,search', baseScore: 1, artistPenalty: 0, trackPenalty: 0, repeatPenalty: 0, qualityPenalty: 0, titlePollutionPenalty: 0, adjustedScore: 1 },
+        { rank: 3, id: '3', song: 'Trend', artist: 'C', sources: 'trend', baseScore: 1, artistPenalty: 0, trackPenalty: 0, repeatPenalty: 0, qualityPenalty: 0, titlePollutionPenalty: 0, adjustedScore: 1 }
+      ]
+    })).toEqual({
+      nonLikedCandidateCount: 2,
+      candidateSourceCounts: {
+        liked: 2,
+        search: 1,
+        trend: 1
+      }
+    });
   });
 
   it('logs skipped pick reasons when append paths fall short of the target', () => {

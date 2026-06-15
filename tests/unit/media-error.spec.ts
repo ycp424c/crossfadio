@@ -13,13 +13,13 @@ describe('media error handling', () => {
     expect(shouldTreatMediaErrorAsEnded({ currentTime: 120, duration: 240 })).toBe(false);
   });
 
-  it('retries mid-track media errors below the attempt limit', () => {
+  it('retries mid-track media errors from the original failure position', () => {
     expect(getMediaErrorRetryDecision({
       currentTime: 120,
       duration: 240,
       retryAttempts: 0,
       maxRetryAttempts: 2
-    })).toEqual({ shouldRetry: true, resumeAtSec: 118 });
+    })).toEqual({ shouldRetry: true, resumeAtSec: 120 });
   });
 
   it('does not retry media errors that are effectively at the end', () => {

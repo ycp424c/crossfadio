@@ -1245,7 +1245,18 @@ function shouldConvergeAfterSkippedToolBudget(
   toolName: MusicAgentToolName | undefined,
   input: RunMusicAgentLoopInput
 ): boolean {
-  return Boolean(toolName && input.candidatePool.count() >= 2);
+  if (!toolName || input.candidatePool.count() < 2) return false;
+  if (input.context.request === 'auto-fill' && !CONVERGENCE_TOOL_NAMES.has(toolName)) {
+    return hasEnoughAutoFillSkippedRecallCandidates(input);
+  }
+  return true;
+}
+
+function hasEnoughAutoFillSkippedRecallCandidates(input: RunMusicAgentLoopInput): boolean {
+  return (
+    countNonLikedCandidates(input) >= targetPickCount(input) ||
+    shouldConvergeAfterAutoFillRecallMix(input)
+  );
 }
 
 function skippedToolBudgetThought(

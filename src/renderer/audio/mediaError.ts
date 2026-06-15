@@ -4,12 +4,10 @@ type MediaErrorPosition = {
 };
 
 const END_OF_TRACK_ERROR_GRACE_SEC = 2;
-const MEDIA_ERROR_RETRY_SEEK_BACK_SEC = 2;
 
 type MediaErrorRetryDecisionInput = MediaErrorPosition & {
   retryAttempts: number;
   maxRetryAttempts: number;
-  seekBackSec?: number;
 };
 
 type MediaErrorRetryDecision = {
@@ -36,12 +34,9 @@ export function getMediaErrorRetryDecision(
   const currentTime = Number.isFinite(input.currentTime) && input.currentTime > 0
     ? input.currentTime
     : 0;
-  const seekBackSec = typeof input.seekBackSec === 'number' && Number.isFinite(input.seekBackSec) && input.seekBackSec > 0
-    ? input.seekBackSec
-    : MEDIA_ERROR_RETRY_SEEK_BACK_SEC;
 
   return {
     shouldRetry: true,
-    resumeAtSec: Math.max(0, currentTime - seekBackSec)
+    resumeAtSec: currentTime
   };
 }

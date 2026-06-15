@@ -76,6 +76,8 @@ type DjPickNextRunMetrics = {
   finalPickDiagnostics?: MusicAgentRunOutput['finalPickDiagnostics'];
   queryFunnel?: MusicAgentRunOutput['queryFunnel'];
   candidateCount?: number;
+  nonLikedCandidateCount?: number;
+  candidateSourceCounts?: Record<string, number>;
   elapsedMs?: number;
   fallbackPath?: DjPickNextFallbackPath;
   discoveryMode?: DiscoveryMode;
@@ -489,6 +491,7 @@ async function doPickNext(
         }
         if (hasReachedPickTarget(userId, initialQueueLength, targetPickCount)) {
           const debugCandidateCount = getMusicAgentDebugCandidateCount(output);
+          const candidateSourceDiagnostics = getMusicAgentCandidateSourceDiagnostics(output);
           emit({
             type: 'dj.debug',
             likedSample: [],
@@ -510,6 +513,7 @@ async function doPickNext(
             excludedIds: Array.from(excludeState.ids),
             excludedDedupeKeys: Array.from(excludeState.dedupeKeys),
             totalCandidates: debugCandidateCount,
+            ...candidateSourceDiagnostics,
             candidateScoreTable: output.candidateScoreTable,
             selectedSay: output.say
           });
@@ -1201,6 +1205,28 @@ function getMusicAgentDebugCandidateCount(output: MusicAgentRunOutput): number {
   return Math.max(output.picks.length, ...output.trace.map((step) => step.candidateCount));
 }
 
+export function getMusicAgentCandidateSourceDiagnostics(
+  output: Pick<MusicAgentRunOutput, 'candidateScoreTable'>
+): { nonLikedCandidateCount: number; candidateSourceCounts: Record<string, number> } {
+  const candidateSourceCounts: Record<string, number> = {};
+  let nonLikedCandidateCount = 0;
+
+  for (const row of output.candidateScoreTable) {
+    const sources = row.sources
+      .split(',')
+      .map((source) => source.trim())
+      .filter(Boolean);
+    if (sources.some((source) => source !== 'liked')) {
+      nonLikedCandidateCount += 1;
+    }
+    for (const source of sources) {
+      candidateSourceCounts[source] = (candidateSourceCounts[source] ?? 0) + 1;
+    }
+  }
+
+  return { nonLikedCandidateCount, candidateSourceCounts };
+}
+
 function getMusicAgentRoutePath(output: MusicAgentRunOutput): DjPickNextFallbackPath {
   return output.picks.some((pick) => pick.reason === 'ranked fallback')
     ? 'music_agent_ranked_fallback'
@@ -1274,6 +1300,8 @@ function broadcastAppended(
       finalPickDiagnostics: metrics.finalPickDiagnostics,
       queryFunnel: metrics.queryFunnel,
       candidateCount: metrics.candidateCount,
+      nonLikedCandidateCount: metrics.nonLikedCandidateCount,
+      candidateSourceCounts: metrics.candidateSourceCounts,
       elapsedMs: metrics.elapsedMs,
       fallbackPath: path ?? metrics.fallbackPath,
       discoveryMode: metrics.discoveryMode,
@@ -1306,6 +1334,7 @@ function musicAgentRunMetrics(
     finalPickDiagnostics: output.finalPickDiagnostics,
     queryFunnel: output.queryFunnel,
     candidateCount: getMusicAgentDebugCandidateCount(output),
+    ...getMusicAgentCandidateSourceDiagnostics(output),
     elapsedMs: Date.now() - startedAt,
     discoveryMode
   };
