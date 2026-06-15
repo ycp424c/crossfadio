@@ -20,6 +20,7 @@ import {
   type MusicAgentLlmClient,
   type MusicAgentRunOutput,
   type MusicAgentToolName,
+  type MusicCandidate,
   type QueryFunnelEntry
 } from './schema.js';
 import type { MusicAgentToolRegistry, ToolObservation } from './tools.js';
@@ -833,7 +834,7 @@ async function rankedFallback(
   await prepareForRanking(input);
   const options = rankOptions(input.context);
   const ranked = rankCandidates(input.candidatePool.list(), input.candidatePool.count(), options);
-  const picks = diversifyCandidates(ranked.slice(0, 10), targetPickCount(input)).map((candidate) => ({
+  const picks = selectRankedPickCandidates(ranked, targetPickCount(input)).map((candidate) => ({
     id: candidate.id,
     name: candidate.name,
     artist: candidate.artist,
@@ -889,7 +890,7 @@ async function rankedConvergence(
   await prepareForRanking(input);
   const options = rankOptions(input.context);
   const ranked = rankCandidates(input.candidatePool.list(), input.candidatePool.count(), options);
-  const picks = diversifyCandidates(ranked.slice(0, 10), targetPickCount(input)).map((candidate) => ({
+  const picks = selectRankedPickCandidates(ranked, targetPickCount(input)).map((candidate) => ({
     id: candidate.id,
     name: candidate.name,
     artist: candidate.artist,
@@ -980,6 +981,18 @@ function createCandidateScoreTable(input: RunMusicAgentLoopInput) {
   const options = rankOptions(input.context);
   const ranked = rankCandidates(input.candidatePool.list(), input.candidatePool.count(), options);
   return buildCandidateScoreTableRows(ranked, options);
+}
+
+function selectRankedPickCandidates(candidates: MusicCandidate[], target: number): MusicCandidate[] {
+  const diverse = diversifyCandidates(candidates.slice(0, 10), target);
+  if (diverse.length >= target) return diverse;
+
+  const selectedIds = new Set(diverse.map((candidate) => candidate.id));
+  const backfill = candidates
+    .filter((candidate) => !selectedIds.has(candidate.id) && !isHardFilteredCandidate(candidate))
+    .slice(0, target - diverse.length);
+
+  return [...diverse, ...backfill];
 }
 
 function validateEligibleFinalPicks(picks: FinalPick[], input: RunMusicAgentLoopInput): FinalPick[] {

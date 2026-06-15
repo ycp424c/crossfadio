@@ -924,6 +924,54 @@ describe('runMusicAgentLoop', () => {
     }));
   });
 
+  it('fills ranked fallback picks from scored duplicate-artist candidates when strict diversity is short', async () => {
+    const pool = new CandidatePool();
+    const liveCandidates = [
+      ['live-1', '和每天讲再见', '李幸倪'],
+      ['live-2', '一加一', 'AGA / 李幸倪'],
+      ['live-3', '如果的事', '范玮琪 / 张韶涵'],
+      ['live-4', '亲爱的，那不是爱情', '张韶涵'],
+      ['live-5', '下一位', '李幸倪'],
+      ['live-6', '有形的翅膀', '张韶涵']
+    ] as const;
+
+    for (const [id, name, artist] of liveCandidates) {
+      pool.upsert(candidate({
+        id,
+        name,
+        artist,
+        sources: ['search']
+      }));
+    }
+    const fallbackLogger = vi.fn();
+    const llmClient = new LoopFakeLlmClient([
+      JSON.stringify({ type: 'tool_call', tool: 'rank_candidates', input: {} }),
+      JSON.stringify({ type: 'tool_call', tool: 'expand_queries', input: {} })
+    ]);
+
+    const result = await runMusicAgentLoop({
+      llmClient,
+      context: context({ request: 'auto-fill' }),
+      candidatePool: pool,
+      tools: {
+        rank_candidates: async () => ({ summary: 'ranked candidates', candidateCount: pool.count() })
+      },
+      budget: budget({ maxLlmCalls: 2, maxSteps: 2, maxToolCalls: 1 }),
+      targetPickCount: 5,
+      fallbackLogger
+    });
+
+    expect(result.status).toBe('ok');
+    expect(result.picks).toHaveLength(5);
+    expect(result.picks.map((pick) => pick.id)).toEqual(['live-1', 'live-2', 'live-3', 'live-4', 'live-5']);
+    expect(result.picks.every((pick) => pick.reason.startsWith('ranked '))).toBe(true);
+    expect(fallbackLogger).toHaveBeenCalledWith(expect.objectContaining({
+      status: 'ok',
+      candidateCount: 6,
+      pickCount: 5
+    }));
+  });
+
   it('does not reward query funnel entries from ranked fallback picks', async () => {
     const pool = new CandidatePool();
     pool.upsert(candidate({ id: '101', scores: { ...candidate().scores, intentMatch: 0.9 } }));
