@@ -48,6 +48,7 @@ export function buildLoopMessages(input: BuildLoopMessagesInput): LlmMessage[] {
         'NCM song search 只适合精确召回：recall_from_ncm_search 只能使用具体歌名+艺人、计划曲目、榜单曲目或高置信曲目实体；不要把 mood、场景、风格、人声、能量词直接作为 song search query。',
         'expand_queries 应把具体曲目实体放入 exactTrackQueries，把风格、地区、年代、人声、能量、编曲质感放入 styleHints/listeningConstraints；这些语义线索用于发现和排序，不是直接搜索词。',
         '当你已经有具体 track/artist/album/playlist 实体假设时，调用 recall_from_entities 让服务端先用 NCM 校验再入池；不要把未经校验的实体直接写进 final。',
+        '探索模式下，recall_from_liked 只能在 recall_auto_fill_mix / recall_from_entities / recall_from_ncm_search 等外部召回已经尝试后用于补尾；不要把红心作为第一召回来源。',
         '知识库和 sourceStyleSeeds 只是参考，不是固定模板；不要逐字照抄整组模板去搜 NCM，候选不足时优先找具体曲目/艺人/榜单/歌单线索。',
         '如果 observations 提示查询被历史重排或重复惩罚，优先换 fresh query，不要继续围绕同一个低质查询变体搜索。',
         '不要编造 NCM id；如果候选池不足，先调用白名单工具补候选。',
@@ -76,8 +77,7 @@ export function buildFinalPickMessages(input: BuildLoopMessagesInput): LlmMessag
   const context = compactJson(input.context, MAX_CONTEXT_CHARS);
   const candidatePool = truncate(input.candidateSummary || '[]', MAX_CANDIDATE_CHARS);
   const targetPickCount = input.targetPickCount ?? 2;
-  const observations = compactJson(input.observations.map((item) => ({
-    tool: item.tool,
+  const selectionNotes = compactJson(input.observations.map((item) => ({
     summary: item.summary,
     candidateCount: item.candidateCount,
     problems: item.problems ?? []
@@ -91,8 +91,8 @@ export function buildFinalPickMessages(input: BuildLoopMessagesInput): LlmMessag
         '只输出严格 JSON，不要 Markdown、不要解释、不要额外文本。',
         ...(input.hardFinalOnlyRetry
           ? [
-              '这是一次强制 final-only 重试；上一次 extra final 返回了 tool_call，已经被服务端拒绝。',
-              '禁止输出 tool_call、tool、input 或任何非 final 字段；服务端只接受 type 为 final 的对象。'
+              '这是一次强制最终选歌重试；上一轮输出不是 final，已经被服务端拒绝。',
+              '服务端只接受顶层 type 为 final 的对象；不要输出请求下一步动作的字段。'
             ]
           : []),
         '这次调用只能输出 {"type":"final","say":"...","picks":[{"id":"候选池ID","reason":"...","source":"liked|playlist|plan|search|style_expansion|trend"}],"rejected":[]}。',
@@ -112,8 +112,8 @@ export function buildFinalPickMessages(input: BuildLoopMessagesInput): LlmMessag
         'candidate_pool:',
         candidatePool,
         '',
-        'observations:',
-        observations
+        'selection_notes:',
+        selectionNotes
       ].join('\n')
     }
   ];

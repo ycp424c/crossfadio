@@ -9,13 +9,17 @@ import {
   rankCandidates
 } from './rank.js';
 import {
+  finalPickSchema,
+  musicAgentFinalPickOutputSchema,
   musicAgentLoopOutputSchema,
   musicAgentToolNameSchema,
+  rejectedPickSchema,
   type AgentBudget,
   type AgentTraceStep,
   type FinalPickDiagnostics,
   type FinalPick,
   type MusicAgentContextSummary,
+  type MusicAgentFinalPickOutput,
   type MusicAgentFinalOutput,
   type MusicAgentLlmClient,
   type MusicAgentRunOutput,
@@ -74,7 +78,7 @@ export type MusicAgentFallbackLogger = (event: MusicAgentFallbackLogEvent) => vo
 
 type ParsedLoopOutput =
   | { type: 'tool_call'; tool: string; input: Record<string, unknown> }
-  | { type: 'final'; say: string; picks: FinalPick[]; rejected?: Array<{ id: string; reason: string }> };
+  | MusicAgentFinalPickOutput;
 
 type LoopObservation = ToolObservation & {
   tool?: string;
@@ -114,6 +118,9 @@ const SKIPPED_TOOL_FINAL_PICK_MIN_CANDIDATES = 2;
 const FORCED_RECALL_LIKED_LIMIT = 10;
 const EXTRA_FINAL_PICK_REMAINING_RATIO = 0.2;
 const EXTRA_FINAL_PICK_MAX_REMAINING_MS = 20_000;
+const LOOP_LLM_MAX_TOKENS = 1_400;
+const EXTRA_FINAL_PICK_MAX_TOKENS = 1_600;
+const HARD_FINAL_ONLY_PICK_MAX_TOKENS = 1_800;
 const RECALL_TOOL_NAMES = new Set<MusicAgentToolName>([
   'recall_auto_fill_mix',
   'recall_from_liked',
@@ -123,6 +130,22 @@ const RECALL_TOOL_NAMES = new Set<MusicAgentToolName>([
   'recall_from_trending',
   'recall_from_playlists',
   'recall_from_plan_segment'
+]);
+const EXTERNAL_RECALL_TOOL_NAMES = new Set<MusicAgentToolName>([
+  'recall_auto_fill_mix',
+  'recall_from_entities',
+  'recall_from_ncm_search',
+  'recall_from_style_expansion',
+  'recall_from_trending',
+  'recall_from_playlists',
+  'recall_from_plan_segment'
+]);
+const NO_PROGRESS_FINAL_TOOL_NAMES = new Set<MusicAgentToolName>([
+  ...EXTERNAL_RECALL_TOOL_NAMES,
+  'expand_queries',
+  'get_context_summary',
+  'get_music_knowledge',
+  'get_trend_context'
 ]);
 
 type ToolRewrite = {
@@ -160,7 +183,8 @@ export async function runMusicAgentLoop(input: RunMusicAgentLoopInput): Promise<
     const response = await input.llmClient.complete(messages, {
       signal: input.signal,
       temperature: 0.2,
-      maxTokens: 1000
+      maxTokens: LOOP_LLM_MAX_TOKENS,
+      thinking: { type: 'disabled' }
     });
     llmCalls += 1;
 
@@ -224,15 +248,21 @@ export async function runMusicAgentLoop(input: RunMusicAgentLoopInput): Promise<
     if (rewrite === 'fallback') {
       return rankedFallback(forcedRecallFallbackReason(input), input, trace, startedAt, step, llmCalls, toolCalls);
     }
+    const likedRecallRewrite = getExploreLikedRecallRewrite({
+      requestedToolName,
+      input,
+      trace
+    });
+    const toolRewrite = rewrite ?? likedRecallRewrite;
 
-    const toolName = rewrite?.toolName ?? requestedToolName;
-    const toolInput = rewrite?.input ?? output.input;
+    const toolName = toolRewrite?.toolName ?? requestedToolName;
+    const toolInput = toolRewrite?.input ?? output.input;
 
     if (toolCalls >= input.budget.maxToolCalls && !canUseReservedRankTool(toolName, input)) {
       const budgetedToolName = toolName;
       const shouldConvergeAfterSkippedBudget = shouldConvergeAfterSkippedToolBudget(budgetedToolName, input);
       const skippedBudgetThought = skippedToolBudgetThought(
-        rewrite,
+        toolRewrite,
         budgetedToolName,
         input,
         shouldConvergeAfterSkippedBudget
@@ -247,8 +277,8 @@ export async function runMusicAgentLoop(input: RunMusicAgentLoopInput): Promise<
         tool: toolName,
         toolInputSummary: summarizeInput(toolInput),
         observationSummary: summarizeObservation(observation),
-        requestedTool: rewrite?.requestedTool,
-        rewriteReason: rewrite?.rewriteReason
+        requestedTool: toolRewrite?.requestedTool,
+        rewriteReason: toolRewrite?.rewriteReason
       }));
       if (shouldConvergeAfterSkippedBudget) {
         if (hasExtraFinalPickBudget(
@@ -286,20 +316,21 @@ export async function runMusicAgentLoop(input: RunMusicAgentLoopInput): Promise<
       continue;
     }
 
+    const candidateCountBeforeTool = input.candidatePool.count();
     const observation = await tool(toolInput, input.signal);
     toolCalls += 1;
     observations.push({ ...observation, tool: toolName });
     trace.push(traceStep(step, startedAt, input.candidatePool.count(), {
-      thoughtSummary: rewrite ? 'empty-pool tool call rewritten to recall' : 'tool executed',
+      thoughtSummary: toolRewrite ? rewrittenToolThought(toolRewrite) : 'tool executed',
       tool: toolName,
       toolInputSummary: summarizeInput(toolInput),
       observationSummary: summarizeObservation(observation),
-      requestedTool: rewrite?.requestedTool,
-      executedTool: rewrite?.toolName,
-      rewriteReason: rewrite?.rewriteReason
+      requestedTool: toolRewrite?.requestedTool,
+      executedTool: toolRewrite?.toolName,
+      rewriteReason: toolRewrite?.rewriteReason
     }));
 
-    if (rewrite && toolName === AUTO_FILL_AGGREGATE_TOOL_NAME) {
+    if (toolRewrite && toolName === AUTO_FILL_AGGREGATE_TOOL_NAME) {
       toolCalls = await maybeForceLikedRecallAfterEmptyPoolRewrite(
         input,
         observations,
@@ -331,6 +362,13 @@ export async function runMusicAgentLoop(input: RunMusicAgentLoopInput): Promise<
       if (shouldSupplementSparseRank) {
         continue;
       }
+    }
+
+    if (
+      shouldAskFinalAfterNoProgressTool(toolName, input, trace, candidateCountBeforeTool) &&
+      hasExtraFinalPickBudget(input, startedAt, step, llmCalls, SKIPPED_TOOL_FINAL_PICK_MIN_CANDIDATES)
+    ) {
+      return askExtraFinalPick(input, observations, trace, startedAt, step, llmCalls, toolCalls);
     }
 
     if (shouldConvergeAfterTool(toolName, input, llmCalls)) {
@@ -377,7 +415,8 @@ async function askExtraFinalPick(
     const response = await input.llmClient.complete(messages, {
       signal: input.signal,
       temperature: 0.2,
-      maxTokens: 1000,
+      maxTokens: EXTRA_FINAL_PICK_MAX_TOKENS,
+      thinking: { type: 'disabled' },
       responseFormat: FINAL_PICK_RESPONSE_FORMAT
     });
     responseContent = response.content;
@@ -418,23 +457,27 @@ async function askExtraFinalPick(
     );
   }
 
-  const output = parseLoopOutput(responseContent);
-  if (output.type !== 'final') {
+  const output = parseFinalPickOutput(responseContent);
+  if (!output) {
+    const responseType = parseOutputType(responseContent) ?? 'invalid_json';
     if (hasExtraFinalPickBudget(input, startedAt, nextStep, nextLlmCalls)) {
+      const retryThought = responseType === 'tool_call'
+        ? 'extra final returned tool_call; retrying final-only output'
+        : 'extra final did not return final JSON; retrying final-only output';
       trace.push(traceStep(nextStep, startedAt, input.candidatePool.count(), {
-        thoughtSummary: 'extra final returned tool_call; retrying final-only output',
+        thoughtSummary: retryThought,
         observationSummary: summarizeObservation(observationFromProblem(
-          'extra final returned tool_call; retrying final-only output',
+          `${retryThought}: ${responseType}`,
           input.candidatePool.count()
         ))
       }));
       return retryHardFinalOnlyPick(input, finalPickObservations, trace, startedAt, nextStep, nextLlmCalls, toolCalls);
     }
     return rankedConvergenceAfterExtraFinalProblem(
-      `extra final returned ${output.type}`,
+      `extra final returned ${responseType}`,
       'extra final did not return final output',
       'extra_final_returned_tool_call',
-      'returned_tool_call',
+      responseType === 'tool_call' ? 'returned_tool_call' : 'invalid_final_output',
       input,
       trace,
       startedAt,
@@ -458,9 +501,9 @@ async function retryHardFinalOnlyPick(
 ): Promise<MusicAgentRunOutput> {
   const retryObservation: LoopObservation = {
     tool: DEFAULT_TOOL_NAME,
-    summary: '上一次 extra final 返回了 tool_call；这次必须只返回 final JSON。',
+    summary: '上一轮最终选歌输出不是 final；这次必须只返回 final JSON。',
     candidateCount: input.candidatePool.count(),
-    problems: ['extra final returned tool_call']
+    problems: ['extra final returned non-final output']
   };
   const messages = buildFinalPickMessages({
     context: input.context,
@@ -476,7 +519,8 @@ async function retryHardFinalOnlyPick(
     const response = await input.llmClient.complete(messages, {
       signal: input.signal,
       temperature: 0.1,
-      maxTokens: 800,
+      maxTokens: HARD_FINAL_ONLY_PICK_MAX_TOKENS,
+      thinking: { type: 'disabled' },
       responseFormat: FINAL_PICK_RESPONSE_FORMAT
     });
     responseContent = response.content;
@@ -517,13 +561,14 @@ async function retryHardFinalOnlyPick(
     );
   }
 
-  const output = parseLoopOutput(responseContent);
-  if (output.type !== 'final') {
+  const output = parseFinalPickOutput(responseContent);
+  if (!output) {
+    const responseType = parseOutputType(responseContent) ?? 'invalid_json';
     return rankedConvergenceAfterExtraFinalProblem(
-      `hard final-only retry returned ${output.type}`,
+      `hard final-only retry returned ${responseType}`,
       'hard final-only retry did not return final output',
       'extra_final_returned_tool_call',
-      'returned_tool_call',
+      responseType === 'tool_call' ? 'returned_tool_call' : 'invalid_final_output',
       input,
       trace,
       startedAt,
@@ -626,7 +671,7 @@ async function supplementAutoFillRecallMix(
       toolInputSummary: summarizeInput({}),
       observationSummary: summarizeObservation(observation)
     }));
-    return nextToolCalls;
+    return supplementLikedTailFallback(input, observations, trace, startedAt, step, nextToolCalls);
   }
 
   let nextToolCalls = toolCalls;
@@ -646,6 +691,35 @@ async function supplementAutoFillRecallMix(
       observationSummary: summarizeObservation(observation)
     }));
   }
+  return supplementLikedTailFallback(input, observations, trace, startedAt, step, nextToolCalls);
+}
+
+async function supplementLikedTailFallback(
+  input: RunMusicAgentLoopInput,
+  observations: LoopObservation[],
+  trace: AgentTraceStep[],
+  startedAt: number,
+  step: number,
+  toolCalls: number
+): Promise<number> {
+  if (!shouldSupplementLikedTailFallback(input)) return toolCalls;
+  if (toolCalls >= input.budget.maxToolCalls) return toolCalls;
+  const likedTool = input.tools.recall_from_liked;
+  if (!likedTool) return toolCalls;
+
+  const toolInput = { limit: targetPickCount(input) };
+  const observation = await likedTool(toolInput, input.signal);
+  const nextToolCalls = toolCalls + 1;
+  observations.push({ ...observation, tool: 'recall_from_liked' });
+  trace.push(traceStep(step, startedAt, input.candidatePool.count(), {
+    thoughtSummary: 'liked tail fallback after sparse external recall',
+    tool: 'recall_from_liked',
+    toolInputSummary: summarizeInput(toolInput),
+    observationSummary: summarizeObservation(observation),
+    requestedTool: 'recall_from_liked',
+    executedTool: 'recall_from_liked',
+    rewriteReason: 'sparse_external_recall_liked_tail'
+  }));
   return nextToolCalls;
 }
 
@@ -702,10 +776,40 @@ function getEmptyPoolToolRewrite(options: {
   };
 }
 
+function getExploreLikedRecallRewrite(options: {
+  requestedToolName: MusicAgentToolName | undefined;
+  input: RunMusicAgentLoopInput;
+  trace: AgentTraceStep[];
+}): ToolRewrite | undefined {
+  const { requestedToolName, input, trace } = options;
+  if (!isExploreAutoFill(input)) return undefined;
+  if (requestedToolName !== 'recall_from_liked') return undefined;
+  if (hasExecutedExternalRecall(trace)) return undefined;
+  if (!input.tools[AUTO_FILL_AGGREGATE_TOOL_NAME]) return undefined;
+
+  return {
+    toolName: AUTO_FILL_AGGREGATE_TOOL_NAME,
+    input: {},
+    requestedTool: 'recall_from_liked',
+    rewriteReason: 'explore_external_recall_before_liked'
+  };
+}
+
+function rewrittenToolThought(rewrite: ToolRewrite): string {
+  if (rewrite.rewriteReason === 'explore_external_recall_before_liked') {
+    return 'liked recall rewritten to external recall first';
+  }
+  return 'empty-pool tool call rewritten to recall';
+}
+
 function selectForcedRecallTool(tools: MusicAgentToolRegistry): MusicAgentToolName | undefined {
   if (tools[AUTO_FILL_AGGREGATE_TOOL_NAME]) return AUTO_FILL_AGGREGATE_TOOL_NAME;
   if (tools.recall_from_liked) return 'recall_from_liked';
   return undefined;
+}
+
+function hasExecutedExternalRecall(trace: AgentTraceStep[]): boolean {
+  return trace.some((step) => step.tool !== undefined && EXTERNAL_RECALL_TOOL_NAMES.has(step.tool));
 }
 
 function hasExecutedTool(trace: AgentTraceStep[], toolName: MusicAgentToolName): boolean {
@@ -748,6 +852,43 @@ function parseLoopOutput(raw: string): ParsedLoopOutput {
   }
 
   return DEFAULT_TOOL_CALL;
+}
+
+function parseFinalPickOutput(raw: string): MusicAgentFinalPickOutput | undefined {
+  const parsed = parseJsonish(raw);
+  const result = musicAgentFinalPickOutputSchema.safeParse(parsed);
+  if (result.success) return result.data;
+  if (!isRecord(parsed) || parsed.type !== 'final' || typeof parsed.say !== 'string') {
+    return undefined;
+  }
+
+  const picks = Array.isArray(parsed.picks)
+    ? parsed.picks.flatMap((pick) => {
+        const pickResult = finalPickSchema.safeParse(pick);
+        return pickResult.success ? [pickResult.data] : [];
+      })
+    : [];
+  if (picks.length === 0) return undefined;
+
+  const rejected = Array.isArray(parsed.rejected)
+    ? parsed.rejected.flatMap((item) => {
+        const rejectedResult = rejectedPickSchema.safeParse(item);
+        return rejectedResult.success ? [rejectedResult.data] : [];
+      })
+    : [];
+
+  return {
+    type: 'final',
+    say: parsed.say,
+    picks,
+    rejected
+  };
+}
+
+function parseOutputType(raw: string): string | undefined {
+  const parsed = parseJsonish(raw);
+  if (!isRecord(parsed)) return undefined;
+  return typeof parsed.type === 'string' ? parsed.type : undefined;
 }
 
 function parseJsonish(raw: string): unknown {
@@ -834,7 +975,8 @@ async function rankedFallback(
   await prepareForRanking(input);
   const options = rankOptions(input.context);
   const ranked = rankCandidates(input.candidatePool.list(), input.candidatePool.count(), options);
-  const picks = selectRankedPickCandidates(ranked, targetPickCount(input)).map((candidate) => ({
+  const selectable = rankedFallbackSelectableCandidates(ranked, input);
+  const picks = selectRankedPickCandidates(selectable, targetPickCount(input)).map((candidate) => ({
     id: candidate.id,
     name: candidate.name,
     artist: candidate.artist,
@@ -1274,6 +1416,32 @@ function shouldConvergeAfterSkippedToolBudget(
   return true;
 }
 
+function shouldAskFinalAfterNoProgressTool(
+  toolName: MusicAgentToolName,
+  input: RunMusicAgentLoopInput,
+  trace: AgentTraceStep[],
+  candidateCountBeforeTool: number
+): boolean {
+  return (
+    modeFromContext(input.context) === 'pick_next' &&
+    targetPickCount(input) >= 4 &&
+    input.candidatePool.count() >= SKIPPED_TOOL_FINAL_PICK_MIN_CANDIDATES &&
+    (input.candidatePool.count() < targetPickCount(input) || isLikedOnlyFallbackPool(input, trace)) &&
+    input.candidatePool.count() <= candidateCountBeforeTool &&
+    NO_PROGRESS_FINAL_TOOL_NAMES.has(toolName) &&
+    hasExecutedExternalRecall(trace)
+  );
+}
+
+function isLikedOnlyFallbackPool(input: RunMusicAgentLoopInput, trace: AgentTraceStep[]): boolean {
+  return (
+    isExploreAutoFill(input) &&
+    countNonLikedCandidates(input) === 0 &&
+    countLikedCandidates(input) > 0 &&
+    hasExecutedExternalRecall(trace)
+  );
+}
+
 function hasEnoughAutoFillSkippedRecallCandidates(input: RunMusicAgentLoopInput): boolean {
   return (
     countNonLikedCandidates(input) >= targetPickCount(input) ||
@@ -1347,10 +1515,58 @@ function hasEnoughAutoFillRankedCandidates(input: RunMusicAgentLoopInput): boole
 }
 
 function shouldConvergeAfterAutoFillRecallMix(input: RunMusicAgentLoopInput): boolean {
+  const nonLikedCount = countNonLikedCandidates(input);
+  const explicitTargetPickCount = input.targetPickCount === undefined ? null : targetPickCount(input);
+  if (nonLikedCount >= autoFillNonLikedConvergenceTarget(input)) {
+    return true;
+  }
+  if (isExploreAutoFill(input)) {
+    return explicitTargetPickCount !== null &&
+      nonLikedCount >= minExternalCandidatesBeforeLikedTail(explicitTargetPickCount) &&
+      countLikedCandidates(input) > 0 &&
+      input.candidatePool.count() >= explicitTargetPickCount;
+  }
   return (
-    countNonLikedCandidates(input) >= autoFillNonLikedConvergenceTarget(input) ||
     input.candidatePool.count() >= autoFillTotalConvergenceTarget(input)
   );
+}
+
+function shouldSupplementLikedTailFallback(input: RunMusicAgentLoopInput): boolean {
+  if (!isExploreAutoFill(input)) return false;
+  const explicitTargetPickCount = input.targetPickCount === undefined ? null : targetPickCount(input);
+  if (explicitTargetPickCount === null) return false;
+  const nonLikedCount = countNonLikedCandidates(input);
+  return (
+    nonLikedCount >= minExternalCandidatesBeforeLikedTail(explicitTargetPickCount) &&
+    input.candidatePool.count() < explicitTargetPickCount
+  );
+}
+
+function rankedFallbackSelectableCandidates(
+  candidates: MusicCandidate[],
+  input: RunMusicAgentLoopInput
+): MusicCandidate[] {
+  if (!shouldBlockLikedOnlyRankedFallback(input) || countNonLikedCandidates(input) > 0) {
+    return candidates;
+  }
+  return [];
+}
+
+function shouldBlockLikedOnlyRankedFallback(input: RunMusicAgentLoopInput): boolean {
+  const explicitTargetPickCount = input.targetPickCount === undefined ? null : targetPickCount(input);
+  return isExploreAutoFill(input) && explicitTargetPickCount !== null && explicitTargetPickCount >= 4;
+}
+
+function isExploreAutoFill(input: RunMusicAgentLoopInput): boolean {
+  return modeFromContext(input.context) === 'pick_next' && input.context.discoveryMode !== 'comfort';
+}
+
+function countLikedCandidates(input: RunMusicAgentLoopInput): number {
+  return input.candidatePool.list().filter((candidate) => candidate.sources.includes('liked')).length;
+}
+
+function minExternalCandidatesBeforeLikedTail(target: number): number {
+  return Math.ceil(Math.max(1, target) * 0.5);
 }
 
 function autoFillNonLikedConvergenceTarget(input: RunMusicAgentLoopInput): number {

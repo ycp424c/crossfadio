@@ -101,6 +101,32 @@ describe('LlmClient.complete', () => {
     });
   });
 
+  it('passes DeepSeek thinking control only for supported models', async () => {
+    const capturedBodies: Array<Record<string, unknown>> = [];
+    mockFetch(async (_url, init) => {
+      capturedBodies.push(JSON.parse(init?.body as string) as Record<string, unknown>);
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: '{"ok":true}' } }],
+        model: 'test-model'
+      }), { status: 200 });
+    });
+
+    await new LlmClient({
+      ...config,
+      baseUrl: 'https://api.deepseek.com',
+      model: 'deepseek-v4-flash'
+    }).complete([{ role: 'user', content: 'json' }], {
+      thinking: { type: 'disabled' }
+    });
+
+    await new LlmClient(config).complete([{ role: 'user', content: 'json' }], {
+      thinking: { type: 'disabled' }
+    });
+
+    expect(capturedBodies[0]?.thinking).toEqual({ type: 'disabled' });
+    expect(capturedBodies[1]).not.toHaveProperty('thinking');
+  });
+
   it('throws LlmError on non-2xx response', async () => {
     mockFetch(async () => new Response('Bad Request', { status: 400 }));
     const client = new LlmClient(config);

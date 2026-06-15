@@ -237,18 +237,22 @@ export const rejectedPickSchema = z.object({
 
 export type RejectedPick = z.infer<typeof rejectedPickSchema>;
 
+export const musicAgentFinalPickOutputSchema = z.object({
+  type: z.literal('final'),
+  say: z.string().min(1),
+  picks: z.array(finalPickSchema).max(AUTO_FILL_BATCH_SIZE_MAX),
+  rejected: z.array(rejectedPickSchema).default([])
+});
+
+export type MusicAgentFinalPickOutput = z.infer<typeof musicAgentFinalPickOutputSchema>;
+
 export const musicAgentLoopOutputSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('tool_call'),
     tool: musicAgentToolNameSchema,
     input: z.record(z.unknown()).default({})
   }),
-  z.object({
-    type: z.literal('final'),
-    say: z.string().min(1),
-    picks: z.array(finalPickSchema).max(AUTO_FILL_BATCH_SIZE_MAX),
-    rejected: z.array(rejectedPickSchema).default([])
-  })
+  musicAgentFinalPickOutputSchema
 ]);
 
 export type MusicAgentLoopOutput = z.infer<typeof musicAgentLoopOutputSchema>;
