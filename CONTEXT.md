@@ -52,6 +52,42 @@ _Avoid_: search term, vibe, style word
 The step that turns listening constraints and style hints into concrete music entities before platform recall.
 _Avoid_: NCM search, style search, query expansion
 
+**Web Music Discovery**:
+The step that uses public web information to discover music entity hints for exploration. It expands what Crossfadio may investigate; it does not by itself create playable candidates.
+_Avoid_: web search, online recall, internet candidate source
+
+**Music Entity Hint**:
+A sourced but not-yet-verified lead that may refer to a music entity or a relationship between music entities. It must be confirmed before it can become a music entity used for selection.
+_Avoid_: candidate, search result, recommendation
+
+**Entity Verification**:
+The act of confirming that a music entity hint refers to a recognizable music entity or relationship that Crossfadio can safely use for discovery.
+_Avoid_: LLM validation, search parsing, candidate filtering
+
+**Playable Candidate**:
+A recalled song candidate that has a verified platform track identity and can be considered for playback selection.
+_Avoid_: music entity hint, search result, recommendation
+
+**Durable Music Knowledge**:
+Music knowledge that is expected to remain useful over time, such as stable artist style associations, similar-artist relationships, or representative works.
+_Avoid_: cached search result, fresh trend, user preference
+
+**Fresh Music Signal**:
+A time-sensitive music lead whose usefulness depends on recency, such as new releases, current charts, or recent scene activity.
+_Avoid_: permanent knowledge, stable preference
+
+**Shared Music Knowledge**:
+Music knowledge that is not tied to one user's taste and can be reused across users or sessions.
+_Avoid_: user preference, personal taste profile
+
+**Preference Evidence**:
+Behavioral evidence about how one user responds to music entities, relationships, or fresh music signals.
+_Avoid_: global music knowledge, objective quality
+
+**Exploration Gap**:
+Evidence that the current discovery path is not producing enough useful novelty for an exploratory selection, even if the candidate pool is not empty. It is a reason to look for new music entity hints rather than a fallback state.
+_Avoid_: empty pool, low score, fallback trigger
+
 **Exact Recall**:
 Platform retrieval using a concrete music entity or identifier rather than a mood, scene, or style phrase.
 _Avoid_: semantic search, fuzzy search

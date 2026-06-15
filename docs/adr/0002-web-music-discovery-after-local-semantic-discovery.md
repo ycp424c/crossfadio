@@ -1,0 +1,3 @@
+# Run Web Music Discovery After Local Semantic Discovery
+
+Web Music Discovery will remain a separate exploration stage instead of being folded into Semantic Discovery. Crossfadio first uses the local SQLite Semantic Index to turn listening constraints into music entities; only when an Exploration Gap remains should it use public web information to produce Music Entity Hints, which must pass Entity Verification before Exact Recall or playback selection. This keeps the local semantic path fast, deterministic, and privacy-preserving while still allowing exploratory runs to learn from fresh or missing public music knowledge.
