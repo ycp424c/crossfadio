@@ -27,6 +27,7 @@ export const musicAgentToolNameSchema = z.enum([
   'recall_from_trending',
   'recall_from_style_expansion',
   'recall_auto_fill_mix',
+  'web_music_discovery',
   'rank_candidates',
   'diversify_candidates',
   'finalize_pick'
@@ -116,6 +117,69 @@ export const trendContextSchema = z.object({
 });
 
 export type TrendContext = z.infer<typeof trendContextSchema>;
+
+export const webMusicDiscoveryFocusSchema = z.enum([
+  'style_artists',
+  'style_tracks',
+  'similar_artists',
+  'similar_tracks',
+  'new_releases',
+  'scene_overview'
+]);
+
+export type WebMusicDiscoveryFocus = z.infer<typeof webMusicDiscoveryFocusSchema>;
+
+export const webMusicDiscoveryAnchorSchema = z.object({
+  type: z.enum(['artist', 'track', 'album', 'style']),
+  name: z.string().min(1),
+  artist: z.string().min(1).optional()
+});
+
+export type WebMusicDiscoveryAnchor = z.infer<typeof webMusicDiscoveryAnchorSchema>;
+
+export const webMusicDiscoveryInputSchema = z.object({
+  intent: z.string().min(1),
+  focus: webMusicDiscoveryFocusSchema,
+  anchors: z.array(webMusicDiscoveryAnchorSchema).default([]),
+  locale: z.enum(['zh-CN', 'global']).default('zh-CN'),
+  freshness: z.enum(['durable', 'recent']).default('durable'),
+  maxHints: z.number().int().positive().max(12).default(6)
+});
+
+export type WebMusicDiscoveryInput = z.infer<typeof webMusicDiscoveryInputSchema>;
+
+export const musicEntityHintKindSchema = z.enum([
+  'artist',
+  'track',
+  'album',
+  'playlist',
+  'chart_item',
+  'relationship'
+]);
+
+export type MusicEntityHintKind = z.infer<typeof musicEntityHintKindSchema>;
+
+export const musicEntityHintSchema = z.object({
+  kind: musicEntityHintKindSchema,
+  name: z.string().min(1),
+  artist: z.string().min(1).optional(),
+  relatedName: z.string().min(1).optional(),
+  relationshipType: z.enum([
+    'similar_to',
+    'represents_style',
+    'featured_in_scene',
+    'recent_release'
+  ]).optional(),
+  styles: z.array(z.string().min(1)).default([]),
+  sourceUrl: z.string().url(),
+  sourceTitle: z.string().min(1).optional(),
+  snippet: z.string().min(1),
+  confidence: z.number().min(0).max(1),
+  freshness: z.enum(['durable', 'fresh']),
+  observedAt: z.string().min(1)
+});
+
+export type MusicEntityHint = z.infer<typeof musicEntityHintSchema>;
 
 export const musicKnowledgeSliceSchema = z.object({
   styleAdjacency: z.array(z.string()).default([]),

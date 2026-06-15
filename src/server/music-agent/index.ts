@@ -7,6 +7,10 @@ import { CandidatePool } from './candidates.js';
 import { buildMusicAgentContext } from './context.js';
 import { runMusicAgentLoop } from './loop.js';
 import { createMusicAgentTools, type MusicAgentEmbeddingClient } from './tools.js';
+import {
+  createDefaultWebMusicDiscoveryProvider,
+  type WebMusicDiscoveryProvider
+} from './web-discovery.js';
 import type { MusicAgentFallbackLogEvent } from './loop.js';
 import type { AgentBudget, MusicAgentLlmClient, MusicAgentRunOutput } from './schema.js';
 import { parseAutoFillBatchSize } from '../../shared/dj.js';
@@ -17,6 +21,7 @@ export type MusicAgentOptions = {
   llmConfig?: LlmConfig;
   embeddingClient?: MusicAgentEmbeddingClient | null;
   embeddingModel?: string | null;
+  webMusicDiscoveryProvider?: WebMusicDiscoveryProvider | null;
 };
 
 type EmbeddingRuntime = {
@@ -67,10 +72,12 @@ export class MusicAgent {
   private readonly llmClient: MusicAgentLlmClient;
   private readonly fallbackLogger: ((event: MusicAgentFallbackLogEvent & { userId: string }) => void) | undefined;
   private readonly embeddingRuntime: EmbeddingRuntime | null;
+  private readonly webMusicDiscoveryProvider: WebMusicDiscoveryProvider | null;
 
   constructor(options: MusicAgentOptions = {}) {
     this.llmClient = resolveLlmClient(options);
     this.embeddingRuntime = resolveEmbeddingRuntime(options);
+    this.webMusicDiscoveryProvider = resolveWebMusicDiscoveryProvider(options);
     this.fallbackLogger = options.llmConfig
       ? (event) => {
           const logger = getLogger();
@@ -110,6 +117,7 @@ export class MusicAgent {
       budget,
       embeddingClient: this.embeddingRuntime?.client ?? null,
       embeddingModel: this.embeddingRuntime?.model ?? null,
+      webMusicDiscoveryProvider: this.webMusicDiscoveryProvider,
       targetPickCount
     });
 
@@ -146,7 +154,8 @@ export class MusicAgent {
       candidatePool,
       budget,
       embeddingClient: this.embeddingRuntime?.client ?? null,
-      embeddingModel: this.embeddingRuntime?.model ?? null
+      embeddingModel: this.embeddingRuntime?.model ?? null,
+      webMusicDiscoveryProvider: this.webMusicDiscoveryProvider
     });
 
     return runMusicAgentLoop({
@@ -248,6 +257,11 @@ function resolveEmbeddingRuntime(options: MusicAgentOptions): EmbeddingRuntime |
   }
 }
 
+function resolveWebMusicDiscoveryProvider(options: MusicAgentOptions): WebMusicDiscoveryProvider | null {
+  if ('webMusicDiscoveryProvider' in options) return options.webMusicDiscoveryProvider ?? null;
+  return options.llmConfig ? createDefaultWebMusicDiscoveryProvider() : null;
+}
+
 function pickNextBudget(targetPickCount = 2): AgentBudget {
   const largeBatch = targetPickCount >= 4;
   return {
@@ -255,7 +269,7 @@ function pickNextBudget(targetPickCount = 2): AgentBudget {
     maxSteps: 10,
     maxLlmCalls: largeBatch ? 12 : 10,
     maxToolCalls: largeBatch ? 12 : 10,
-    maxNcmSearches: largeBatch ? 12 : 10,
+    maxNcmSearches: largeBatch ? 18 : 10,
     maxPlaylistFetches: 3,
     maxTrendFetchMs: 2_000,
     maxCandidates: largeBatch ? 160 : 120

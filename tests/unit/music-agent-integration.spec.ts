@@ -51,6 +51,7 @@ describe('MusicAgent facade', () => {
 
     expect(pickNextBudget).toContain('const largeBatch = targetPickCount >= 4');
     expect(pickNextBudget).toContain('maxLlmCalls: largeBatch ? 12 : 10');
+    expect(pickNextBudget).toContain('maxNcmSearches: largeBatch ? 18 : 10');
     expect(pickNextBudget).toContain('maxCandidates: largeBatch ? 160 : 120');
   });
 
@@ -793,6 +794,418 @@ describe('createMusicAgentTools', () => {
       sources: ['search']
     });
     expect(candidatePool.get('302')).toBeUndefined();
+  });
+
+  it('returns sourced web discovery hints and keeps them out of the candidate pool', async () => {
+    const ncmClient = {
+      getLikedSongIds: vi.fn(async () => []),
+      getSongDetails: vi.fn(async () => []),
+      searchSongs: vi.fn(async () => []),
+      getPlaylistDetail: vi.fn(async () => null)
+    };
+    const webMusicDiscoveryProvider = {
+      discover: vi.fn(async () => [
+        {
+          kind: 'track',
+          name: 'Only Love',
+          artist: 'Ben Howard',
+          styles: ['folk'],
+          sourceUrl: 'https://example.com/ben-howard',
+          sourceTitle: 'Ben Howard songs',
+          snippet: 'The source names Only Love by Ben Howard.',
+          confidence: 0.88,
+          freshness: 'durable',
+          observedAt: '2026-06-15T08:00:00.000Z'
+        },
+        {
+          kind: 'track',
+          name: 'Loose Untitled Hint',
+          sourceUrl: 'https://example.com/loose',
+          snippet: 'This hint lacks an artist and must not become a playable candidate.',
+          confidence: 0.9,
+          freshness: 'fresh',
+          observedAt: '2026-06-15T08:00:00.000Z'
+        },
+        {
+          kind: 'track',
+          name: 'Wrong Song',
+          artist: 'Ben Howard',
+          sourceUrl: 'https://example.com/wrong',
+          snippet: 'This hint will fail exact NCM title and artist verification.',
+          confidence: 0.86,
+          freshness: 'fresh',
+          observedAt: '2026-06-15T08:00:00.000Z'
+        }
+      ])
+    };
+
+    const { CandidatePool } = await import('../../src/server/music-agent/candidates.js');
+    const { createMusicAgentTools } = await import('../../src/server/music-agent/tools.js');
+    const candidatePool = new CandidatePool();
+    const tools = createMusicAgentTools({
+      userId: 'web-discovery-track-verify',
+      ncmClient: ncmClient as any,
+      webMusicDiscoveryProvider,
+      context: {
+        request: 'auto-fill',
+        discoveryMode: 'explore',
+        currentUserText: '探索几首类似 Ben Howard 的民谣新歌',
+        currentMoment: { localTime: '周一 16:00', daypart: '下午', weather: null },
+        activeDirective: '',
+        currentPlanSegment: null,
+        tasteSummary: '',
+        recentPreferenceSummary: '',
+        recentPlaySignals: '',
+        queueStateSummary: '',
+        bannedSummary: ''
+      },
+      candidatePool,
+      budget: {
+        maxMs: 10_000,
+        maxSteps: 3,
+        maxLlmCalls: 2,
+        maxToolCalls: 3,
+        maxNcmSearches: 4,
+        maxPlaylistFetches: 0,
+        maxTrendFetchMs: 0,
+        maxCandidates: 20
+      },
+      targetPickCount: 5
+    });
+
+    const observation = await tools.web_music_discovery?.({
+      intent: '探索几首类似 Ben Howard 的民谣新歌',
+      focus: 'similar_tracks',
+      anchors: [{ type: 'artist', name: 'Ben Howard' }],
+      freshness: 'recent',
+      maxHints: 3
+    });
+
+    expect(webMusicDiscoveryProvider.discover).toHaveBeenCalledWith(
+      expect.objectContaining({
+        intent: '探索几首类似 Ben Howard 的民谣新歌',
+        focus: 'similar_tracks',
+        maxHints: 3
+      }),
+      expect.any(Object)
+    );
+    expect(ncmClient.searchSongs).not.toHaveBeenCalled();
+    expect(candidatePool.list()).toHaveLength(0);
+    expect(observation?.candidateCount).toBe(0);
+    expect(observation?.summary).toContain('web discovery returned 3 hints');
+    expect(observation?.data?.hints).toEqual([
+      expect.objectContaining({
+        kind: 'track',
+        name: 'Only Love',
+        artist: 'Ben Howard',
+        sourceUrl: 'https://example.com/ben-howard'
+      }),
+      expect.objectContaining({ name: 'Loose Untitled Hint' }),
+      expect.objectContaining({ name: 'Wrong Song' })
+    ]);
+  });
+
+  it('verifies web discovery hints through recall_from_entities before adding candidates', async () => {
+    const ncmClient = {
+      getLikedSongIds: vi.fn(async () => []),
+      getSongDetails: vi.fn(async () => []),
+      searchSongs: vi.fn(async (query: string) => {
+        if (query === 'Only Love Ben Howard') {
+          return [
+            { id: 9301, name: 'Only Love', artists: ['Ben Howard'] },
+            { id: 9302, name: 'Only Love', artists: ['Wrong Artist'] }
+          ];
+        }
+        return [{ id: 9303, name: 'Wrong Song', artists: ['Wrong Artist'] }];
+      }),
+      getPlaylistDetail: vi.fn(async () => null)
+    };
+
+    const { CandidatePool } = await import('../../src/server/music-agent/candidates.js');
+    const { createMusicAgentTools } = await import('../../src/server/music-agent/tools.js');
+    const candidatePool = new CandidatePool();
+    const tools = createMusicAgentTools({
+      userId: 'web-discovery-hint-verify',
+      ncmClient: ncmClient as any,
+      context: {
+        request: 'auto-fill',
+        discoveryMode: 'explore',
+        currentUserText: '探索几首类似 Ben Howard 的民谣新歌',
+        currentMoment: { localTime: '周一 16:00', daypart: '下午', weather: null },
+        activeDirective: '',
+        currentPlanSegment: null,
+        tasteSummary: '',
+        recentPreferenceSummary: '',
+        recentPlaySignals: '',
+        queueStateSummary: '',
+        bannedSummary: ''
+      },
+      candidatePool,
+      budget: {
+        maxMs: 10_000,
+        maxSteps: 3,
+        maxLlmCalls: 2,
+        maxToolCalls: 3,
+        maxNcmSearches: 4,
+        maxPlaylistFetches: 0,
+        maxTrendFetchMs: 0,
+        maxCandidates: 20
+      },
+      targetPickCount: 5
+    });
+
+    const observation = await tools.recall_from_entities?.({
+      hints: [
+        {
+          kind: 'track',
+          name: 'Only Love',
+          artist: 'Ben Howard',
+          sourceUrl: 'https://example.com/ben-howard',
+          snippet: 'The source names Only Love by Ben Howard.',
+          confidence: 0.88,
+          freshness: 'durable',
+          observedAt: '2026-06-15T08:00:00.000Z'
+        },
+        {
+          kind: 'track',
+          name: 'Loose Untitled Hint',
+          sourceUrl: 'https://example.com/loose',
+          snippet: 'This hint lacks an artist and must not become a playable candidate.',
+          confidence: 0.9,
+          freshness: 'fresh',
+          observedAt: '2026-06-15T08:00:00.000Z'
+        },
+        {
+          kind: 'track',
+          name: 'Wrong Song',
+          artist: 'Ben Howard',
+          sourceUrl: 'https://example.com/wrong',
+          snippet: 'This hint will fail exact NCM title and artist verification.',
+          confidence: 0.86,
+          freshness: 'fresh',
+          observedAt: '2026-06-15T08:00:00.000Z'
+        }
+      ]
+    });
+
+    expect(ncmClient.searchSongs).toHaveBeenCalledWith('Only Love Ben Howard', 5);
+    expect(candidatePool.list()).toHaveLength(1);
+    expect(candidatePool.get('9301')).toMatchObject({
+      id: '9301',
+      name: 'Only Love',
+      artist: 'Ben Howard',
+      sources: ['search']
+    });
+    expect(candidatePool.get('9302')).toBeUndefined();
+    expect(candidatePool.get('9303')).toBeUndefined();
+    expect(observation?.summary).toContain('entity recall expanded 2 entities and added 1 candidates');
+    expect(observation?.problems).toContain('web track hint skipped: missing artist for Loose Untitled Hint');
+    expect(observation?.problems).toContain('track entity rejected: Wrong Song - Ben Howard');
+  });
+
+  it('denies web discovery in comfort mode without calling the provider', async () => {
+    const ncmClient = {
+      getLikedSongIds: vi.fn(async () => []),
+      getSongDetails: vi.fn(async () => []),
+      searchSongs: vi.fn(async () => []),
+      getPlaylistDetail: vi.fn(async () => null)
+    };
+    const webMusicDiscoveryProvider = {
+      discover: vi.fn(async () => [])
+    };
+
+    const { CandidatePool } = await import('../../src/server/music-agent/candidates.js');
+    const { createMusicAgentTools } = await import('../../src/server/music-agent/tools.js');
+    const candidatePool = new CandidatePool();
+    const tools = createMusicAgentTools({
+      userId: 'web-discovery-comfort-deny',
+      ncmClient: ncmClient as any,
+      webMusicDiscoveryProvider,
+      context: {
+        request: 'auto-fill',
+        discoveryMode: 'comfort',
+        currentUserText: '放几首熟悉的',
+        currentMoment: { localTime: '周一 16:00', daypart: '下午', weather: null },
+        activeDirective: '',
+        currentPlanSegment: null,
+        tasteSummary: '',
+        recentPreferenceSummary: '',
+        recentPlaySignals: '',
+        queueStateSummary: '',
+        bannedSummary: ''
+      },
+      candidatePool,
+      budget: {
+        maxMs: 10_000,
+        maxSteps: 3,
+        maxLlmCalls: 2,
+        maxToolCalls: 3,
+        maxNcmSearches: 4,
+        maxPlaylistFetches: 0,
+        maxTrendFetchMs: 0,
+        maxCandidates: 20
+      },
+      targetPickCount: 5
+    });
+
+    const observation = await tools.web_music_discovery?.({
+      intent: '放几首熟悉的',
+      focus: 'similar_tracks'
+    });
+
+    expect(webMusicDiscoveryProvider.discover).not.toHaveBeenCalled();
+    expect(observation?.candidateCount).toBe(0);
+    expect(observation?.problems).toContain('web discovery denied: discovery mode is comfort');
+  });
+
+  it('allows only one web discovery call per tool registry run', async () => {
+    const ncmClient = {
+      getLikedSongIds: vi.fn(async () => []),
+      getSongDetails: vi.fn(async () => []),
+      searchSongs: vi.fn(async () => []),
+      getPlaylistDetail: vi.fn(async () => null)
+    };
+    const webMusicDiscoveryProvider = {
+      discover: vi.fn(async () => [])
+    };
+
+    const { CandidatePool } = await import('../../src/server/music-agent/candidates.js');
+    const { createMusicAgentTools } = await import('../../src/server/music-agent/tools.js');
+    const candidatePool = new CandidatePool();
+    const tools = createMusicAgentTools({
+      userId: 'web-discovery-once',
+      ncmClient: ncmClient as any,
+      webMusicDiscoveryProvider,
+      context: {
+        request: 'auto-fill',
+        discoveryMode: 'explore',
+        currentUserText: '探索一些新的 indie folk',
+        currentMoment: { localTime: '周一 16:00', daypart: '下午', weather: null },
+        activeDirective: '',
+        currentPlanSegment: null,
+        tasteSummary: '',
+        recentPreferenceSummary: '',
+        recentPlaySignals: '',
+        queueStateSummary: '',
+        bannedSummary: ''
+      },
+      candidatePool,
+      budget: {
+        maxMs: 10_000,
+        maxSteps: 3,
+        maxLlmCalls: 2,
+        maxToolCalls: 3,
+        maxNcmSearches: 4,
+        maxPlaylistFetches: 0,
+        maxTrendFetchMs: 0,
+        maxCandidates: 20
+      },
+      targetPickCount: 5
+    });
+
+    const first = await tools.web_music_discovery?.({
+      intent: '探索一些新的 indie folk',
+      focus: 'scene_overview',
+      maxHints: 2
+    });
+    const second = await tools.web_music_discovery?.({
+      intent: '探索一些新的 indie folk',
+      focus: 'scene_overview',
+      maxHints: 2
+    });
+
+    expect(webMusicDiscoveryProvider.discover).toHaveBeenCalledTimes(1);
+    expect(first?.summary).toContain('web discovery returned 0 hints');
+    expect(second?.problems).toContain('web discovery denied: already called in this run');
+  });
+
+  it('auto-fill mix sends a tight web discovery request and recalls one track per web artist hint', async () => {
+    const ncmClient = {
+      getLikedSongIds: vi.fn(async () => []),
+      getSongDetails: vi.fn(async () => []),
+      searchSongs: vi.fn(async () => []),
+      searchArtists: vi.fn(async (query: string) => query === 'Web Artist'
+        ? [{ id: 'web-artist', name: 'Web Artist' }]
+        : []),
+      getArtistTopSongs: vi.fn(async () => [
+        { id: 'web-auto-1', name: 'Quiet Harbor', artists: ['Web Artist'] },
+        { id: 'web-auto-2', name: 'Loud Harbor', artists: ['Web Artist'] }
+      ]),
+      getPlaylistDetail: vi.fn(async () => null)
+    };
+    const webMusicDiscoveryProvider = {
+      discover: vi.fn(async () => [
+        {
+          kind: 'artist',
+          name: 'Web Artist',
+          styles: ['cantopop'],
+          sourceUrl: 'https://example.com/quiet-harbor',
+          snippet: 'The source names Web Artist in a cantopop scene note.',
+          confidence: 0.86,
+          freshness: 'durable',
+          observedAt: '2026-06-15T08:00:00.000Z'
+        }
+      ])
+    };
+
+    const { CandidatePool } = await import('../../src/server/music-agent/candidates.js');
+    const { createMusicAgentTools } = await import('../../src/server/music-agent/tools.js');
+    const candidatePool = new CandidatePool();
+    const tools = createMusicAgentTools({
+      userId: 'web-discovery-auto-fill-mix',
+      ncmClient: ncmClient as any,
+      webMusicDiscoveryProvider,
+      context: {
+        request: 'auto-fill',
+        discoveryMode: 'explore',
+        currentUserText: '探索一些适合现在的粤语/港乐',
+        currentMoment: { localTime: '周一 16:00', daypart: '下午', weather: null },
+        activeDirective: '',
+        currentPlanSegment: '下午工作；mood=珍惜与守护；tracks=给自己的信 — 钟舒漫、Mr. Curiosity — Jason Mraz',
+        tasteSummary: '长期画像很长：最近很多 Slipknot、metal、indie folk、近年的新歌都听过，也喜欢英文歌。',
+        recentPreferenceSummary: '近期偏好 近年的新歌、独立民谣、Slipknot、高能量 metal。',
+        recentPlaySignals: '',
+        queueStateSummary: '',
+        bannedSummary: ''
+      },
+      candidatePool,
+      budget: {
+        maxMs: 10_000,
+        maxSteps: 3,
+        maxLlmCalls: 2,
+        maxToolCalls: 3,
+        maxNcmSearches: 6,
+        maxPlaylistFetches: 0,
+        maxTrendFetchMs: 0,
+        maxCandidates: 20
+      },
+      targetPickCount: 5
+    });
+
+    const observation = await tools.recall_auto_fill_mix?.({});
+
+    expect(webMusicDiscoveryProvider.discover).toHaveBeenCalledTimes(1);
+    const providerInput = webMusicDiscoveryProvider.discover.mock.calls[0]?.[0];
+    expect(providerInput).toMatchObject({
+      focus: 'style_artists',
+      anchors: [{ type: 'style', name: 'cantopop' }],
+      freshness: 'durable',
+      maxHints: 8
+    });
+    expect(providerInput.intent).toContain('粤语');
+    expect(providerInput.intent).not.toContain('Slipknot');
+    expect(providerInput.intent).not.toContain('近年的新歌');
+    expect(ncmClient.searchArtists).toHaveBeenCalledWith('Web Artist', 3);
+    expect(ncmClient.getArtistTopSongs).toHaveBeenCalledWith('web-artist');
+    expect(candidatePool.get('web-auto-1')).toMatchObject({
+      id: 'web-auto-1',
+      name: 'Quiet Harbor',
+      artist: 'Web Artist',
+      sources: ['search']
+    });
+    expect(candidatePool.get('web-auto-2')).toBeUndefined();
+    expect(observation?.summary).toContain('web discovery returned 1 hints');
+    expect(observation?.summary).toContain('web hint entity recall added 1 candidates');
   });
 
   it('recalls providerId-backed track and playlist entities without search re-resolution', async () => {

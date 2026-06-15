@@ -159,11 +159,52 @@ type DjPickLog = {
   searchQueries: string[];
   searchedTracks: DjTrackSample[];
   selectedTracks: DjSelectedTrack[];
+  searchResultCount: number;
+  searchAddedCount: number;
+  searchSelectedCount: number;
   totalCandidates: number;
   selectedSay: string;
 };
 
-function buildDjPickDoneLog(data: Record<string, unknown>): DjPickLog | null {
+type DjQueryFunnelEntry = {
+  resultCount: number;
+  addedCount: number;
+  selectedCount: number;
+};
+
+function numericField(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0;
+}
+
+function queryFunnelEntries(value: unknown): DjQueryFunnelEntry[] {
+  if (!Array.isArray(value)) return [];
+  return value.map((entry): DjQueryFunnelEntry | null => {
+    if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) return null;
+    const record = entry as Record<string, unknown>;
+    return {
+      resultCount: numericField(record.resultCount),
+      addedCount: numericField(record.addedCount),
+      selectedCount: numericField(record.selectedCount)
+    };
+  }).filter((entry): entry is DjQueryFunnelEntry => entry !== null);
+}
+
+export function buildDjPickDebugLog(data: Record<string, unknown>): DjPickLog {
+  const queryFunnel = queryFunnelEntries(data.queryFunnel);
+  return {
+    likedSample: Array.isArray(data.likedSample) ? data.likedSample as DjTrackSample[] : [],
+    searchQueries: Array.isArray(data.searchQueries) ? data.searchQueries as string[] : [],
+    searchedTracks: Array.isArray(data.searchedTracks) ? data.searchedTracks as DjTrackSample[] : [],
+    selectedTracks: Array.isArray(data.selectedTracks) ? data.selectedTracks as DjSelectedTrack[] : [],
+    searchResultCount: queryFunnel.reduce((sum, entry) => sum + entry.resultCount, 0),
+    searchAddedCount: queryFunnel.reduce((sum, entry) => sum + entry.addedCount, 0),
+    searchSelectedCount: queryFunnel.reduce((sum, entry) => sum + entry.selectedCount, 0),
+    totalCandidates: numericField(data.totalCandidates),
+    selectedSay: typeof data.selectedSay === 'string' ? data.selectedSay : ''
+  };
+}
+
+export function buildDjPickDoneLog(data: Record<string, unknown>): DjPickLog | null {
   const trackNames = getDjPickDoneTrackNames(data);
   const trackIds = Array.isArray(data.trackIds)
     ? data.trackIds.map((id) => String(id))
@@ -182,6 +223,9 @@ function buildDjPickDoneLog(data: Record<string, unknown>): DjPickLog | null {
       reason: '已加入队列',
       source: 'done'
     })),
+    searchResultCount: 0,
+    searchAddedCount: 0,
+    searchSelectedCount: 0,
     totalCandidates: typeof data.totalCandidates === 'number' ? data.totalCandidates : 0,
     selectedSay: addedCount > 0 ? `本次补充 ${addedCount} 首。` : ''
   };
@@ -1112,9 +1156,6 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
                 const candidateScoreTable = Array.isArray(data.candidateScoreTable)
                   ? data.candidateScoreTable as CandidateScoreTableRow[]
                   : [];
-                const selectedTracks = Array.isArray(data.selectedTracks)
-                  ? data.selectedTracks as DjSelectedTrack[]
-                  : [];
                 console.info('[Crossfadio] DJ pick-next exclusion list', {
                   excludedIds,
                   excludedDedupeKeys,
@@ -1125,14 +1166,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
                   console.info('[Crossfadio] DJ pick-next candidate scores');
                   console.table(candidateScoreTable);
                 }
-                setDjPickLog({
-                  likedSample: Array.isArray(data.likedSample) ? data.likedSample as DjTrackSample[] : [],
-                  searchQueries: Array.isArray(data.searchQueries) ? data.searchQueries as string[] : [],
-                  searchedTracks: Array.isArray(data.searchedTracks) ? data.searchedTracks as DjTrackSample[] : [],
-                  selectedTracks,
-                  totalCandidates: typeof data.totalCandidates === 'number' ? data.totalCandidates : 0,
-                  selectedSay: typeof data.selectedSay === 'string' ? data.selectedSay : '',
-                });
+                setDjPickLog(buildDjPickDebugLog(data));
               } else if (type === 'dj.pick-next.done') {
                 console.info('[Crossfadio] DJ pick-next done', data);
                 if (data.added) {
@@ -2001,7 +2035,8 @@ function DjStatusDock({
               ) : null}
               <div className="flex flex-wrap gap-x-4 gap-y-1 text-[10px] text-zinc-500">
                 <span>红心采样 <span className="text-zinc-300">{djPickLog.likedSample.length}</span> 首</span>
-                <span>搜索命中 <span className="text-zinc-300">{djPickLog.searchedTracks.length}</span> 首</span>
+                <span>搜索返回 <span className="text-zinc-300">{djPickLog.searchResultCount}</span> 首</span>
+                <span>搜索入池 <span className="text-zinc-300">{djPickLog.searchAddedCount}</span> 首</span>
                 <span>候选池 <span className="text-cyan-300">{djPickLog.totalCandidates}</span> 首</span>
               </div>
             </div>

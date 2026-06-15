@@ -1518,6 +1518,98 @@ describe('runMusicAgentLoop', () => {
     }));
   });
 
+  it('lets web discovery run on an empty explore pool and then verifies hints through entity recall', async () => {
+    const pool = new CandidatePool();
+    const llmClient = new LoopFakeLlmClient([
+      JSON.stringify({
+        type: 'tool_call',
+        tool: 'web_music_discovery',
+        input: {
+          intent: '探索类似 Ben Howard 的民谣新歌',
+          focus: 'similar_tracks',
+          maxHints: 2
+        }
+      }),
+      JSON.stringify({
+        type: 'tool_call',
+        tool: 'recall_from_entities',
+        input: {
+          hints: [{
+            kind: 'track',
+            name: 'Only Love',
+            artist: 'Ben Howard',
+            sourceUrl: 'https://example.com/ben-howard',
+            snippet: 'The source names Only Love by Ben Howard.',
+            confidence: 0.88,
+            freshness: 'durable',
+            observedAt: '2026-06-15T08:00:00.000Z'
+          }]
+        }
+      }),
+      JSON.stringify({
+        type: 'final',
+        say: '我用网页线索校验后的候选来选。',
+        picks: [{ id: 'web-verified-1', reason: '网页 hint 经 NCM 校验后贴合当前探索意图', source: 'search' }],
+        rejected: []
+      })
+    ]);
+    const calls: string[] = [];
+
+    const result = await runMusicAgentLoop({
+      llmClient,
+      context: context({
+        request: 'auto-fill',
+        discoveryMode: 'explore',
+        currentUserText: '探索类似 Ben Howard 的民谣新歌'
+      }),
+      candidatePool: pool,
+      tools: {
+        web_music_discovery: async () => {
+          calls.push('web_music_discovery');
+          return {
+            summary: 'web discovery returned 1 hints from 1 raw hints.',
+            candidateCount: pool.count(),
+            data: {
+              hints: [{
+                kind: 'track',
+                name: 'Only Love',
+                artist: 'Ben Howard',
+                sourceUrl: 'https://example.com/ben-howard',
+                snippet: 'The source names Only Love by Ben Howard.',
+                confidence: 0.88,
+                freshness: 'durable',
+                observedAt: '2026-06-15T08:00:00.000Z'
+              }]
+            }
+          };
+        },
+        recall_from_entities: async () => {
+          calls.push('recall_from_entities');
+          pool.upsert(candidate({
+            id: 'web-verified-1',
+            name: 'Only Love',
+            artist: 'Ben Howard',
+            sources: ['search']
+          }));
+          return { summary: 'entity recall expanded 1 entities and added 1 candidates', candidateCount: pool.count() };
+        },
+        recall_auto_fill_mix: async () => {
+          throw new Error('web discovery should not be rewritten to auto-fill mix');
+        }
+      },
+      budget: budget({ maxLlmCalls: 4, maxSteps: 4, maxToolCalls: 3 }),
+      targetPickCount: 1
+    });
+
+    expect(result.status).toBe('ok');
+    expect(result.say).toBe('我用网页线索校验后的候选来选。');
+    expect(result.picks.map((pick) => pick.id)).toEqual(['web-verified-1']);
+    expect(calls).toEqual(['web_music_discovery', 'recall_from_entities']);
+    expect(result.trace[0]).toMatchObject({ tool: 'web_music_discovery' });
+    expect(result.trace[0].rewriteReason).toBeUndefined();
+    expect(JSON.stringify(llmClient.calls[1].messages)).toContain('Only Love');
+  });
+
   it('prefers one aggregate auto-fill recall tool so rank still has budget', async () => {
     const pool = new CandidatePool();
     const fallbackLogger = vi.fn();
@@ -2000,25 +2092,24 @@ describe('runMusicAgentLoop', () => {
     });
   });
 
-  it('uses extra final for liked-only fallback pool after external recall makes no progress', async () => {
+  it('runs post-expand recall before final for liked-only fallback pools', async () => {
     const pool = new CandidatePool();
     const llmClient = new LoopFakeLlmClient([
       JSON.stringify({ type: 'tool_call', tool: 'get_context_summary', input: {} }),
       JSON.stringify({ type: 'tool_call', tool: 'expand_queries', input: {} }),
       JSON.stringify({
         type: 'final',
-        say: '外部召回失败后，我从红心兜底池里选。',
+        say: '我用扩展后的搜索候选先锚定这一批。',
         picks: [
-          { id: 'liked-1', reason: '红心兜底里最贴合当前氛围', source: 'liked' },
-          { id: 'liked-2', reason: '红心兜底保持熟悉度', source: 'liked' },
-          { id: 'liked-3', reason: '红心兜底补足连续性', source: 'liked' },
-          { id: 'liked-4', reason: '红心兜底避免空播', source: 'liked' },
-          { id: 'liked-5', reason: '红心兜底完成批次', source: 'liked' }
+          { id: 'search-1', reason: '扩展查询后召回的新候选更贴近当前方向', source: 'search' },
+          { id: 'search-2', reason: '避免只从红心兜底池里选择', source: 'search' },
+          { id: 'search-3', reason: '提供足够外部候选锚点', source: 'search' }
         ],
         rejected: []
       })
     ]);
     const calls: string[] = [];
+    let autoFillCalls = 0;
 
     const result = await runMusicAgentLoop({
       llmClient,
@@ -2026,12 +2117,23 @@ describe('runMusicAgentLoop', () => {
       candidatePool: pool,
       tools: {
         recall_auto_fill_mix: async () => {
-          calls.push('recall_auto_fill_mix');
+          autoFillCalls += 1;
+          calls.push(`recall_auto_fill_mix:${autoFillCalls}`);
+          if (autoFillCalls === 2) {
+            for (let index = 1; index <= 3; index += 1) {
+              pool.upsert(candidate({
+                id: `search-${index}`,
+                name: `Search ${index}`,
+                artist: `Search Artist ${index}`,
+                sources: ['search']
+              }));
+            }
+          }
           return { summary: 'auto-fill mix added 0 candidates', candidateCount: pool.count() };
         },
         recall_from_liked: async () => {
           calls.push('recall_from_liked');
-          for (let index = 1; index <= 5; index += 1) {
+          for (let index = 1; index <= 4; index += 1) {
             pool.upsert(candidate({
               id: `liked-${index}`,
               name: `Liked ${index}`,
@@ -2051,9 +2153,9 @@ describe('runMusicAgentLoop', () => {
     });
 
     expect(result.status).toBe('ok');
-    expect(result.say).toBe('外部召回失败后，我从红心兜底池里选。');
-    expect(result.picks.map((pick) => pick.id)).toEqual(['liked-1', 'liked-2', 'liked-3', 'liked-4', 'liked-5']);
-    expect(calls).toEqual(['recall_auto_fill_mix', 'recall_from_liked', 'expand_queries']);
+    expect(result.say).toBe('我用扩展后的搜索候选先锚定这一批。');
+    expect(result.picks.map((pick) => pick.id)).toEqual(['search-1', 'search-2', 'search-3']);
+    expect(calls).toEqual(['recall_auto_fill_mix:1', 'recall_from_liked', 'expand_queries', 'recall_auto_fill_mix:2']);
     expect(result.picks.every((pick) => pick.reason !== 'ranked fallback')).toBe(true);
   });
 

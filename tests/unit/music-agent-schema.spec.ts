@@ -4,11 +4,13 @@ import {
   finalPickDiagnosticsSchema,
   musicAgentLoopOutputSchema,
   musicAgentToolNameSchema,
+  musicEntityHintSchema,
   musicCandidateSchema,
   musicAgentFinalOutputSchema,
   musicAgentRunOutputSchema,
   queryPlanSchema,
-  queryFunnelEntrySchema
+  queryFunnelEntrySchema,
+  webMusicDiscoveryInputSchema
 } from '../../src/server/music-agent/schema';
 
 describe('music-agent schema', () => {
@@ -25,6 +27,7 @@ describe('music-agent schema', () => {
     expect(musicAgentToolNameSchema.parse('recall_from_trending')).toBe('recall_from_trending');
     expect(musicAgentToolNameSchema.parse('recall_from_style_expansion')).toBe('recall_from_style_expansion');
     expect(musicAgentToolNameSchema.parse('recall_auto_fill_mix')).toBe('recall_auto_fill_mix');
+    expect(musicAgentToolNameSchema.parse('web_music_discovery')).toBe('web_music_discovery');
     expect(musicAgentToolNameSchema.parse('rank_candidates')).toBe('rank_candidates');
     expect(musicAgentToolNameSchema.parse('diversify_candidates')).toBe('diversify_candidates');
     expect(musicAgentToolNameSchema.parse('finalize_pick')).toBe('finalize_pick');
@@ -141,6 +144,34 @@ describe('music-agent schema', () => {
     expect(plan.styleHints).toEqual(['city pop']);
     expect(plan.listeningConstraints).toEqual(['下午', '中低能量']);
     expect(plan.intentQueries).toEqual([]);
+  });
+
+  it('validates web music discovery inputs and sourced entity hints', () => {
+    const input = webMusicDiscoveryInputSchema.parse({
+      intent: '探索几首类似 Saint Etienne 的轻快女声',
+      focus: 'similar_tracks',
+      anchors: [{ type: 'artist', name: 'Saint Etienne' }],
+      locale: 'global',
+      freshness: 'recent',
+      maxHints: 4
+    });
+    const hint = musicEntityHintSchema.parse({
+      kind: 'track',
+      name: 'Nothing Can Stop Us',
+      artist: 'Saint Etienne',
+      styles: ['indie pop'],
+      sourceUrl: 'https://example.com/scene',
+      sourceTitle: 'Scene note',
+      snippet: 'A sourced note that names the track and artist.',
+      confidence: 0.82,
+      freshness: 'fresh',
+      observedAt: '2026-06-15T08:00:00.000Z'
+    });
+
+    expect(input.focus).toBe('similar_tracks');
+    expect(input.maxHints).toBe(4);
+    expect(hint.kind).toBe('track');
+    expect(hint.sourceUrl).toBe('https://example.com/scene');
   });
 
   it('validates final MusicAgent output', () => {

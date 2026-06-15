@@ -9,9 +9,12 @@ import {
 } from './rank.js';
 import { buildTrendContext, type TrendCapableNcmClient } from './trends.js';
 import {
+  musicEntityHintSchema,
   queryPlanSchema,
+  webMusicDiscoveryInputSchema,
   type AgentBudget,
   type CandidateSource,
+  type MusicEntityHint,
   type MusicAgentContextSummary,
   type MusicCandidateQualitySignals,
   type MusicAgentToolName,
@@ -19,7 +22,8 @@ import {
   type MusicCandidateScores,
   type QueryFunnelEntry,
   type QueryPlan,
-  type TrendContext
+  type TrendContext,
+  type WebMusicDiscoveryInput
 } from './schema.js';
 import type { CandidatePool, CandidatePoolRejectReason } from './candidates.js';
 import {
@@ -34,11 +38,13 @@ import {
   findSimilarMusicEntities,
   type MusicEntityRecord as StoredMusicEntityRecord
 } from '../store/music-entities.js';
+import type { WebMusicDiscoveryProvider } from './web-discovery.js';
 
 export type ToolObservation = {
   summary: string;
   candidateCount: number;
   problems?: string[];
+  data?: Record<string, unknown>;
 };
 
 export type MusicAgentTool = (
@@ -87,6 +93,9 @@ export type CreateMusicAgentToolsInput = {
   targetPickCount?: number;
   embeddingClient?: MusicAgentEmbeddingClient | null;
   embeddingModel?: string | null;
+  webMusicDiscoveryProvider?: WebMusicDiscoveryProvider | null;
+  maxWebDiscoveryMs?: number;
+  maxWebDiscoveryHints?: number;
 };
 
 type NcmTrackLike = {
@@ -121,6 +130,7 @@ type ToolState = {
   playlistFetches: number;
   qualityPreparedIds: Set<string>;
   queryFunnel: Map<string, QueryFunnelAccumulator>;
+  webDiscoveryCalled: boolean;
 };
 
 type UpsertTracksResult = {
@@ -171,6 +181,14 @@ const QUALITY_DETAIL_BATCH_LIMIT = 80;
 const QUALITY_SOURCES = new Set<CandidateSource>(['search', 'style_expansion', 'trend']);
 const MAX_RECALL_QUERY_COUNT = 8;
 const AUTO_FILL_MIN_RECALL_NON_LIKED_TARGET = 8;
+const DEFAULT_WEB_DISCOVERY_TIMEOUT_MS = 6_000;
+const DEFAULT_WEB_DISCOVERY_HINT_LIMIT = 6;
+const AUTO_FILL_WEB_DISCOVERY_HINT_LIMIT = 8;
+const WEB_DISCOVERY_ENTITY_RECALL_LIMIT = 1;
+const WEB_DISCOVERY_INTENT_MAX_CHARS = 360;
+const WEB_DISCOVERY_MAX_HINT_LIMIT = 12;
+const WEB_DISCOVERY_COOLDOWN_MS = 20 * 60 * 1000;
+const WEB_HINT_MIN_CONFIDENCE = 0.45;
 const SEMANTIC_ONLY_QUERY_PROBLEM = 'skipped semantic-only queries; use semantic discovery before NCM song search';
 const SEMANTIC_SONG_SEARCH_PATTERNS = [
   /\b(city\s*pop|indie\s*pop|dream\s*pop|synth[-\s]*pop|cantopop|neo\s*soul|nu\s*jazz|downtempo|electropop)\b/i,
@@ -182,6 +200,29 @@ const SEMANTIC_SONG_SEARCH_PATTERNS = [
 ];
 const likedRecallCache = new Map<string, CacheEntry<NcmTrackLike[]>>();
 const searchRecallCache = new Map<string, CacheEntry<NcmTrackLike[]>>();
+const webDiscoveryCooldowns = new Map<string, number>();
+const WEB_DISCOVERY_STYLE_PATTERNS: Array<{ pattern: RegExp; style: string; priority: number }> = [
+  { pattern: /cantopop|粤语流行|粤语|港乐|香港流行/i, style: 'cantopop', priority: 24 },
+  { pattern: /city\s*pop|城市流行/i, style: 'city pop', priority: 22 },
+  { pattern: /indie\s*folk|独立民谣/i, style: 'indie folk', priority: 21 },
+  { pattern: /folk|民谣/i, style: 'folk', priority: 18 },
+  { pattern: /singer[-\s]*songwriter|唱作/i, style: 'singer-songwriter', priority: 17 },
+  { pattern: /indie\s*pop|独立流行/i, style: 'indie pop', priority: 16 },
+  { pattern: /dream\s*pop|梦幻流行/i, style: 'dream pop', priority: 15 },
+  { pattern: /synth[-\s]*pop|合成器流行/i, style: 'synth pop', priority: 14 },
+  { pattern: /neo\s*soul|新灵魂/i, style: 'neo soul', priority: 13 },
+  { pattern: /r\s*&?\s*b|节奏布鲁斯/i, style: 'r&b', priority: 12 },
+  { pattern: /jazz|爵士/i, style: 'jazz', priority: 11 },
+  { pattern: /ambient|氛围/i, style: 'ambient', priority: 10 },
+  { pattern: /downtempo|缓拍/i, style: 'downtempo', priority: 9 },
+  { pattern: /alternative\s*rock|另类摇滚/i, style: 'alternative rock', priority: 8 },
+  { pattern: /indie\s*rock|独立摇滚/i, style: 'indie rock', priority: 7 },
+  { pattern: /j[-\s]*pop|日语|日系/i, style: 'j-pop', priority: 6 },
+  { pattern: /k[-\s]*pop|韩语|韩系/i, style: 'k-pop', priority: 5 },
+  { pattern: /c[-\s]*pop|华语|中文|mandarin/i, style: 'c-pop', priority: 4 }
+];
+const HARD_MISMATCH_WEB_ARTIST_PATTERN =
+  /\b(slipknot|metallica|megadeth|slayer|korn|limp bizkit|pantera|system of a down)\b/i;
 
 export function createMusicAgentTools(input: CreateMusicAgentToolsInput): MusicAgentToolRegistry {
   const state: ToolState = {
@@ -190,7 +231,8 @@ export function createMusicAgentTools(input: CreateMusicAgentToolsInput): MusicA
     ncmSearches: 0,
     playlistFetches: 0,
     qualityPreparedIds: new Set(),
-    queryFunnel: new Map()
+    queryFunnel: new Map(),
+    webDiscoveryCalled: false
   };
   const limits = {
     maxNcmSearches: input.maxNcmSearches ?? input.budget.maxNcmSearches,
@@ -370,10 +412,12 @@ export function createMusicAgentTools(input: CreateMusicAgentToolsInput): MusicA
 
     recall_from_entities: async (toolInput, signal) => {
       if (signal?.aborted) return abortedObservation(input.candidatePool);
-      const entities = parseEntityHypotheses(toolInput).slice(0, MAX_ENTITY_RECALL_COUNT);
+      const parsedInput = parseEntityRecallInput(toolInput);
+      const entities = parsedInput.entities.slice(0, MAX_ENTITY_RECALL_COUNT);
       if (entities.length === 0) {
         return observation(input.candidatePool, 'entity recall skipped: no entities.', [
-          'no music entities provided'
+          'no music entities provided',
+          ...parsedInput.problems
         ]);
       }
 
@@ -386,7 +430,7 @@ export function createMusicAgentTools(input: CreateMusicAgentToolsInput): MusicA
         ].map(primaryArtist).filter(Boolean)
       );
       const artistCounts = countPrimaryArtists(input.candidatePool.list());
-      const problems: string[] = [];
+      const problems: string[] = [...parsedInput.problems];
       let added = 0;
 
       for (const entity of entities) {
@@ -502,8 +546,43 @@ export function createMusicAgentTools(input: CreateMusicAgentToolsInput): MusicA
       });
       summaries.push(trend.summary);
       problems.push(...(trend.problems ?? []));
+      if (hasEnoughAutoFillNonLikedCandidates(input.candidatePool, input.targetPickCount)) {
+        return observation(input.candidatePool, `auto-fill mix: ${summaries.join(' | ')}`, problems);
+      }
+
+      const web = await webMusicDiscovery({
+        toolInput: autoFillWebDiscoveryInput(input.context, state.queryPlan),
+        input,
+        state,
+        signal
+      });
+      summaries.push(web.summary);
+      problems.push(...(web.problems ?? []));
+      if (web.data?.hints) {
+        const webRecall = await recallFromWebDiscoveryHints({
+          hints: web.data.hints,
+          input,
+          state,
+          maxSearches: limits.maxNcmSearches,
+          maxPlaylistFetches: limits.maxPlaylistFetches,
+          signal,
+          limit: WEB_DISCOVERY_ENTITY_RECALL_LIMIT
+        });
+        summaries.push(webRecall.summary);
+        problems.push(...webRecall.problems);
+      }
 
       return observation(input.candidatePool, `auto-fill mix: ${summaries.join(' | ')}`, problems);
+    },
+
+    web_music_discovery: async (toolInput, signal) => {
+      if (signal?.aborted) return abortedObservation(input.candidatePool);
+      return webMusicDiscovery({
+        toolInput,
+        input,
+        state,
+        signal
+      });
     },
 
     rank_candidates: async (toolInput, signal) => {
@@ -606,6 +685,425 @@ async function prepareCandidateQuality(
       : 'quality signals already prepared.',
     problems
   );
+}
+
+async function webMusicDiscovery(options: {
+  toolInput: Record<string, unknown>;
+  input: CreateMusicAgentToolsInput;
+  state: ToolState;
+  signal?: AbortSignal;
+}): Promise<ToolObservation> {
+  const discoveryInput = parseWebMusicDiscoveryInput(options.toolInput, options.input);
+  const gate = evaluateWebMusicDiscoveryGate({
+    discoveryInput,
+    input: options.input,
+    state: options.state
+  });
+  const baseData = {
+    allowed: gate.allowed,
+    signals: gate.signals,
+    intentCluster: gate.intentCluster
+  };
+
+  if (!gate.allowed) {
+    return observation(
+      options.input.candidatePool,
+      `web discovery skipped: ${gate.reason}.`,
+      [`web discovery denied: ${gate.reason}`],
+      baseData
+    );
+  }
+  if (!options.input.webMusicDiscoveryProvider) {
+    return observation(
+      options.input.candidatePool,
+      'web discovery unavailable: provider is not configured.',
+      ['web discovery unavailable: provider is not configured'],
+      baseData
+    );
+  }
+
+  options.state.webDiscoveryCalled = true;
+  const maxHints = boundedPositiveInt(
+    options.toolInput.maxHints,
+    options.input.maxWebDiscoveryHints ?? DEFAULT_WEB_DISCOVERY_HINT_LIMIT,
+    Math.min(options.input.maxWebDiscoveryHints ?? WEB_DISCOVERY_MAX_HINT_LIMIT, WEB_DISCOVERY_MAX_HINT_LIMIT)
+  );
+  const request = webMusicDiscoveryInputSchema.parse({
+    ...discoveryInput,
+    maxHints
+  });
+
+  try {
+    const result = await withTimeout(
+      options.input.webMusicDiscoveryProvider.discover(request, { signal: options.signal }),
+      options.input.maxWebDiscoveryMs ?? DEFAULT_WEB_DISCOVERY_TIMEOUT_MS
+    );
+    if (options.signal?.aborted) return abortedObservation(options.input.candidatePool);
+    if (result.timedOut) {
+      setWebDiscoveryCooldown(gate.intentCluster);
+      return observation(
+        options.input.candidatePool,
+        'web discovery timed out before returning hints.',
+        ['web discovery timeout'],
+        { ...baseData, hints: [] }
+      );
+    }
+
+    const parsed = parseMusicEntityHints(result.value, maxHints);
+    setWebDiscoveryCooldown(gate.intentCluster);
+    return observation(
+      options.input.candidatePool,
+      `web discovery returned ${parsed.hints.length} hints from ${result.value.length} raw hints.`,
+      parsed.problems,
+      { ...baseData, hints: parsed.hints }
+    );
+  } catch (error) {
+    setWebDiscoveryCooldown(gate.intentCluster);
+    return observation(
+      options.input.candidatePool,
+      'web discovery failed before returning hints.',
+      [`web discovery failed: ${formatError(error)}`],
+      { ...baseData, hints: [] }
+    );
+  }
+}
+
+function parseWebMusicDiscoveryInput(
+  toolInput: Record<string, unknown>,
+  input: CreateMusicAgentToolsInput
+): WebMusicDiscoveryInput {
+  const intent = stringValue(toolInput.intent) || webDiscoveryIntentText(input.context) || 'music exploration';
+  return webMusicDiscoveryInputSchema.parse({
+    intent,
+    focus: parseWebDiscoveryFocus(toolInput.focus, intent),
+    anchors: objectArrayValue(toolInput.anchors),
+    locale: stringValue(toolInput.locale) || defaultWebDiscoveryLocale(input.context),
+    freshness: stringValue(toolInput.freshness) || defaultWebDiscoveryFreshness(intent),
+    maxHints: boundedPositiveInt(toolInput.maxHints, input.maxWebDiscoveryHints ?? DEFAULT_WEB_DISCOVERY_HINT_LIMIT, WEB_DISCOVERY_MAX_HINT_LIMIT)
+  });
+}
+
+function parseWebDiscoveryFocus(value: unknown, intent: string): WebMusicDiscoveryInput['focus'] {
+  const raw = stringValue(value);
+  const allowed = new Set<WebMusicDiscoveryInput['focus']>([
+    'style_artists',
+    'style_tracks',
+    'similar_artists',
+    'similar_tracks',
+    'new_releases',
+    'scene_overview'
+  ]);
+  if (allowed.has(raw as WebMusicDiscoveryInput['focus'])) return raw as WebMusicDiscoveryInput['focus'];
+  if (/新歌|新音乐|recent|new release|fresh/i.test(intent)) return 'new_releases';
+  if (/类似|相似|similar|like/i.test(intent)) return 'similar_tracks';
+  if (/歌手|artist|艺人/i.test(intent)) return 'style_artists';
+  return 'scene_overview';
+}
+
+function defaultWebDiscoveryLocale(context: MusicAgentContextSummary): WebMusicDiscoveryInput['locale'] {
+  const text = webDiscoveryIntentText(context);
+  return /[一-鿿]/.test(text) ? 'zh-CN' : 'global';
+}
+
+function defaultWebDiscoveryFreshness(intent: string): WebMusicDiscoveryInput['freshness'] {
+  return /新歌|近期|最近|recent|new|fresh|release/i.test(intent) ? 'recent' : 'durable';
+}
+
+function autoFillWebDiscoveryInput(
+  context: MusicAgentContextSummary,
+  queryPlan: QueryPlan | null
+): Record<string, unknown> {
+  const style = selectWebDiscoveryStyle(context, queryPlan);
+  const intent = compactWebDiscoveryIntent(context, queryPlan, style);
+  return {
+    intent,
+    focus: style ? 'style_artists' : 'scene_overview',
+    anchors: style ? [{ type: 'style', name: style }] : [],
+    locale: /[一-鿿]/.test(intent) ? 'zh-CN' : 'global',
+    freshness: hasExplicitRecentWebIntent(context) ? 'recent' : 'durable',
+    maxHints: AUTO_FILL_WEB_DISCOVERY_HINT_LIMIT
+  };
+}
+
+function selectWebDiscoveryStyle(
+  context: MusicAgentContextSummary,
+  queryPlan: QueryPlan | null
+): string {
+  const scores = new Map<string, { score: number; priority: number }>();
+  const addText = (text: string, weight: number) => {
+    if (!text) return;
+    for (const item of WEB_DISCOVERY_STYLE_PATTERNS) {
+      if (!item.pattern.test(text)) continue;
+      const existing = scores.get(item.style) ?? { score: 0, priority: item.priority };
+      scores.set(item.style, {
+        score: existing.score + weight + item.priority / 100,
+        priority: Math.max(existing.priority, item.priority)
+      });
+    }
+  };
+
+  addText([context.currentUserText, ...(context.actionQueries ?? []), context.activeDirective].join(' '), 100);
+  addText(context.currentPlanSegment ?? '', 80);
+  addText([...(queryPlan?.styleHints ?? []), ...(queryPlan?.listeningConstraints ?? [])].join(' '), 70);
+  addText(context.recentPreferenceSummary, 25);
+  addText(context.tasteSummary, 15);
+
+  return [...scores.entries()]
+    .sort((left, right) => {
+      const scoreDelta = right[1].score - left[1].score;
+      if (scoreDelta !== 0) return scoreDelta;
+      return right[1].priority - left[1].priority;
+    })[0]?.[0] ?? '';
+}
+
+function compactWebDiscoveryIntent(
+  context: MusicAgentContextSummary,
+  queryPlan: QueryPlan | null,
+  style: string
+): string {
+  const parts = uniqueStrings([
+    context.currentUserText,
+    ...(context.actionQueries ?? []),
+    context.activeDirective,
+    context.currentPlanSegment ?? '',
+    style ? `style:${style}` : '',
+    ...(queryPlan?.styleHints.slice(0, 4) ?? []),
+    ...(queryPlan?.listeningConstraints.slice(0, 4) ?? [])
+  ]);
+  return truncate(parts.join(' | ') || style || 'music exploration', WEB_DISCOVERY_INTENT_MAX_CHARS);
+}
+
+function hasExplicitRecentWebIntent(context: MusicAgentContextSummary): boolean {
+  const text = [
+    context.currentUserText,
+    ...(context.actionQueries ?? []),
+    context.activeDirective
+  ].join(' ');
+  return /新歌|近期|最近|recent|new|fresh|release/i.test(text);
+}
+
+function evaluateWebMusicDiscoveryGate(options: {
+  discoveryInput: WebMusicDiscoveryInput;
+  input: CreateMusicAgentToolsInput;
+  state: ToolState;
+}): { allowed: boolean; reason?: string; signals: string[]; intentCluster: string } {
+  const intentCluster = webDiscoveryCooldownKey(options.input.userId, options.discoveryInput.intent);
+  if (options.input.context.discoveryMode === 'comfort') {
+    return { allowed: false, reason: 'discovery mode is comfort', signals: [], intentCluster };
+  }
+  if (options.state.webDiscoveryCalled) {
+    return { allowed: false, reason: 'already called in this run', signals: [], intentCluster };
+  }
+  if (isWebDiscoveryCooldownActive(intentCluster)) {
+    return { allowed: false, reason: 'cooldown active for this intent cluster', signals: [], intentCluster };
+  }
+
+  const signals = webDiscoveryGapSignals(options.input, options.state);
+  if (isExplicitWebExploreIntent(options.discoveryInput, options.input.context)) {
+    return { allowed: true, signals: ['explicit_explore_intent', ...signals], intentCluster };
+  }
+  if (signals.length >= 2) {
+    return { allowed: true, signals, intentCluster };
+  }
+  return { allowed: false, reason: 'exploration gap is not strong enough', signals, intentCluster };
+}
+
+function webDiscoveryGapSignals(input: CreateMusicAgentToolsInput, state: ToolState): string[] {
+  const candidates = input.candidatePool.list();
+  const nonLikedCount = candidates.filter((candidate) => candidate.sources.some((source) => source !== 'liked')).length;
+  const target = Math.max(1, input.targetPickCount ?? 2);
+  const externalSources = new Set(
+    candidates.flatMap((candidate) => candidate.sources.filter((source) => source !== 'liked'))
+  );
+  const sourceCounts = countPrimaryArtists(candidates);
+  const maxArtistCount = Math.max(0, ...sourceCounts.values());
+  const queryFunnel = queryFunnelSnapshot(state);
+  return [
+    nonLikedCount < target ? 'sparse_external_candidates' : '',
+    externalSources.size <= 1 ? 'low_source_diversity' : '',
+    candidates.length >= 3 && maxArtistCount / candidates.length >= 0.6 ? 'artist_clustered' : '',
+    queryFunnel.some((entry) => entry.resultCount > 0 && entry.addedCount === 0) ? 'query_funnel_low_yield' : '',
+    state.ncmSearches > 0 && nonLikedCount === 0 ? 'semantic_or_exact_discovery_empty' : ''
+  ].filter(Boolean);
+}
+
+function isExplicitWebExploreIntent(
+  discoveryInput: WebMusicDiscoveryInput,
+  context: MusicAgentContextSummary
+): boolean {
+  const text = [
+    discoveryInput.intent,
+    context.currentUserText,
+    ...(context.actionQueries ?? []),
+    context.activeDirective,
+    context.currentPlanSegment ?? ''
+  ].join(' ');
+  return (
+    /探索|发现|找点|新歌|新音乐|类似|相似|小众|冷门|recent|new|discover|explore|similar|fresh|novelty/i.test(text) ||
+    discoveryInput.focus === 'new_releases' ||
+    discoveryInput.focus === 'similar_artists' ||
+    discoveryInput.focus === 'similar_tracks'
+  );
+}
+
+function webDiscoveryIntentText(context: MusicAgentContextSummary): string {
+  return [
+    context.currentUserText,
+    ...(context.actionQueries ?? []),
+    context.activeDirective,
+    context.currentPlanSegment ?? ''
+  ].filter(Boolean).join(' ');
+}
+
+function webDiscoveryCooldownKey(userId: string, intent: string): string {
+  const cluster = normalizeSearchQuery(intent).slice(0, 120) || 'default';
+  return `${userId}:${cluster}`;
+}
+
+function isWebDiscoveryCooldownActive(key: string): boolean {
+  const expiresAt = webDiscoveryCooldowns.get(key);
+  if (!expiresAt) return false;
+  if (expiresAt <= Date.now()) {
+    webDiscoveryCooldowns.delete(key);
+    return false;
+  }
+  return true;
+}
+
+function setWebDiscoveryCooldown(key: string): void {
+  webDiscoveryCooldowns.set(key, Date.now() + WEB_DISCOVERY_COOLDOWN_MS);
+}
+
+function parseMusicEntityHints(value: unknown, limit: number): { hints: MusicEntityHint[]; problems: string[] } {
+  const rawHints = Array.isArray(value) ? value : [];
+  const hints: MusicEntityHint[] = [];
+  const problems: string[] = [];
+  for (const rawHint of rawHints) {
+    if (hints.length >= limit) break;
+    const parsed = musicEntityHintSchema.safeParse(rawHint);
+    if (!parsed.success) {
+      problems.push('web hint skipped: invalid sourced hint');
+      continue;
+    }
+    hints.push(parsed.data);
+  }
+  return { hints, problems };
+}
+
+async function recallFromWebDiscoveryHints(options: {
+  hints: unknown;
+  input: CreateMusicAgentToolsInput;
+  state: ToolState;
+  maxSearches: number;
+  maxPlaylistFetches: number;
+  signal?: AbortSignal;
+  limit: number;
+}): Promise<{ summary: string; problems: string[] }> {
+  const filteredHints = filterWebDiscoveryHintsForRecall(options.hints, options.input, options.state);
+  const parsedInput = parseEntityRecallInput({ hints: filteredHints.hints });
+  const entities = parsedInput.entities.slice(0, MAX_ENTITY_RECALL_COUNT);
+  const avoidArtists = new Set(
+    [
+      ...avoidArtistsFromContext(options.input.context),
+      ...(options.state.queryPlan?.avoidArtists ?? [])
+    ].map(primaryArtist).filter(Boolean)
+  );
+  const artistCounts = countPrimaryArtists(options.input.candidatePool.list());
+  const problems = [...filteredHints.problems, ...parsedInput.problems];
+  let added = 0;
+
+  for (const entity of entities) {
+    if (options.signal?.aborted) return { summary: 'web hint entity recall aborted.', problems: ['aborted'] };
+    const result = await recallFromEntity({
+      entity,
+      input: options.input,
+      state: options.state,
+      limit: options.limit,
+      searchLimit: DEFAULT_ENTITY_SEARCH_LIMIT,
+      maxSearches: options.maxSearches,
+      maxPlaylistFetches: options.maxPlaylistFetches,
+      avoidArtists,
+      artistCounts,
+      signal: options.signal
+    });
+    added += result.added;
+    problems.push(...result.problems);
+  }
+
+  return {
+    summary: `web hint entity recall added ${added} candidates from ${entities.length} entities.`,
+    problems
+  };
+}
+
+function filterWebDiscoveryHintsForRecall(
+  value: unknown,
+  input: CreateMusicAgentToolsInput,
+  state: ToolState
+): { hints: unknown[]; problems: string[] } {
+  const avoidArtists = new Set(
+    [
+      ...avoidArtistsFromContext(input.context),
+      ...(state.queryPlan?.avoidArtists ?? [])
+    ].map(primaryArtist).filter(Boolean)
+  );
+  const expectedStyle = selectWebDiscoveryStyle(input.context, state.queryPlan);
+  const hints: unknown[] = [];
+  const problems: string[] = [];
+
+  for (const rawHint of objectArrayValue(value)) {
+    const parsed = musicEntityHintSchema.safeParse(rawHint);
+    if (!parsed.success) {
+      hints.push(rawHint);
+      continue;
+    }
+    const hint = parsed.data;
+    const artist = webHintArtistName(hint);
+    const artistKey = artist ? primaryArtist(artist) : '';
+    if (artistKey && avoidArtists.has(artistKey)) {
+      problems.push(`web hint skipped: recently repeated artist ${artist}`);
+      continue;
+    }
+    if (artist && isHardMismatchedWebArtist(artist, expectedStyle || hint.styles.join(' '))) {
+      problems.push(`web hint skipped: hard style mismatch for ${artist}`);
+      continue;
+    }
+    hints.push(rawHint);
+  }
+
+  return { hints, problems };
+}
+
+function webHintArtistName(hint: MusicEntityHint): string {
+  if (hint.kind === 'artist') return hint.name;
+  if (hint.kind === 'relationship') return hint.relatedName ?? hint.artist ?? hint.name;
+  return hint.artist ?? '';
+}
+
+function isHardMismatchedWebArtist(artist: string, styleText: string): boolean {
+  if (!styleText || !styleDisallowsHeavyRock(styleText)) return false;
+  return HARD_MISMATCH_WEB_ARTIST_PATTERN.test(artist);
+}
+
+function styleDisallowsHeavyRock(styleText: string): boolean {
+  return /cantopop|c[-\s]*pop|j[-\s]*pop|k[-\s]*pop|city\s*pop|indie\s*folk|folk|dream\s*pop|synth[-\s]*pop|singer[-\s]*songwriter|neo\s*soul|r\s*&?\s*b|jazz|ambient|downtempo/i.test(styleText);
+}
+
+async function withTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number
+): Promise<{ timedOut: false; value: T } | { timedOut: true }> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise.then((value) => ({ timedOut: false as const, value })),
+      new Promise<{ timedOut: true }>((resolve) => {
+        timer = setTimeout(() => resolve({ timedOut: true }), Math.max(0, timeoutMs));
+      })
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 function autoFillSearchQueries(context: MusicAgentContextSummary, queryPlan: QueryPlan): string[] {
@@ -1054,6 +1552,77 @@ function parseEntityHypotheses(input: Record<string, unknown>): MusicEntityHypot
     ...objectArrayValue(input.albums).map((item) => parseEntityHypothesis({ ...item, type: 'album' })),
     ...objectArrayValue(input.playlists).map((item) => parseEntityHypothesis({ ...item, type: 'playlist' }))
   ].filter((entity): entity is MusicEntityHypothesis => Boolean(entity));
+}
+
+function parseEntityRecallInput(input: Record<string, unknown>): {
+  entities: MusicEntityHypothesis[];
+  problems: string[];
+} {
+  const hintResult = parseEntityHypothesesFromHints(input.hints);
+  return {
+    entities: [
+      ...parseEntityHypotheses(input),
+      ...hintResult.entities
+    ],
+    problems: hintResult.problems
+  };
+}
+
+function parseEntityHypothesesFromHints(value: unknown): {
+  entities: MusicEntityHypothesis[];
+  problems: string[];
+} {
+  const entities: MusicEntityHypothesis[] = [];
+  const problems: string[] = [];
+  for (const rawHint of objectArrayValue(value)) {
+    const parsed = musicEntityHintSchema.safeParse(rawHint);
+    if (!parsed.success) {
+      problems.push('web hint skipped: invalid sourced hint');
+      continue;
+    }
+    const hint = parsed.data;
+    if (hint.confidence < WEB_HINT_MIN_CONFIDENCE) {
+      problems.push(`web hint skipped: low confidence for ${hint.name}`);
+      continue;
+    }
+    const entity = entityFromMusicEntityHint(hint);
+    if (entity) {
+      entities.push(entity);
+      continue;
+    }
+    if (hint.kind === 'track' || hint.kind === 'chart_item') {
+      problems.push(`web track hint skipped: missing artist for ${hint.name}`);
+    } else if (hint.kind === 'relationship') {
+      problems.push(`web relationship hint skipped: ${hint.name}`);
+    } else {
+      problems.push(`web hint skipped: unsupported ${hint.kind} ${hint.name}`);
+    }
+  }
+  return { entities, problems };
+}
+
+function entityFromMusicEntityHint(hint: MusicEntityHint): MusicEntityHypothesis | null {
+  if (hint.kind === 'track' || hint.kind === 'chart_item') {
+    if (!hint.artist) return null;
+    return { type: 'track', title: hint.name, artist: hint.artist };
+  }
+  if (hint.kind === 'artist') {
+    return { type: 'artist', name: hint.name };
+  }
+  if (hint.kind === 'album') {
+    return {
+      type: 'album',
+      title: hint.name,
+      ...(hint.artist ? { artist: hint.artist } : {})
+    };
+  }
+  if (hint.kind === 'playlist') {
+    return { type: 'playlist', name: hint.name };
+  }
+  if (hint.kind === 'relationship' && hint.relatedName) {
+    return { type: 'artist', name: hint.relatedName };
+  }
+  return null;
 }
 
 function parseEntityHypothesis(input: Record<string, unknown>): MusicEntityHypothesis | null {
@@ -1709,11 +2278,17 @@ function sourceScores(source: CandidateSource, context: MusicAgentContextSummary
     : { ...base, intentMatch: 0.76, tasteMatch: 0.64, novelty: 0.78, sourceConfidence: 0.72 };
 }
 
-function observation(pool: CandidatePool, summary: string, problems: string[] = []): ToolObservation {
+function observation(
+  pool: CandidatePool,
+  summary: string,
+  problems: string[] = [],
+  data?: Record<string, unknown>
+): ToolObservation {
   return {
     summary: truncate(summary, SUMMARY_MAX_CHARS),
     candidateCount: pool.count(),
-    ...(problems.length > 0 ? { problems: problems.map((problem) => truncate(problem, 240)) } : {})
+    ...(problems.length > 0 ? { problems: problems.map((problem) => truncate(problem, 240)) } : {}),
+    ...(data ? { data } : {})
   };
 }
 

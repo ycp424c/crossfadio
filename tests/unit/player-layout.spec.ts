@@ -241,8 +241,7 @@ describe('player layout', () => {
     expect(debugBlock).toContain('data.candidateScoreTable');
     expect(debugBlock).toContain('console.table');
     expect(debugBlock).toContain('DJ pick-next candidate scores');
-    expect(debugBlock).toContain('data.selectedTracks');
-    expect(debugBlock).toContain('as DjSelectedTrack[]');
+    expect(debugBlock).toContain('buildDjPickDebugLog(data)');
     expect(source).toContain('djPickLog.selectedTracks.map');
     expect(source).toContain('track.reason');
   });

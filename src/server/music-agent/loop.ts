@@ -147,6 +147,9 @@ const NO_PROGRESS_FINAL_TOOL_NAMES = new Set<MusicAgentToolName>([
   'get_music_knowledge',
   'get_trend_context'
 ]);
+const DISCOVERY_ONLY_TOOL_NAMES = new Set<MusicAgentToolName>([
+  'web_music_discovery'
+]);
 
 type ToolRewrite = {
   toolName: MusicAgentToolName;
@@ -361,6 +364,19 @@ export async function runMusicAgentLoop(input: RunMusicAgentLoopInput): Promise<
       }
       if (shouldSupplementSparseRank) {
         continue;
+      }
+    }
+
+    if (shouldSupplementSparseExpandRecall(toolName, input, trace, candidateCountBeforeTool)) {
+      toolCalls = await supplementAutoFillRecallMix(input, observations, trace, startedAt, step, toolCalls);
+      if (input.signal?.aborted) {
+        return abortedOutput(resolveMode(input), trace);
+      }
+      if (shouldConvergeAfterAutoFillRecallMix(input)) {
+        if (hasExtraFinalPickBudget(input, startedAt, step, llmCalls)) {
+          return askExtraFinalPick(input, observations, trace, startedAt, step, llmCalls, toolCalls);
+        }
+        return rankedConvergence(input, trace, startedAt, step, llmCalls, toolCalls);
       }
     }
 
@@ -763,6 +779,7 @@ function getEmptyPoolToolRewrite(options: {
   if (modeFromContext(input.context) !== 'pick_next') return undefined;
   if (input.candidatePool.count() >= 2) return undefined;
   if (requestedToolName && RECALL_TOOL_NAMES.has(requestedToolName)) return undefined;
+  if (requestedToolName && DISCOVERY_ONLY_TOOL_NAMES.has(requestedToolName)) return undefined;
   if (requestedToolName === 'expand_queries' && !hasExecutedTool(trace, 'expand_queries')) return undefined;
   if (forcedEmptyPoolRecallCompleted) return 'fallback';
 
@@ -1429,6 +1446,23 @@ function shouldAskFinalAfterNoProgressTool(
     (input.candidatePool.count() < targetPickCount(input) || isLikedOnlyFallbackPool(input, trace)) &&
     input.candidatePool.count() <= candidateCountBeforeTool &&
     NO_PROGRESS_FINAL_TOOL_NAMES.has(toolName) &&
+    hasExecutedExternalRecall(trace)
+  );
+}
+
+function shouldSupplementSparseExpandRecall(
+  toolName: MusicAgentToolName,
+  input: RunMusicAgentLoopInput,
+  trace: AgentTraceStep[],
+  candidateCountBeforeTool: number
+): boolean {
+  return (
+    toolName === 'expand_queries' &&
+    modeFromContext(input.context) === 'pick_next' &&
+    targetPickCount(input) >= 4 &&
+    input.candidatePool.count() >= SKIPPED_TOOL_FINAL_PICK_MIN_CANDIDATES &&
+    (input.candidatePool.count() < targetPickCount(input) || isLikedOnlyFallbackPool(input, trace)) &&
+    input.candidatePool.count() <= candidateCountBeforeTool &&
     hasExecutedExternalRecall(trace)
   );
 }

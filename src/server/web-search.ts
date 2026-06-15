@@ -1,15 +1,15 @@
 import { getLogger } from './logger.js';
 
 const TIMEOUT_MS = 8_000;
-const MAX_ARTISTS = 5;
+const MAX_ARTISTS = 10;
 const WIKI_API = 'https://en.wikipedia.org/w/api.php';
 const MB_API = 'https://musicbrainz.org/ws/2/artist';
 
 /**
  * Search for artists matching a style/mood from multiple sources.
- * 1. MusicBrainz: tag-based artist search with random offset (good for genre→artist mapping)
+ * 1. MusicBrainz: tag-based artist search
  * 2. Wikipedia: "List of X artists" pages (broad coverage)
- * Returns up to 5 randomly sampled artist names, or empty array on failure.
+ * Returns up to 10 deterministic artist names, or empty array on failure.
  */
 export async function searchArtistsForStyle(styleQuery: string): Promise<string[]> {
   const [mb, wiki] = await Promise.all([
@@ -17,15 +17,22 @@ export async function searchArtistsForStyle(styleQuery: string): Promise<string[
     searchWikipedia(styleQuery),
   ]);
 
-  // Merge, dedupe by lowercase
+  // Merge in source order but interleave sources so one provider cannot occupy
+  // the whole hint budget with names that later fail NCM resolution.
   const seen = new Set<string>();
   const merged: string[] = [];
-  for (const name of [...mb, ...wiki]) {
-    const lower = name.toLowerCase();
-    if (!seen.has(lower)) {
-      seen.add(lower);
-      merged.push(name);
+  const maxLength = Math.max(mb.length, wiki.length);
+  for (let index = 0; index < maxLength; index += 1) {
+    for (const name of [mb[index], wiki[index]]) {
+      if (!name) continue;
+      const lower = name.toLowerCase();
+      if (!seen.has(lower)) {
+        seen.add(lower);
+        merged.push(name);
+      }
+      if (merged.length >= MAX_ARTISTS) break;
     }
+    if (merged.length >= MAX_ARTISTS) break;
   }
   return merged.slice(0, MAX_ARTISTS);
 }
@@ -34,7 +41,6 @@ export async function searchArtistsForStyle(styleQuery: string): Promise<string[
 
 /**
  * Search MusicBrainz for artists tagged with a given style.
- * Uses random offset to avoid bias toward mainstream crossover acts.
  */
 async function searchMusicBrainz(styleQuery: string): Promise<string[]> {
   try {
@@ -42,25 +48,10 @@ async function searchMusicBrainz(styleQuery: string): Promise<string[]> {
     const tag = styleQuery.replace(/\s+/g, '-').toLowerCase();
     const query = `tag:${tag} AND type:group`;
 
-    // First request: get total count
-    const countData = await mbApi<MbCountResponse>({
-      query,
-      limit: '1',
-      offset: '0',
-      fmt: 'json',
-    });
-    const total = countData?.count ?? 0;
-    if (total < 10) return [];
-
-    // Pick a random offset to get diverse results (avoid top mainstream acts)
-    const maxOffset = Math.min(total - 20, 5000);
-    const randomOffset = Math.floor(Math.random() * maxOffset);
-
-    // Fetch a batch at random offset
     const data = await mbApi<MbSearchResponse>({
       query,
       limit: '20',
-      offset: String(randomOffset),
+      offset: '0',
       fmt: 'json',
     });
 
@@ -78,7 +69,7 @@ async function searchMusicBrainz(styleQuery: string): Promise<string[]> {
           !isNoiseName(n)
       );
 
-    return sampleN(names, 5);
+    return names.slice(0, 5);
   } catch {
     return [];
   }
@@ -111,7 +102,6 @@ async function mbApi<T>(params: Record<string, string>): Promise<T | null> {
   }
 }
 
-type MbCountResponse = { count: number };
 type MbSearchResponse = { artists?: Array<{ name?: string }> };
 
 // ── Wikipedia ──────────────────────────────────────────────────
@@ -168,12 +158,12 @@ async function tryListPageLookup(searchQuery: string): Promise<string[]> {
   const allArtists = await fetchAllLinks(listHit.title);
   if (allArtists.length === 0) return [];
 
-  // Step 3: Random sample
+  // Step 3: Keep source order for deterministic diagnostics
   getLogger().debug(
     { searchQuery, listTitle: listHit.title, totalLinks: allArtists.length },
-    'Wikipedia list page found, sampling artists'
+    'Wikipedia list page found, returning artists'
   );
-  return sampleN(allArtists, MAX_ARTISTS);
+  return allArtists.slice(0, MAX_ARTISTS);
 }
 
 /**
@@ -289,15 +279,6 @@ function isLikelyArtist(title: string): boolean {
   // Must contain at least one letter from a known script
   if (!/[a-zA-Z一-鿿぀-ゟ゠-ヿ]/.test(title)) return false;
   return true;
-}
-
-function sampleN<T>(arr: T[], n: number): T[] {
-  const copy = [...arr];
-  for (let i = copy.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [copy[i], copy[j]] = [copy[j], copy[i]];
-  }
-  return copy.slice(0, n);
 }
 
 async function wikiApi<T>(params: Record<string, string>): Promise<T | null> {
