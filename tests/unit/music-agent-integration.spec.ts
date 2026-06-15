@@ -625,6 +625,60 @@ describe('createMusicAgentTools', () => {
     );
   });
 
+  it('counts query funnel addedCount as unique admitted candidates instead of merges', async () => {
+    const ncmClient = {
+      getLikedSongIds: vi.fn(async () => []),
+      getSongDetails: vi.fn(async () => []),
+      searchSongs: vi.fn(async () => [
+        { id: 'same-id', name: 'Same Song', artists: ['Same Artist'] },
+        { id: 'same-id', name: 'Same Song', artists: ['Same Artist'] }
+      ]),
+      getPlaylistDetail: vi.fn(async () => null)
+    };
+
+    const { CandidatePool } = await import('../../src/server/music-agent/candidates.js');
+    const { createMusicAgentTools } = await import('../../src/server/music-agent/tools.js');
+    const candidatePool = new CandidatePool();
+    const tools = createMusicAgentTools({
+      userId: 'query-funnel-unique-added',
+      ncmClient: ncmClient as any,
+      context: {
+        request: 'chat-recommend',
+        currentUserText: '',
+        currentMoment: { localTime: '周四 15:00', daypart: '下午', weather: null },
+        activeDirective: '',
+        currentPlanSegment: null,
+        tasteSummary: '',
+        recentPreferenceSummary: '',
+        recentPlaySignals: '',
+        queueStateSummary: '',
+        bannedSummary: ''
+      },
+      candidatePool,
+      budget: {
+        maxMs: 10_000,
+        maxSteps: 3,
+        maxLlmCalls: 2,
+        maxToolCalls: 2,
+        maxNcmSearches: 1,
+        maxPlaylistFetches: 0,
+        maxTrendFetchMs: 0,
+        maxCandidates: 20
+      }
+    });
+
+    const observation = await tools.recall_from_ncm_search?.({ queries: ['Same Song Same Artist'], limit: 8 });
+
+    expect(observation?.candidateCount).toBe(1);
+    expect(tools.getQueryFunnel?.()).toEqual([
+      expect.objectContaining({
+        query: 'Same Song Same Artist',
+        resultCount: 2,
+        addedCount: 1
+      })
+    ]);
+  });
+
   it('falls back to artist expansion when exact-track search results are all banned', async () => {
     const ncmClient = {
       getLikedSongIds: vi.fn(async () => []),
@@ -903,6 +957,82 @@ describe('createMusicAgentTools', () => {
       expect.objectContaining({ name: 'Loose Untitled Hint' }),
       expect.objectContaining({ name: 'Wrong Song' })
     ]);
+  });
+
+  it('treats seven search candidates for a five-pick auto-fill run as sparse for web discovery', async () => {
+    const ncmClient = {
+      getLikedSongIds: vi.fn(async () => []),
+      getSongDetails: vi.fn(async () => []),
+      searchSongs: vi.fn(async () => []),
+      getPlaylistDetail: vi.fn(async () => null)
+    };
+    const webMusicDiscoveryProvider = {
+      discover: vi.fn(async () => [])
+    };
+    const baseScores = {
+      intentMatch: 0.6,
+      tasteMatch: 0.6,
+      timeFit: 0.6,
+      planFit: 0.6,
+      novelty: 0.6,
+      recentPenalty: 0,
+      skipPenalty: 0,
+      sourceConfidence: 0.6
+    };
+
+    const { CandidatePool } = await import('../../src/server/music-agent/candidates.js');
+    const { createMusicAgentTools } = await import('../../src/server/music-agent/tools.js');
+    const candidatePool = new CandidatePool();
+    for (let index = 1; index <= 7; index += 1) {
+      candidatePool.upsert({
+        id: `search-only-${index}`,
+        name: `Search Only ${index}`,
+        artist: `Search Artist ${index}`,
+        sources: ['search'],
+        evidence: ['网易云搜索'],
+        scores: baseScores
+      });
+    }
+    const tools = createMusicAgentTools({
+      userId: 'web-discovery-seven-search-candidates',
+      ncmClient: ncmClient as any,
+      webMusicDiscoveryProvider,
+      context: {
+        request: 'auto-fill',
+        discoveryMode: 'explore',
+        currentUserText: '傍晚放松一点',
+        currentMoment: { localTime: '周一 17:10', daypart: '傍晚', weather: null },
+        activeDirective: '',
+        currentPlanSegment: null,
+        tasteSummary: '',
+        recentPreferenceSummary: '',
+        recentPlaySignals: '',
+        queueStateSummary: '',
+        bannedSummary: ''
+      },
+      candidatePool,
+      budget: {
+        maxMs: 10_000,
+        maxSteps: 3,
+        maxLlmCalls: 2,
+        maxToolCalls: 3,
+        maxNcmSearches: 4,
+        maxPlaylistFetches: 0,
+        maxTrendFetchMs: 0,
+        maxCandidates: 20
+      },
+      targetPickCount: 5
+    });
+
+    const observation = await tools.web_music_discovery?.({
+      intent: '傍晚放松一点',
+      focus: 'scene_overview',
+      maxHints: 4
+    });
+
+    expect(webMusicDiscoveryProvider.discover).toHaveBeenCalledTimes(1);
+    expect(observation?.summary).toContain('web discovery returned 0 hints');
+    expect(observation?.problems ?? []).not.toContain('web discovery denied: exploration gap is not strong enough');
   });
 
   it('verifies web discovery hints through recall_from_entities before adding candidates', async () => {

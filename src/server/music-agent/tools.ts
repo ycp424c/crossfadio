@@ -911,7 +911,9 @@ function evaluateWebMusicDiscoveryGate(options: {
 function webDiscoveryGapSignals(input: CreateMusicAgentToolsInput, state: ToolState): string[] {
   const candidates = input.candidatePool.list();
   const nonLikedCount = candidates.filter((candidate) => candidate.sources.some((source) => source !== 'liked')).length;
-  const target = Math.max(1, input.targetPickCount ?? 2);
+  const target = input.context.request === 'auto-fill'
+    ? autoFillRecallNonLikedTarget(input.targetPickCount)
+    : Math.max(1, input.targetPickCount ?? 2);
   const externalSources = new Set(
     candidates.flatMap((candidate) => candidate.sources.filter((source) => source !== 'liked'))
   );
@@ -2022,9 +2024,10 @@ function recordQueryFunnelSearch(
       .filter((id) => id && input.pool.has(id))
   );
   if (existing) {
+    const uniqueAddedCount = [...candidateIds].filter((id) => !existing.candidateIds.has(id)).length;
     existing.searchedCount += 1;
     existing.resultCount += input.resultCount;
-    existing.addedCount += input.addedCount;
+    existing.addedCount += uniqueAddedCount;
     for (const id of candidateIds) existing.candidateIds.add(id);
     return;
   }
@@ -2044,7 +2047,7 @@ function recordQueryFunnelSearch(
     }),
     searchedCount: 1,
     resultCount: input.resultCount,
-    addedCount: input.addedCount,
+    addedCount: candidateIds.size,
     selectedCount: 0,
     candidateIds,
     order: state.queryFunnel.size

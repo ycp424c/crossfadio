@@ -1750,7 +1750,7 @@ describe('runMusicAgentLoop', () => {
     expect(fallbackLogger).not.toHaveBeenCalled();
   });
 
-  it('converges after ranking a target-sized non-liked auto-fill pool', async () => {
+  it('converges after ranking a target-sized non-liked comfort auto-fill pool', async () => {
     const pool = new CandidatePool();
     const fallbackLogger = vi.fn();
     const llmClient = new LoopFakeLlmClient([
@@ -1762,7 +1762,7 @@ describe('runMusicAgentLoop', () => {
 
     const result = await runMusicAgentLoop({
       llmClient,
-      context: context({ request: 'auto-fill' }),
+      context: context({ request: 'auto-fill', discoveryMode: 'comfort' }),
       candidatePool: pool,
       tools: {
         recall_auto_fill_mix: async () => {
@@ -2327,6 +2327,78 @@ describe('runMusicAgentLoop', () => {
       candidateCount: 10,
       step: 3,
       llmCalls: 3
+    }));
+  });
+
+  it('keeps supplementing ranked five-pick auto-fill batches until the larger recall pool target is met', async () => {
+    const pool = new CandidatePool();
+    const fallbackLogger = vi.fn();
+    const llmClient = new LoopFakeLlmClient([
+      JSON.stringify({ type: 'tool_call', tool: 'recall_from_ncm_search', input: { query: 'evening mix' } }),
+      JSON.stringify({ type: 'tool_call', tool: 'rank_candidates', input: {} }),
+      JSON.stringify({
+        type: 'final',
+        say: '我从更宽的候选池里选五首。',
+        picks: [
+          { id: 'search-1', reason: '第一轮候选贴合', source: 'search' },
+          { id: 'search-4', reason: '第一轮候选保留变化', source: 'search' },
+          { id: 'search-8', reason: '补充召回后质量更稳定', source: 'search' },
+          { id: 'search-12', reason: '候选池更宽后有更好选择', source: 'search' },
+          { id: 'search-15', reason: '避免七选五过窄', source: 'search' }
+        ],
+        rejected: []
+      })
+    ]);
+    const calls: string[] = [];
+
+    function addSearchCandidates(count: number): void {
+      const start = pool.count();
+      for (let index = 0; index < count; index += 1) {
+        const number = start + index + 1;
+        pool.upsert(candidate({
+          id: `search-${number}`,
+          name: `Search ${number}`,
+          artist: `Search Artist ${number}`,
+          sources: ['search']
+        }));
+      }
+    }
+
+    const result = await runMusicAgentLoop({
+      llmClient,
+      context: context({ request: 'auto-fill', discoveryMode: 'explore' }),
+      candidatePool: pool,
+      tools: {
+        recall_from_ncm_search: async () => {
+          calls.push('recall_from_ncm_search');
+          addSearchCandidates(7);
+          return { summary: 'search recall added 7 candidates', candidateCount: pool.count() };
+        },
+        rank_candidates: async () => {
+          calls.push('rank_candidates');
+          return { summary: 'ranked candidates', candidateCount: pool.count() };
+        },
+        recall_auto_fill_mix: async () => {
+          calls.push('recall_auto_fill_mix');
+          addSearchCandidates(8);
+          return { summary: 'auto-fill mix added 8 candidates', candidateCount: pool.count() };
+        }
+      },
+      budget: budget({ maxLlmCalls: 6, maxSteps: 6, maxToolCalls: 4 }),
+      targetPickCount: 5,
+      fallbackLogger
+    });
+
+    expect(result.status).toBe('ok');
+    expect(result.say).toBe('我从更宽的候选池里选五首。');
+    expect(result.picks.map((pick) => pick.id)).toEqual(['search-1', 'search-4', 'search-8', 'search-12', 'search-15']);
+    expect(calls).toEqual(['recall_from_ncm_search', 'rank_candidates', 'recall_auto_fill_mix']);
+    expect(pool.count()).toBe(15);
+    expect(fallbackLogger).toHaveBeenCalledWith(expect.objectContaining({
+      reason: 'ranked_tool_completed',
+      status: 'ok',
+      candidateCount: 15,
+      pickCount: 5
     }));
   });
 

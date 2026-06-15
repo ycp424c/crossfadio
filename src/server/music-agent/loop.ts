@@ -1542,8 +1542,11 @@ function shouldSupplementSparseAutoFillRank(toolName: MusicAgentToolName, input:
 
 function hasEnoughAutoFillRankedCandidates(input: RunMusicAgentLoopInput): boolean {
   const explicitTargetPickCount = input.targetPickCount === undefined ? null : targetPickCount(input);
+  const nonLikedTarget = isExploreAutoFill(input) && explicitTargetPickCount !== null
+    ? autoFillNonLikedConvergenceTarget(input)
+    : explicitTargetPickCount;
   return (
-    (explicitTargetPickCount !== null && countNonLikedCandidates(input) >= explicitTargetPickCount) ||
+    (nonLikedTarget !== null && countNonLikedCandidates(input) >= nonLikedTarget) ||
     shouldConvergeAfterAutoFillRecallMix(input)
   );
 }
