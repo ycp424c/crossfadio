@@ -1,10 +1,12 @@
 import { LlmClient, type LlmConfig } from '../llm/client.js';
+import { getConfig } from '../config.js';
+import { EmbeddingClient } from '../embedding/client.js';
 import { getLogger } from '../logger.js';
 import type { NcmClient } from '../ncm/client.js';
 import { CandidatePool } from './candidates.js';
 import { buildMusicAgentContext } from './context.js';
 import { runMusicAgentLoop } from './loop.js';
-import { createMusicAgentTools } from './tools.js';
+import { createMusicAgentTools, type MusicAgentEmbeddingClient } from './tools.js';
 import type { MusicAgentFallbackLogEvent } from './loop.js';
 import type { AgentBudget, MusicAgentLlmClient, MusicAgentRunOutput } from './schema.js';
 import { parseAutoFillBatchSize } from '../../shared/dj.js';
@@ -13,6 +15,13 @@ import { getActiveTemporaryQueueBanDedupeState } from '../store/temporary-bans.j
 export type MusicAgentOptions = {
   llmClient?: MusicAgentLlmClient;
   llmConfig?: LlmConfig;
+  embeddingClient?: MusicAgentEmbeddingClient | null;
+  embeddingModel?: string | null;
+};
+
+type EmbeddingRuntime = {
+  client: MusicAgentEmbeddingClient;
+  model: string;
 };
 
 export type MusicAgentFallbackStats = {
@@ -57,9 +66,11 @@ export type ChatRecommendInput = {
 export class MusicAgent {
   private readonly llmClient: MusicAgentLlmClient;
   private readonly fallbackLogger: ((event: MusicAgentFallbackLogEvent & { userId: string }) => void) | undefined;
+  private readonly embeddingRuntime: EmbeddingRuntime | null;
 
   constructor(options: MusicAgentOptions = {}) {
     this.llmClient = resolveLlmClient(options);
+    this.embeddingRuntime = resolveEmbeddingRuntime(options);
     this.fallbackLogger = options.llmConfig
       ? (event) => {
           const logger = getLogger();
@@ -97,6 +108,8 @@ export class MusicAgent {
       context,
       candidatePool,
       budget,
+      embeddingClient: this.embeddingRuntime?.client ?? null,
+      embeddingModel: this.embeddingRuntime?.model ?? null,
       targetPickCount
     });
 
@@ -131,7 +144,9 @@ export class MusicAgent {
       ncmClient: input.ncmClient,
       context,
       candidatePool,
-      budget
+      budget,
+      embeddingClient: this.embeddingRuntime?.client ?? null,
+      embeddingModel: this.embeddingRuntime?.model ?? null
     });
 
     return runMusicAgentLoop({
@@ -214,6 +229,23 @@ function resolveLlmClient(options: MusicAgentOptions): MusicAgentLlmClient {
   if (options.llmClient) return options.llmClient;
   if (options.llmConfig) return new LlmClient(options.llmConfig);
   throw new Error('MusicAgent requires either llmClient or llmConfig.');
+}
+
+function resolveEmbeddingRuntime(options: MusicAgentOptions): EmbeddingRuntime | null {
+  if ('embeddingClient' in options) {
+    return options.embeddingClient && options.embeddingModel
+      ? { client: options.embeddingClient, model: options.embeddingModel }
+      : null;
+  }
+
+  try {
+    const config = getConfig().embedding;
+    return config
+      ? { client: new EmbeddingClient(config), model: config.model }
+      : null;
+  } catch {
+    return null;
+  }
 }
 
 function pickNextBudget(targetPickCount = 2): AgentBudget {

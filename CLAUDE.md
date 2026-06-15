@@ -82,6 +82,10 @@ src/
 | `CROSSFADIO_TTS_BASE_URL` | **required** | TTS API base URL (multi-user) |
 | `CROSSFADIO_TTS_API_KEY` | **required** | TTS API key (multi-user) |
 | `CROSSFADIO_TTS_VOICE_DEFAULT` | (none) | Default TTS voice, falls back to 'Cherry' |
+| `CROSSFADIO_EMBEDDING_API_KEY` | (disabled) | Optional semantic discovery embedding API key |
+| `CROSSFADIO_EMBEDDING_BASE_URL` | DashScope compatible URL | Optional embedding API base URL |
+| `CROSSFADIO_EMBEDDING_MODEL` | `text-embedding-v4` | Optional embedding model name |
+| `CROSSFADIO_EMBEDDING_DIMENSIONS` | `1024` | Optional embedding vector dimensions |
 | `CROSSFADIO_HOST` | `127.0.0.1` | Server bind address |
 | `CROSSFADIO_ALLOWED_ORIGINS` | (none) | Comma-separated CORS origins beyond localhost |
 | `CROSSFADIO_DAILY_THEME_TIMEOUT_MS` | `15000` | Daily theme LLM generation timeout (ms) |

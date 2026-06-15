@@ -565,6 +565,59 @@ describe('createMusicAgentTools', () => {
     });
   });
 
+  it('accepts lowercase exact track and artist queries for NCM song search', async () => {
+    const ncmClient = {
+      getLikedSongIds: vi.fn(async () => []),
+      getSongDetails: vi.fn(async () => []),
+      searchSongs: vi.fn(async () => [
+        { id: 251, name: 'Get Lucky', artists: ['Daft Punk'] }
+      ]),
+      getPlaylistDetail: vi.fn(async () => null)
+    };
+
+    const { CandidatePool } = await import('../../src/server/music-agent/candidates.js');
+    const { createMusicAgentTools } = await import('../../src/server/music-agent/tools.js');
+    const candidatePool = new CandidatePool();
+    const tools = createMusicAgentTools({
+      userId: 'lowercase-exact-query',
+      ncmClient: ncmClient as any,
+      context: {
+        request: 'chat-recommend',
+        currentUserText: '',
+        currentMoment: { localTime: '周四 15:00', daypart: '下午', weather: null },
+        activeDirective: '',
+        currentPlanSegment: null,
+        tasteSummary: '',
+        recentPreferenceSummary: '',
+        recentPlaySignals: '',
+        queueStateSummary: '',
+        bannedSummary: ''
+      },
+      candidatePool,
+      budget: {
+        maxMs: 10_000,
+        maxSteps: 3,
+        maxLlmCalls: 2,
+        maxToolCalls: 2,
+        maxNcmSearches: 1,
+        maxPlaylistFetches: 0,
+        maxTrendFetchMs: 0,
+        maxCandidates: 20
+      }
+    });
+
+    const observation = await tools.recall_from_ncm_search?.({ queries: ['get lucky daft punk'], limit: 5 });
+
+    expect(ncmClient.searchSongs).toHaveBeenCalledWith('get lucky daft punk', 5);
+    expect(observation?.candidateCount).toBe(1);
+    expect(candidatePool.get('251')).toMatchObject({
+      id: '251',
+      name: 'Get Lucky',
+      artist: 'Daft Punk',
+      sources: ['search']
+    });
+  });
+
   it('verifies track entities through exact NCM search before adding candidates', async () => {
     const ncmClient = {
       getLikedSongIds: vi.fn(async () => []),
@@ -620,6 +673,70 @@ describe('createMusicAgentTools', () => {
       sources: ['search']
     });
     expect(candidatePool.get('302')).toBeUndefined();
+  });
+
+  it('recalls providerId-backed track and playlist entities without search re-resolution', async () => {
+    const ncmClient = {
+      getLikedSongIds: vi.fn(async () => []),
+      getSongDetails: vi.fn(async () => [
+        { id: 901, name: 'Stored Candy', artists: ['Stored Artist'], durationMs: 220_000 }
+      ]),
+      searchSongs: vi.fn(async () => []),
+      searchPlaylists: vi.fn(async () => []),
+      getPlaylistDetail: vi.fn(async () => ({
+        id: 801,
+        name: 'Stored Playlist',
+        coverImgUrl: null,
+        trackCount: 1,
+        tracks: [{ id: 902, name: 'Stored Friday', artists: ['Playlist Artist'], durationMs: 210_000 }]
+      }))
+    };
+
+    const { CandidatePool } = await import('../../src/server/music-agent/candidates.js');
+    const { createMusicAgentTools } = await import('../../src/server/music-agent/tools.js');
+    const candidatePool = new CandidatePool();
+    const tools = createMusicAgentTools({
+      userId: 'provider-id-entity',
+      ncmClient: ncmClient as any,
+      context: {
+        request: 'chat-recommend',
+        currentUserText: '下午 city pop',
+        currentMoment: { localTime: '周四 15:00', daypart: '下午', weather: null },
+        activeDirective: '',
+        currentPlanSegment: null,
+        tasteSummary: '',
+        recentPreferenceSummary: '',
+        recentPlaySignals: '',
+        queueStateSummary: '',
+        bannedSummary: ''
+      },
+      candidatePool,
+      budget: {
+        maxMs: 10_000,
+        maxSteps: 3,
+        maxLlmCalls: 2,
+        maxToolCalls: 2,
+        maxNcmSearches: 0,
+        maxPlaylistFetches: 1,
+        maxTrendFetchMs: 0,
+        maxCandidates: 20
+      }
+    });
+
+    const observation = await tools.recall_from_entities?.({
+      entities: [
+        { type: 'track', providerId: '901' },
+        { type: 'playlist', providerId: '801' }
+      ],
+      limit: 3
+    });
+
+    expect(ncmClient.searchSongs).not.toHaveBeenCalled();
+    expect(ncmClient.searchPlaylists).not.toHaveBeenCalled();
+    expect(ncmClient.getSongDetails).toHaveBeenCalledWith(['901']);
+    expect(ncmClient.getPlaylistDetail).toHaveBeenCalledWith('801');
+    expect(observation?.summary).toContain('entity recall expanded 2 entities and added 2 candidates');
+    expect(candidatePool.list().map((candidate) => candidate.id).sort()).toEqual(['901', '902']);
   });
 
   it('rejects unverified track entities before CandidatePool admission', async () => {
@@ -960,6 +1077,97 @@ describe('createMusicAgentTools', () => {
     expect(observation?.problems).toContain('skipped semantic-only queries; use semantic discovery before NCM song search');
     expect(queries).not.toContain('city pop');
     expect(queries).not.toContain('neo-city pop');
+  });
+
+  it('uses embedded music entities when semantic style queries are not exact song searches', async () => {
+    const ncmClient = {
+      getLikedSongIds: vi.fn(async () => []),
+      getSongDetails: vi.fn(async () => [
+        { id: 9901, name: 'City Semantic', artists: ['Semantic Artist'], durationMs: 230_000 }
+      ]),
+      searchSongs: vi.fn(async () => []),
+      getPlaylistDetail: vi.fn(async () => null)
+    };
+    const embeddingClient = {
+      embed: vi.fn(async () => ({
+        vectors: [Float32Array.from([1, 0])],
+        model: 'text-embedding-v4',
+        dimensions: 2
+      }))
+    };
+
+    const { CandidatePool } = await import('../../src/server/music-agent/candidates.js');
+    const { createMusicAgentTools } = await import('../../src/server/music-agent/tools.js');
+    const {
+      upsertMusicEntity,
+      upsertMusicEntityEmbedding
+    } = await import('../../src/server/store/music-entities.js');
+    upsertMusicEntity({
+      userId: 'semantic-entity-recall',
+      id: 'track:city-semantic',
+      type: 'track',
+      provider: 'ncm',
+      providerId: '9901',
+      title: 'City Semantic',
+      artist: 'Semantic Artist',
+      description: 'city pop relaxed afternoon female vocal',
+      styleHints: ['city pop'],
+      constraints: ['下午', '女声'],
+      sourceSignals: ['seed_catalog']
+    });
+    upsertMusicEntityEmbedding({
+      userId: 'semantic-entity-recall',
+      entityId: 'track:city-semantic',
+      model: 'text-embedding-v4',
+      vector: Float32Array.from([1, 0])
+    });
+
+    const candidatePool = new CandidatePool();
+    const tools = createMusicAgentTools({
+      userId: 'semantic-entity-recall',
+      ncmClient: ncmClient as any,
+      embeddingClient,
+      embeddingModel: 'text-embedding-v4',
+      context: {
+        request: 'chat-recommend',
+        currentUserText: '下午 city pop 女声',
+        currentMoment: { localTime: '周四 15:00', daypart: '下午', weather: null },
+        activeDirective: '',
+        currentPlanSegment: null,
+        tasteSummary: '',
+        recentPreferenceSummary: '',
+        recentPlaySignals: '',
+        queueStateSummary: '',
+        bannedSummary: ''
+      },
+      candidatePool,
+      budget: {
+        maxMs: 10_000,
+        maxSteps: 3,
+        maxLlmCalls: 2,
+        maxToolCalls: 2,
+        maxNcmSearches: 0,
+        maxPlaylistFetches: 0,
+        maxTrendFetchMs: 0,
+        maxCandidates: 20
+      }
+    });
+
+    const observation = await tools.recall_from_style_expansion?.({ queries: ['city pop 女声 下午'], limit: 5 });
+
+    expect(ncmClient.searchSongs).not.toHaveBeenCalled();
+    expect(embeddingClient.embed).toHaveBeenCalledWith(
+      expect.stringContaining('city pop 女声 下午'),
+      expect.any(Object)
+    );
+    expect(ncmClient.getSongDetails).toHaveBeenCalledWith(['9901']);
+    expect(observation?.summary).toContain('semantic entity recall added 1 candidates');
+    expect(candidatePool.get('9901')).toMatchObject({
+      id: '9901',
+      name: 'City Semantic',
+      artist: 'Semantic Artist',
+      sources: ['search']
+    });
   });
 
   it('falls back to context-derived queries when expand_queries receives an empty object', async () => {
