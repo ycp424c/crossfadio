@@ -111,6 +111,26 @@ describe('DJ pick-next diagnostics', () => {
     expect(musicAgentDebugHelper).toContain('source: pick.source');
   });
 
+  it('routes MusicAgent ranked fallback picks through legacy LLM instead of appending them', () => {
+    const source = readSource('src/server/http/routes/djNext.ts');
+    const doPickNext = extractBetween(source, 'async function doPickNext', 'function broadcastAppended');
+    const rankedFallbackBlock = extractBetween(
+      doPickNext,
+      "if (output.status === 'ok' && hasRankedFallbackPicks(output)) {",
+      "} else if (output.status === 'ok') {"
+    );
+
+    expect(rankedFallbackBlock).toContain("legacyFallbackPath = 'music_agent_legacy_fallback';");
+    expect(rankedFallbackBlock).toContain('rankedFallbackPicks: createMusicAgentSelectedTrackDebug(output.picks)');
+    expect(rankedFallbackBlock).toContain('MusicAgent returned ranked fallback picks, using legacy fallback');
+    expectBefore(
+      doPickNext,
+      "if (output.status === 'ok' && hasRankedFallbackPicks(output))",
+      'const pathQueueLength = getQueue(userId).length'
+    );
+    expect(source).toContain('function hasRankedFallbackPicks(output: MusicAgentRunOutput): boolean');
+  });
+
   it('emits MusicAgent debug details before broadcasting partial append success', () => {
     const source = readSource('src/server/http/routes/djNext.ts');
     const doPickNext = extractBetween(source, 'async function doPickNext', 'function broadcastAppended');

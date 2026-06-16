@@ -482,7 +482,20 @@ async function doPickNext(
           'DJ pick-next: MusicAgent timed out, using legacy fallback'
         );
       }
-      if (output.status === 'ok') {
+      if (output.status === 'ok' && hasRankedFallbackPicks(output)) {
+        legacyFallbackPath = 'music_agent_legacy_fallback';
+        logger.warn(
+          {
+            targetCount: targetPickCount,
+            requestedPickCount: output.picks.length,
+            rankedFallbackPicks: createMusicAgentSelectedTrackDebug(output.picks),
+            ...getMusicAgentShortfallDiagnostics(output, []),
+            fallbackPath: legacyFallbackPath,
+            fallbackStats: djPickNextFallbackStats.snapshot()
+          },
+          'DJ pick-next: MusicAgent returned ranked fallback picks, using legacy fallback'
+        );
+      } else if (output.status === 'ok') {
         const pathQueueLength = getQueue(userId).length;
         const appendedPicks: typeof output.picks = [];
         const musicAgentSkippedPicks: SkippedPickLog[] = [];
@@ -1419,9 +1432,13 @@ function createLegacySelectedTrackDebug(
 }
 
 function getMusicAgentRoutePath(output: MusicAgentRunOutput): DjPickNextFallbackPath {
-  return output.picks.some((pick) => pick.reason === 'ranked fallback')
+  return hasRankedFallbackPicks(output)
     ? 'music_agent_ranked_fallback'
     : 'music_agent_success';
+}
+
+function hasRankedFallbackPicks(output: MusicAgentRunOutput): boolean {
+  return output.picks.some((pick) => pick.reason === 'ranked fallback');
 }
 
 export function createDjPickNextFallbackStatsTracker(): DjPickNextFallbackStatsTracker {
