@@ -763,6 +763,60 @@ describe('runMusicAgentLoop', () => {
     }));
   });
 
+  it('rejects liked-only extra final picks for large explore auto-fill batches', async () => {
+    const pool = new CandidatePool();
+    for (let index = 1; index <= 5; index += 1) {
+      pool.upsert(candidate({
+        id: `liked-only-${index}`,
+        name: `Liked Only ${index}`,
+        artist: `Liked Artist ${index}`,
+        sources: ['liked']
+      }));
+    }
+    const fallbackLogger = vi.fn();
+    const llmClient = new LoopFakeLlmClient([
+      JSON.stringify({ type: 'tool_call', tool: 'recall_from_ncm_search', input: { queries: ['粤语流行 女声'] } }),
+      JSON.stringify({
+        type: 'final',
+        say: '只从红心里选。',
+        picks: [
+          { id: 'liked-only-1', reason: '红心候选', source: 'liked' },
+          { id: 'liked-only-2', reason: '红心候选', source: 'liked' },
+          { id: 'liked-only-3', reason: '红心候选', source: 'liked' },
+          { id: 'liked-only-4', reason: '红心候选', source: 'liked' }
+        ],
+        rejected: [{ id: 'liked-only-5', reason: '重复' }]
+      })
+    ]);
+
+    const result = await runMusicAgentLoop({
+      llmClient,
+      context: context({ request: 'auto-fill', discoveryMode: 'explore' }),
+      candidatePool: pool,
+      tools: {
+        recall_from_ncm_search: async () => ({
+          summary: 'search recall added 0 candidates',
+          candidateCount: pool.count(),
+          problems: ['no external candidates']
+        })
+      },
+      budget: budget({ maxLlmCalls: 2, maxSteps: 2 }),
+      targetPickCount: 5,
+      fallbackLogger
+    });
+
+    expect(result.status).toBe('empty_pool');
+    expect(result.picks).toEqual([]);
+    expect(result.say).toContain('暂时没有可用候选');
+    expect(fallbackLogger).toHaveBeenCalledWith(expect.objectContaining({
+      reason: 'liked_only_final_rejected',
+      status: 'empty_pool',
+      candidateCount: 5,
+      pickCount: 0,
+      extraFinalProblem: 'liked_only_final'
+    }));
+  });
+
   it('retries once with a hard final-only prompt when the extra final-pick call returns a tool call', async () => {
     const pool = new CandidatePool();
     pool.upsert(candidate({ id: '101', scores: { ...candidate().scores, intentMatch: 0.9 } }));

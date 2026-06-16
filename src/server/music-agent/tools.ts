@@ -1759,6 +1759,13 @@ async function recallFromQueries(options: {
     preparedQueries.funnelEntries.map((entry) => [entry.normalizedQuery, entry])
   );
   if (queries.length === 0) {
+    const noQueryReason = formatNoExecutableQueryReason({
+      inputQueryCount: options.queries.length,
+      sanitizedQueryCount: sanitizedQueries.length,
+      artistFilteredQueryCount: artistFilteredQueries.length,
+      skippedAvoidedQueries,
+      skippedSemanticQueries
+    });
     if (skippedSemanticQueries > 0) {
       const semanticRecall = await recallFromSemanticEntities({
         semanticQueries: artistFilteredQueries.length > 0 ? artistFilteredQueries : sanitizedQueries,
@@ -1783,7 +1790,7 @@ async function recallFromQueries(options: {
         );
       }
     }
-    return observation(options.input.candidatePool, `${options.evidencePrefix} recall skipped: no queries.`, [
+    return observation(options.input.candidatePool, `${options.evidencePrefix} recall skipped: no queries (${noQueryReason}).`, [
       'no search queries available',
       ...(skippedSemanticQueries > 0 ? [SEMANTIC_ONLY_QUERY_PROBLEM] : []),
       ...(skippedAvoidedQueries > 0 ? [`skipped ${skippedAvoidedQueries} search queries for recently repeated artists`] : [])
@@ -1882,6 +1889,27 @@ async function recallFromQueries(options: {
       (artistFallbacks.length > 0 ? ` artist fallback added ${artistFallbackAdded} candidates from ${artistFallbacks.join('、')}.` : ''),
     problems
   );
+}
+
+function formatNoExecutableQueryReason(input: {
+  inputQueryCount: number;
+  sanitizedQueryCount: number;
+  artistFilteredQueryCount: number;
+  skippedAvoidedQueries: number;
+  skippedSemanticQueries: number;
+}): string {
+  const reasons: string[] = [];
+  if (input.inputQueryCount === 0) reasons.push('query plan empty');
+  if (input.inputQueryCount > 0 && input.sanitizedQueryCount === 0) reasons.push('queries sanitized to empty');
+  if (input.skippedAvoidedQueries > 0 && input.artistFilteredQueryCount === 0) {
+    reasons.push('all queries skipped for recently repeated artists');
+  }
+  if (input.skippedSemanticQueries > 0) {
+    reasons.push(input.artistFilteredQueryCount === input.skippedSemanticQueries
+      ? 'all queries skipped as semantic-only'
+      : `${input.skippedSemanticQueries} semantic-only queries skipped`);
+  }
+  return reasons.length > 0 ? reasons.join('; ') : 'no exact-track search queries available';
 }
 
 function artistFallbackNameFromQuery(query: string, tracks: NcmTrackLike[]): string {

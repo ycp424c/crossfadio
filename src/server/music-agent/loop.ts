@@ -50,6 +50,7 @@ export type MusicAgentFallbackReason =
   | 'insufficient_pool_after_forced_recall'
   | 'extra_final_returned_tool_call'
   | 'extra_final_rejected'
+  | 'liked_only_final_rejected'
   | 'extra_final_request_failed'
   | 'extra_final_timeout'
   | 'ranked_tool_completed';
@@ -613,6 +614,19 @@ async function acceptExtraFinalPick(
     if (completed.picks.length === 0) {
       return rankedFallback('extra_final_rejected', input, trace, startedAt, step, llmCalls, toolCalls, {
         extraFinalProblem: 'empty_final',
+        finalPickDiagnostics: completed.finalPickDiagnostics
+      });
+    }
+    if (shouldRejectLikedOnlyFinalPicks(input)) {
+      trace.push(traceStep(step, startedAt, input.candidatePool.count(), {
+        thoughtSummary: 'extra final rejected because explore auto-fill has only liked candidates',
+        observationSummary: summarizeObservation(observationFromProblem(
+          'extra final rejected: explore auto-fill requires non-liked candidates before accepting a large batch',
+          input.candidatePool.count()
+        ))
+      }));
+      return rankedFallback('liked_only_final_rejected', input, trace, startedAt, step, llmCalls, toolCalls, {
+        extraFinalProblem: 'liked_only_final',
         finalPickDiagnostics: completed.finalPickDiagnostics
       });
     }
@@ -1592,6 +1606,14 @@ function rankedFallbackSelectableCandidates(
 function shouldBlockLikedOnlyRankedFallback(input: RunMusicAgentLoopInput): boolean {
   const explicitTargetPickCount = input.targetPickCount === undefined ? null : targetPickCount(input);
   return isExploreAutoFill(input) && explicitTargetPickCount !== null && explicitTargetPickCount >= 4;
+}
+
+function shouldRejectLikedOnlyFinalPicks(input: RunMusicAgentLoopInput): boolean {
+  return (
+    shouldBlockLikedOnlyRankedFallback(input) &&
+    countNonLikedCandidates(input) === 0 &&
+    countLikedCandidates(input) > 0
+  );
 }
 
 function isExploreAutoFill(input: RunMusicAgentLoopInput): boolean {

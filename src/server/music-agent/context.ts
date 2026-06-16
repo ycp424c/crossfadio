@@ -115,8 +115,8 @@ function buildCurrentPlanSegment(userId: string, now: Date): string | null {
   const plan = loadLatestPlan(userId, formatShanghaiDate(now));
   if (!plan) return null;
 
-  const segmentId = getPlanSegmentId(timeParts.hour);
-  const segment = plan.segments.find((item) => item.id === segmentId);
+  const segment = plan.segments.find((item) => isCurrentTimeInSegmentRange(item.timeRange, timeParts))
+    ?? plan.segments.find((item) => item.id === getPlanSegmentId(timeParts.hour));
   if (!segment) return null;
 
   const tracks = segment.tracks
@@ -131,6 +131,39 @@ function buildCurrentPlanSegment(userId: string, now: Date): string | null {
     tracks ? `tracks=${tracks}` : ''
   ].filter(Boolean);
   return truncate(parts.join('；'), 500);
+}
+
+function isCurrentTimeInSegmentRange(
+  timeRange: string,
+  timeParts: Pick<ReturnType<typeof getShanghaiTimeParts>, 'hour' | 'minute'>
+): boolean {
+  const range = parseSegmentTimeRange(timeRange);
+  if (!range) return false;
+  const currentMinutes = timeParts.hour * 60 + timeParts.minute;
+  if (range.start === range.end) return false;
+  if (range.start < range.end) {
+    return currentMinutes >= range.start && currentMinutes < range.end;
+  }
+  return currentMinutes >= range.start || currentMinutes < range.end;
+}
+
+function parseSegmentTimeRange(timeRange: string): { start: number; end: number } | null {
+  const match = /(\d{1,2})(?::(\d{2}))?\s*(?:[-–—~至到]+)\s*(\d{1,2})(?::(\d{2}))?/.exec(timeRange);
+  if (!match) return null;
+  const [, startHourRaw, startMinuteRaw, endHourRaw, endMinuteRaw] = match;
+  const start = parseTimeOfDay(startHourRaw, startMinuteRaw);
+  const end = parseTimeOfDay(endHourRaw, endMinuteRaw);
+  if (start === null || end === null) return null;
+  return { start, end };
+}
+
+function parseTimeOfDay(hourRaw: string, minuteRaw: string | undefined): number | null {
+  const hour = Number.parseInt(hourRaw, 10);
+  const minute = minuteRaw === undefined ? 0 : Number.parseInt(minuteRaw, 10);
+  if (!Number.isInteger(hour) || !Number.isInteger(minute)) return null;
+  if (hour < 0 || hour > 24 || minute < 0 || minute > 59) return null;
+  if (hour === 24 && minute !== 0) return null;
+  return (hour % 24) * 60 + minute;
 }
 
 function getPlanSegmentId(hour: number): 'morning' | 'work' | 'evening' | 'late-night' {

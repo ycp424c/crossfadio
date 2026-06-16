@@ -45,6 +45,49 @@ afterEach(() => {
 });
 
 describe('MusicAgent facade', () => {
+  it('selects the current plan segment by matching its time range', async () => {
+    const { savePlan } = await import('../../src/server/store/plan.js');
+    const { buildMusicAgentContext } = await import('../../src/server/music-agent/context.js');
+
+    savePlan('time-range-plan-user', {
+      mode: 'plan',
+      date: '2026-06-15',
+      segments: [
+        {
+          id: 'work',
+          label: '专注工作',
+          timeRange: '13:30-18:30',
+          mood: '专注/平静',
+          energyPct: 40,
+          tracks: [
+            { query: '日出时让街灯安睡 — 李幸倪 / 张学友', reason: '平静收束' },
+            { query: '无名的人 — 张韶涵', reason: '保持清醒' }
+          ]
+        },
+        {
+          id: 'late-night',
+          label: '深夜写代码',
+          timeRange: '21:00-01:00',
+          mood: '安静/内省',
+          energyPct: 30,
+          tracks: [{ query: '喜帖街 — 谢安琪', reason: '夜间氛围' }]
+        }
+      ],
+      narrative: 'test plan'
+    });
+
+    const context = await buildMusicAgentContext({
+      userId: 'time-range-plan-user',
+      request: 'auto-fill',
+      includeDailyTheme: false,
+      now: new Date('2026-06-15T10:08:30.000Z')
+    });
+
+    expect(context.currentPlanSegment).not.toBeNull();
+    expect(context.currentPlanSegment ?? '').toContain('专注工作 13:30-18:30');
+    expect(context.currentPlanSegment ?? '').toContain('tracks=日出时让街灯安睡 — 李幸倪 / 张学友、无名的人 — 张韶涵');
+  });
+
   it('keeps the base LLM budget for small auto-fill batches and raises it for large batches', () => {
     const source = fs.readFileSync(path.join(process.cwd(), 'src/server/music-agent/index.ts'), 'utf8');
     const pickNextBudget = source.slice(source.indexOf('function pickNextBudget'), source.indexOf('function chatRecommendBudget'));
@@ -623,6 +666,56 @@ describe('createMusicAgentTools', () => {
     expect(observation?.problems).toContain(
       'candidate admission: inserted=3; mergedByDedupe=1; invalid=1; rejectedByPool=2 (banned_id=1, banned_dedupe=1); skippedArtistCap=1'
     );
+  });
+
+  it('explains why NCM recall has no executable search queries', async () => {
+    const ncmClient = {
+      getLikedSongIds: vi.fn(async () => []),
+      getSongDetails: vi.fn(async () => []),
+      searchSongs: vi.fn(async () => []),
+      getPlaylistDetail: vi.fn(async () => null)
+    };
+
+    const { CandidatePool } = await import('../../src/server/music-agent/candidates.js');
+    const { createMusicAgentTools } = await import('../../src/server/music-agent/tools.js');
+    const tools = createMusicAgentTools({
+      userId: 'no-query-diagnostics',
+      ncmClient: ncmClient as any,
+      context: {
+        request: 'auto-fill',
+        discoveryMode: 'explore',
+        currentUserText: '',
+        currentMoment: { localTime: '周一 18:08', daypart: '傍晚', weather: null },
+        activeDirective: '',
+        currentPlanSegment: null,
+        tasteSummary: '',
+        recentPreferenceSummary: '',
+        recentPlaySignals: '',
+        queueStateSummary: '',
+        bannedSummary: '',
+        recentArtistPenalties: [{ artist: '陈奕迅', penalty: 0.24 }]
+      },
+      candidatePool: new CandidatePool(),
+      budget: {
+        maxMs: 10_000,
+        maxSteps: 3,
+        maxLlmCalls: 2,
+        maxToolCalls: 2,
+        maxNcmSearches: 3,
+        maxPlaylistFetches: 0,
+        maxTrendFetchMs: 0,
+        maxCandidates: 20
+      }
+    });
+
+    const emptyPlan = await tools.recall_from_ncm_search?.({ queries: [] });
+    const avoided = await tools.recall_from_ncm_search?.({ queries: ['盲婚哑嫁 The Code — 陈奕迅'] });
+    const semanticOnly = await tools.recall_from_ncm_search?.({ queries: ['粤语流行 女声 工作间隙放松'] });
+
+    expect(emptyPlan?.summary).toContain('query plan empty');
+    expect(avoided?.summary).toContain('all queries skipped for recently repeated artists');
+    expect(semanticOnly?.summary).toContain('all queries skipped as semantic-only');
+    expect(ncmClient.searchSongs).not.toHaveBeenCalled();
   });
 
   it('counts query funnel addedCount as unique admitted candidates instead of merges', async () => {
