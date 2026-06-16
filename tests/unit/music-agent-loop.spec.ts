@@ -133,6 +133,59 @@ describe('runMusicAgentLoop', () => {
     });
   });
 
+  it('keeps structured tool observation diagnostics in trace steps', async () => {
+    const llmClient = new LoopFakeLlmClient([
+      JSON.stringify({ type: 'tool_call', tool: 'recall_auto_fill_mix', input: {} }),
+      JSON.stringify({
+        type: 'final',
+        say: '这首歌适合现在。',
+        picks: [{ id: '101', reason: '候选诊断完整且可播放', source: 'search' }],
+        rejected: []
+      })
+    ]);
+    const pool = new CandidatePool();
+    const tools: MusicAgentToolRegistry = {
+      recall_auto_fill_mix: async () => {
+        pool.upsert(candidate({
+          sources: ['search'],
+          evidence: ['web verified'],
+          artist: 'Web Artist'
+        }));
+        return {
+          summary: 'auto-fill mix completed with full diagnostics',
+          candidateCount: pool.count(),
+          data: {
+            stages: [
+              { stage: 'web_discovery', summary: 'web discovery skipped: cooldown active.', problems: ['cooldown active'] },
+              { stage: 'web_hint_recall', summary: 'web hint entity recall added 0 candidates from 0 entities.', problems: [] }
+            ]
+          }
+        };
+      }
+    };
+
+    const result = await runMusicAgentLoop({
+      llmClient,
+      context: context({ request: 'auto-fill', discoveryMode: 'explore' }),
+      candidatePool: pool,
+      tools,
+      budget: budget(),
+      mode: 'pick_next',
+      targetPickCount: 1
+    });
+
+    expect(result.status).toBe('ok');
+    expect(result.trace[0]).toMatchObject({
+      tool: 'recall_auto_fill_mix',
+      observationData: {
+        stages: [
+          expect.objectContaining({ stage: 'web_discovery', summary: expect.stringContaining('cooldown active') }),
+          expect.objectContaining({ stage: 'web_hint_recall' })
+        ]
+      }
+    });
+  });
+
   it('accepts final picks up to the target pick count', async () => {
     const pool = new CandidatePool();
     for (let index = 1; index <= 5; index += 1) {

@@ -329,6 +329,7 @@ export async function runMusicAgentLoop(input: RunMusicAgentLoopInput): Promise<
       tool: toolName,
       toolInputSummary: summarizeInput(toolInput),
       observationSummary: summarizeObservation(observation),
+      ...(observation.data ? { observationData: observation.data } : {}),
       requestedTool: toolRewrite?.requestedTool,
       executedTool: toolRewrite?.toolName,
       rewriteReason: toolRewrite?.rewriteReason

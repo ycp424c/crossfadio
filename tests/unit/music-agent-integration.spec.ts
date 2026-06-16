@@ -1431,6 +1431,76 @@ describe('createMusicAgentTools', () => {
     expect(observation?.summary).toContain('web hint entity recall added 1 candidates');
   });
 
+  it('auto-fill mix prefers cantopop web discovery when exact anchors include Cantonese artists', async () => {
+    const ncmClient = {
+      getLikedSongIds: vi.fn(async () => []),
+      getSongDetails: vi.fn(async () => []),
+      searchSongs: vi.fn(async () => []),
+      searchArtists: vi.fn(async () => []),
+      getArtistTopSongs: vi.fn(async () => []),
+      getPlaylistDetail: vi.fn(async () => null)
+    };
+    const webMusicDiscoveryProvider = {
+      discover: vi.fn(async () => [])
+    };
+
+    const { CandidatePool } = await import('../../src/server/music-agent/candidates.js');
+    const { createMusicAgentTools } = await import('../../src/server/music-agent/tools.js');
+    const candidatePool = new CandidatePool();
+    const tools = createMusicAgentTools({
+      userId: 'web-discovery-cantopop-from-exact-anchors',
+      ncmClient: ncmClient as any,
+      webMusicDiscoveryProvider,
+      context: {
+        request: 'auto-fill',
+        discoveryMode: 'explore',
+        currentUserText: '午后专注，来几首有新鲜感的',
+        currentMoment: { localTime: '周二 16:00', daypart: '下午', weather: null },
+        activeDirective: '',
+        currentPlanSegment: null,
+        tasteSummary: '',
+        recentPreferenceSummary: '',
+        recentPlaySignals: '',
+        queueStateSummary: '',
+        bannedSummary: ''
+      },
+      candidatePool,
+      budget: {
+        maxMs: 10_000,
+        maxSteps: 3,
+        maxLlmCalls: 2,
+        maxToolCalls: 3,
+        maxNcmSearches: 18,
+        maxPlaylistFetches: 0,
+        maxTrendFetchMs: 0,
+        maxCandidates: 20
+      },
+      targetPickCount: 5
+    });
+
+    await tools.expand_queries?.({
+      exactTrackQueries: ['红色高跟鞋 — 蔡健雅', 'My Cookie Can — 卫兰'],
+      styleHints: ['流行摇滚', '电子舞曲', 'K-pop', 'J-pop', '独立流行', '明亮节奏', '提神'],
+      listeningConstraints: ['下午', '专注']
+    });
+    const observation = await tools.recall_auto_fill_mix?.({});
+
+    expect(observation?.data?.stages).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        stage: 'web_discovery',
+        summary: expect.stringContaining('web discovery returned 0 hints')
+      })
+    ]));
+    expect(webMusicDiscoveryProvider.discover).toHaveBeenCalledTimes(1);
+    const providerInput = webMusicDiscoveryProvider.discover.mock.calls[0]?.[0];
+    expect(providerInput).toMatchObject({
+      focus: 'style_artists',
+      anchors: [{ type: 'style', name: 'cantopop' }]
+    });
+    expect(providerInput.intent).toContain('卫兰');
+    expect(providerInput.intent).not.toContain('Slipknot');
+  });
+
   it('recalls providerId-backed track and playlist entities without search re-resolution', async () => {
     const ncmClient = {
       getLikedSongIds: vi.fn(async () => []),

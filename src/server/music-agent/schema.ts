@@ -230,6 +230,7 @@ export const agentTraceStepSchema = z.object({
   tool: musicAgentToolNameSchema.optional(),
   toolInputSummary: z.string().optional(),
   observationSummary: z.string().optional(),
+  observationData: z.record(z.unknown()).optional(),
   requestedTool: z.string().optional(),
   executedTool: musicAgentToolNameSchema.optional(),
   rewriteReason: z.string().optional(),

@@ -133,6 +133,14 @@ type ToolState = {
   webDiscoveryCalled: boolean;
 };
 
+type AutoFillMixStage = {
+  stage: 'search' | 'style_expansion' | 'trend' | 'web_discovery' | 'web_hint_recall';
+  summary: string;
+  candidateCount: number;
+  problems: string[];
+  data?: Record<string, unknown>;
+};
+
 type UpsertTracksResult = {
   added: number;
   inserted: number;
@@ -202,7 +210,8 @@ const likedRecallCache = new Map<string, CacheEntry<NcmTrackLike[]>>();
 const searchRecallCache = new Map<string, CacheEntry<NcmTrackLike[]>>();
 const webDiscoveryCooldowns = new Map<string, number>();
 const WEB_DISCOVERY_STYLE_PATTERNS: Array<{ pattern: RegExp; style: string; priority: number }> = [
-  { pattern: /cantopop|粤语流行|粤语|港乐|香港流行/i, style: 'cantopop', priority: 24 },
+  { pattern: /janice\s*vidal|卫兰|my\s*cookie\s*can|就算世界无童话|cantopop|粤语流行|粤语|港乐|香港流行|广东歌/i, style: 'cantopop', priority: 40 },
+  { pattern: /tanya\s*chua|蔡健雅|红色高跟鞋|mandopop|c[-\s]*pop|华语|中文|国语|mandarin/i, style: 'c-pop', priority: 30 },
   { pattern: /city\s*pop|城市流行/i, style: 'city pop', priority: 22 },
   { pattern: /indie\s*folk|独立民谣/i, style: 'indie folk', priority: 21 },
   { pattern: /folk|民谣/i, style: 'folk', priority: 18 },
@@ -218,8 +227,7 @@ const WEB_DISCOVERY_STYLE_PATTERNS: Array<{ pattern: RegExp; style: string; prio
   { pattern: /alternative\s*rock|另类摇滚/i, style: 'alternative rock', priority: 8 },
   { pattern: /indie\s*rock|独立摇滚/i, style: 'indie rock', priority: 7 },
   { pattern: /j[-\s]*pop|日语|日系/i, style: 'j-pop', priority: 6 },
-  { pattern: /k[-\s]*pop|韩语|韩系/i, style: 'k-pop', priority: 5 },
-  { pattern: /c[-\s]*pop|华语|中文|mandarin/i, style: 'c-pop', priority: 4 }
+  { pattern: /k[-\s]*pop|韩语|韩系/i, style: 'k-pop', priority: 5 }
 ];
 const HARD_MISMATCH_WEB_ARTIST_PATTERN =
   /\b(slipknot|metallica|megadeth|slayer|korn|limp bizkit|pantera|system of a down)\b/i;
@@ -497,6 +505,13 @@ export function createMusicAgentTools(input: CreateMusicAgentToolsInput): MusicA
 
       const summaries: string[] = [];
       const problems: string[] = [];
+      const stages: AutoFillMixStage[] = [];
+      const addStage = (stage: AutoFillMixStage['stage'], result: ToolObservation) => {
+        summaries.push(result.summary);
+        problems.push(...(result.problems ?? []));
+        stages.push(autoFillMixStage(stage, result));
+      };
+      const finish = () => autoFillMixObservation(input, summaries, problems, stages);
 
       const searchQueries = autoFillSearchQueries(input.context, state.queryPlan);
       const search = await recallFromQueries({
@@ -510,10 +525,9 @@ export function createMusicAgentTools(input: CreateMusicAgentToolsInput): MusicA
         signal,
         limit: DEFAULT_SEARCH_LIMIT
       });
-      summaries.push(search.summary);
-      problems.push(...(search.problems ?? []));
+      addStage('search', search);
       if (hasEnoughAutoFillNonLikedCandidates(input.candidatePool, input.targetPickCount)) {
-        return observation(input.candidatePool, `auto-fill mix: ${summaries.join(' | ')}`, problems);
+        return finish();
       }
 
       const style = await recallFromQueries({
@@ -527,10 +541,9 @@ export function createMusicAgentTools(input: CreateMusicAgentToolsInput): MusicA
         signal,
         limit: 5
       });
-      summaries.push(style.summary);
-      problems.push(...(style.problems ?? []));
+      addStage('style_expansion', style);
       if (hasEnoughAutoFillNonLikedCandidates(input.candidatePool, input.targetPickCount)) {
-        return observation(input.candidatePool, `auto-fill mix: ${summaries.join(' | ')}`, problems);
+        return finish();
       }
 
       const trend = await recallFromQueries({
@@ -544,10 +557,9 @@ export function createMusicAgentTools(input: CreateMusicAgentToolsInput): MusicA
         signal,
         limit: 5
       });
-      summaries.push(trend.summary);
-      problems.push(...(trend.problems ?? []));
+      addStage('trend', trend);
       if (hasEnoughAutoFillNonLikedCandidates(input.candidatePool, input.targetPickCount)) {
-        return observation(input.candidatePool, `auto-fill mix: ${summaries.join(' | ')}`, problems);
+        return finish();
       }
 
       const web = await webMusicDiscovery({
@@ -556,8 +568,7 @@ export function createMusicAgentTools(input: CreateMusicAgentToolsInput): MusicA
         state,
         signal
       });
-      summaries.push(web.summary);
-      problems.push(...(web.problems ?? []));
+      addStage('web_discovery', web);
       if (web.data?.hints) {
         const webRecall = await recallFromWebDiscoveryHints({
           hints: web.data.hints,
@@ -570,9 +581,16 @@ export function createMusicAgentTools(input: CreateMusicAgentToolsInput): MusicA
         });
         summaries.push(webRecall.summary);
         problems.push(...webRecall.problems);
+        stages.push({
+          stage: 'web_hint_recall',
+          summary: webRecall.summary,
+          candidateCount: input.candidatePool.count(),
+          problems: webRecall.problems,
+          data: { hintCount: objectArrayValue(web.data.hints).length }
+        });
       }
 
-      return observation(input.candidatePool, `auto-fill mix: ${summaries.join(' | ')}`, problems);
+      return finish();
     },
 
     web_music_discovery: async (toolInput, signal) => {
@@ -844,6 +862,12 @@ function selectWebDiscoveryStyle(
 
   addText([context.currentUserText, ...(context.actionQueries ?? []), context.activeDirective].join(' '), 100);
   addText(context.currentPlanSegment ?? '', 80);
+  addText([...(queryPlan?.exactTrackQueries ?? [])].join(' '), 95);
+  addText([
+    ...(queryPlan?.tasteAnchorQueries ?? []),
+    ...(queryPlan?.planQueries ?? []),
+    ...(queryPlan?.explorationQueries ?? [])
+  ].join(' '), 55);
   addText([...(queryPlan?.styleHints ?? []), ...(queryPlan?.listeningConstraints ?? [])].join(' '), 70);
   addText(context.recentPreferenceSummary, 25);
   addText(context.tasteSummary, 15);
@@ -867,6 +891,10 @@ function compactWebDiscoveryIntent(
     context.activeDirective,
     context.currentPlanSegment ?? '',
     style ? `style:${style}` : '',
+    ...(queryPlan?.exactTrackQueries.slice(0, 3) ?? []),
+    ...(queryPlan?.tasteAnchorQueries.slice(0, 2) ?? []),
+    ...(queryPlan?.planQueries.slice(0, 2) ?? []),
+    ...(queryPlan?.explorationQueries.slice(0, 2) ?? []),
     ...(queryPlan?.styleHints.slice(0, 4) ?? []),
     ...(queryPlan?.listeningConstraints.slice(0, 4) ?? [])
   ]);
@@ -1175,6 +1203,30 @@ function trendRecallQueries(state: ToolState, toolInput: Record<string, unknown>
       ]
     : state.queryPlan?.trendQueries ?? [];
   return uniqueStrings([...stringArrayValue(toolInput.queries), ...trendQueries]).slice(0, 8);
+}
+
+function autoFillMixStage(stage: AutoFillMixStage['stage'], result: ToolObservation): AutoFillMixStage {
+  return {
+    stage,
+    summary: result.summary,
+    candidateCount: result.candidateCount,
+    problems: result.problems ?? [],
+    ...(result.data ? { data: result.data } : {})
+  };
+}
+
+function autoFillMixObservation(
+  input: CreateMusicAgentToolsInput,
+  summaries: string[],
+  problems: string[],
+  stages: AutoFillMixStage[]
+): ToolObservation {
+  return observation(
+    input.candidatePool,
+    `auto-fill mix: ${summaries.join(' | ')}`,
+    problems,
+    { stages }
+  );
 }
 
 function hasEnoughAutoFillNonLikedCandidates(pool: CandidatePool, targetPickCount: number | undefined): boolean {
