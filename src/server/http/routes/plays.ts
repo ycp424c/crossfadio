@@ -2,6 +2,8 @@ import type { Request, Response } from 'express';
 import { z } from 'zod';
 import type { NcmClient } from '../../ncm/client.js';
 import { startPlay, endPlay } from '../../store/plays.js';
+import { indexPlayedTrack } from '../../music-agent/entity-indexer.js';
+import { getLogger } from '../../logger.js';
 
 type AuthedRequest = Request & { userId: string; ncmClient: NcmClient };
 
@@ -24,6 +26,13 @@ export function createStartPlayHandler() {
       return;
     }
     const id = startPlay(userId, parsed.data);
+    void Promise.resolve(indexPlayedTrack({ userId, track: parsed.data })).catch((err) => {
+      getLogger().error({
+        err,
+        userId,
+        songId: parsed.data.songId
+      }, 'Music entity played-track fire-and-forget failed');
+    });
     res.status(201).json({ ok: true, id });
   };
 }

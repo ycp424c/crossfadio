@@ -190,6 +190,17 @@ CREATE TABLE IF NOT EXISTS music_entity_embeddings (
 
 CREATE INDEX IF NOT EXISTS idx_music_entity_embeddings_user_model
   ON music_entity_embeddings (user_id, model);
+`,
+  `
+CREATE TABLE IF NOT EXISTS music_entity_index_state (
+  user_id     TEXT NOT NULL,
+  source      TEXT NOT NULL,
+  cursor      TEXT NOT NULL DEFAULT '',
+  last_run_at TEXT,
+  last_error  TEXT,
+  updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (user_id, source)
+);
 `
 ];
 

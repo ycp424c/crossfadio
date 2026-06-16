@@ -4,6 +4,17 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Request, Response, NextFunction } from 'express';
 
+const scheduleTasteAnalysisIfDueMock = vi.hoisted(() => vi.fn());
+const scheduleMusicEntityIndexIfDueMock = vi.hoisted(() => vi.fn());
+
+vi.mock('../../src/server/http/routes/taste-analysis.js', () => ({
+  scheduleTasteAnalysisIfDue: scheduleTasteAnalysisIfDueMock
+}));
+
+vi.mock('../../src/server/music-agent/entity-indexer.js', () => ({
+  scheduleMusicEntityIndexIfDue: scheduleMusicEntityIndexIfDueMock
+}));
+
 const originalDataDir = process.env.CROSSFADIO_DATA_DIR;
 const originalJwtSecret = process.env.CROSSFADIO_JWT_SECRET;
 
@@ -12,6 +23,8 @@ describe('userScopeMiddleware allowlist check', () => {
 
   beforeEach(async () => {
     vi.resetModules();
+    scheduleTasteAnalysisIfDueMock.mockReset();
+    scheduleMusicEntityIndexIfDueMock.mockReset();
     dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'crossfadio-userscope-'));
     process.env.CROSSFADIO_DATA_DIR = dataDir;
     process.env.CROSSFADIO_JWT_SECRET = 'unit-test-secret-key-at-least-32-chars-long!!';
@@ -95,5 +108,32 @@ describe('userScopeMiddleware allowlist check', () => {
 
     expect(res.status).toHaveBeenCalledWith(401);
     expect(next).not.toHaveBeenCalled();
+  });
+
+  it('attaches NCM client and schedules taste analysis plus music entity indexing for allowed users', async () => {
+    const { deriveKey, encrypt } = await import('../../src/server/crypto');
+    const { getConfig } = await import('../../src/server/config');
+    const { upsertUser } = await import('../../src/server/store/users');
+    const { userScopeMiddleware } = await import(
+      '../../src/server/http/middleware/userScope'
+    );
+    const encryptedCookie = encrypt('MUSIC_U=unit-test;', deriveKey(getConfig().jwtSecret));
+    upsertUser({ ncmId: 'allowedUser', encryptedCookie, profileJson: null });
+
+    const { req, res, next } = makeReqRes('allowedUser');
+
+    await userScopeMiddleware(req, res, next);
+
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(res.status).not.toHaveBeenCalled();
+    expect((req as Request & { ncmClient?: unknown }).ncmClient).toBeTruthy();
+    expect(scheduleTasteAnalysisIfDueMock).toHaveBeenCalledWith(
+      'allowedUser',
+      (req as Request & { ncmClient?: unknown }).ncmClient
+    );
+    expect(scheduleMusicEntityIndexIfDueMock).toHaveBeenCalledWith(
+      'allowedUser',
+      (req as Request & { ncmClient?: unknown }).ncmClient
+    );
   });
 });
