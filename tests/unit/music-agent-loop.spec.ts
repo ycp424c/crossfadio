@@ -2266,6 +2266,75 @@ describe('runMusicAgentLoop', () => {
     expect(result.picks.every((pick) => pick.reason !== 'ranked fallback')).toBe(true);
   });
 
+  it('supplements no-progress expand queries while explore external candidates are still sparse', async () => {
+    const pool = new CandidatePool();
+    const llmClient = new LoopFakeLlmClient([
+      JSON.stringify({ type: 'tool_call', tool: 'recall_from_ncm_search', input: { query: 'bright work pop' } }),
+      JSON.stringify({ type: 'tool_call', tool: 'expand_queries', input: { styleHints: ['bright', 'focused'] } })
+    ]);
+    const calls: string[] = [];
+
+    const result = await runMusicAgentLoop({
+      llmClient,
+      context: context({ request: 'auto-fill', discoveryMode: 'explore' }),
+      candidatePool: pool,
+      tools: {
+        recall_from_ncm_search: async () => {
+          calls.push('recall_from_ncm_search');
+          for (let index = 1; index <= 6; index += 1) {
+            pool.upsert(candidate({
+              id: `search-${index}`,
+              name: `Search ${index}`,
+              artist: `Search Artist ${index}`,
+              sources: ['search']
+            }));
+          }
+          return { summary: 'search recall added 6 candidates', candidateCount: pool.count() };
+        },
+        expand_queries: async () => {
+          calls.push('expand_queries');
+          return { summary: 'expanded queries without adding candidates', candidateCount: pool.count() };
+        },
+        recall_auto_fill_mix: async () => {
+          calls.push('recall_auto_fill_mix');
+          for (let index = 7; index <= 15; index += 1) {
+            pool.upsert(candidate({
+              id: `search-${index}`,
+              name: `Search ${index}`,
+              artist: `Search Artist ${index}`,
+              sources: ['search']
+            }));
+          }
+          return {
+            summary: 'auto-fill mix expanded sparse external candidates',
+            candidateCount: pool.count(),
+            data: {
+              stages: [
+                { stage: 'web_discovery', summary: 'web discovery returned 3 hints from 3 raw hints.', problems: [] }
+              ]
+            }
+          };
+        }
+      },
+      budget: budget({ maxLlmCalls: 3, maxSteps: 2, maxToolCalls: 3 }),
+      targetPickCount: 5
+    });
+
+    expect(result.status).toBe('ok');
+    expect(calls).toEqual(['recall_from_ncm_search', 'expand_queries', 'recall_auto_fill_mix']);
+    expect(result.trace).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        tool: 'recall_auto_fill_mix',
+        thoughtSummary: 'auto-fill recall mix tool executed',
+        observationData: {
+          stages: [
+            expect.objectContaining({ stage: 'web_discovery' })
+          ]
+        }
+      })
+    ]));
+  });
+
   it('uses liked only as tail fallback after explore recall finds enough external candidates to anchor a batch', async () => {
     const pool = new CandidatePool();
     const fallbackLogger = vi.fn();

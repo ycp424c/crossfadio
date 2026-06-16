@@ -2,14 +2,17 @@ import { getLogger } from './logger.js';
 
 const TIMEOUT_MS = 8_000;
 const MAX_ARTISTS = 10;
+const MB_BATCH_SIZE = 20;
+const MAX_MB_OFFSET = 5_000;
 const WIKI_API = 'https://en.wikipedia.org/w/api.php';
 const MB_API = 'https://musicbrainz.org/ws/2/artist';
+const probabilityCursors = new Map<string, number>();
 
 /**
  * Search for artists matching a style/mood from multiple sources.
- * 1. MusicBrainz: tag-based artist search
+ * 1. MusicBrainz: tag-based artist search with a rotating probability cursor
  * 2. Wikipedia: "List of X artists" pages (broad coverage)
- * Returns up to 10 deterministic artist names, or empty array on failure.
+ * Returns up to 10 artist names, or empty array on failure.
  */
 export async function searchArtistsForStyle(styleQuery: string): Promise<string[]> {
   const [mb, wiki] = await Promise.all([
@@ -48,10 +51,22 @@ async function searchMusicBrainz(styleQuery: string): Promise<string[]> {
     const tag = styleQuery.replace(/\s+/g, '-').toLowerCase();
     const query = `tag:${tag} AND type:group`;
 
+    const countData = await mbApi<MbCountResponse>({
+      query,
+      limit: '1',
+      offset: '0',
+      fmt: 'json',
+    });
+    const total = countData?.count ?? 0;
+    if (countData && total < 10) return [];
+    const offset = total > MB_BATCH_SIZE
+      ? nextProbabilityCursor(`mb:${tag}`, total, MB_BATCH_SIZE, MAX_MB_OFFSET)
+      : 0;
+
     const data = await mbApi<MbSearchResponse>({
       query,
-      limit: '20',
-      offset: '0',
+      limit: String(MB_BATCH_SIZE),
+      offset: String(offset),
       fmt: 'json',
     });
 
@@ -102,6 +117,7 @@ async function mbApi<T>(params: Record<string, string>): Promise<T | null> {
   }
 }
 
+type MbCountResponse = { count?: number };
 type MbSearchResponse = { artists?: Array<{ name?: string }> };
 
 // ── Wikipedia ──────────────────────────────────────────────────
@@ -158,12 +174,12 @@ async function tryListPageLookup(searchQuery: string): Promise<string[]> {
   const allArtists = await fetchAllLinks(listHit.title);
   if (allArtists.length === 0) return [];
 
-  // Step 3: Keep source order for deterministic diagnostics
+  // Step 3: Rotate through a window so one bad list prefix does not stick forever.
   getLogger().debug(
     { searchQuery, listTitle: listHit.title, totalLinks: allArtists.length },
-    'Wikipedia list page found, returning artists'
+    'Wikipedia list page found, rotating artist window'
   );
-  return allArtists.slice(0, MAX_ARTISTS);
+  return probabilityWindow(allArtists, `wiki-list:${searchQuery}:${listHit.title}`, MAX_ARTISTS);
 }
 
 /**
@@ -233,10 +249,33 @@ async function trySearchExtraction(styleQuery: string): Promise<string[]> {
     if (names.length >= MAX_ARTISTS) break;
   }
 
-  return names;
+  return probabilityWindow(names, `wiki-search:${styleQuery}`, MAX_ARTISTS);
 }
 
 // ── Helpers ──────────────────────────────────────────────────
+
+function probabilityWindow<T>(items: T[], key: string, count: number): T[] {
+  if (items.length <= count) return items.slice(0, count);
+  const start = nextProbabilityCursor(key, items.length, count);
+  return Array.from({ length: count }, (_, index) => items[(start + index) % items.length]);
+}
+
+function nextProbabilityCursor(
+  key: string,
+  total: number,
+  windowSize: number,
+  maxOffsetCap = Number.MAX_SAFE_INTEGER
+): number {
+  const maxOffset = Math.min(Math.max(0, total - windowSize), maxOffsetCap);
+  if (maxOffset <= 0) return 0;
+
+  const previous = probabilityCursors.get(key) ?? Math.floor(Math.random() * (maxOffset + 1));
+  const minimumStep = Math.max(1, Math.floor(windowSize / 2));
+  const jitter = Math.floor(Math.random() * Math.max(1, windowSize));
+  const next = (previous + minimumStep + jitter) % (maxOffset + 1);
+  probabilityCursors.set(key, next);
+  return next;
+}
 
 function isLikelyArtist(title: string): boolean {
   if (!title || title.length > 60) return false;

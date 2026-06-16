@@ -700,7 +700,8 @@ async function supplementAutoFillRecallMix(
       thoughtSummary: 'auto-fill recall mix tool executed',
       tool: AUTO_FILL_AGGREGATE_TOOL_NAME,
       toolInputSummary: summarizeInput({}),
-      observationSummary: summarizeObservation(observation)
+      observationSummary: summarizeObservation(observation),
+      ...(observation.data ? { observationData: observation.data } : {})
     }));
     return supplementLikedTailFallback(input, observations, trace, startedAt, step, nextToolCalls);
   }
@@ -719,7 +720,8 @@ async function supplementAutoFillRecallMix(
       thoughtSummary: 'auto-fill recall mix tool executed',
       tool: toolName,
       toolInputSummary: summarizeInput({}),
-      observationSummary: summarizeObservation(observation)
+      observationSummary: summarizeObservation(observation),
+      ...(observation.data ? { observationData: observation.data } : {})
     }));
   }
   return supplementLikedTailFallback(input, observations, trace, startedAt, step, nextToolCalls);
@@ -747,6 +749,7 @@ async function supplementLikedTailFallback(
     tool: 'recall_from_liked',
     toolInputSummary: summarizeInput(toolInput),
     observationSummary: summarizeObservation(observation),
+    ...(observation.data ? { observationData: observation.data } : {}),
     requestedTool: 'recall_from_liked',
     executedTool: 'recall_from_liked',
     rewriteReason: 'sparse_external_recall_liked_tail'
@@ -776,6 +779,7 @@ async function maybeForceLikedRecallAfterEmptyPoolRewrite(
     tool: 'recall_from_liked',
     toolInputSummary: summarizeInput(toolInput),
     observationSummary: summarizeObservation(observation),
+    ...(observation.data ? { observationData: observation.data } : {}),
     requestedTool: 'recall_from_liked',
     executedTool: 'recall_from_liked',
     rewriteReason: 'empty_pool_forced_liked_recall'
@@ -1476,10 +1480,20 @@ function shouldSupplementSparseExpandRecall(
     modeFromContext(input.context) === 'pick_next' &&
     targetPickCount(input) >= 4 &&
     input.candidatePool.count() >= SKIPPED_TOOL_FINAL_PICK_MIN_CANDIDATES &&
-    (input.candidatePool.count() < targetPickCount(input) || isLikedOnlyFallbackPool(input, trace)) &&
+    hasSparseAutoFillCandidatesAfterNoProgress(input, trace) &&
     input.candidatePool.count() <= candidateCountBeforeTool &&
     hasExecutedExternalRecall(trace)
   );
+}
+
+function hasSparseAutoFillCandidatesAfterNoProgress(
+  input: RunMusicAgentLoopInput,
+  trace: AgentTraceStep[]
+): boolean {
+  if (isExploreAutoFill(input)) {
+    return !hasEnoughAutoFillRankedCandidates(input);
+  }
+  return input.candidatePool.count() < targetPickCount(input) || isLikedOnlyFallbackPool(input, trace);
 }
 
 function isLikedOnlyFallbackPool(input: RunMusicAgentLoopInput, trace: AgentTraceStep[]): boolean {
