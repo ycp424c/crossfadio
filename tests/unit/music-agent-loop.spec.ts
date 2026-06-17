@@ -156,7 +156,7 @@ describe('runMusicAgentLoop', () => {
           candidateCount: pool.count(),
           data: {
             stages: [
-              { stage: 'web_discovery', summary: 'web discovery skipped: cooldown active.', problems: ['cooldown active'] },
+              { stage: 'web_discovery', summary: 'web discovery returned 0 hints from 0 raw hints.', problems: [] },
               { stage: 'web_hint_recall', summary: 'web hint entity recall added 0 candidates from 0 entities.', problems: [] }
             ]
           }
@@ -179,7 +179,7 @@ describe('runMusicAgentLoop', () => {
       tool: 'recall_auto_fill_mix',
       observationData: {
         stages: [
-          expect.objectContaining({ stage: 'web_discovery', summary: expect.stringContaining('cooldown active') }),
+          expect.objectContaining({ stage: 'web_discovery', summary: expect.stringContaining('returned 0 hints') }),
           expect.objectContaining({ stage: 'web_hint_recall' })
         ]
       }

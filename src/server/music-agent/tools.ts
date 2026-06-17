@@ -195,7 +195,6 @@ const AUTO_FILL_WEB_DISCOVERY_HINT_LIMIT = 8;
 const WEB_DISCOVERY_ENTITY_RECALL_LIMIT = 1;
 const WEB_DISCOVERY_INTENT_MAX_CHARS = 360;
 const WEB_DISCOVERY_MAX_HINT_LIMIT = 12;
-const WEB_DISCOVERY_COOLDOWN_MS = 20 * 60 * 1000;
 const WEB_HINT_MIN_CONFIDENCE = 0.45;
 const SEMANTIC_ONLY_QUERY_PROBLEM = 'skipped semantic-only queries; use semantic discovery before NCM song search';
 const SEMANTIC_SONG_SEARCH_PATTERNS = [
@@ -208,7 +207,6 @@ const SEMANTIC_SONG_SEARCH_PATTERNS = [
 ];
 const likedRecallCache = new Map<string, CacheEntry<NcmTrackLike[]>>();
 const searchRecallCache = new Map<string, CacheEntry<NcmTrackLike[]>>();
-const webDiscoveryCooldowns = new Map<string, number>();
 const WEB_DISCOVERY_STYLE_PATTERNS: Array<{ pattern: RegExp; style: string; priority: number }> = [
   { pattern: /janice\s*vidal|卫兰|my\s*cookie\s*can|就算世界无童话|cantopop|粤语流行|粤语|港乐|香港流行|广东歌/i, style: 'cantopop', priority: 40 },
   { pattern: /tanya\s*chua|蔡健雅|红色高跟鞋|mandopop|c[-\s]*pop|华语|中文|国语|mandarin/i, style: 'c-pop', priority: 30 },
@@ -758,7 +756,6 @@ async function webMusicDiscovery(options: {
     );
     if (options.signal?.aborted) return abortedObservation(options.input.candidatePool);
     if (result.timedOut) {
-      setWebDiscoveryCooldown(gate.intentCluster);
       return observation(
         options.input.candidatePool,
         'web discovery timed out before returning hints.',
@@ -768,7 +765,6 @@ async function webMusicDiscovery(options: {
     }
 
     const parsed = parseMusicEntityHints(result.value, maxHints);
-    setWebDiscoveryCooldown(gate.intentCluster);
     return observation(
       options.input.candidatePool,
       `web discovery returned ${parsed.hints.length} hints from ${result.value.length} raw hints.`,
@@ -776,7 +772,6 @@ async function webMusicDiscovery(options: {
       { ...baseData, hints: parsed.hints }
     );
   } catch (error) {
-    setWebDiscoveryCooldown(gate.intentCluster);
     return observation(
       options.input.candidatePool,
       'web discovery failed before returning hints.',
@@ -915,15 +910,12 @@ function evaluateWebMusicDiscoveryGate(options: {
   input: CreateMusicAgentToolsInput;
   state: ToolState;
 }): { allowed: boolean; reason?: string; signals: string[]; intentCluster: string } {
-  const intentCluster = webDiscoveryCooldownKey(options.input.userId, options.discoveryInput.intent);
+  const intentCluster = webDiscoveryIntentCluster(options.input.userId, options.discoveryInput.intent);
   if (options.input.context.discoveryMode === 'comfort') {
     return { allowed: false, reason: 'discovery mode is comfort', signals: [], intentCluster };
   }
   if (options.state.webDiscoveryCalled) {
     return { allowed: false, reason: 'already called in this run', signals: [], intentCluster };
-  }
-  if (isWebDiscoveryCooldownActive(intentCluster)) {
-    return { allowed: false, reason: 'cooldown active for this intent cluster', signals: [], intentCluster };
   }
 
   const signals = webDiscoveryGapSignals(options.input, options.state);
@@ -985,23 +977,9 @@ function webDiscoveryIntentText(context: MusicAgentContextSummary): string {
   ].filter(Boolean).join(' ');
 }
 
-function webDiscoveryCooldownKey(userId: string, intent: string): string {
+function webDiscoveryIntentCluster(userId: string, intent: string): string {
   const cluster = normalizeSearchQuery(intent).slice(0, 120) || 'default';
   return `${userId}:${cluster}`;
-}
-
-function isWebDiscoveryCooldownActive(key: string): boolean {
-  const expiresAt = webDiscoveryCooldowns.get(key);
-  if (!expiresAt) return false;
-  if (expiresAt <= Date.now()) {
-    webDiscoveryCooldowns.delete(key);
-    return false;
-  }
-  return true;
-}
-
-function setWebDiscoveryCooldown(key: string): void {
-  webDiscoveryCooldowns.set(key, Date.now() + WEB_DISCOVERY_COOLDOWN_MS);
 }
 
 function parseMusicEntityHints(value: unknown, limit: number): { hints: MusicEntityHint[]; problems: string[] } {

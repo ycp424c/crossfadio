@@ -1342,6 +1342,78 @@ describe('createMusicAgentTools', () => {
     expect(second?.problems).toContain('web discovery denied: already called in this run');
   });
 
+  it('allows web discovery again for the same intent in a new tool registry run', async () => {
+    const ncmClient = {
+      getLikedSongIds: vi.fn(async () => []),
+      getSongDetails: vi.fn(async () => []),
+      searchSongs: vi.fn(async () => []),
+      getPlaylistDetail: vi.fn(async () => null)
+    };
+    const webMusicDiscoveryProvider = {
+      discover: vi.fn(async () => [])
+    };
+
+    const { CandidatePool } = await import('../../src/server/music-agent/candidates.js');
+    const { createMusicAgentTools } = await import('../../src/server/music-agent/tools.js');
+    const context = {
+      request: 'auto-fill' as const,
+      discoveryMode: 'explore' as const,
+      currentUserText: '探索一些新的 indie folk',
+      currentMoment: { localTime: '周一 16:00', daypart: '下午', weather: null },
+      activeDirective: '',
+      currentPlanSegment: null,
+      tasteSummary: '',
+      recentPreferenceSummary: '',
+      recentPlaySignals: '',
+      queueStateSummary: '',
+      bannedSummary: ''
+    };
+    const budget = {
+      maxMs: 10_000,
+      maxSteps: 3,
+      maxLlmCalls: 2,
+      maxToolCalls: 3,
+      maxNcmSearches: 4,
+      maxPlaylistFetches: 0,
+      maxTrendFetchMs: 0,
+      maxCandidates: 20
+    };
+
+    const firstTools = createMusicAgentTools({
+      userId: 'web-discovery-cross-run',
+      ncmClient: ncmClient as any,
+      webMusicDiscoveryProvider,
+      context,
+      candidatePool: new CandidatePool(),
+      budget,
+      targetPickCount: 5
+    });
+    const secondTools = createMusicAgentTools({
+      userId: 'web-discovery-cross-run',
+      ncmClient: ncmClient as any,
+      webMusicDiscoveryProvider,
+      context,
+      candidatePool: new CandidatePool(),
+      budget,
+      targetPickCount: 5
+    });
+
+    const first = await firstTools.web_music_discovery?.({
+      intent: '探索一些新的 indie folk',
+      focus: 'scene_overview',
+      maxHints: 2
+    });
+    const second = await secondTools.web_music_discovery?.({
+      intent: '探索一些新的 indie folk',
+      focus: 'scene_overview',
+      maxHints: 2
+    });
+
+    expect(webMusicDiscoveryProvider.discover).toHaveBeenCalledTimes(2);
+    expect(first?.summary).toContain('web discovery returned 0 hints');
+    expect(second?.summary).toContain('web discovery returned 0 hints');
+  });
+
   it('auto-fill mix sends a tight web discovery request and recalls one track per web artist hint', async () => {
     const ncmClient = {
       getLikedSongIds: vi.fn(async () => []),
