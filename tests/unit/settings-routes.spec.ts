@@ -13,6 +13,7 @@ import {
   createGetPlayerContextHandler
 } from '../../src/server/http/routes/settings';
 import { createAnalyzeTasteHandler, runTasteAnalysis } from '../../src/server/http/routes/taste-analysis';
+import { NCM_ERROR_CODE } from '../../src/shared/schema';
 import { DEFAULT_TTS_MODEL } from '../../src/shared/tts';
 
 const originalEnv = { ...process.env };
@@ -253,6 +254,55 @@ describe('settings taste analysis route', () => {
     expect(requestBodies.some((body) =>
       body.messages?.some((message) => message.content.includes('Song 450 - Artist 450'))
     )).toBe(true);
+  });
+
+  it('skips liked songs whose details fail when a batch contains malformed NCM data', async () => {
+    const requestBodies: Array<{
+      messages?: Array<{ role: string; content: string }>;
+    }> = [];
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).includes('llm.example')) {
+        requestBodies.push(JSON.parse(String(init?.body ?? '{}')) as { messages?: Array<{ role: string; content: string }> });
+        return new Response(JSON.stringify({
+          choices: [{ message: { content: '# 我的音乐口味\n- 喜欢：跳过坏详情。' } }],
+          model: 'test-model'
+        }), { status: 200 });
+      }
+      return Promise.reject(new Error(`unexpected fetch: ${String(input)}`));
+    }));
+    const ncmClient = {
+      getLikedSongIds: vi.fn().mockResolvedValue(['101', '102', '103']),
+      getSongDetails: vi.fn(async (ids: string[]) => {
+        if (ids.length > 1) {
+          throw Object.assign(new Error('NCM song/detail returned malformed payload'), {
+            code: NCM_ERROR_CODE.BAD_RESPONSE
+          });
+        }
+        if (ids[0] === '102') {
+          throw Object.assign(new Error('malformed song detail'), {
+            code: NCM_ERROR_CODE.BAD_RESPONSE
+          });
+        }
+        return [{
+          id: Number(ids[0]),
+          name: `Song ${ids[0]}`,
+          artists: [`Artist ${ids[0]}`],
+          durationMs: 180_000
+        }];
+      })
+    };
+
+    const taste = await runTasteAnalysis('test-user', ncmClient as never);
+
+    expect(taste).toContain('跳过坏详情');
+    expect(ncmClient.getSongDetails).toHaveBeenNthCalledWith(1, ['101', '102', '103']);
+    expect(ncmClient.getSongDetails).toHaveBeenNthCalledWith(2, ['101']);
+    expect(ncmClient.getSongDetails).toHaveBeenNthCalledWith(3, ['102']);
+    expect(ncmClient.getSongDetails).toHaveBeenNthCalledWith(4, ['103']);
+    const finalPrompt = requestBodies.at(-1)?.messages?.find((message) => message.role === 'user')?.content ?? '';
+    expect(finalPrompt).toContain('Song 101 - Artist 101');
+    expect(finalPrompt).not.toContain('Song 102');
+    expect(finalPrompt).toContain('Song 103 - Artist 103');
   });
 
   it('returns a readable timeout message when LLM taste analysis stalls', async () => {

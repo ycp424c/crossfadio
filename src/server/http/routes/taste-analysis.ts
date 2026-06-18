@@ -7,6 +7,7 @@ import { LlmClient, type LlmMessage } from '../../llm/client.js';
 import type { NcmClient } from '../../ncm/client.js';
 import { getLogger } from '../../logger.js';
 import { getPref, setPref } from '../../store/prefs.js';
+import { NCM_ERROR_CODE } from '../../../shared/schema.js';
 
 type AuthedRequest = Request & { userId: string; ncmClient: NcmClient };
 
@@ -116,13 +117,52 @@ async function fetchAllLikedSongDetails(
 ): Promise<Array<{ name: string; artists: string[] }>> {
   const songs: Array<{ name: string; artists: string[] }> = [];
   for (const batchIds of chunkArray(ids, LIKED_DETAIL_BATCH_SIZE)) {
-    const details = await ncmClient.getSongDetails(batchIds);
+    const details = await fetchLikedSongDetailsBatch(ncmClient, batchIds);
     songs.push(...details.map((track) => ({
       name: track.name,
       artists: (track as { name: string; artists: string[] }).artists ?? []
     })));
   }
   return songs;
+}
+
+async function fetchLikedSongDetailsBatch(
+  ncmClient: NcmClient,
+  batchIds: string[]
+): ReturnType<NcmClient['getSongDetails']> {
+  try {
+    return await ncmClient.getSongDetails(batchIds);
+  } catch (err) {
+    if (!isNcmBadResponseError(err)) {
+      throw err;
+    }
+
+    const logger = getLogger();
+    logger.warn(
+      { err, batchSize: batchIds.length },
+      'Taste analysis retrying liked song details individually after malformed batch'
+    );
+
+    const recovered: Awaited<ReturnType<NcmClient['getSongDetails']>> = [];
+    for (const id of batchIds) {
+      try {
+        recovered.push(...await ncmClient.getSongDetails([id]));
+      } catch (singleErr) {
+        if (!isNcmBadResponseError(singleErr)) {
+          throw singleErr;
+        }
+        logger.warn({ err: singleErr, songId: id }, 'Taste analysis skipped malformed liked song detail');
+      }
+    }
+    return recovered;
+  }
+}
+
+function isNcmBadResponseError(err: unknown): boolean {
+  return typeof err === 'object'
+    && err !== null
+    && 'code' in err
+    && (err as { code?: unknown }).code === NCM_ERROR_CODE.BAD_RESPONSE;
 }
 
 async function analyzeLargeTasteLibrary(
