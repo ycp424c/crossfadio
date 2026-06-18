@@ -19,6 +19,7 @@ export type PreparedSearchQueries = {
 
 type ScoredQuery = QueryFunnelEntry & {
   index: number;
+  cooldowned: boolean;
 };
 
 const RECENT_REPEAT_PENALTY = 0.32;
@@ -28,6 +29,8 @@ const GOOD_SELECTION_BOOST = 0.12;
 const OK_SELECTION_BOOST = 0.06;
 const LOW_SELECTION_PENALTY = 0.08;
 const EMPTY_RESULT_PENALTY = 0.1;
+const LOW_YIELD_COOLDOWN_SEARCHES = 2;
+const LOW_YIELD_COOLDOWN_WINDOW = 3;
 
 export function sanitizeSearchQuery(query: string): string {
   return compactWhitespace(query);
@@ -52,6 +55,7 @@ export function prepareSearchQueriesForRecall(input: PrepareSearchQueriesInput):
     const history = statsByKey.get(normalizedQuery) ?? null;
     const repeatPenalty = queryRepeatPenalty(history, mostRecentOrder);
     const selectionRate = querySelectionRate(history);
+    const cooldowned = isLowYieldCooldown(history, mostRecentOrder);
     const scoreMultiplier = clamp(
       1 - repeatPenalty + queryQualityAdjustment(history, selectionRate),
       0.65,
@@ -69,14 +73,17 @@ export function prepareSearchQueriesForRecall(input: PrepareSearchQueriesInput):
       scoreMultiplier,
       repeatPenalty,
       selectionRate,
-      index
+      index,
+      cooldowned
     };
   });
 
-  const funnelEntries = scored
+  const eligible = scored.filter((item) => !item.cooldowned);
+  const ranked = eligible.length > 0 ? eligible : scored;
+  const funnelEntries = ranked
     .sort((left, right) => right.scoreMultiplier - left.scoreMultiplier || left.index - right.index)
     .slice(0, Math.max(0, input.maxQueries))
-    .map(({ index: _index, ...entry }) => entry);
+    .map(({ index: _index, cooldowned: _cooldowned, ...entry }) => entry);
 
   return {
     queries: funnelEntries.map((entry) => entry.query),
@@ -130,6 +137,14 @@ function queryQualityAdjustment(history: MusicQueryStatsRecord | null, selection
   if (selectionRate >= 0.15) return OK_SELECTION_BOOST;
   if (history.searched_count >= 2) return -LOW_SELECTION_PENALTY;
   return 0;
+}
+
+function isLowYieldCooldown(history: MusicQueryStatsRecord | null, mostRecentOrder: number): boolean {
+  if (!history) return false;
+  if (history.last_used_order < mostRecentOrder - LOW_YIELD_COOLDOWN_WINDOW) return false;
+  if (history.searched_count < LOW_YIELD_COOLDOWN_SEARCHES) return false;
+  if (history.result_count > 0 && history.added_count === 0) return true;
+  return history.added_count >= 2 && history.selected_count === 0 && history.searched_count >= 3;
 }
 
 function compactWhitespace(value: string): string {

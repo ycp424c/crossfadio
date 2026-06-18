@@ -269,6 +269,7 @@ export const queryFunnelEntrySchema = z.object({
   source: candidateSourceSchema,
   searchedCount: z.number().int().nonnegative(),
   resultCount: z.number().int().nonnegative(),
+  uniqueResultCount: z.number().int().nonnegative().optional(),
   addedCount: z.number().int().nonnegative(),
   selectedCount: z.number().int().nonnegative(),
   scoreMultiplier: z.number().min(0),

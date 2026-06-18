@@ -160,6 +160,7 @@ type DjPickLog = {
   searchedTracks: DjTrackSample[];
   selectedTracks: DjSelectedTrack[];
   searchResultCount: number;
+  searchRepeatedCount: number;
   searchAddedCount: number;
   searchSelectedCount: number;
   totalCandidates: number;
@@ -167,7 +168,9 @@ type DjPickLog = {
 };
 
 type DjQueryFunnelEntry = {
+  searchedCount: number;
   resultCount: number;
+  uniqueResultCount: number;
   addedCount: number;
   selectedCount: number;
 };
@@ -182,7 +185,9 @@ function queryFunnelEntries(value: unknown): DjQueryFunnelEntry[] {
     if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) return null;
     const record = entry as Record<string, unknown>;
     return {
+      searchedCount: numericField(record.searchedCount),
       resultCount: numericField(record.resultCount),
+      uniqueResultCount: numericField(record.uniqueResultCount) || numericField(record.resultCount),
       addedCount: numericField(record.addedCount),
       selectedCount: numericField(record.selectedCount)
     };
@@ -196,7 +201,8 @@ export function buildDjPickDebugLog(data: Record<string, unknown>): DjPickLog {
     searchQueries: Array.isArray(data.searchQueries) ? data.searchQueries as string[] : [],
     searchedTracks: Array.isArray(data.searchedTracks) ? data.searchedTracks as DjTrackSample[] : [],
     selectedTracks: Array.isArray(data.selectedTracks) ? data.selectedTracks as DjSelectedTrack[] : [],
-    searchResultCount: queryFunnel.reduce((sum, entry) => sum + entry.resultCount, 0),
+    searchResultCount: queryFunnel.reduce((sum, entry) => sum + entry.uniqueResultCount, 0),
+    searchRepeatedCount: queryFunnel.reduce((sum, entry) => sum + Math.max(0, entry.searchedCount - 1), 0),
     searchAddedCount: queryFunnel.reduce((sum, entry) => sum + entry.addedCount, 0),
     searchSelectedCount: queryFunnel.reduce((sum, entry) => sum + entry.selectedCount, 0),
     totalCandidates: numericField(data.totalCandidates),
@@ -224,6 +230,7 @@ export function buildDjPickDoneLog(data: Record<string, unknown>): DjPickLog | n
       source: 'done'
     })),
     searchResultCount: 0,
+    searchRepeatedCount: 0,
     searchAddedCount: 0,
     searchSelectedCount: 0,
     totalCandidates: typeof data.totalCandidates === 'number' ? data.totalCandidates : 0,
@@ -2036,6 +2043,9 @@ function DjStatusDock({
               <div className="flex flex-wrap gap-x-4 gap-y-1 text-[10px] text-zinc-500">
                 <span>红心采样 <span className="text-zinc-300">{djPickLog.likedSample.length}</span> 首</span>
                 <span>搜索返回 <span className="text-zinc-300">{djPickLog.searchResultCount}</span> 首</span>
+                {djPickLog.searchRepeatedCount > 0 ? (
+                  <span>重复搜索 <span className="text-zinc-300">{djPickLog.searchRepeatedCount}</span> 次</span>
+                ) : null}
                 <span>搜索入池 <span className="text-zinc-300">{djPickLog.searchAddedCount}</span> 首</span>
                 <span>候选池 <span className="text-cyan-300">{djPickLog.totalCandidates}</span> 首</span>
               </div>

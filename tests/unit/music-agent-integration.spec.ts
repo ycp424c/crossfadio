@@ -1999,6 +1999,182 @@ describe('createMusicAgentTools', () => {
     expect(getUserQueryStats('user-query-funnel').map((item) => item.normalized_query)).toContain('ocean one ocean singer');
   });
 
+  it('skips repeated search queries within the same agent run', async () => {
+    const ncmClient = {
+      getLikedSongIds: vi.fn(async () => []),
+      getSongDetails: vi.fn(async () => []),
+      searchSongs: vi.fn(async () => [
+        { id: 'repeat-once-1', name: 'Repeat Once', artists: ['Repeat Singer'] }
+      ]),
+      getPlaylistDetail: vi.fn(async () => null)
+    };
+
+    const { CandidatePool } = await import('../../src/server/music-agent/candidates.js');
+    const { createMusicAgentTools } = await import('../../src/server/music-agent/tools.js');
+    const candidatePool = new CandidatePool();
+    const tools = createMusicAgentTools({
+      userId: 'same-run-query-dedupe',
+      ncmClient: ncmClient as any,
+      context: {
+        request: 'auto-fill',
+        currentUserText: '想听不重复的搜索结果',
+        currentMoment: { localTime: '周四 15:00', daypart: '下午', weather: null },
+        activeDirective: '',
+        currentPlanSegment: null,
+        tasteSummary: '',
+        recentPreferenceSummary: '',
+        recentPlaySignals: '',
+        queueStateSummary: '',
+        bannedSummary: ''
+      },
+      candidatePool,
+      budget: {
+        maxMs: 10_000,
+        maxSteps: 3,
+        maxLlmCalls: 2,
+        maxToolCalls: 3,
+        maxNcmSearches: 3,
+        maxPlaylistFetches: 0,
+        maxTrendFetchMs: 0,
+        maxCandidates: 20
+      }
+    });
+
+    const first = await tools.recall_from_ncm_search?.({ queries: ['Repeat Once Repeat Singer'], limit: 8 });
+    const second = await tools.recall_from_ncm_search?.({ queries: ['Repeat Once Repeat Singer'], limit: 8 });
+
+    expect(ncmClient.searchSongs).toHaveBeenCalledTimes(1);
+    expect(first?.summary).toContain('searched 1 queries');
+    expect(second?.summary).toContain('searched 0 queries');
+    expect(second?.problems).toContain('skipped 1 repeated search query in this run');
+    expect(tools.getQueryFunnel?.()).toEqual([
+      expect.objectContaining({
+        query: 'Repeat Once Repeat Singer',
+        searchedCount: 1,
+        resultCount: 1,
+        uniqueResultCount: 1,
+        addedCount: 1
+      })
+    ]);
+  });
+
+  it('skips repeated search queries across recall sources when an earlier search covered the requested limit', async () => {
+    const ncmClient = {
+      getLikedSongIds: vi.fn(async () => []),
+      getSongDetails: vi.fn(async () => []),
+      searchSongs: vi.fn(async () => [
+        { id: 'repeat-cross-source-1', name: 'Repeat Cross Source', artists: ['Repeat Singer'] }
+      ]),
+      getPlaylistDetail: vi.fn(async () => null)
+    };
+
+    const { CandidatePool } = await import('../../src/server/music-agent/candidates.js');
+    const { createMusicAgentTools } = await import('../../src/server/music-agent/tools.js');
+    const candidatePool = new CandidatePool();
+    const tools = createMusicAgentTools({
+      userId: 'same-run-query-dedupe-cross-source',
+      ncmClient: ncmClient as any,
+      context: {
+        request: 'auto-fill',
+        currentUserText: '想听不重复的搜索结果',
+        currentMoment: { localTime: '周四 15:00', daypart: '下午', weather: null },
+        activeDirective: '',
+        currentPlanSegment: null,
+        tasteSummary: '',
+        recentPreferenceSummary: '',
+        recentPlaySignals: '',
+        queueStateSummary: '',
+        bannedSummary: ''
+      },
+      candidatePool,
+      budget: {
+        maxMs: 10_000,
+        maxSteps: 3,
+        maxLlmCalls: 2,
+        maxToolCalls: 3,
+        maxNcmSearches: 3,
+        maxPlaylistFetches: 0,
+        maxTrendFetchMs: 0,
+        maxCandidates: 20
+      }
+    });
+
+    const first = await tools.recall_from_ncm_search?.({ queries: ['Repeat Cross Source Repeat Singer'], limit: 8 });
+    const second = await tools.recall_from_trending?.({ queries: ['Repeat Cross Source Repeat Singer'], limit: 5 });
+
+    expect(ncmClient.searchSongs).toHaveBeenCalledTimes(1);
+    expect(ncmClient.searchSongs).toHaveBeenCalledWith('Repeat Cross Source Repeat Singer', 8);
+    expect(first?.summary).toContain('searched 1 queries');
+    expect(second?.summary).toContain('searched 0 queries');
+    expect(second?.problems).toContain('skipped 1 repeated search query in this run');
+    expect(tools.getQueryFunnel?.()).toEqual([
+      expect.objectContaining({
+        query: 'Repeat Cross Source Repeat Singer',
+        source: 'search',
+        searchedCount: 1,
+        resultCount: 1,
+        uniqueResultCount: 1,
+        addedCount: 1
+      })
+    ]);
+  });
+
+  it('limits explore auto-fill exact track anchors so reference songs do not dominate search', async () => {
+    const ncmClient = {
+      getLikedSongIds: vi.fn(async () => []),
+      getSongDetails: vi.fn(async () => []),
+      searchSongs: vi.fn(async () => []),
+      searchArtists: vi.fn(async () => []),
+      getArtistTopSongs: vi.fn(async () => []),
+      getPlaylistDetail: vi.fn(async () => null)
+    };
+
+    const { CandidatePool } = await import('../../src/server/music-agent/candidates.js');
+    const { createMusicAgentTools } = await import('../../src/server/music-agent/tools.js');
+    const candidatePool = new CandidatePool();
+    const tools = createMusicAgentTools({
+      userId: 'explore-exact-anchor-limit',
+      ncmClient: ncmClient as any,
+      context: {
+        request: 'auto-fill',
+        discoveryMode: 'explore',
+        currentUserText: '下午专注，粤语女声，有故事感',
+        currentMoment: { localTime: '周四 15:00', daypart: '下午', weather: null },
+        activeDirective: '',
+        currentPlanSegment: null,
+        tasteSummary: '',
+        recentPreferenceSummary: '',
+        recentPlaySignals: '',
+        queueStateSummary: '',
+        bannedSummary: ''
+      },
+      candidatePool,
+      budget: {
+        maxMs: 10_000,
+        maxSteps: 3,
+        maxLlmCalls: 2,
+        maxToolCalls: 3,
+        maxNcmSearches: 8,
+        maxPlaylistFetches: 0,
+        maxTrendFetchMs: 0,
+        maxCandidates: 20
+      },
+      targetPickCount: 5
+    });
+
+    await tools.expand_queries?.({
+      exactTrackQueries: ['给自己的信 — 钟舒漫', '生涯规划 — 卫兰', '喜欢 — 张悬', '我发誓以后 — 苏永康'],
+      styleHints: ['cantopop', '粤语流行', '女声', '轻快节奏', '有故事感'],
+      listeningConstraints: ['下午', '专注', '平静']
+    });
+    await tools.recall_auto_fill_mix?.({});
+
+    expect(ncmClient.searchSongs.mock.calls.map((call) => call[0])).toEqual([
+      '给自己的信 — 钟舒漫',
+      '生涯规划 — 卫兰'
+    ]);
+  });
+
   it('records fallback search history without adding selection credit', async () => {
     const ncmClient = {
       getLikedSongIds: vi.fn(async () => []),
@@ -2387,6 +2563,7 @@ describe('createMusicAgentTools', () => {
       ncmClient: ncmClient as any,
       context: {
         request: 'auto-fill',
+        discoveryMode: 'comfort',
         currentUserText: '',
         currentMoment: { localTime: '周五 16:25', daypart: '下午', weather: null },
         activeDirective: '',

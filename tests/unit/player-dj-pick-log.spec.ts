@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { buildDjPickDebugLog } from '../../src/renderer/views/Player/PlayerView';
 
 describe('DJ pick debug log', () => {
-  it('counts real query funnel search results instead of selected picks', () => {
+  it('counts unique query funnel search results and repeated searches separately', () => {
     const log = buildDjPickDebugLog({
       likedSample: [],
       searchQueries: ['The Archer — Taylor Swift'],
@@ -21,8 +21,9 @@ describe('DJ pick debug log', () => {
         query: 'The Archer — Taylor Swift',
         normalizedQuery: 'the archer — taylor swift',
         source: 'search',
-        searchedCount: 1,
-        resultCount: 8,
+        searchedCount: 5,
+        resultCount: 40,
+        uniqueResultCount: 8,
         addedCount: 0,
         selectedCount: 0,
         scoreMultiplier: 0.65,
@@ -32,6 +33,7 @@ describe('DJ pick debug log', () => {
     });
 
     expect(log.searchResultCount).toBe(8);
+    expect(log.searchRepeatedCount).toBe(4);
     expect(log.searchAddedCount).toBe(0);
     expect(log.searchedTracks).toHaveLength(4);
   });

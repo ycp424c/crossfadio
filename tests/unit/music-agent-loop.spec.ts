@@ -186,6 +186,55 @@ describe('runMusicAgentLoop', () => {
     });
   });
 
+  it('converges after explore auto-fill has target-sized external candidates instead of continuing search', async () => {
+    const llmClient = new LoopFakeLlmClient([
+      JSON.stringify({ type: 'tool_call', tool: 'recall_auto_fill_mix', input: {} }),
+      JSON.stringify({ type: 'tool_call', tool: 'expand_queries', input: { exactTrackQueries: ['Stale Query — Artist'] } }),
+      JSON.stringify({
+        type: 'final',
+        say: '这些候选已经足够收束。',
+        picks: [1, 2, 3, 4, 5].map((index) => ({
+          id: `external-${index}`,
+          reason: '外部候选足够且排序靠前',
+          source: 'search'
+        })),
+        rejected: []
+      })
+    ]);
+    const pool = new CandidatePool();
+    const tools: MusicAgentToolRegistry = {
+      recall_auto_fill_mix: async () => {
+        for (let index = 1; index <= 10; index += 1) {
+          pool.upsert(candidate({
+            id: `external-${index}`,
+            name: `External ${index}`,
+            artist: `Artist ${index}`,
+            sources: ['search'],
+            evidence: ['external recall']
+          }));
+        }
+        return { summary: 'auto-fill mix added enough external candidates', candidateCount: pool.count() };
+      },
+      expand_queries: vi.fn(async () => ({ summary: 'expanded stale queries', candidateCount: pool.count() }))
+    };
+
+    const result = await runMusicAgentLoop({
+      llmClient,
+      context: context({ request: 'auto-fill', discoveryMode: 'explore' }),
+      candidatePool: pool,
+      tools,
+      budget: budget({ maxLlmCalls: 4, maxToolCalls: 3 }),
+      mode: 'pick_next',
+      targetPickCount: 5
+    });
+
+    expect(result.status).toBe('ok');
+    expect(result.picks).toHaveLength(5);
+    expect(tools.expand_queries).not.toHaveBeenCalled();
+    expect(result.trace.map((step) => step.tool)).not.toContain('expand_queries');
+    expect(result.trace.map((step) => step.thoughtSummary)).toContain('extra final returned tool_call; retrying final-only output');
+  });
+
   it('accepts final picks up to the target pick count', async () => {
     const pool = new CandidatePool();
     for (let index = 1; index <= 5; index += 1) {
@@ -1906,7 +1955,14 @@ describe('runMusicAgentLoop', () => {
     expect(result.picks.map((pick) => pick.id)).toEqual(['search-1', 'search-3', 'search-5', 'search-9', 'search-12']);
     expect(calls).toEqual(['recall_auto_fill_mix', 'recall_from_ncm_search']);
     expect(llmClient.calls).toHaveLength(3);
-    expect(fallbackLogger).not.toHaveBeenCalled();
+    expect(fallbackLogger).toHaveBeenCalledWith(expect.objectContaining({
+      reason: 'ranked_tool_completed',
+      status: 'ok',
+      candidateCount: 15,
+      toolCalls: 2,
+      step: 3,
+      llmCalls: 3
+    }));
   });
 
   it('converges after ranking a target-sized non-liked comfort auto-fill pool', async () => {
@@ -2021,7 +2077,14 @@ describe('runMusicAgentLoop', () => {
     expect(result.picks.map((pick) => pick.id)).toEqual(['search-1', 'search-3', 'search-5', 'search-9', 'search-12']);
     expect(calls).toEqual(['recall_from_liked', 'recall_auto_fill_mix', 'recall_from_ncm_search']);
     expect(llmClient.calls).toHaveLength(3);
-    expect(fallbackLogger).not.toHaveBeenCalled();
+    expect(fallbackLogger).toHaveBeenCalledWith(expect.objectContaining({
+      reason: 'ranked_tool_completed',
+      status: 'ok',
+      candidateCount: 15,
+      toolCalls: 3,
+      step: 3,
+      llmCalls: 3
+    }));
   });
 
   it('allows comfort auto-fill to converge after liked recall supplies ten candidates for five-pick batches', async () => {

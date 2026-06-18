@@ -151,4 +151,36 @@ describe('music-agent query stats', () => {
     });
     expect(prepared.funnelEntries[1].repeatPenalty).toBeGreaterThan(0.25);
   });
+
+  it('cools down recently repeated queries that returned results but admitted nothing', async () => {
+    const {
+      prepareSearchQueriesForRecall,
+      recordUserQueryFunnel
+    } = await import('../../src/server/music-agent/query-stats.js');
+
+    recordUserQueryFunnel('query-user-low-yield', [
+      {
+        query: '给自己的信 — 钟舒漫',
+        normalizedQuery: '给自己的信 — 钟舒漫',
+        source: 'search',
+        searchedCount: 5,
+        resultCount: 40,
+        addedCount: 0,
+        selectedCount: 0,
+        scoreMultiplier: 1,
+        repeatPenalty: 0,
+        selectionRate: null
+      }
+    ]);
+
+    const prepared = prepareSearchQueriesForRecall({
+      userId: 'query-user-low-yield',
+      queries: ['给自己的信 — 钟舒漫', '生涯规划 — 卫兰'],
+      source: 'search',
+      maxQueries: 2
+    });
+
+    expect(prepared.queries).toEqual(['生涯规划 — 卫兰']);
+    expect(prepared.funnelEntries.map((entry) => entry.query)).not.toContain('给自己的信 — 钟舒漫');
+  });
 });
