@@ -10,7 +10,8 @@ import { getPref, setPref } from '../../store/prefs.js';
 
 type AuthedRequest = Request & { userId: string; ncmClient: NcmClient };
 
-const LIKED_SAMPLE_LIMIT = 200;
+const LIKED_DETAIL_BATCH_SIZE = 200;
+const TASTE_ANALYSIS_CHUNK_SIZE = 200;
 const DEFAULT_TASTE_ANALYSIS_TIMEOUT_MS = 60_000;
 
 const SYSTEM_PROMPT = `你是一个音乐品味分析师。根据用户的红心（收藏）歌曲列表，分析用户音乐偏好并输出一份结构化的品味档案。
@@ -33,6 +34,11 @@ const SYSTEM_PROMPT = `你是一个音乐品味分析师。根据用户的红心
 - 喜欢：xxx
 - 不想听：xxx`;
 
+const CHUNK_SYSTEM_PROMPT = `你是一个音乐品味分析师。你会收到用户红心歌曲列表中的一个批次。
+
+请只根据这批歌曲提炼可观察到的偏好信号，用简洁中文输出 120-180 字摘要。
+覆盖风格/流派、艺人或语言、年代、情绪倾向、可能避雷点。不要输出最终标题，不要假装看到了其他批次。`;
+
 /**
  * Core taste analysis logic. Reusable by both the HTTP handler and background scheduler.
  * @returns The taste text on success, null on failure (errors are logged internally).
@@ -54,17 +60,10 @@ export async function runTasteAnalysis(userId: string, ncmClient: NcmClient): Pr
     return null;
   }
 
-  // 2. Sample up to LIKED_SAMPLE_LIMIT
-  const sampledIds = ids.slice(0, LIKED_SAMPLE_LIMIT);
-
-  // 3. Fetch song details
+  // 2. Fetch all liked song details in batches.
   let songs: Array<{ name: string; artists: string[] }>;
   try {
-    const details = await ncmClient.getSongDetails(sampledIds);
-    songs = details.map((t) => ({
-      name: t.name,
-      artists: (t as { name: string; artists: string[] }).artists ?? []
-    }));
+    songs = await fetchAllLikedSongDetails(ncmClient, ids);
   } catch (err) {
     logger.error({ err, userId }, 'Failed to fetch song details for taste analysis');
     return null;
@@ -75,14 +74,8 @@ export async function runTasteAnalysis(userId: string, ncmClient: NcmClient): Pr
     return null;
   }
 
-  // 4. Build LLM prompt
-  const songListText = songs
-    .map((s, i) => `${i + 1}. ${s.name} - ${s.artists.join(' / ') || '未知艺人'}`)
-    .join('\n');
-
-  const userMessage = `以下用户收藏了 ${ids.length} 首歌曲（以下是前 ${songs.length} 首样本）：\n\n${songListText}\n\n请分析该用户的音乐品味。`;
-
-  // 5. Call LLM
+  // 3. Call LLM. Large libraries are summarized chunk-by-chunk first so every
+  // liked song can participate without building an oversized prompt.
   const llmConfig = resolveLlmConfig();
   if (!llmConfig) {
     logger.warn({ userId }, 'Taste analysis skipped: LLM not configured');
@@ -90,27 +83,24 @@ export async function runTasteAnalysis(userId: string, ncmClient: NcmClient): Pr
   }
 
   const client = new LlmClient(llmConfig);
-  const messages: LlmMessage[] = [
-    { role: 'system', content: SYSTEM_PROMPT },
-    { role: 'user', content: userMessage }
-  ];
 
   try {
-    const result = await client.complete(messages, {
-      temperature: 0.7,
-      maxTokens: 1000,
-      signal: AbortSignal.timeout(getTasteAnalysisTimeoutMs())
-    });
+    const result = songs.length <= TASTE_ANALYSIS_CHUNK_SIZE
+      ? await client.complete(buildFinalTasteMessages(ids.length, songs), buildTasteCompleteOptions())
+      : await analyzeLargeTasteLibrary(client, ids.length, songs);
     const taste = result.content.trim();
 
-    // 6. Save to user corpus taste.md
+    // 4. Save to user corpus taste.md
     const userDir = resolveUserDir(userId);
     if (!fs.existsSync(userDir)) {
       fs.mkdirSync(userDir, { recursive: true });
     }
     fs.writeFileSync(path.join(userDir, 'taste.md'), taste, 'utf-8');
 
-    logger.info({ userId, likedCount: ids.length, sampledCount: songs.length }, 'Taste analysis completed and saved');
+    logger.info(
+      { userId, likedCount: ids.length, analyzedCount: songs.length, batchSize: LIKED_DETAIL_BATCH_SIZE },
+      'Taste analysis completed and saved'
+    );
     return taste;
   } catch (err) {
     // Throw abort/timeout errors so callers can distinguish (504 vs 502)
@@ -118,6 +108,115 @@ export async function runTasteAnalysis(userId: string, ncmClient: NcmClient): Pr
     logger.error({ err, userId }, 'Taste analysis failed');
     return null;
   }
+}
+
+async function fetchAllLikedSongDetails(
+  ncmClient: NcmClient,
+  ids: string[]
+): Promise<Array<{ name: string; artists: string[] }>> {
+  const songs: Array<{ name: string; artists: string[] }> = [];
+  for (const batchIds of chunkArray(ids, LIKED_DETAIL_BATCH_SIZE)) {
+    const details = await ncmClient.getSongDetails(batchIds);
+    songs.push(...details.map((track) => ({
+      name: track.name,
+      artists: (track as { name: string; artists: string[] }).artists ?? []
+    })));
+  }
+  return songs;
+}
+
+async function analyzeLargeTasteLibrary(
+  client: LlmClient,
+  likedCount: number,
+  songs: Array<{ name: string; artists: string[] }>
+): Promise<{ content: string }> {
+  const chunks = chunkArray(songs, TASTE_ANALYSIS_CHUNK_SIZE);
+  const chunkSummaries: string[] = [];
+
+  for (const [chunkIndex, chunkSongs] of chunks.entries()) {
+    const startIndex = chunkIndex * TASTE_ANALYSIS_CHUNK_SIZE;
+    const result = await client.complete(
+      buildChunkTasteMessages(likedCount, chunkSongs, startIndex),
+      buildTasteCompleteOptions()
+    );
+    const summary = result.content.trim();
+    if (summary) {
+      chunkSummaries.push(summary);
+    }
+  }
+
+  return client.complete(buildMergedTasteMessages(likedCount, songs.length, chunkSummaries), buildTasteCompleteOptions());
+}
+
+function buildFinalTasteMessages(
+  likedCount: number,
+  songs: Array<{ name: string; artists: string[] }>
+): LlmMessage[] {
+  const songListText = formatSongList(songs, 0);
+  const userMessage = `以下用户收藏了 ${likedCount} 首歌曲（以下是全部 ${songs.length} 首）：\n\n${songListText}\n\n请分析该用户的音乐品味。`;
+
+  return [
+    { role: 'system', content: SYSTEM_PROMPT },
+    { role: 'user', content: userMessage }
+  ];
+}
+
+function buildChunkTasteMessages(
+  likedCount: number,
+  songs: Array<{ name: string; artists: string[] }>,
+  startIndex: number
+): LlmMessage[] {
+  const endIndex = startIndex + songs.length;
+  const songListText = formatSongList(songs, startIndex);
+  const userMessage = `用户一共收藏了 ${likedCount} 首红心歌曲。以下是第 ${startIndex + 1}-${endIndex} 首：\n\n${songListText}\n\n请分析这一批歌曲透露出的音乐偏好信号。`;
+
+  return [
+    { role: 'system', content: CHUNK_SYSTEM_PROMPT },
+    { role: 'user', content: userMessage }
+  ];
+}
+
+function buildMergedTasteMessages(
+  likedCount: number,
+  analyzedCount: number,
+  chunkSummaries: string[]
+): LlmMessage[] {
+  const summaryText = chunkSummaries.map((summary, index) => `批次 ${index + 1}: ${summary}`).join('\n\n');
+  const userMessage = `用户一共收藏了 ${likedCount} 首红心歌曲，已分析到 ${analyzedCount} 首详情。以下是所有批次的偏好摘要：\n\n${summaryText}\n\n请综合所有批次，输出最终音乐品味档案。不要提及批次或分析过程。`;
+
+  return [
+    { role: 'system', content: SYSTEM_PROMPT },
+    { role: 'user', content: userMessage }
+  ];
+}
+
+function buildTasteCompleteOptions(): {
+  temperature: number;
+  maxTokens: number;
+  signal: AbortSignal;
+} {
+  return {
+    temperature: 0.7,
+    maxTokens: 1000,
+    signal: AbortSignal.timeout(getTasteAnalysisTimeoutMs())
+  };
+}
+
+function formatSongList(
+  songs: Array<{ name: string; artists: string[] }>,
+  startIndex: number
+): string {
+  return songs
+    .map((song, index) => `${startIndex + index + 1}. ${song.name} - ${song.artists.join(' / ') || '未知艺人'}`)
+    .join('\n');
+}
+
+function chunkArray<T>(items: T[], size: number): T[][] {
+  const chunks: T[][] = [];
+  for (let index = 0; index < items.length; index += size) {
+    chunks.push(items.slice(index, index + size));
+  }
+  return chunks;
 }
 
 export function createAnalyzeTasteHandler() {

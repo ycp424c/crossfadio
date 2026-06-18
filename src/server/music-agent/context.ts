@@ -19,6 +19,13 @@ import { artistKeys, primaryArtistKey } from './artists.js';
 const WEATHER_TIMEOUT_MS = 1500;
 const QUEUE_ARTIST_PENALTIES = [0.36, 0.28, 0.2, 0.14, 0.1, 0.08];
 const RECENT_PLAY_ARTIST_PENALTIES = [0.3, 0.24, 0.18, 0.12, 0.08, 0.06, 0.04, 0.04];
+const ARTIST_REPEAT_HISTORY_LIMIT = 200;
+const ARTIST_REPEAT_LOOKBACK_DAYS = 60;
+const ARTIST_REPEAT_HALF_LIFE_DAYS = 21;
+const ARTIST_REPEAT_GROWTH_RATE = 0.2;
+const ARTIST_REPEAT_MAX_PENALTY = 0.24;
+const ARTIST_REPEAT_MIN_PENALTY = 0.04;
+const ARTIST_REPEAT_MAX_ITEMS = 40;
 const TRACK_REPEAT_HISTORY_LIMIT = 200;
 const TRACK_REPEAT_LOOKBACK_DAYS = 60;
 const TRACK_REPEAT_HALF_LIFE_DAYS = 21;
@@ -65,7 +72,7 @@ export async function buildMusicAgentContext(input: BuildMusicAgentContextInput)
     recentPreferenceSummary: truncate(getPreferenceContext(input.userId, 3), 600),
     recentPlaySignals: buildRecentPlaySignals(input.userId),
     queueStateSummary: buildQueueStateSummary(input.userId),
-    recentArtistPenalties: buildRecentArtistPenalties(input.userId),
+    recentArtistPenalties: buildRecentArtistPenalties(input.userId, now),
     recentTrackPenalties: buildRecentTrackPenalties(input.userId, now),
     bannedSummary: buildBannedSummary(input.userId, now)
   };
@@ -215,7 +222,7 @@ function buildQueueStateSummary(userId: string): string {
   );
 }
 
-function buildRecentArtistPenalties(userId: string): Array<{ artist: string; penalty: number }> {
+function buildRecentArtistPenalties(userId: string, now: Date): Array<{ artist: string; penalty: number }> {
   const byArtist = new Map<string, number>();
 
   getQueue(userId).slice(0, QUEUE_ARTIST_PENALTIES.length).forEach((track, index) => {
@@ -230,6 +237,10 @@ function buildRecentArtistPenalties(userId: string): Array<{ artist: string; pen
     addArtistPenalty(byArtist, play.artist_name, penalty);
   });
 
+  for (const item of buildLongLivedArtistPenalties(userId, now)) {
+    addArtistPenalty(byArtist, item.artist, item.penalty);
+  }
+
   return [...byArtist.entries()].map(([artist, penalty]) => ({ artist, penalty }));
 }
 
@@ -237,6 +248,31 @@ function addArtistPenalty(byArtist: Map<string, number>, artist: string | null |
   for (const normalized of artistKeys(artist)) {
     byArtist.set(normalized, Math.max(byArtist.get(normalized) ?? 0, penalty));
   }
+}
+
+function buildLongLivedArtistPenalties(userId: string, now: Date): Array<{ artist: string; penalty: number }> {
+  const byArtist = new Map<string, number>();
+
+  for (const play of getRecentPlays(userId, ARTIST_REPEAT_HISTORY_LIMIT)) {
+    const startedAt = parseSqliteDate(play.started_at);
+    if (!startedAt) continue;
+    const ageDays = Math.max(0, (now.getTime() - startedAt.getTime()) / 86_400_000);
+    if (ageDays > ARTIST_REPEAT_LOOKBACK_DAYS) continue;
+
+    const exposure = Math.pow(0.5, ageDays / ARTIST_REPEAT_HALF_LIFE_DAYS);
+    for (const artist of artistKeys(play.artist_name)) {
+      byArtist.set(artist, (byArtist.get(artist) ?? 0) + exposure);
+    }
+  }
+
+  return [...byArtist.entries()]
+    .map(([artist, exposure]) => ({
+      artist,
+      penalty: roundPenalty(ARTIST_REPEAT_MAX_PENALTY * (1 - Math.exp(-exposure * ARTIST_REPEAT_GROWTH_RATE)))
+    }))
+    .filter((item) => item.penalty >= ARTIST_REPEAT_MIN_PENALTY)
+    .sort((left, right) => right.penalty - left.penalty || left.artist.localeCompare(right.artist))
+    .slice(0, ARTIST_REPEAT_MAX_ITEMS);
 }
 
 function buildRecentTrackPenalties(userId: string, now: Date): Array<{ trackKey: string; title: string; artist: string; penalty: number }> {

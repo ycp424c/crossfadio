@@ -12,7 +12,7 @@ import {
   createSaveSettingsHandler,
   createGetPlayerContextHandler
 } from '../../src/server/http/routes/settings';
-import { createAnalyzeTasteHandler } from '../../src/server/http/routes/taste-analysis';
+import { createAnalyzeTasteHandler, runTasteAnalysis } from '../../src/server/http/routes/taste-analysis';
 import { DEFAULT_TTS_MODEL } from '../../src/shared/tts';
 
 const originalEnv = { ...process.env };
@@ -216,6 +216,45 @@ describe('settings player context route', () => {
 });
 
 describe('settings taste analysis route', () => {
+  it('analyzes every liked song instead of only the first 200', async () => {
+    const requestBodies: Array<{
+      messages?: Array<{ role: string; content: string }>;
+    }> = [];
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).includes('llm.example')) {
+        requestBodies.push(JSON.parse(String(init?.body ?? '{}')) as { messages?: Array<{ role: string; content: string }> });
+        return new Response(JSON.stringify({
+          choices: [{ message: { content: '# 我的音乐口味\n- 喜欢：覆盖全量红心。' } }],
+          model: 'test-model'
+        }), { status: 200 });
+      }
+      return Promise.reject(new Error(`unexpected fetch: ${String(input)}`));
+    }));
+    const ids = Array.from({ length: 450 }, (_, index) => String(index + 1));
+    const ncmClient = {
+      getLikedSongIds: vi.fn().mockResolvedValue(ids),
+      getSongDetails: vi.fn(async (batchIds: string[]) =>
+        batchIds.map((id) => ({
+          id: Number(id),
+          name: `Song ${id}`,
+          artists: [`Artist ${id}`],
+          durationMs: 180_000
+        }))
+      )
+    };
+
+    const taste = await runTasteAnalysis('test-user', ncmClient as never);
+
+    expect(taste).toContain('覆盖全量红心');
+    expect(ncmClient.getSongDetails).toHaveBeenCalledTimes(3);
+    expect(ncmClient.getSongDetails).toHaveBeenNthCalledWith(1, ids.slice(0, 200));
+    expect(ncmClient.getSongDetails).toHaveBeenNthCalledWith(2, ids.slice(200, 400));
+    expect(ncmClient.getSongDetails).toHaveBeenNthCalledWith(3, ids.slice(400, 450));
+    expect(requestBodies.some((body) =>
+      body.messages?.some((message) => message.content.includes('Song 450 - Artist 450'))
+    )).toBe(true);
+  });
+
   it('returns a readable timeout message when LLM taste analysis stalls', async () => {
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
       if (String(input).includes('llm.example')) {

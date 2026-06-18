@@ -1717,6 +1717,58 @@ describe('runMusicAgentLoop', () => {
     expect(JSON.stringify(llmClient.calls[1].messages)).toContain('Only Love');
   });
 
+  it('persists the first web discovery summary in convergence logs after it leaves traceLastSteps', async () => {
+    const pool = new CandidatePool();
+    const fallbackLogger = vi.fn();
+    const llmClient = new LoopFakeLlmClient([
+      JSON.stringify({
+        type: 'tool_call',
+        tool: 'web_music_discovery',
+        input: { intent: '探索类似 Ben Howard 的民谣新歌', focus: 'similar_tracks' }
+      }),
+      JSON.stringify({ type: 'tool_call', tool: 'expand_queries', input: { exactTrackQueries: ['Only Love Ben Howard'] } }),
+      JSON.stringify({ type: 'tool_call', tool: 'recall_from_ncm_search', input: { query: 'Only Love Ben Howard' } }),
+      JSON.stringify({ type: 'tool_call', tool: 'rank_candidates', input: { limit: 2 } })
+    ]);
+
+    const result = await runMusicAgentLoop({
+      llmClient,
+      context: context({ request: 'chat-recommend', currentUserText: '探索类似 Ben Howard 的民谣新歌' }),
+      candidatePool: pool,
+      tools: {
+        web_music_discovery: async () => ({
+          summary: 'web discovery returned 0 hints from 0 raw hints.',
+          candidateCount: pool.count(),
+          problems: ['web discovery returned no usable hints']
+        }),
+        expand_queries: async () => ({ summary: 'expanded queries', candidateCount: pool.count() }),
+        recall_from_ncm_search: async () => {
+          pool.upsert(candidate({ id: 'search-1', name: 'Only Love', artist: 'Ben Howard', sources: ['search'] }));
+          pool.upsert(candidate({ id: 'search-2', name: 'Old Pine', artist: 'Ben Howard', sources: ['search'] }));
+          return { summary: 'search recall added 2 candidates', candidateCount: pool.count() };
+        },
+        rank_candidates: async () => ({ summary: 'ranked candidates', candidateCount: pool.count() })
+      },
+      budget: budget({ maxLlmCalls: 5, maxSteps: 4, maxToolCalls: 4 }),
+      fallbackLogger
+    });
+
+    expect(result.status).toBe('ok');
+    expect(result.trace).toHaveLength(4);
+    expect(fallbackLogger).toHaveBeenCalledWith(expect.objectContaining({
+      reason: 'ranked_tool_completed',
+      traceLastSteps: expect.not.arrayContaining([
+        expect.objectContaining({ tool: 'web_music_discovery' })
+      ]),
+      webDiscoveryDiagnostics: {
+        step: 1,
+        summary: 'web discovery returned 0 hints from 0 raw hints.',
+        candidateCount: 0,
+        problems: ['web discovery returned no usable hints']
+      }
+    }));
+  });
+
   it('prefers one aggregate auto-fill recall tool so rank still has budget', async () => {
     const pool = new CandidatePool();
     const fallbackLogger = vi.fn();

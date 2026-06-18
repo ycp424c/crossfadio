@@ -355,6 +355,46 @@ describe('music agent context builder', () => {
     expect(penalties.some((item) => item.title === 'Old Theme Song')).toBe(false);
   });
 
+  it('builds long-lived artist penalties from repeated play history outside the recent window', async () => {
+    const userId = 'artist-repeat-user';
+    const { getDb } = await import('../../src/server/store/db.js');
+    const db = getDb();
+    const insertPlay = db.prepare(
+      `INSERT INTO plays (user_id, song_id, song_name, artist_name, started_at)
+       VALUES (?, ?, ?, ?, ?)`
+    );
+
+    for (let index = 1; index <= 10; index += 1) {
+      insertPlay.run(
+        userId,
+        `swift-${index}`,
+        `Taylor Deep Cut ${index}`,
+        'Taylor Swift',
+        `2026-06-${String(index).padStart(2, '0')} 02:00:00`
+      );
+    }
+    for (let index = 1; index <= 8; index += 1) {
+      insertPlay.run(
+        userId,
+        `fresh-${index}`,
+        `Fresh Song ${index}`,
+        `Fresh Artist ${index}`,
+        `2026-06-11 ${String(index).padStart(2, '0')}:00:00`
+      );
+    }
+
+    const { buildMusicAgentContext } = await import('../../src/server/music-agent/context.js');
+    const context = await buildMusicAgentContext({
+      userId,
+      request: 'auto-fill',
+      now: new Date('2026-06-12T02:00:00.000Z')
+    });
+
+    const taylor = context.recentArtistPenalties.find((item) => item.artist === 'taylor swift');
+    expect(taylor?.penalty).toBeGreaterThanOrEqual(0.18);
+    expect(taylor?.penalty).toBeLessThan(0.24);
+  });
+
   it('builds recent artist penalties for collaborators from queue and play history', async () => {
     const userId = 'collaborator-artist-penalty-user';
     const now = new Date('2026-06-17T17:30:00+08:00');

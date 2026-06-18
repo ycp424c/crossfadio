@@ -73,9 +73,17 @@ export type MusicAgentFallbackLogEvent = {
   queryFunnel?: QueryFunnelEntry[];
   candidateScoreTablePreview?: MusicAgentRunOutput['candidateScoreTable'];
   candidateScoreTableCount?: number;
+  webDiscoveryDiagnostics?: WebDiscoveryLogDiagnostics;
 };
 
 export type MusicAgentFallbackLogger = (event: MusicAgentFallbackLogEvent) => void;
+
+type WebDiscoveryLogDiagnostics = {
+  step: number;
+  summary: string;
+  candidateCount: number;
+  problems?: string[];
+};
 
 type ParsedLoopOutput =
   | { type: 'tool_call'; tool: string; input: Record<string, unknown> }
@@ -1034,6 +1042,7 @@ async function rankedFallback(
     trace,
     candidateScoreTable: buildCandidateScoreTableRows(ranked, options)
   };
+  const webDiscoveryDiagnostics = firstWebDiscoveryDiagnostics(trace);
   input.fallbackLogger?.({
     reason,
     mode,
@@ -1051,6 +1060,7 @@ async function rankedFallback(
     queryFunnel,
     candidateScoreTablePreview: output.candidateScoreTable.slice(0, 20),
     candidateScoreTableCount: output.candidateScoreTable.length,
+    ...(webDiscoveryDiagnostics ? { webDiscoveryDiagnostics } : {}),
     ...extra
   });
   return output;
@@ -1099,6 +1109,7 @@ function recordRankedConvergence(
   llmCalls: number,
   toolCalls: number
 ): void {
+  const webDiscoveryDiagnostics = firstWebDiscoveryDiagnostics(trace);
   input.fallbackLogger?.({
     reason: 'ranked_tool_completed',
     mode: output.mode,
@@ -1115,7 +1126,8 @@ function recordRankedConvergence(
     finalPickDiagnostics: output.finalPickDiagnostics,
     queryFunnel: output.queryFunnel,
     candidateScoreTablePreview: output.candidateScoreTable.slice(0, 20),
-    candidateScoreTableCount: output.candidateScoreTable.length
+    candidateScoreTableCount: output.candidateScoreTable.length,
+    ...(webDiscoveryDiagnostics ? { webDiscoveryDiagnostics } : {})
   });
 }
 
@@ -1385,6 +1397,54 @@ function traceStep(
 
 function observationFromProblem(summary: string, candidateCount: number): ToolObservation {
   return { summary, candidateCount, problems: [summary] };
+}
+
+function firstWebDiscoveryDiagnostics(trace: AgentTraceStep[]): WebDiscoveryLogDiagnostics | undefined {
+  for (const step of trace) {
+    if (step.tool === 'web_music_discovery') {
+      return webDiscoveryDiagnosticsFromTraceStep(step);
+    }
+
+    const stages = step.observationData?.stages;
+    if (!Array.isArray(stages)) continue;
+    for (const stage of stages) {
+      if (!isRecord(stage) || stage.stage !== 'web_discovery') continue;
+      const summary = typeof stage.summary === 'string' ? stage.summary : '';
+      if (!summary) continue;
+      const candidateCount = typeof stage.candidateCount === 'number' ? stage.candidateCount : step.candidateCount;
+      const problems = Array.isArray(stage.problems)
+        ? stage.problems.filter((problem): problem is string => typeof problem === 'string')
+        : [];
+      return {
+        step: step.step,
+        summary,
+        candidateCount,
+        ...(problems.length > 0 ? { problems } : {})
+      };
+    }
+  }
+  return undefined;
+}
+
+function webDiscoveryDiagnosticsFromTraceStep(step: AgentTraceStep): WebDiscoveryLogDiagnostics {
+  const parsed = parseObservationSummary(step.observationSummary ?? '');
+  return {
+    step: step.step,
+    summary: parsed.summary || 'web discovery observation unavailable',
+    candidateCount: step.candidateCount,
+    ...(parsed.problems.length > 0 ? { problems: parsed.problems } : {})
+  };
+}
+
+function parseObservationSummary(value: string): { summary: string; problems: string[] } {
+  const candidateCountIndex = value.indexOf('; candidateCount=');
+  const summary = (candidateCountIndex >= 0 ? value.slice(0, candidateCountIndex) : value).trim();
+  const problems = value
+    .split('; ')
+    .filter((part) => part.startsWith('problem='))
+    .map((part) => part.slice('problem='.length).trim())
+    .filter(Boolean);
+  return { summary, problems };
 }
 
 function summarizeObservation(observation: ToolObservation): string {
