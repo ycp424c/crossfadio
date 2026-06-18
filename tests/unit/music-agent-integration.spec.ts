@@ -2708,6 +2708,62 @@ describe('createMusicAgentTools', () => {
     expect(candidatePool.count()).toBe(10);
   });
 
+  it('samples auto-fill liked recall from the full liked id list', async () => {
+    const likedIds = Array.from({ length: 100 }, (_, index) => `liked-${index + 1}`);
+    const ncmClient = {
+      getLikedSongIds: vi.fn(async () => likedIds),
+      getSongDetails: vi.fn(async (ids: string[]) => ids.map((id) => ({
+        id,
+        name: `Liked ${id}`,
+        artists: [`Artist ${id}`]
+      }))),
+      searchSongs: vi.fn(async () => []),
+      getPlaylistDetail: vi.fn(async () => null)
+    };
+
+    const { CandidatePool } = await import('../../src/server/music-agent/candidates.js');
+    const { createMusicAgentTools } = await import('../../src/server/music-agent/tools.js');
+    const candidatePool = new CandidatePool();
+    const tools = createMusicAgentTools({
+      userId: 'full-liked-random-sample',
+      ncmClient: ncmClient as any,
+      context: {
+        request: 'auto-fill',
+        currentUserText: '',
+        currentMoment: { localTime: '周一 13:30', daypart: '下午', weather: null },
+        activeDirective: '',
+        currentPlanSegment: null,
+        tasteSummary: '偏好华语抒情与欧美流行女声',
+        recentPreferenceSummary: '',
+        recentPlaySignals: '',
+        queueStateSummary: '',
+        bannedSummary: ''
+      },
+      candidatePool,
+      budget: {
+        maxMs: 10_000,
+        maxSteps: 3,
+        maxLlmCalls: 2,
+        maxToolCalls: 2,
+        maxNcmSearches: 1,
+        maxPlaylistFetches: 0,
+        maxTrendFetchMs: 0,
+        maxCandidates: 20
+      }
+    });
+    const randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0);
+
+    try {
+      await tools.recall_from_liked?.({ limit: 10 });
+    } finally {
+      randomSpy.mockRestore();
+    }
+
+    const fetchedIds = ncmClient.getSongDetails.mock.calls[0]?.[0] ?? [];
+    expect(fetchedIds).toHaveLength(30);
+    expect(fetchedIds.some((id) => Number(id.replace('liked-', '')) > 30)).toBe(true);
+  });
+
   it('scans deeper liked ids when the first auto-fill liked window is banned', async () => {
     const likedIds = Array.from({ length: 30 }, (_, index) => `liked-${index + 1}`);
     const bannedIds = new Set(likedIds.slice(0, 10));

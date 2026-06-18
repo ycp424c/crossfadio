@@ -206,7 +206,8 @@ const SEMANTIC_SONG_SEARCH_PATTERNS = [
   /午后|下午|上午|早晨|清晨|晚上|夜晚|深夜|工作|学习|专注|轻松|柔和|不吵|安静|中低能量|低能量|高能量/,
   /女声|男声|女歌手|男歌手|女生唱|男生唱|乐队|律动|合成器|清爽|明亮|提神|低人声|少人声|粤语|华语/
 ];
-const likedRecallCache = new Map<string, CacheEntry<NcmTrackLike[]>>();
+const likedIdCache = new Map<string, CacheEntry<string[]>>();
+const likedTrackCache = new Map<string, CacheEntry<NcmTrackLike>>();
 const searchRecallCache = new Map<string, CacheEntry<NcmTrackLike[]>>();
 const WEB_DISCOVERY_STYLE_PATTERNS: Array<{ pattern: RegExp; style: string; priority: number }> = [
   { pattern: /janice\s*vidal|卫兰|my\s*cookie\s*can|就算世界无童话|cantopop|粤语流行|粤语|港乐|香港流行|广东歌/i, style: 'cantopop', priority: 40 },
@@ -645,19 +646,64 @@ async function getLikedRecallTracks(
   limit: number,
   signal?: AbortSignal
 ): Promise<NcmTrackLike[] | 'aborted'> {
-  const cacheKey = `${input.userId}:${limit}`;
-  const cached = readCache(likedRecallCache, cacheKey);
-  if (cached) return cached;
-
-  const ids = (await input.ncmClient.getLikedSongIds()).slice(0, limit).map(String);
+  const allIds = await getCachedLikedIds(input);
   if (signal?.aborted) return 'aborted';
+  const ids = sampleN(allIds, limit);
   if (ids.length === 0) {
-    writeCache(likedRecallCache, cacheKey, [], LIKED_RECALL_CACHE_TTL_MS);
     return [];
   }
-  const tracks = await input.ncmClient.getSongDetails(ids);
-  writeCache(likedRecallCache, cacheKey, tracks, LIKED_RECALL_CACHE_TTL_MS);
-  return tracks;
+  return getCachedLikedTracks(input, ids);
+}
+
+async function getCachedLikedIds(input: CreateMusicAgentToolsInput): Promise<string[]> {
+  const cached = readCache(likedIdCache, input.userId);
+  if (cached) return cached;
+
+  const ids = (await input.ncmClient.getLikedSongIds()).map(String);
+  writeCache(likedIdCache, input.userId, ids, LIKED_RECALL_CACHE_TTL_MS);
+  return ids;
+}
+
+async function getCachedLikedTracks(
+  input: CreateMusicAgentToolsInput,
+  ids: string[]
+): Promise<NcmTrackLike[]> {
+  const cachedTracks = new Map<string, NcmTrackLike>();
+  const missingIds: string[] = [];
+
+  for (const id of ids) {
+    const cached = readCache(likedTrackCache, likedTrackCacheKey(input.userId, id));
+    if (cached) cachedTracks.set(id, cached);
+    else missingIds.push(id);
+  }
+
+  if (missingIds.length > 0) {
+    const fetchedTracks = await input.ncmClient.getSongDetails(missingIds);
+    for (const track of fetchedTracks) {
+      const id = String(track.id);
+      cachedTracks.set(id, track);
+      writeCache(likedTrackCache, likedTrackCacheKey(input.userId, id), track, LIKED_RECALL_CACHE_TTL_MS);
+    }
+  }
+
+  return ids
+    .map((id) => cachedTracks.get(id))
+    .filter((track): track is NcmTrackLike => Boolean(track));
+}
+
+function likedTrackCacheKey(userId: string, trackId: string): string {
+  return `${userId}:${trackId}`;
+}
+
+function sampleN<T>(items: T[], count: number): T[] {
+  if (count >= items.length) return [...items];
+
+  const copy = [...items];
+  for (let index = copy.length - 1; index > 0; index -= 1) {
+    const swapIndex = Math.floor(Math.random() * (index + 1));
+    [copy[index], copy[swapIndex]] = [copy[swapIndex], copy[index]];
+  }
+  return copy.slice(0, count);
 }
 
 async function prepareCandidateQuality(
