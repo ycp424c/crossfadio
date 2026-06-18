@@ -14,6 +14,7 @@ import {
   type MusicAgentContextSummary
 } from './schema.js';
 import { buildMusicTrackDedupeKey } from './dedupe.js';
+import { artistKeys, primaryArtistKey } from './artists.js';
 
 const WEATHER_TIMEOUT_MS = 1500;
 const QUEUE_ARTIST_PENALTIES = [0.36, 0.28, 0.2, 0.14, 0.1, 0.08];
@@ -233,9 +234,9 @@ function buildRecentArtistPenalties(userId: string): Array<{ artist: string; pen
 }
 
 function addArtistPenalty(byArtist: Map<string, number>, artist: string | null | undefined, penalty: number): void {
-  const normalized = primaryArtist(artist);
-  if (!normalized) return;
-  byArtist.set(normalized, Math.max(byArtist.get(normalized) ?? 0, penalty));
+  for (const normalized of artistKeys(artist)) {
+    byArtist.set(normalized, Math.max(byArtist.get(normalized) ?? 0, penalty));
+  }
 }
 
 function buildRecentTrackPenalties(userId: string, now: Date): Array<{ trackKey: string; title: string; artist: string; penalty: number }> {
@@ -244,7 +245,7 @@ function buildRecentTrackPenalties(userId: string, now: Date): Array<{ trackKey:
   for (const play of getRecentPlays(userId, TRACK_REPEAT_HISTORY_LIMIT)) {
     const title = play.song_name?.trim() ?? '';
     if (!title) continue;
-    const artist = primaryArtist(play.artist_name) || (play.artist_name?.trim() ?? '');
+    const artist = primaryArtistKey(play.artist_name) || (play.artist_name?.trim() ?? '');
     const trackKey = buildMusicTrackDedupeKey({ name: title, artist });
     if (!trackKey) continue;
 
@@ -299,11 +300,6 @@ function parseSqliteDate(value: string): Date | null {
 
 function roundPenalty(value: number): number {
   return Number(value.toFixed(4));
-}
-
-function primaryArtist(artist: string | null | undefined): string {
-  const value = artist ?? '';
-  return value.split(/\s*(?:\/|,|，|&| feat\.?| ft\.?| with )\s*/i)[0]?.trim().toLowerCase() ?? value.trim().toLowerCase();
 }
 
 function buildBannedSummary(userId: string, now: Date): string {

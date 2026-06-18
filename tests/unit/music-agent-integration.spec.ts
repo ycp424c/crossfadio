@@ -668,6 +668,56 @@ describe('createMusicAgentTools', () => {
     );
   });
 
+  it('applies the per-artist recall cap to collaborators during query recall', async () => {
+    const ncmClient = {
+      getLikedSongIds: vi.fn(async () => []),
+      getSongDetails: vi.fn(async () => []),
+      searchSongs: vi.fn(async () => [
+        { id: 'shared-guest-1', name: 'Shared Guest One', artists: ['Primary One / Shared Guest'] },
+        { id: 'shared-guest-2', name: 'Shared Guest Two', artists: ['Primary Two / Shared Guest'] },
+        { id: 'shared-guest-3', name: 'Shared Guest Three', artists: ['Primary Three / Shared Guest'] },
+        { id: 'fresh', name: 'Fresh Song', artists: ['Fresh Artist'] }
+      ]),
+      getPlaylistDetail: vi.fn(async () => null)
+    };
+
+    const { CandidatePool } = await import('../../src/server/music-agent/candidates.js');
+    const { createMusicAgentTools } = await import('../../src/server/music-agent/tools.js');
+    const candidatePool = new CandidatePool();
+    const tools = createMusicAgentTools({
+      userId: 'collaborator-recall-cap',
+      ncmClient: ncmClient as any,
+      context: {
+        request: 'chat-recommend',
+        currentUserText: '',
+        currentMoment: { localTime: '周四 15:00', daypart: '下午', weather: null },
+        activeDirective: '',
+        currentPlanSegment: null,
+        tasteSummary: '',
+        recentPreferenceSummary: '',
+        recentPlaySignals: '',
+        queueStateSummary: '',
+        bannedSummary: ''
+      },
+      candidatePool,
+      budget: {
+        maxMs: 10_000,
+        maxSteps: 3,
+        maxLlmCalls: 2,
+        maxToolCalls: 2,
+        maxNcmSearches: 1,
+        maxPlaylistFetches: 0,
+        maxTrendFetchMs: 0,
+        maxCandidates: 20
+      }
+    });
+
+    const observation = await tools.recall_from_ncm_search?.({ queries: ['Shared Guest Song Artist'], limit: 10 });
+
+    expect(candidatePool.list().map((candidate) => candidate.id)).toEqual(['shared-guest-1', 'shared-guest-2', 'fresh']);
+    expect(observation?.problems).toContain('skipped 1 tracks after per-artist recall cap');
+  });
+
   it('explains why NCM recall has no executable search queries', async () => {
     const ncmClient = {
       getLikedSongIds: vi.fn(async () => []),
@@ -833,6 +883,67 @@ describe('createMusicAgentTools', () => {
     expect(observation?.problems).toContain('candidate admission: rejectedByPool=2 (banned_dedupe=2)');
   });
 
+  it('counts multi-artist fallback names as one fallback attempt', async () => {
+    const ncmClient = {
+      getLikedSongIds: vi.fn(async () => []),
+      getSongDetails: vi.fn(async () => []),
+      searchSongs: vi.fn(async (query: string) => query.includes('Blocked One')
+        ? [{ id: 'blocked-one', name: 'Blocked One', artists: ['Alpha / Guest'] }]
+        : [{ id: 'blocked-two', name: 'Blocked Two', artists: ['Beta'] }]),
+      searchArtists: vi.fn(async (query: string) => query === 'Alpha / Guest'
+        ? [{ id: 'alpha', name: 'Alpha / Guest' }]
+        : [{ id: 'beta', name: 'Beta' }]),
+      getArtistTopSongs: vi.fn(async (artistId: string) => artistId === 'alpha'
+        ? [{ id: 'alpha-fresh', name: 'Alpha Fresh', artists: ['Alpha / Guest'] }]
+        : [{ id: 'beta-fresh', name: 'Beta Fresh', artists: ['Beta'] }]),
+      getPlaylistDetail: vi.fn(async () => null)
+    };
+
+    const { CandidatePool } = await import('../../src/server/music-agent/candidates.js');
+    const { createMusicAgentTools } = await import('../../src/server/music-agent/tools.js');
+    const candidatePool = new CandidatePool({
+      bannedIds: ['blocked-one', 'blocked-two']
+    });
+    const tools = createMusicAgentTools({
+      userId: 'artist-fallback-budget-collaborators',
+      ncmClient: ncmClient as any,
+      context: {
+        request: 'auto-fill',
+        currentUserText: '',
+        discoveryMode: 'explore',
+        currentMoment: { localTime: '周五 16:25', daypart: '下午', weather: null },
+        activeDirective: '',
+        currentPlanSegment: null,
+        tasteSummary: '',
+        recentPreferenceSummary: '',
+        recentPlaySignals: '',
+        queueStateSummary: '',
+        bannedSummary: ''
+      },
+      candidatePool,
+      budget: {
+        maxMs: 10_000,
+        maxSteps: 3,
+        maxLlmCalls: 2,
+        maxToolCalls: 2,
+        maxNcmSearches: 6,
+        maxPlaylistFetches: 0,
+        maxTrendFetchMs: 0,
+        maxCandidates: 40
+      }
+    });
+
+    const observation = await tools.recall_from_ncm_search?.({
+      queries: ['Blocked One — Alpha / Guest', 'Blocked Two — Beta'],
+      limit: 8
+    });
+
+    expect(ncmClient.searchArtists).toHaveBeenCalledWith('Alpha / Guest', 3);
+    expect(ncmClient.searchArtists).toHaveBeenCalledWith('Beta', 3);
+    expect(candidatePool.list().map((candidate) => candidate.id)).toEqual(['alpha-fresh', 'beta-fresh']);
+    expect(observation?.summary).toContain('artist fallback added 2 candidates from Alpha / Guest、Beta');
+  });
+
   it('accepts lowercase exact track and artist queries for NCM song search', async () => {
     const ncmClient = {
       getLikedSongIds: vi.fn(async () => []),
@@ -941,6 +1052,61 @@ describe('createMusicAgentTools', () => {
       sources: ['search']
     });
     expect(candidatePool.get('302')).toBeUndefined();
+  });
+
+  it('requires the expected primary artist when verifying multi-artist track entities', async () => {
+    const ncmClient = {
+      getLikedSongIds: vi.fn(async () => []),
+      getSongDetails: vi.fn(async () => []),
+      searchSongs: vi.fn(async () => [
+        { id: 'wrong-feature-only', name: 'Payphone', artists: ['Wiz Khalifa'] },
+        { id: 'correct-collab', name: 'Payphone', artists: ['Maroon 5', 'Wiz Khalifa'] }
+      ]),
+      getPlaylistDetail: vi.fn(async () => null)
+    };
+
+    const { CandidatePool } = await import('../../src/server/music-agent/candidates.js');
+    const { createMusicAgentTools } = await import('../../src/server/music-agent/tools.js');
+    const candidatePool = new CandidatePool();
+    const tools = createMusicAgentTools({
+      userId: 'entity-track-primary-collaborator-verify',
+      ncmClient: ncmClient as any,
+      context: {
+        request: 'chat-recommend',
+        currentUserText: '下午 pop',
+        currentMoment: { localTime: '周四 15:00', daypart: '下午', weather: null },
+        activeDirective: '',
+        currentPlanSegment: null,
+        tasteSummary: '',
+        recentPreferenceSummary: '',
+        recentPlaySignals: '',
+        queueStateSummary: '',
+        bannedSummary: ''
+      },
+      candidatePool,
+      budget: {
+        maxMs: 10_000,
+        maxSteps: 3,
+        maxLlmCalls: 2,
+        maxToolCalls: 2,
+        maxNcmSearches: 2,
+        maxPlaylistFetches: 0,
+        maxTrendFetchMs: 0,
+        maxCandidates: 20
+      }
+    });
+
+    const observation = await tools.recall_from_entities?.({
+      entities: [{ type: 'track', title: 'Payphone', artist: 'Maroon 5 / Wiz Khalifa' }]
+    });
+
+    expect(observation?.summary).toContain('entity recall expanded 1 entities and added 1 candidates');
+    expect(candidatePool.get('correct-collab')).toMatchObject({
+      id: 'correct-collab',
+      name: 'Payphone',
+      artist: 'Maroon 5 / Wiz Khalifa'
+    });
+    expect(candidatePool.get('wrong-feature-only')).toBeUndefined();
   });
 
   it('returns sourced web discovery hints and keeps them out of the candidate pool', async () => {

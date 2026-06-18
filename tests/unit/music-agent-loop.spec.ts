@@ -1077,7 +1077,7 @@ describe('runMusicAgentLoop', () => {
 
     expect(result.status).toBe('ok');
     expect(result.picks).toHaveLength(5);
-    expect(result.picks.map((pick) => pick.id)).toEqual(['live-1', 'live-2', 'live-3', 'live-4', 'live-5']);
+    expect(result.picks.map((pick) => pick.id)).toEqual(['live-1', 'live-3', 'live-2', 'live-4', 'live-5']);
     expect(result.picks.every((pick) => pick.reason.startsWith('ranked '))).toBe(true);
     expect(fallbackLogger).toHaveBeenCalledWith(expect.objectContaining({
       status: 'ok',

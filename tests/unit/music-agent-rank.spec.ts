@@ -174,6 +174,16 @@ describe('music-agent ranking', () => {
     expect(rankCandidates(candidates, 3).map((item) => item.id)).toEqual(['a1', 'b1', 'a2']);
   });
 
+  it('rankCandidates lowers repeated collaborator scores when ordering picks', () => {
+    const candidates = [
+      candidate({ id: 'payphone', artist: 'Maroon 5 / Wiz Khalifa', scores: { ...candidate().scores, intentMatch: 1 } }),
+      candidate({ id: 'girl-next-door', artist: 'mgk / Wiz Khalifa', scores: { ...candidate().scores, intentMatch: 0.98 } }),
+      candidate({ id: 'fresh', artist: 'Fresh Artist', scores: { ...candidate().scores, intentMatch: 0.9 } })
+    ];
+
+    expect(rankCandidates(candidates, 3).map((item) => item.id)).toEqual(['payphone', 'fresh', 'girl-next-door']);
+  });
+
   it('rankCandidates applies artist recency penalties with distance decay', () => {
     const candidates = [
       candidate({ id: 'near', artist: 'Near Artist', scores: { ...candidate().scores, intentMatch: 1 } }),
@@ -189,6 +199,19 @@ describe('music-agent ranking', () => {
     });
 
     expect(ranked.map((item) => item.id)).toEqual(['far', 'fresh', 'near']);
+  });
+
+  it('rankCandidates applies artist recency penalties to collaborators', () => {
+    const candidates = [
+      candidate({ id: 'recent-collab', artist: 'Maroon 5 / Wiz Khalifa', scores: { ...candidate().scores, intentMatch: 1 } }),
+      candidate({ id: 'fresh', artist: 'Fresh Artist', scores: { ...candidate().scores, intentMatch: 0.9 } })
+    ];
+
+    const ranked = rankCandidates(candidates, 2, {
+      artistPenalties: new Map([['wiz khalifa', 0.3]])
+    });
+
+    expect(ranked.map((item) => item.id)).toEqual(['fresh', 'recent-collab']);
   });
 
   it('rankCandidates applies long-lived track penalties by normalized song key', () => {
@@ -372,6 +395,16 @@ describe('music-agent ranking', () => {
 
     expect(diversifyCandidates(candidates, 3).map((item) => item.id)).toEqual(['a1']);
     expect(diversifyCandidates(candidates, 0)).toEqual([]);
+  });
+
+  it('diversifyCandidates skips repeated collaborators', () => {
+    const candidates = [
+      candidate({ id: 'payphone', artist: 'Maroon 5 / Wiz Khalifa', scores: { ...candidate().scores, intentMatch: 1 } }),
+      candidate({ id: 'girl-next-door', artist: 'mgk / Wiz Khalifa', scores: { ...candidate().scores, intentMatch: 0.98 } }),
+      candidate({ id: 'fresh', artist: 'Fresh Artist', scores: { ...candidate().scores, intentMatch: 0.9 } })
+    ];
+
+    expect(diversifyCandidates(candidates, 2).map((item) => item.id)).toEqual(['payphone', 'fresh']);
   });
 
   it('returns cloned quality signals from ranking helpers', () => {

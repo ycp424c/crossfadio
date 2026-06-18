@@ -355,6 +355,36 @@ describe('music agent context builder', () => {
     expect(penalties.some((item) => item.title === 'Old Theme Song')).toBe(false);
   });
 
+  it('builds recent artist penalties for collaborators from queue and play history', async () => {
+    const userId = 'collaborator-artist-penalty-user';
+    const now = new Date('2026-06-17T17:30:00+08:00');
+
+    const { startPlay, endPlay } = await import('../../src/server/store/plays.js');
+    const playId = startPlay(userId, { songId: '4172700', songName: 'Payphone', artistName: 'Maroon 5 / Wiz Khalifa' });
+    endPlay(userId, playId, 'completed');
+
+    const { setQueue } = await import('../../src/server/store/queue.js');
+    setQueue(userId, [
+      { ncmId: '3380980671', name: 'girl next door', artists: ['mgk', 'Ty Dolla $ign'], query: 'collab' }
+    ]);
+
+    const { buildMusicAgentContext } = await import('../../src/server/music-agent/context.js');
+    const context = await buildMusicAgentContext({
+      userId,
+      ncmClient: {} as never,
+      request: 'chat-recommend',
+      userText: '继续',
+      now
+    });
+
+    expect(context.recentArtistPenalties).toEqual(expect.arrayContaining([
+      { artist: 'maroon 5', penalty: 0.3 },
+      { artist: 'wiz khalifa', penalty: 0.3 },
+      { artist: 'mgk', penalty: 0.36 },
+      { artist: 'ty dolla $ign', penalty: 0.36 }
+    ]));
+  });
+
   it('uses Shanghai daypart even when the server process timezone is UTC', async () => {
     const originalTz = process.env.TZ;
     process.env.TZ = 'UTC';

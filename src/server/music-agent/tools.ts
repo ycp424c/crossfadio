@@ -39,6 +39,7 @@ import {
   type MusicEntityRecord as StoredMusicEntityRecord
 } from '../store/music-entities.js';
 import type { WebMusicDiscoveryProvider } from './web-discovery.js';
+import { artistKeys, primaryArtistKey } from './artists.js';
 
 export type ToolObservation = {
   summary: string;
@@ -181,7 +182,7 @@ const MAX_ENTITY_RECALL_COUNT = 8;
 const MAX_RANK_DISPLAY_LIMIT = 20;
 const MAX_DIVERSIFY_DISPLAY_LIMIT = 5;
 const AVOID_ARTIST_PENALTY_THRESHOLD = 0.18;
-const MAX_QUERY_RECALL_PER_PRIMARY_ARTIST = 2;
+const MAX_QUERY_RECALL_PER_ARTIST_KEY = 2;
 const MAX_ARTIST_FALLBACKS_PER_RECALL = 2;
 const LIKED_RECALL_CACHE_TTL_MS = 10 * 60 * 1000;
 const SEARCH_RECALL_CACHE_TTL_MS = 30 * 60 * 1000;
@@ -433,9 +434,9 @@ export function createMusicAgentTools(input: CreateMusicAgentToolsInput): MusicA
         [
           ...avoidArtistsFromContext(input.context),
           ...(state.queryPlan?.avoidArtists ?? [])
-        ].map(primaryArtist).filter(Boolean)
+        ].flatMap(artistKeys)
       );
-      const artistCounts = countPrimaryArtists(input.candidatePool.list());
+      const artistCounts = countArtistKeys(input.candidatePool.list());
       const problems: string[] = [...parsedInput.problems];
       let added = 0;
 
@@ -937,7 +938,7 @@ function webDiscoveryGapSignals(input: CreateMusicAgentToolsInput, state: ToolSt
   const externalSources = new Set(
     candidates.flatMap((candidate) => candidate.sources.filter((source) => source !== 'liked'))
   );
-  const sourceCounts = countPrimaryArtists(candidates);
+  const sourceCounts = countArtistKeys(candidates);
   const maxArtistCount = Math.max(0, ...sourceCounts.values());
   const queryFunnel = queryFunnelSnapshot(state);
   return [
@@ -1014,9 +1015,9 @@ async function recallFromWebDiscoveryHints(options: {
     [
       ...avoidArtistsFromContext(options.input.context),
       ...(options.state.queryPlan?.avoidArtists ?? [])
-    ].map(primaryArtist).filter(Boolean)
+    ].flatMap(artistKeys)
   );
-  const artistCounts = countPrimaryArtists(options.input.candidatePool.list());
+  const artistCounts = countArtistKeys(options.input.candidatePool.list());
   const problems = [...filteredHints.problems, ...parsedInput.problems];
   let added = 0;
 
@@ -1053,7 +1054,7 @@ function filterWebDiscoveryHintsForRecall(
     [
       ...avoidArtistsFromContext(input.context),
       ...(state.queryPlan?.avoidArtists ?? [])
-    ].map(primaryArtist).filter(Boolean)
+    ].flatMap(artistKeys)
   );
   const expectedStyle = selectWebDiscoveryStyle(input.context, state.queryPlan);
   const hints: unknown[] = [];
@@ -1067,8 +1068,8 @@ function filterWebDiscoveryHintsForRecall(
     }
     const hint = parsed.data;
     const artist = webHintArtistName(hint);
-    const artistKey = artist ? primaryArtist(artist) : '';
-    if (artistKey && avoidArtists.has(artistKey)) {
+    const hintArtistKeys = artistKeys(artist);
+    if (hintArtistKeys.some((artistKey) => avoidArtists.has(artistKey))) {
       problems.push(`web hint skipped: recently repeated artist ${artist}`);
       continue;
     }
@@ -1737,9 +1738,12 @@ function albumMatchesKnownEntityFields(entity: MusicEntityHypothesis, album: Ncm
 }
 
 function trackMatchesArtist(track: NcmTrackLike, artist: string): boolean {
-  const expected = primaryArtist(artist);
-  if (!expected) return false;
-  return (track.artists ?? []).some((candidate) => tokenMatches(expected, primaryArtist(candidate)));
+  const expectedArtist = primaryArtistKey(artist);
+  if (!expectedArtist) return false;
+  return (track.artists ?? []).some((candidate) => {
+    const candidateArtists = artistKeys(candidate);
+    return candidateArtists.some((actual) => tokenMatches(expectedArtist, actual));
+  });
 }
 
 function tokenMatches(expected: string, actual: string): boolean {
@@ -1773,7 +1777,7 @@ async function recallFromQueries(options: {
     [
       ...avoidArtistsFromContext(options.input.context),
       ...(options.state.queryPlan?.avoidArtists ?? [])
-    ].map(primaryArtist).filter(Boolean)
+    ].flatMap(artistKeys)
   );
   const sanitizedQueries = uniqueStrings(options.queries.map(sanitizeSearchQuery).filter(Boolean));
   const { queries: artistFilteredQueries, skipped: skippedAvoidedQueries } = filterAvoidedQueries(sanitizedQueries, avoidArtists);
@@ -1835,8 +1839,9 @@ async function recallFromQueries(options: {
   let artistFallbackAdded = 0;
   const problems: string[] = [];
   const admissionTotals = emptyUpsertTracksResult();
-  const artistCounts = countPrimaryArtists(options.input.candidatePool.list());
+  const artistCounts = countArtistKeys(options.input.candidatePool.list());
   const attemptedArtistFallbacks = new Set<string>();
+  let attemptedArtistFallbackCount = 0;
 
   for (const query of queries) {
     if (options.signal?.aborted) return abortedObservation(options.input.candidatePool);
@@ -1875,12 +1880,17 @@ async function recallFromQueries(options: {
       if (
         result.added === 0 &&
         tracks.length > 0 &&
-        attemptedArtistFallbacks.size < MAX_ARTIST_FALLBACKS_PER_RECALL
+        attemptedArtistFallbackCount < MAX_ARTIST_FALLBACKS_PER_RECALL
       ) {
         const artist = artistFallbackNameFromQuery(query, tracks);
-        const artistKey = artist ? primaryArtist(artist) : '';
-        if (artist && artistKey && !attemptedArtistFallbacks.has(artistKey) && !avoidArtists.has(artistKey)) {
-          attemptedArtistFallbacks.add(artistKey);
+        const fallbackArtistKeys = artistKeys(artist);
+        const alreadyAttempted = fallbackArtistKeys.some((artistKey) => attemptedArtistFallbacks.has(artistKey));
+        const avoided = fallbackArtistKeys.some((artistKey) => avoidArtists.has(artistKey));
+        if (artist && fallbackArtistKeys.length > 0 && !alreadyAttempted && !avoided) {
+          for (const artistKey of fallbackArtistKeys) {
+            attemptedArtistFallbacks.add(artistKey);
+          }
+          attemptedArtistFallbackCount += 1;
           const fallback = await recallFromEntity({
             entity: { type: 'artist', name: artist },
             input: options.input,
@@ -2017,9 +2027,9 @@ async function recallFromSemanticEntities(options: {
       [
         ...avoidArtistsFromContext(options.input.context),
         ...(options.state.queryPlan?.avoidArtists ?? [])
-      ].map(primaryArtist).filter(Boolean)
+      ].flatMap(artistKeys)
     );
-    const artistCounts = countPrimaryArtists(options.input.candidatePool.list());
+    const artistCounts = countArtistKeys(options.input.candidatePool.list());
     const problems: string[] = [];
     let added = 0;
 
@@ -2173,12 +2183,12 @@ function upsertTracks(
       result.invalid += 1;
       continue;
     }
-    const artist = primaryArtist(candidate.artist);
-    if (artist && options.avoidArtists?.has(artist)) {
+    const artists = artistKeys(candidate.artist);
+    if (artists.some((artist) => options.avoidArtists?.has(artist))) {
       result.skippedAvoidedArtists += 1;
       continue;
     }
-    if (artist && (artistCounts.get(artist) ?? 0) >= MAX_QUERY_RECALL_PER_PRIMARY_ARTIST) {
+    if (artists.some((artist) => (artistCounts.get(artist) ?? 0) >= MAX_QUERY_RECALL_PER_ARTIST_KEY)) {
       result.skippedArtistCap += 1;
       continue;
     }
@@ -2186,19 +2196,19 @@ function upsertTracks(
     if (upsertResult.status === 'inserted') {
       result.added += 1;
       result.inserted += 1;
-      if (artist) artistCounts.set(artist, (artistCounts.get(artist) ?? 0) + 1);
+      incrementArtistCounts(artistCounts, artists);
     } else if (upsertResult.status === 'merged_by_id') {
       result.added += 1;
       result.mergedById += 1;
-      if (artist) artistCounts.set(artist, (artistCounts.get(artist) ?? 0) + 1);
+      incrementArtistCounts(artistCounts, artists);
     } else if (upsertResult.status === 'merged_by_dedupe') {
       result.added += 1;
       result.mergedByDedupe += 1;
-      if (artist) artistCounts.set(artist, (artistCounts.get(artist) ?? 0) + 1);
+      incrementArtistCounts(artistCounts, artists);
     } else if (upsertResult.status === 'merged_by_id_and_dedupe') {
       result.added += 1;
       result.mergedByIdAndDedupe += 1;
-      if (artist) artistCounts.set(artist, (artistCounts.get(artist) ?? 0) + 1);
+      incrementArtistCounts(artistCounts, artists);
     } else {
       result.rejectedByPool += 1;
       result.rejectedReasons[upsertResult.reason] = (result.rejectedReasons[upsertResult.reason] ?? 0) + 1;
@@ -2485,14 +2495,20 @@ function defaultQueryPlan(
   });
 }
 
-function countPrimaryArtists(candidates: MusicCandidate[]): Map<string, number> {
+function countArtistKeys(candidates: MusicCandidate[]): Map<string, number> {
   const counts = new Map<string, number>();
   for (const candidate of candidates) {
-    const artist = primaryArtist(candidate.artist);
-    if (!artist) continue;
-    counts.set(artist, (counts.get(artist) ?? 0) + 1);
+    for (const artist of artistKeys(candidate.artist)) {
+      counts.set(artist, (counts.get(artist) ?? 0) + 1);
+    }
   }
   return counts;
+}
+
+function incrementArtistCounts(counts: Map<string, number>, artists: string[]): void {
+  for (const artist of artists) {
+    counts.set(artist, (counts.get(artist) ?? 0) + 1);
+  }
 }
 
 function filterAvoidedQueries(queries: string[], avoidArtists: ReadonlySet<string>): { queries: string[]; skipped: number } {
@@ -2570,10 +2586,6 @@ function entityFromStoredRecord(entity: StoredMusicEntityRecord): MusicEntityHyp
     ...(entity.title ? { name: entity.title } : {}),
     ...(entity.providerId ? { providerId: entity.providerId } : {})
   };
-}
-
-function primaryArtist(artist: string): string {
-  return artist.split(/\s*(?:\/|,|，|&| feat\.?| ft\.?| with )\s*/i)[0]?.trim().toLowerCase() ?? artist.trim().toLowerCase();
 }
 
 function extractPlanQueries(planSegment: string | null): string[] {

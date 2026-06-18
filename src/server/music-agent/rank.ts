@@ -1,5 +1,6 @@
 import type { CandidateScoreTableRow, MusicCandidate, MusicCandidateQualitySignals } from './schema.js';
 import { areMusicTrackDedupeKeysSimilar, buildMusicTrackDedupeKey } from './dedupe.js';
+import { artistKeys } from './artists.js';
 
 const REPEATED_ARTIST_PENALTY = 0.16;
 const LOW_POPULARITY_THRESHOLD = 40;
@@ -39,10 +40,6 @@ export type DiversifyCandidatesOptions = {
   blockedTitleMotifs?: ReadonlySet<string>;
 };
 
-function primaryArtist(artist: string): string {
-  return artist.split(/\s*(?:\/|,|，|&| feat\.?| ft\.?| with )\s*/i)[0]?.trim().toLowerCase() ?? artist.trim().toLowerCase();
-}
-
 export function scoreCandidate(candidate: MusicCandidate): number {
   const { scores } = candidate;
 
@@ -75,9 +72,8 @@ export function scoreCandidateForRanking(
   options: RankCandidatesOptions = {},
   repeatCount = 0
 ): CandidateScoreBreakdown {
-  const artist = primaryArtist(candidate.artist);
   const baseScore = scoreCandidate(candidate);
-  const artistPenalty = options.artistPenalties?.get(artist) ?? 0;
+  const artistPenalty = resolveArtistPenalty(candidate, options.artistPenalties);
   const trackPenalty = resolveTrackPenalty(candidate, options.trackPenalties);
   const repeatPenalty = repeatCount * REPEATED_ARTIST_PENALTY;
   const qualityPenalty = qualitySignalPenalty(candidate);
@@ -113,9 +109,7 @@ export function rankCandidates(candidates: MusicCandidate[], limit: number, opti
 
     const [picked] = remaining.splice(bestIndex, 1);
     selected.push(cloneCandidate(picked));
-
-    const artist = primaryArtist(picked.artist);
-    artistCounts.set(artist, (artistCounts.get(artist) ?? 0) + 1);
+    incrementArtistCounts(artistCounts, picked);
   }
 
   return selected;
@@ -127,10 +121,9 @@ export function buildCandidateScoreTableRows(
 ): CandidateScoreTableRow[] {
   const artistCounts = new Map<string, number>();
   return candidates.map((candidate, index) => {
-    const artist = primaryArtist(candidate.artist);
-    const repeatCount = artistCounts.get(artist) ?? 0;
+    const repeatCount = repeatedArtistCount(candidate, artistCounts);
     const breakdown = scoreCandidateForRanking(candidate, options, repeatCount);
-    artistCounts.set(artist, repeatCount + 1);
+    incrementArtistCounts(artistCounts, candidate);
     return {
       rank: index + 1,
       id: candidate.id,
@@ -165,10 +158,10 @@ export function diversifyCandidates(
       break;
     }
 
-    const artist = primaryArtist(candidate.artist);
+    const artists = artistKeys(candidate.artist);
     const titleMotifs = candidateTitleMotifKeys(candidate);
 
-    if (usedArtists.has(artist)) {
+    if (artists.some((artist) => usedArtists.has(artist))) {
       continue;
     }
 
@@ -177,7 +170,9 @@ export function diversifyCandidates(
     }
 
     selected.push(cloneCandidate(candidate));
-    usedArtists.add(artist);
+    for (const artist of artists) {
+      usedArtists.add(artist);
+    }
     for (const motif of titleMotifs) {
       usedTitleMotifs.add(motif);
     }
@@ -198,9 +193,18 @@ function repeatedArtistAdjustedScore(
   artistCounts: Map<string, number>,
   options: RankCandidatesOptions = {}
 ): number {
-  const artist = primaryArtist(candidate.artist);
-  const repeatCount = artistCounts.get(artist) ?? 0;
+  const repeatCount = repeatedArtistCount(candidate, artistCounts);
   return scoreCandidateForRanking(candidate, options, repeatCount).adjustedScore;
+}
+
+function repeatedArtistCount(candidate: MusicCandidate, artistCounts: ReadonlyMap<string, number>): number {
+  return Math.max(0, ...artistKeys(candidate.artist).map((artist) => artistCounts.get(artist) ?? 0));
+}
+
+function incrementArtistCounts(artistCounts: Map<string, number>, candidate: MusicCandidate): void {
+  for (const artist of artistKeys(candidate.artist)) {
+    artistCounts.set(artist, (artistCounts.get(artist) ?? 0) + 1);
+  }
 }
 
 function cloneCandidate(candidate: MusicCandidate): MusicCandidate {
@@ -267,6 +271,11 @@ function resolveTrackPenalty(candidate: MusicCandidate, penalties: ReadonlyMap<s
     }
   }
   return penalty;
+}
+
+function resolveArtistPenalty(candidate: MusicCandidate, penalties: ReadonlyMap<string, number> | undefined): number {
+  if (!penalties || penalties.size === 0) return 0;
+  return Math.max(0, ...artistKeys(candidate.artist).map((artist) => penalties.get(artist) ?? 0));
 }
 
 function detectTitlePollution(title: string): NonNullable<MusicCandidateQualitySignals['titlePollution']> {
