@@ -256,6 +256,43 @@ describe('settings taste analysis route', () => {
     )).toBe(true);
   });
 
+  it('asks the LLM for a richer DJ-oriented taste profile', async () => {
+    const requestBodies: Array<{
+      max_tokens?: number;
+      messages?: Array<{ role: string; content: string }>;
+    }> = [];
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).includes('llm.example')) {
+        requestBodies.push(JSON.parse(String(init?.body ?? '{}')) as {
+          max_tokens?: number;
+          messages?: Array<{ role: string; content: string }>;
+        });
+        return new Response(JSON.stringify({
+          choices: [{ message: { content: '# 我的音乐口味\n## 核心画像\n喜欢层次更丰富的歌曲。' } }],
+          model: 'test-model'
+        }), { status: 200 });
+      }
+      return Promise.reject(new Error(`unexpected fetch: ${String(input)}`));
+    }));
+    const ncmClient = {
+      getLikedSongIds: vi.fn().mockResolvedValue(['101', '102']),
+      getSongDetails: vi.fn().mockResolvedValue([
+        { id: 101, name: 'Song A', artists: ['Artist A'], durationMs: 180_000 },
+        { id: 102, name: 'Song B', artists: ['Artist B'], durationMs: 180_000 }
+      ])
+    };
+
+    await runTasteAnalysis('test-user', ncmClient as never);
+
+    const systemPrompt = requestBodies.at(-1)?.messages?.find((message) => message.role === 'system')?.content ?? '';
+    expect(systemPrompt).toContain('600-900字');
+    expect(systemPrompt).toContain('## 核心画像');
+    expect(systemPrompt).toContain('## DJ 选歌提示');
+    expect(systemPrompt).toContain('少放');
+    expect(systemPrompt).not.toContain('200字以内');
+    expect(requestBodies.at(-1)?.max_tokens).toBeGreaterThanOrEqual(1400);
+  });
+
   it('skips liked songs whose details fail when a batch contains malformed NCM data', async () => {
     const requestBodies: Array<{
       messages?: Array<{ role: string; content: string }>;
