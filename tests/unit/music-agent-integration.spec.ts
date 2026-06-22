@@ -3128,6 +3128,57 @@ describe('createMusicAgentTools', () => {
     expect(rank?.summary).toContain('adjusted=');
   });
 
+  it('applies repeated artist avoidance to liked recall backfill', async () => {
+    const ncmClient = {
+      getLikedSongIds: vi.fn(async () => ['tanya-liked', 'fresh-liked']),
+      getSongDetails: vi.fn(async (ids: string[]) => ids.map((id) => (
+        id === 'tanya-liked'
+          ? { id, name: 'Letting Go', artists: ['蔡健雅'] }
+          : { id, name: 'Fresh Light', artists: ['Fresh Artist'] }
+      ))),
+      searchSongs: vi.fn(async () => []),
+      getPlaylistDetail: vi.fn(async () => null)
+    };
+
+    const { CandidatePool } = await import('../../src/server/music-agent/candidates.js');
+    const { createMusicAgentTools } = await import('../../src/server/music-agent/tools.js');
+    const candidatePool = new CandidatePool();
+    const tools = createMusicAgentTools({
+      userId: 'liked-recall-avoid-artist',
+      ncmClient: ncmClient as any,
+      context: {
+        request: 'auto-fill',
+        currentUserText: '',
+        discoveryMode: 'explore',
+        currentMoment: { localTime: '周一 16:35', daypart: '下午', weather: null },
+        activeDirective: '',
+        currentPlanSegment: null,
+        tasteSummary: '',
+        recentPreferenceSummary: '',
+        recentPlaySignals: '',
+        queueStateSummary: '',
+        recentArtistPenalties: [{ artist: '蔡健雅', penalty: 0.19 }],
+        bannedSummary: ''
+      },
+      candidatePool,
+      budget: {
+        maxMs: 10_000,
+        maxSteps: 3,
+        maxLlmCalls: 2,
+        maxToolCalls: 2,
+        maxNcmSearches: 0,
+        maxPlaylistFetches: 0,
+        maxTrendFetchMs: 0,
+        maxCandidates: 20
+      }
+    });
+
+    const liked = await tools.recall_from_liked?.({ limit: 2 });
+
+    expect(liked?.problems).toContain('skipped 1 tracks from recently repeated artists');
+    expect(candidatePool.list().map((item) => item.id)).toEqual(['fresh-liked']);
+  });
+
   it('scores source candidates differently for explore and comfort discovery modes', async () => {
     const ncmClient = {
       getLikedSongIds: vi.fn(async () => ['liked-1']),

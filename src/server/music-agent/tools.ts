@@ -325,12 +325,28 @@ export function createMusicAgentTools(input: CreateMusicAgentToolsInput): MusicA
         if (tracks.length === 0) {
           return observation(input.candidatePool, 'liked recall found no liked ids.');
         }
-        const added = upsertTracks(input.candidatePool, tracks, 'liked', {
+        const avoidArtists = new Set(
+          [
+            ...avoidArtistsFromContext(input.context),
+            ...(state.queryPlan?.avoidArtists ?? [])
+          ].flatMap(artistKeys)
+        );
+        const artistCounts = countArtistKeys(input.candidatePool.list());
+        const result = upsertTracks(input.candidatePool, tracks, 'liked', {
           evidence: '网易云红心歌曲',
           scores: sourceScores('liked', input.context),
+          avoidArtists,
+          artistCounts,
           maxAccepted: limit
-        }).added;
-        return observation(input.candidatePool, `liked recall added ${added} candidates from ${tracks.length} ids.`);
+        });
+        return observation(
+          input.candidatePool,
+          `liked recall added ${result.added} candidates from ${tracks.length} ids.`,
+          [
+            ...(result.skippedAvoidedArtists > 0 ? [`skipped ${result.skippedAvoidedArtists} tracks from recently repeated artists`] : []),
+            ...(result.skippedArtistCap > 0 ? [`skipped ${result.skippedArtistCap} tracks after per-artist recall cap`] : [])
+          ]
+        );
       } catch (error) {
         return observation(input.candidatePool, 'liked recall failed.', [formatError(error)]);
       }
