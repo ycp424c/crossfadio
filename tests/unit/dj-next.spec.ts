@@ -2,7 +2,8 @@ import { describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import { extractQueueDirectiveFromText } from '../../src/server/http/chat-sse-worker';
-import { buildDiscoveryModePromptParts, buildDjTimeContext, buildTrackDedupeKey, createDjPickNextFallbackStatsTracker, getCandidateSourceMix, getMusicAgentCandidateSourceDiagnostics, parseDjCandidatePicks, serializeDjPickNextErrorForLog, searchCandidates } from '../../src/server/http/routes/djNext';
+import { buildDiscoveryModePromptParts, buildDjTimeContext, buildTrackDedupeKey, getCandidateSourceMix, getMusicAgentCandidateSourceDiagnostics, parseDjCandidatePicks, serializeDjPickNextErrorForLog, searchCandidates } from '../../src/server/http/routes/djNext';
+import { createDjPickNextFallbackStatsTracker } from '../../src/server/dj/pickNextTelemetry';
 import { LlmError } from '../../src/server/llm/client';
 import type { NcmClient } from '../../src/server/ncm/client';
 import type { NcmSong } from '../../src/shared/schema';
@@ -178,7 +179,7 @@ describe('DJ pick-next diagnostics', () => {
 
   it('includes a console-table friendly candidate table in legacy debug events', () => {
     const source = readSource('src/server/http/routes/djNext.ts');
-    const doPickNext = extractBetween(source, 'async function doPickNext', 'function broadcastAppended');
+    const doPickNext = extractBetween(source, 'async function doPickNext', 'function createLegacyCandidateScoreTable');
     const phase3DebugBlock = extractBetween(
       doPickNext,
       'const phase3Debug = {',
@@ -211,7 +212,7 @@ describe('DJ pick-next diagnostics', () => {
     const source = readSource('src/server/http/routes/djNext.ts');
     const musicAgentResultSource = readSource('src/server/dj/musicAgentPickNextResult.ts');
     const legacyResultSource = readSource('src/server/dj/legacyPickNextResult.ts');
-    const doPickNext = extractBetween(source, 'async function doPickNext', 'function broadcastAppended');
+    const doPickNext = extractBetween(source, 'async function doPickNext', 'function createLegacyCandidateScoreTable');
 
     expect(musicAgentResultSource).toContain('const musicAgentSkippedPicks: SkippedPickLog[] = [];');
     expect(legacyResultSource).toContain('const whitelistedSkippedPicks: SkippedPickLog[] = [];');
@@ -231,9 +232,10 @@ describe('DJ pick-next diagnostics', () => {
     const musicAgentResultSource = readSource('src/server/dj/musicAgentPickNextResult.ts');
     const legacyResultSource = readSource('src/server/dj/legacyPickNextResult.ts');
     const randomFallbackSource = readSource('src/server/dj/legacyRandomFallback.ts');
+    const telemetrySource = readSource('src/server/dj/pickNextTelemetry.ts');
     const runnerSetup = extractBetween(source, 'const djPickNextRunner = createDjPickNextRunner', 'type LikedIdsCache');
     const jsonHandler = extractBetween(source, 'export function createDjPickNextHandler', 'async function doPickNext');
-    const doPickNext = extractBetween(source, 'async function doPickNext', 'function broadcastAppended');
+    const doPickNext = extractBetween(source, 'async function doPickNext', 'function createLegacyCandidateScoreTable');
     const sseHandler = extractBetween(source, 'export function createSseDjPickNextHandler', 'function getScopedNcmClient');
 
     expect(runnerSetup).toContain('getTargetPickCount: getAutoFillBatchSize');
@@ -263,8 +265,8 @@ describe('DJ pick-next diagnostics', () => {
     expect(musicAgentResultSource).toContain('if (hasReachedPickTarget(userId, initialQueueLength, targetPickCount))');
     expect(doPickNext).toContain('broadcastAppended,');
     expect(musicAgentResultSource).toContain('musicAgentRunMetrics(output, appendedPicks, startedAt, discoveryMode)');
-    expect(source).toContain('rankedBackfillCount: metrics.rankedBackfillCount');
-    expect(source).toContain('finalPickDiagnostics: metrics.finalPickDiagnostics');
+    expect(telemetrySource).toContain('rankedBackfillCount: metrics.rankedBackfillCount');
+    expect(telemetrySource).toContain('finalPickDiagnostics: metrics.finalPickDiagnostics');
     expect(musicAgentResultSource).toContain('totalCandidates: getMusicAgentDebugCandidateCount(output)');
     expect(musicAgentResultSource).not.toContain('totalCandidates: output.picks.length');
     expect(musicAgentResultSource).toContain('MusicAgent appended fewer than target');
@@ -273,9 +275,11 @@ describe('DJ pick-next diagnostics', () => {
     expect(doPickNext).toContain('handleLegacyRandomFallback({');
     expect(randomFallbackSource).toContain('getRemainingPickSlots(userId, initialQueueLength, targetPickCount) * 4');
     expect(randomFallbackSource).toContain('targetCount: targetPickCount');
-    expect(source).toContain('addedCount: newTracks.length');
-    expect(source).toContain('trackNames: names');
-    expect(source).toContain('trackIds: newTracks.map((track) => track.ncmId)');
+    expect(source).toContain('const broadcastAppended = djPickNextTelemetry.broadcastAppended');
+    expect(source).toContain('recordFallbackStats: djPickNextTelemetry.recordFallbackStats');
+    expect(telemetrySource).toContain('addedCount: newTracks.length');
+    expect(telemetrySource).toContain('trackNames: names');
+    expect(telemetrySource).toContain('trackIds: newTracks.map((track) => track.ncmId)');
 
     expect(doPickNext).toContain('const styleAbort = createAbortTimeoutSignal(signal, SEARCH_QUERY_LLM_TIMEOUT_MS)');
     expect(doPickNext).toContain('{ signal: styleAbort.signal }');

@@ -21,6 +21,7 @@ import { getOrGenerateDailyThemeWithin } from '../../daily-theme.js';
 import { MusicAgent } from '../../music-agent/index.js';
 import { handleLegacyPickNextOutput } from '../../dj/legacyPickNextResult.js';
 import { handleLegacyRandomFallback } from '../../dj/legacyRandomFallback.js';
+import { createDjPickNextTelemetry } from '../../dj/pickNextTelemetry.js';
 import { createDjPickNextRunner } from '../../dj/pickNextRunner.js';
 import {
   buildTrackDedupeKey,
@@ -31,8 +32,7 @@ import {
 import type {
   DedupeState,
   DjEventSink,
-  DjPickNextFallbackPath,
-  DjPickNextRunMetrics
+  DjPickNextFallbackPath
 } from '../../dj/musicAgentPickNextResult.js';
 import { formatShanghaiLocalTime, getDaypart, getShanghaiTimeParts } from '../../timezone.js';
 import { parseAutoFillBatchSize, parseDiscoveryMode } from '../../../shared/dj.js';
@@ -42,19 +42,6 @@ type AuthedRequest = Request & { userId: string; ncmClient: NcmClient };
 export { buildTrackDedupeKey, getMusicAgentCandidateSourceDiagnostics, isTrackDedupeKeyExcluded };
 export type { DiscoveryMode } from '../../../shared/dj.js';
 export type { DjPickNextFallbackPath } from '../../dj/musicAgentPickNextResult.js';
-
-
-export type DjPickNextFallbackStats = {
-  totalRuns: number;
-  fallbackRuns: number;
-  fallbackRate: number;
-  fallbackPaths: Partial<Record<DjPickNextFallbackPath, number>>;
-};
-
-export type DjPickNextFallbackStatsTracker = {
-  record(event: { path: DjPickNextFallbackPath }): DjPickNextFallbackStats;
-  snapshot(): DjPickNextFallbackStats;
-};
 
 type DjNextOptions = {
   secrets: any;
@@ -75,7 +62,9 @@ const DAILY_THEME_CONTEXT_TIMEOUT_MS = 1_500;
 const DJ_AGENT_TIMEOUT_MS = 135_000;
 const LARGE_BATCH_DJ_AGENT_TIMEOUT_MS = 165_000;
 
-const djPickNextFallbackStats = createDjPickNextFallbackStatsTracker();
+const djPickNextTelemetry = createDjPickNextTelemetry();
+const djPickNextFallbackStats = djPickNextTelemetry.fallbackStats;
+const broadcastAppended = djPickNextTelemetry.broadcastAppended;
 const djPickNextRunner = createDjPickNextRunner({
   getTargetPickCount: getAutoFillBatchSize,
   getJobTimeoutMs,
@@ -960,7 +949,7 @@ ${candidateList}
     emit,
     broadcastAppended,
     logger,
-    recordFallbackStats: recordDjPickNextFallbackStats,
+    recordFallbackStats: djPickNextTelemetry.recordFallbackStats,
     sampleIds: sampleN,
     fetchSongDetails: (ids) => withTimeout(
       ncmClient.getSongDetails(ids).catch(() => []),
@@ -1003,95 +992,6 @@ function createLegacyCandidateScoreTable(candidates: Track[], likedSampleIds: Se
       titlePollutionPenalty: 0,
       adjustedScore: score
     };
-  });
-}
-
-export function createDjPickNextFallbackStatsTracker(): DjPickNextFallbackStatsTracker {
-  const stats: DjPickNextFallbackStats = {
-    totalRuns: 0,
-    fallbackRuns: 0,
-    fallbackRate: 0,
-    fallbackPaths: {}
-  };
-
-  return {
-    record(event) {
-      stats.totalRuns += 1;
-      if (isDjPickNextFallbackPath(event.path)) {
-        stats.fallbackRuns += 1;
-        stats.fallbackPaths[event.path] = (stats.fallbackPaths[event.path] ?? 0) + 1;
-      }
-      stats.fallbackRate = roundRate(stats.fallbackRuns / stats.totalRuns);
-      return cloneDjPickNextFallbackStats(stats);
-    },
-    snapshot() {
-      return cloneDjPickNextFallbackStats(stats);
-    }
-  };
-}
-
-function recordDjPickNextFallbackStats(path: DjPickNextFallbackPath): DjPickNextFallbackStats {
-  return djPickNextFallbackStats.record({ path });
-}
-
-function cloneDjPickNextFallbackStats(stats: DjPickNextFallbackStats): DjPickNextFallbackStats {
-  return {
-    ...stats,
-    fallbackPaths: { ...stats.fallbackPaths }
-  };
-}
-
-function isDjPickNextFallbackPath(path: DjPickNextFallbackPath): boolean {
-  return path !== 'music_agent_success' && path !== 'legacy_llm_success';
-}
-
-function roundRate(value: number): number {
-  return Math.round(value * 1000) / 1000;
-}
-
-function broadcastAppended(
-  userId: string,
-  prevQueueLength: number,
-  targetPickCount: number,
-  emit: DjEventSink,
-  path?: DjPickNextFallbackPath,
-  metrics: DjPickNextRunMetrics = {}
-): void {
-  const q = getQueue(userId);
-  const newTracks = q.slice(prevQueueLength);
-  for (const track of newTracks) {
-    emit({ type: 'queue-appended', track });
-  }
-  const names = newTracks.map((t) => t.name).filter((n): n is string => Boolean(n));
-  const fallbackStats = path ? recordDjPickNextFallbackStats(path) : djPickNextFallbackStats.snapshot();
-  getLogger().info(
-    {
-      targetCount: targetPickCount,
-      appendedCount: newTracks.length,
-      agentPickCount: metrics.agentPickCount,
-      rankedBackfillCount: metrics.rankedBackfillCount,
-      finalPickDiagnostics: metrics.finalPickDiagnostics,
-      queryFunnel: metrics.queryFunnel,
-      candidateCount: metrics.candidateCount,
-      nonLikedCandidateCount: metrics.nonLikedCandidateCount,
-      candidateSourceCounts: metrics.candidateSourceCounts,
-      elapsedMs: metrics.elapsedMs,
-      fallbackPath: path ?? metrics.fallbackPath,
-      discoveryMode: metrics.discoveryMode,
-      trackIds: newTracks.map((track) => track.ncmId),
-      trackNames: names,
-      fallbackStats
-    },
-    'DJ pick-next: broadcast appended tracks'
-  );
-  emit({
-    type: 'dj.pick-next.done',
-    added: newTracks.length > 0,
-    addedCount: newTracks.length,
-    targetCount: targetPickCount,
-    trackIds: newTracks.map((track) => track.ncmId),
-    trackNames: names,
-    trackName: names.join('、') || undefined
   });
 }
 
