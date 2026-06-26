@@ -23,7 +23,10 @@ import { createLegacyCandidatePool } from '../../dj/legacyCandidatePool.js';
 import { handleLegacyPickNextOutput } from '../../dj/legacyPickNextResult.js';
 import { buildLegacyPickPrompt } from '../../dj/legacyPickPrompt.js';
 import { handleLegacyRandomFallback } from '../../dj/legacyRandomFallback.js';
-import { parseLegacyStyleArtistResponse } from '../../dj/legacyStyleDiscovery.js';
+import {
+  buildLegacySearchQueries,
+  parseLegacyStyleArtistResponse
+} from '../../dj/legacyStyleDiscovery.js';
 import { buildLegacyStylePrompt } from '../../dj/legacyStylePrompt.js';
 import { createDjPickNextTelemetry } from '../../dj/pickNextTelemetry.js';
 import { createDjPickNextRunner } from '../../dj/pickNextRunner.js';
@@ -640,66 +643,22 @@ async function doPickNext(
         logger.info({ webArtistCount: webArtists.length }, 'DJ pick-next: Wikipedia found additional artists');
       }
 
-      // Merge: LLM artists first (up to 6), then web discoveries (up to 4), cap at 10
-      const QUERY_CAP = 10;
-      const LLM_QUOTA = 6;
-      const mergedQueries = new Set<string>();
-      const searchQueries: string[] = [];
-      for (const a of llmArtists) {
-        const lower = a.toLowerCase();
-        if (!mergedQueries.has(lower) && searchQueries.length < LLM_QUOTA) {
-          mergedQueries.add(lower);
-          searchQueries.push(a);
-        }
+      const searchQueryPlan = buildLegacySearchQueries({
+        llmArtists,
+        webArtists,
+        styleConcepts,
+        dailyTheme,
+        directiveQueries: activeDirective ? buildDirectiveSearchQueries(activeDirective) : []
+      });
+      const searchQueries = searchQueryPlan.searchQueries;
+      if (searchQueryPlan.themeKeywordsAdded > 0) {
+        logger.info({ themeKeywordsAdded: searchQueryPlan.themeKeywordsAdded }, 'DJ pick-next: mixed daily theme keywords into search queries');
       }
-      for (const a of webArtists) {
-        const lower = a.toLowerCase();
-        if (!mergedQueries.has(lower) && searchQueries.length < QUERY_CAP) {
-          mergedQueries.add(lower);
-          searchQueries.push(a);
-        }
-      }
-      // Mix 1-2 daily theme keywords into search queries (probabilistic, ~50% per keyword)
-      if (dailyTheme && dailyTheme.keywords.length > 0 && searchQueries.length < QUERY_CAP) {
-        const themeCandidates = dailyTheme.keywords.filter(
-          (k) => !mergedQueries.has(k.toLowerCase())
+      if (searchQueryPlan.usedStyleFallback) {
+        logger.warn(
+          { searchQueries: searchQueryPlan.styleFallbackSourceQueries ?? searchQueries, styleConcepts },
+          'DJ pick-next: too few artist names, falling back to style keywords'
         );
-        let themeAdded = 0;
-        const THEME_QUOTA = 2;
-        for (const k of themeCandidates) {
-          if (searchQueries.length >= QUERY_CAP || themeAdded >= THEME_QUOTA) break;
-          if (Math.random() < 0.5) {
-            mergedQueries.add(k.toLowerCase());
-            searchQueries.push(k);
-            themeAdded++;
-          }
-        }
-        if (themeAdded > 0) {
-          logger.info({ themeKeywordsAdded: themeAdded }, 'DJ pick-next: mixed daily theme keywords into search queries');
-        }
-      }
-
-      if (activeDirective) {
-        const directiveQueries = buildDirectiveSearchQueries(activeDirective);
-        for (const query of [...directiveQueries].reverse()) {
-          const lower = query.toLowerCase();
-          if (!mergedQueries.has(lower)) {
-            mergedQueries.add(lower);
-            searchQueries.unshift(query);
-            if (searchQueries.length > QUERY_CAP) {
-              const removed = searchQueries.pop();
-              if (removed) mergedQueries.delete(removed.toLowerCase());
-            }
-          }
-        }
-      }
-
-
-      // Fallback: if we don't have enough search queries, use style keywords directly
-      if (searchQueries.length < 2 && styleConcepts.length > 0) {
-        logger.warn({ searchQueries, styleConcepts }, 'DJ pick-next: too few artist names, falling back to style keywords');
-        searchQueries.length = 0;
-        searchQueries.push(...styleConcepts.slice(0, 3));
       }
 
       logger.info({ searchQueries, llmCount: llmArtists.length, webCount: webArtists.length }, 'DJ pick-next: final search queries for NCM');
