@@ -9,12 +9,10 @@ import {
 } from './rank.js';
 import { buildTrendContext, type TrendCapableNcmClient } from './trends.js';
 import {
-  musicEntityHintSchema,
   queryPlanSchema,
   webMusicDiscoveryInputSchema,
   type AgentBudget,
   type CandidateSource,
-  type MusicEntityHint,
   type MusicAgentContextSummary,
   type MusicCandidateQualitySignals,
   type MusicAgentToolName,
@@ -38,6 +36,13 @@ import {
   prepareRecallQueryEligibility,
   SEMANTIC_ONLY_QUERY_PROBLEM
 } from './recall-query-filtering.js';
+import {
+  defaultWebDiscoveryFreshness,
+  defaultWebDiscoveryLocale,
+  filterWebDiscoveryHintsForRecall as filterWebDiscoveryHintsByPolicy,
+  parseMusicEntityHints,
+  webDiscoveryIntentText
+} from './web-discovery-hints.js';
 import {
   autoFillSearchQueries,
   styleExpansionQueries,
@@ -224,9 +229,6 @@ const WEB_DISCOVERY_STYLE_PATTERNS: Array<{ pattern: RegExp; style: string; prio
   { pattern: /j[-\s]*pop|日语|日系/i, style: 'j-pop', priority: 6 },
   { pattern: /k[-\s]*pop|韩语|韩系/i, style: 'k-pop', priority: 5 }
 ];
-const HARD_MISMATCH_WEB_ARTIST_PATTERN =
-  /\b(slipknot|metallica|megadeth|slayer|korn|limp bizkit|pantera|system of a down)\b/i;
-
 export function createMusicAgentTools(input: CreateMusicAgentToolsInput): MusicAgentToolRegistry {
   const state: ToolState = {
     queryPlan: null,
@@ -807,15 +809,6 @@ function parseWebDiscoveryFocus(value: unknown, intent: string): WebMusicDiscove
   return 'scene_overview';
 }
 
-function defaultWebDiscoveryLocale(context: MusicAgentContextSummary): WebMusicDiscoveryInput['locale'] {
-  const text = webDiscoveryIntentText(context);
-  return /[一-鿿]/.test(text) ? 'zh-CN' : 'global';
-}
-
-function defaultWebDiscoveryFreshness(intent: string): WebMusicDiscoveryInput['freshness'] {
-  return /新歌|近期|最近|recent|new|fresh|release/i.test(intent) ? 'recent' : 'durable';
-}
-
 function autoFillWebDiscoveryInput(
   context: MusicAgentContextSummary,
   queryPlan: QueryPlan | null
@@ -962,34 +955,9 @@ function isExplicitWebExploreIntent(
   );
 }
 
-function webDiscoveryIntentText(context: MusicAgentContextSummary): string {
-  return [
-    context.currentUserText,
-    ...(context.actionQueries ?? []),
-    context.activeDirective,
-    context.currentPlanSegment ?? ''
-  ].filter(Boolean).join(' ');
-}
-
 function webDiscoveryIntentCluster(userId: string, intent: string): string {
   const cluster = normalizeSearchQuery(intent).slice(0, 120) || 'default';
   return `${userId}:${cluster}`;
-}
-
-function parseMusicEntityHints(value: unknown, limit: number): { hints: MusicEntityHint[]; problems: string[] } {
-  const rawHints = Array.isArray(value) ? value : [];
-  const hints: MusicEntityHint[] = [];
-  const problems: string[] = [];
-  for (const rawHint of rawHints) {
-    if (hints.length >= limit) break;
-    const parsed = musicEntityHintSchema.safeParse(rawHint);
-    if (!parsed.success) {
-      problems.push('web hint skipped: invalid sourced hint');
-      continue;
-    }
-    hints.push(parsed.data);
-  }
-  return { hints, problems };
 }
 
 async function recallFromWebDiscoveryHints(options: {
@@ -1050,45 +1018,10 @@ function filterWebDiscoveryHintsForRecall(
     ].flatMap(artistKeys)
   );
   const expectedStyle = selectWebDiscoveryStyle(input.context, state.queryPlan);
-  const hints: unknown[] = [];
-  const problems: string[] = [];
-
-  for (const rawHint of objectArrayValue(value)) {
-    const parsed = musicEntityHintSchema.safeParse(rawHint);
-    if (!parsed.success) {
-      hints.push(rawHint);
-      continue;
-    }
-    const hint = parsed.data;
-    const artist = webHintArtistName(hint);
-    const hintArtistKeys = artistKeys(artist);
-    if (hintArtistKeys.some((artistKey) => avoidArtists.has(artistKey))) {
-      problems.push(`web hint skipped: recently repeated artist ${artist}`);
-      continue;
-    }
-    if (artist && isHardMismatchedWebArtist(artist, expectedStyle || hint.styles.join(' '))) {
-      problems.push(`web hint skipped: hard style mismatch for ${artist}`);
-      continue;
-    }
-    hints.push(rawHint);
-  }
-
-  return { hints, problems };
-}
-
-function webHintArtistName(hint: MusicEntityHint): string {
-  if (hint.kind === 'artist') return hint.name;
-  if (hint.kind === 'relationship') return hint.relatedName ?? hint.artist ?? hint.name;
-  return hint.artist ?? '';
-}
-
-function isHardMismatchedWebArtist(artist: string, styleText: string): boolean {
-  if (!styleText || !styleDisallowsHeavyRock(styleText)) return false;
-  return HARD_MISMATCH_WEB_ARTIST_PATTERN.test(artist);
-}
-
-function styleDisallowsHeavyRock(styleText: string): boolean {
-  return /cantopop|c[-\s]*pop|j[-\s]*pop|k[-\s]*pop|city\s*pop|indie\s*folk|folk|dream\s*pop|synth[-\s]*pop|singer[-\s]*songwriter|neo\s*soul|r\s*&?\s*b|jazz|ambient|downtempo/i.test(styleText);
+  return filterWebDiscoveryHintsByPolicy(value, {
+    avoidArtists,
+    expectedStyle
+  });
 }
 
 async function withTimeout<T>(
