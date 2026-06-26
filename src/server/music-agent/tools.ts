@@ -11,7 +11,6 @@ import { buildTrendContext, type TrendCapableNcmClient } from './trends.js';
 import {
   queryPlanSchema,
   type AgentBudget,
-  type CandidateProvenanceKind,
   type CandidateSource,
   type MusicAgentContextSummary,
   type MusicAgentToolName,
@@ -24,25 +23,17 @@ import {
 import type { CandidatePool } from './candidates.js';
 import {
   countCandidateArtistKeys,
-  emptyUpsertTracksResult,
-  mergeUpsertTracksResult,
   sourceScores,
-  summarizeCandidateAdmission,
   upsertTracks,
   usesExternalQuality,
   type UpsertTracksResult
 } from './candidate-admission.js';
 import {
-  normalizeSearchQuery,
-  prepareSearchQueriesForRecall,
   recordUserQueryFunnel,
   sanitizeSearchQuery
 } from './query-stats.js';
 import {
-  filterExactSongSearchQueries,
-  formatNoExecutableQueryReason,
-  prepareRecallQueryEligibility,
-  SEMANTIC_ONLY_QUERY_PROBLEM
+  filterExactSongSearchQueries
 } from './recall-query-filtering.js';
 import {
   filterWebDiscoveryHintsForRecall as filterWebDiscoveryHintsByPolicy,
@@ -58,23 +49,11 @@ import {
   styleExpansionQueries,
   styleSeedQueryModifiers
 } from './query-planning.js';
-import {
-  getLikedRecallTracks,
-  type NcmTrackLike
-} from './liked-recall.js';
-import {
-  artistFallbackNameFromQuery,
-  readRecallSearchCache,
-  recallSearchCacheKey,
-  writeRecallSearchCache,
-  type RecallSearchCacheEntry
-} from './recall-search.js';
+import { getLikedRecallTracks } from './liked-recall.js';
 import {
   queryFunnelSnapshot,
   recordFinalQueryFunnel,
-  recordQueryFunnelSearch,
   recordQueryFunnelSnapshot,
-  searchRunKey,
   type QueryFunnelAccumulator
 } from './query-funnel.js';
 import type { FinalPick } from './schema.js';
@@ -86,10 +65,8 @@ import {
   recallFromEntity,
   type EntityRecallNcmClient
 } from './entity-recall.js';
-import {
-  recallFromSemanticEntities,
-  type MusicAgentEmbeddingClient
-} from './semantic-recall.js';
+import type { MusicAgentEmbeddingClient } from './semantic-recall.js';
+import { runRecallFromQueries } from './query-recall.js';
 import { artistKeys } from './artists.js';
 
 export type ToolObservation = {
@@ -168,13 +145,9 @@ const MAX_ENTITY_RECALL_COUNT = 8;
 const MAX_RANK_DISPLAY_LIMIT = 20;
 const MAX_DIVERSIFY_DISPLAY_LIMIT = 5;
 const AVOID_ARTIST_PENALTY_THRESHOLD = 0.18;
-const MAX_ARTIST_FALLBACKS_PER_RECALL = 2;
-const SEARCH_RECALL_CACHE_TTL_MS = 30 * 60 * 1000;
 const QUALITY_DETAIL_BATCH_LIMIT = 80;
-const MAX_RECALL_QUERY_COUNT = 8;
 const AUTO_FILL_MIN_RECALL_NON_LIKED_TARGET = 8;
 const WEB_DISCOVERY_ENTITY_RECALL_LIMIT = 1;
-const searchRecallCache = new Map<string, RecallSearchCacheEntry<NcmTrackLike[]>>();
 export function createMusicAgentTools(input: CreateMusicAgentToolsInput): MusicAgentToolRegistry {
   const state: ToolState = {
     queryPlan: null,
@@ -883,189 +856,27 @@ async function recallFromQueries(options: {
       ...(options.state.queryPlan?.avoidArtists ?? [])
     ].flatMap(artistKeys)
   );
-  const {
-    sanitizedQueries,
-    artistFilteredQueries,
-    exactTrackQueries,
-    skippedAvoidedQueries,
-    skippedSemanticQueries
-  } = prepareRecallQueryEligibility(options.queries, avoidArtists);
-  const preparedQueries = prepareSearchQueriesForRecall({
-    userId: options.input.userId,
-    queries: exactTrackQueries,
+  const result = await runRecallFromQueries({
+    queries: options.queries,
     source: options.source,
-    maxQueries: MAX_RECALL_QUERY_COUNT
+    evidencePrefix: options.evidencePrefix,
+    scores: options.scores,
+    userId: options.input.userId,
+    ncmClient: options.input.ncmClient,
+    candidatePool: options.input.candidatePool,
+    context: options.input.context,
+    queryPlan: options.state.queryPlan,
+    queryState: options.state,
+    embeddingClient: options.input.embeddingClient,
+    embeddingModel: options.input.embeddingModel,
+    avoidArtists,
+    consumeNcmSearch: () => consumeNcmSearch(options.state, options.maxSearches),
+    consumePlaylistFetch: () => consumePlaylistFetch(options.state, options.input.budget.maxPlaylistFetches),
+    signal: options.signal,
+    limit: options.limit
   });
-  const queries = preparedQueries.queries;
-  const funnelSeeds = new Map(
-    preparedQueries.funnelEntries.map((entry) => [entry.normalizedQuery, entry])
-  );
-  if (queries.length === 0) {
-    const noQueryReason = formatNoExecutableQueryReason({
-      inputQueryCount: options.queries.length,
-      sanitizedQueryCount: sanitizedQueries.length,
-      artistFilteredQueryCount: artistFilteredQueries.length,
-      skippedAvoidedQueries,
-      skippedSemanticQueries
-    });
-    if (skippedSemanticQueries > 0) {
-      const semanticRecall = await recallFromSemanticEntities({
-        semanticQueries: artistFilteredQueries.length > 0 ? artistFilteredQueries : sanitizedQueries,
-        userId: options.input.userId,
-        ncmClient: options.input.ncmClient,
-        candidatePool: options.input.candidatePool,
-        context: options.input.context,
-        queryPlan: options.state.queryPlan,
-        embeddingClient: options.input.embeddingClient,
-        embeddingModel: options.input.embeddingModel,
-        avoidArtists,
-        consumeNcmSearch: () => consumeNcmSearch(options.state, options.maxSearches),
-        consumePlaylistFetch: () => consumePlaylistFetch(options.state, options.input.budget.maxPlaylistFetches),
-        signal: options.signal,
-        limit: options.limit ?? DEFAULT_ENTITY_RECALL_LIMIT
-      });
-      if (semanticRecall.attempted) {
-        return observation(
-          options.input.candidatePool,
-          `${options.evidencePrefix} semantic entity recall added ${semanticRecall.added} candidates from ${semanticRecall.matchCount} matches.`,
-          [
-            SEMANTIC_ONLY_QUERY_PROBLEM,
-            ...semanticRecall.problems,
-            ...(skippedAvoidedQueries > 0 ? [`skipped ${skippedAvoidedQueries} search queries for recently repeated artists`] : [])
-          ]
-        );
-      }
-    }
-    return observation(options.input.candidatePool, `${options.evidencePrefix} recall skipped: no queries (${noQueryReason}).`, [
-      'no search queries available',
-      ...(skippedSemanticQueries > 0 ? [SEMANTIC_ONLY_QUERY_PROBLEM] : []),
-      ...(skippedAvoidedQueries > 0 ? [`skipped ${skippedAvoidedQueries} search queries for recently repeated artists`] : [])
-    ]);
-  }
-
-  let added = 0;
-  let skippedAvoidedArtists = 0;
-  let skippedArtistCap = 0;
-  let skippedRepeatedQueries = 0;
-  const searched: string[] = [];
-  const artistFallbacks: string[] = [];
-  let artistFallbackAdded = 0;
-  const problems: string[] = [];
-  const admissionTotals = emptyUpsertTracksResult();
-  const artistCounts = countCandidateArtistKeys(options.input.candidatePool.list());
-  const attemptedArtistFallbacks = new Set<string>();
-  let attemptedArtistFallbackCount = 0;
-
-  for (const query of queries) {
-    if (options.signal?.aborted) return abortedObservation(options.input.candidatePool);
-    try {
-      const limit = options.limit ?? DEFAULT_SEARCH_LIMIT;
-      const runSearchKey = searchRunKey(options.source, query, limit);
-      const coveredLimit = options.state.searchedQueryLimits.get(runSearchKey) ?? 0;
-      if (coveredLimit >= limit) {
-        skippedRepeatedQueries += 1;
-        continue;
-      }
-      const cacheKey = recallSearchCacheKey(query, limit);
-      let tracks = readRecallSearchCache(searchRecallCache, cacheKey);
-      if (!tracks) {
-        if (!consumeNcmSearch(options.state, options.maxSearches)) {
-          problems.push('NCM search budget exhausted');
-          break;
-        }
-        tracks = await options.input.ncmClient.searchSongs(query, limit);
-        writeRecallSearchCache(searchRecallCache, cacheKey, tracks, SEARCH_RECALL_CACHE_TTL_MS);
-      }
-      options.state.searchedQueryLimits.set(runSearchKey, Math.max(coveredLimit, limit));
-      searched.push(query);
-      const result = upsertTracks(options.input.candidatePool, tracks, options.source, {
-        evidence: `${options.evidencePrefix}: ${query}`,
-        scores: options.scores,
-        avoidArtists,
-        artistCounts,
-        provenanceKind: recallQueryProvenanceKind(options.source)
-      });
-      recordQueryFunnelSearch(options.state, {
-        seed: funnelSeeds.get(normalizeSearchQuery(query)),
-        query,
-        source: options.source,
-        tracks,
-        resultCount: tracks.length,
-        addedCount: result.added,
-        pool: options.input.candidatePool
-      });
-      added += result.added;
-      skippedAvoidedArtists += result.skippedAvoidedArtists;
-      skippedArtistCap += result.skippedArtistCap;
-      mergeUpsertTracksResult(admissionTotals, result);
-      if (
-        result.added === 0 &&
-        tracks.length > 0 &&
-        attemptedArtistFallbackCount < MAX_ARTIST_FALLBACKS_PER_RECALL
-      ) {
-        const artist = artistFallbackNameFromQuery(query, tracks);
-        const fallbackArtistKeys = artistKeys(artist);
-        const alreadyAttempted = fallbackArtistKeys.some((artistKey) => attemptedArtistFallbacks.has(artistKey));
-        const avoided = fallbackArtistKeys.some((artistKey) => avoidArtists.has(artistKey));
-        if (artist && fallbackArtistKeys.length > 0 && !alreadyAttempted && !avoided) {
-          for (const artistKey of fallbackArtistKeys) {
-            attemptedArtistFallbacks.add(artistKey);
-          }
-          attemptedArtistFallbackCount += 1;
-          const fallback = await recallFromEntity({
-            entity: { type: 'artist', name: artist },
-            ncmClient: options.input.ncmClient,
-            candidatePool: options.input.candidatePool,
-            context: options.input.context,
-            limit: Math.min(options.limit ?? DEFAULT_SEARCH_LIMIT, DEFAULT_ENTITY_RECALL_LIMIT),
-            searchLimit: DEFAULT_ENTITY_SEARCH_LIMIT,
-            consumeNcmSearch: () => consumeNcmSearch(options.state, options.maxSearches),
-            consumePlaylistFetch: () => consumePlaylistFetch(options.state, options.input.budget.maxPlaylistFetches),
-            avoidArtists,
-            artistCounts,
-            provenanceKind: recallQueryProvenanceKind(options.source),
-            signal: options.signal
-          });
-          added += fallback.added;
-          artistFallbackAdded += fallback.added;
-          if (fallback.added > 0) artistFallbacks.push(artist);
-          problems.push(...fallback.problems);
-        }
-      }
-    } catch (error) {
-      problems.push(`${query}: ${formatError(error)}`);
-    }
-  }
-  if (skippedAvoidedQueries > 0) problems.push(`skipped ${skippedAvoidedQueries} search queries for recently repeated artists`);
-  if (skippedSemanticQueries > 0) problems.push(SEMANTIC_ONLY_QUERY_PROBLEM);
-  if (skippedRepeatedQueries > 0) {
-    problems.push(skippedRepeatedQueries === 1
-      ? 'skipped 1 repeated search query in this run'
-      : `skipped ${skippedRepeatedQueries} repeated search queries in this run`);
-  }
-  if (skippedAvoidedArtists > 0) problems.push(`skipped ${skippedAvoidedArtists} tracks from recently repeated artists`);
-  if (skippedArtistCap > 0) problems.push(`skipped ${skippedArtistCap} tracks after per-artist recall cap`);
-  const admissionSummary = summarizeCandidateAdmission(admissionTotals);
-  if (admissionSummary) problems.push(admissionSummary);
-  if (preparedQueries.funnelEntries.some((entry) => entry.scoreMultiplier !== 1 || entry.repeatPenalty > 0)) {
-    problems.push('reweighted search queries with user query history');
-  }
-
-  return observation(
-    options.input.candidatePool,
-    `${options.evidencePrefix} recall searched ${searched.length} queries and added ${added} candidates: ${searched.join('、') || 'none'}.` +
-      (artistFallbacks.length > 0 ? ` artist fallback added ${artistFallbackAdded} candidates from ${artistFallbacks.join('、')}.` : ''),
-    problems
-  );
-}
-
-function recallQueryProvenanceKind(source: CandidateSource): CandidateProvenanceKind {
-  if (source === 'trend') return 'trend_recall';
-  if (source === 'style_expansion') return 'style_expansion';
-  if (source === 'plan') return 'plan';
-  if (source === 'playlist') return 'playlist';
-  if (source === 'liked') return 'liked';
-  return 'exact_recall';
+  if (result.aborted) return abortedObservation(options.input.candidatePool);
+  return observation(options.input.candidatePool, result.summary, result.problems);
 }
 
 function observation(
