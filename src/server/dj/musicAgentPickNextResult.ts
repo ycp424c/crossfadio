@@ -2,6 +2,7 @@ import type { MusicAgentRunOutput } from '../music-agent/schema.js';
 import { buildMusicTrackDedupeKey, isMusicTrackDedupeKeyExcluded } from '../music-agent/dedupe.js';
 import { addToQueue, getQueue } from '../store/queue.js';
 import type { DiscoveryMode } from '../../shared/dj.js';
+import { getRemainingPickSlots, hasReachedPickTarget } from './pickNextQueueProgress.js';
 
 export type DjPickNextFallbackPath =
   | 'music_agent_success'
@@ -217,18 +218,6 @@ export function handleMusicAgentPickNextOutput(input: {
     'DJ pick-next: MusicAgent picks did not change queue, using legacy fallback'
   );
   return { status: 'legacy-fallback', legacyFallbackPath, debugBroadcastSent: false };
-}
-
-function getAddedTrackCount(userId: string, initialQueueLength: number): number {
-  return Math.max(0, getQueue(userId).length - initialQueueLength);
-}
-
-function getRemainingPickSlots(userId: string, initialQueueLength: number, targetPickCount: number): number {
-  return Math.max(0, targetPickCount - getAddedTrackCount(userId, initialQueueLength));
-}
-
-function hasReachedPickTarget(userId: string, initialQueueLength: number, targetPickCount: number): boolean {
-  return getAddedTrackCount(userId, initialQueueLength) >= targetPickCount;
 }
 
 function getMusicAgentDebugCandidateCount(output: MusicAgentRunOutput): number {

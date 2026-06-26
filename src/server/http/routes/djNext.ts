@@ -11,7 +11,7 @@ import { getRecentSegues } from '../../store/segues.js';
 import { getPreferenceContext } from '../../store/chat-preferences.js';
 import { fetchWeather } from '../../weather.js';
 import { searchArtistsForStyle } from '../../web-search.js';
-import { getQueue, addToQueue, setQueueState } from '../../store/queue.js';
+import { getQueue, setQueueState } from '../../store/queue.js';
 import { getPref } from '../../store/prefs.js';
 import { getActiveTemporaryQueueBanDedupeState } from '../../store/temporary-bans.js';
 import { broadcastToUser } from '../broadcast.js';
@@ -19,10 +19,11 @@ import { getLogger } from '../../logger.js';
 import { initSseRes, writeSseEvent, endSse } from '../sse.js';
 import { getOrGenerateDailyThemeWithin } from '../../daily-theme.js';
 import { MusicAgent } from '../../music-agent/index.js';
+import { handleLegacyPickNextOutput } from '../../dj/legacyPickNextResult.js';
+import { handleLegacyRandomFallback } from '../../dj/legacyRandomFallback.js';
 import { createDjPickNextRunner } from '../../dj/pickNextRunner.js';
 import {
   buildTrackDedupeKey,
-  createSkippedPickLog,
   getMusicAgentCandidateSourceDiagnostics,
   handleMusicAgentPickNextOutput,
   isTrackDedupeKeyExcluded
@@ -31,8 +32,7 @@ import type {
   DedupeState,
   DjEventSink,
   DjPickNextFallbackPath,
-  DjPickNextRunMetrics,
-  SkippedPickLog
+  DjPickNextRunMetrics
 } from '../../dj/musicAgentPickNextResult.js';
 import { formatShanghaiLocalTime, getDaypart, getShanghaiTimeParts } from '../../timezone.js';
 import { parseAutoFillBatchSize, parseDiscoveryMode } from '../../../shared/dj.js';
@@ -261,18 +261,6 @@ function sampleN<T>(arr: T[], n: number): T[] {
     [copy[i], copy[j]] = [copy[j], copy[i]];
   }
   return copy.slice(0, n);
-}
-
-function getAddedTrackCount(userId: string, initialQueueLength: number): number {
-  return Math.max(0, getQueue(userId).length - initialQueueLength);
-}
-
-function getRemainingPickSlots(userId: string, initialQueueLength: number, targetPickCount: number): number {
-  return Math.max(0, targetPickCount - getAddedTrackCount(userId, initialQueueLength));
-}
-
-function hasReachedPickTarget(userId: string, initialQueueLength: number, targetPickCount: number): boolean {
-  return getAddedTrackCount(userId, initialQueueLength) >= targetPickCount;
 }
 
 // Run parallel NCM searches, deduplicate results, exclude known IDs
@@ -904,130 +892,36 @@ ${candidateList}
         )).map((track) => [String(track.id), track])
         );
         if (signal?.aborted) return;
-        const pathQueueLength = getQueue(userId).length;
         const excludeState = getTodayAndQueueDedupeState(userId);
-        const whitelistedSkippedPicks: SkippedPickLog[] = [];
-        const appendedWhitelistedTracks: Track[] = [];
-        for (const track of pickedTracks) {
-          if (getRemainingPickSlots(userId, initialQueueLength, targetPickCount) <= 0) {
-            whitelistedSkippedPicks.push(createSkippedPickLog(track, 'no_remaining_slots', buildTrackDedupeKey(track)));
-            break;
-          }
-          const dedupeKey = buildTrackDedupeKey(track);
-          if (excludeState.ids.has(track.id)) {
-            whitelistedSkippedPicks.push(createSkippedPickLog(track, 'id_excluded', dedupeKey));
-            continue;
-          }
-          if (isTrackDedupeKeyExcluded(dedupeKey, excludeState.dedupeKeys)) {
-            whitelistedSkippedPicks.push(createSkippedPickLog(track, 'dedupe_excluded', dedupeKey));
-            continue;
-          }
-          const detail = pickedDetailMap.get(track.id);
-          const appendedTrack = {
-            id: track.id,
-            name: detail?.name ?? track.name,
-            artist: detail?.artists?.join(' / ') || track.artist
-          };
-          addToQueue(userId, {
-            ncmId: appendedTrack.id,
-            name: appendedTrack.name,
-            artists: detail?.artists ?? (track.artist ? track.artist.split(' / ').filter(Boolean) : []),
-            coverImgUrl: detail?.coverImgUrl
-          }, 'end');
-          appendedWhitelistedTracks.push(appendedTrack);
-          excludeState.ids.add(track.id);
-          excludeState.dedupeKeys.add(dedupeKey);
-        }
-        if (getQueue(userId).length > pathQueueLength) {
-          const pathNewTracks = getQueue(userId).slice(pathQueueLength);
-          for (const track of pathNewTracks) {
-            const trackReason = pickReasonsById[track.ncmId]?.trim() || pickSay.trim();
-            if (trackReason) djPickReasonCache.set(track.ncmId, trackReason);
-          }
-        }
-        if (hasReachedPickTarget(userId, initialQueueLength, targetPickCount)) {
-          emit(buildLegacyDebugPayload({
-            phase3Debug,
-            selectedTracks: createLegacySelectedTrackDebug(appendedWhitelistedTracks, pickSay, pickReasonsById),
-            selectedSay: pickSay,
-            targetCount: targetPickCount,
-            appendedCount: getQueue(userId).length - initialQueueLength,
-            pickedCount: pickedTracks.length,
-            skippedPicks: whitelistedSkippedPicks
-          }));
-          debugBroadcastSent = true;
-          broadcastAppended(
-            userId,
-            initialQueueLength,
-            targetPickCount,
-            emit,
-            legacyFallbackPath ?? 'legacy_llm_success',
-            {
-              agentPickCount: pickedTracks.length,
-              rankedBackfillCount: 0,
-              candidateCount: allCandidates.length,
-              elapsedMs: Date.now() - startedAt,
-              discoveryMode
-            }
-          );
-          return;
-        }
-        const appendedCount = getQueue(userId).length - initialQueueLength;
-        if (appendedCount > 0) {
-          emit(buildLegacyDebugPayload({
-            phase3Debug,
-            selectedTracks: createLegacySelectedTrackDebug(appendedWhitelistedTracks, pickSay, pickReasonsById),
-            selectedSay: pickSay,
-            partial: true,
-            targetCount: targetPickCount,
-            appendedCount,
-            pickedCount: pickedTracks.length,
-            skippedPicks: whitelistedSkippedPicks
-          }));
-          debugBroadcastSent = true;
-          logger.warn(
-            {
-              targetCount: targetPickCount,
-              appendedCount,
-              pickedCount: pickedTracks.length,
-              skippedPicks: whitelistedSkippedPicks,
-              selectedTracks: createLegacySelectedTrackDebug(appendedWhitelistedTracks, pickSay, pickReasonsById),
-              selectedSay: pickSay,
-              searchedCount: searchedTracks.length,
-              totalCandidates: allCandidates.length,
-              searchQueries,
-              fallbackPath: 'legacy_llm_success',
-              fallbackStats: djPickNextFallbackStats.snapshot()
-            },
-            'DJ pick-next: whitelisted picks appended fewer than target'
-          );
-          broadcastAppended(
-            userId,
-            initialQueueLength,
-            targetPickCount,
-            emit,
-            legacyFallbackPath ?? 'legacy_llm_success',
-            {
-              agentPickCount: pickedTracks.length,
-              rankedBackfillCount: 0,
-              candidateCount: allCandidates.length,
-              elapsedMs: Date.now() - startedAt,
-              discoveryMode
-            }
-          );
-          return;
-        }
-        logger.warn(
-          {
-            targetCount: targetPickCount,
-            appendedCount,
-            pickedCount: pickedTracks.length,
-            skippedPicks: whitelistedSkippedPicks,
-            fallbackPath: 'legacy_random_fallback',
-            fallbackStats: djPickNextFallbackStats.snapshot()
+        const legacyPickResult = handleLegacyPickNextOutput({
+          userId,
+          pickedTracks,
+          pickedDetailMap,
+          pickSay,
+          pickReasonsById,
+          phase3Debug,
+          excludeState,
+          initialQueueLength,
+          targetPickCount,
+          startedAt,
+          discoveryMode,
+          legacyFallbackPath,
+          emit,
+          broadcastAppended,
+          logger,
+          markDebugBroadcastSent: () => {
+            debugBroadcastSent = true;
           },
-          'DJ pick-next: whitelisted picks did not change queue, using random fallback'
-        );
+          setPickReason: (trackId, reason) => djPickReasonCache.set(trackId, reason),
+          fallbackStatsSnapshot: () => djPickNextFallbackStats.snapshot(),
+          searchedCount: searchedTracks.length,
+          totalCandidates: allCandidates.length,
+          searchQueries
+        });
+        debugBroadcastSent = legacyPickResult.debugBroadcastSent;
+        if (legacyPickResult.status === 'handled') {
+          return;
+        }
       } else {
         logger.warn(
           { fallbackPath: 'legacy_random_fallback', fallbackStats: djPickNextFallbackStats.snapshot() },
@@ -1054,152 +948,27 @@ ${candidateList}
     }
   }
 
-  // Random fallback: sample 2 IDs from full liked list, then fetch details
-  const fallbackExcludeState = getTodayAndQueueDedupeState(userId);
-  const fallbackIds = allLikedIds.filter((id) => !fallbackExcludeState.ids.has(id));
-
-  if (fallbackIds.length === 0) {
-    const appendedCount = getAddedTrackCount(userId, initialQueueLength);
-    logger.warn(
-      {
-        targetCount: targetPickCount,
-        appendedCount,
-        fallbackStats: recordDjPickNextFallbackStats('no_candidates')
-      },
-      'DJ pick-next fallback: no candidates'
-    );
-    if (appendedCount > 0) {
-      broadcastAppended(userId, initialQueueLength, targetPickCount, emit, undefined, {
-        agentPickCount: 0,
-        rankedBackfillCount: 0,
-        candidateCount: fallbackIds.length,
-        elapsedMs: Date.now() - startedAt,
-        fallbackPath: 'no_candidates',
-        discoveryMode
-      });
-    } else {
-      emit({ type: 'dj.pick-next.done', added: false, reason: 'no-candidates' });
-    }
-    return;
-  }
-
-  if (!debugBroadcastSent) {
-    emit({
-      type: 'dj.debug',
-      likedSample: [],
-      sqRaw: '',
-      searchQueries: [],
-      searchedTracks: [],
-      excludedIds: Array.from(fallbackExcludeState.ids),
-      excludedDedupeKeys: Array.from(fallbackExcludeState.dedupeKeys),
-      totalCandidates: fallbackIds.length,
-      selectedSay: '随机 fallback（LLM 未配置或选歌失败）'
-    });
-  }
-
-  const fallbackSampleSize = Math.min(
-    Math.max(targetPickCount, getRemainingPickSlots(userId, initialQueueLength, targetPickCount) * 4),
-    fallbackIds.length
-  );
-  const pickedIds = sampleN(fallbackIds, fallbackSampleSize);
-  const pickedDetails = (await withTimeout(
-    ncmClient.getSongDetails(pickedIds).catch(() => []),
-    LIKED_DETAILS_TIMEOUT_MS,
-    []
-  )).filter((t) => {
-    if (t.artists.length === 0) return false;
-    return !isTrackDedupeKeyExcluded(buildTrackDedupeKey({
-      id: String(t.id),
-      name: t.name,
-      artist: t.artists.join(' / ')
-    }), fallbackExcludeState.dedupeKeys);
+  await handleLegacyRandomFallback({
+    userId,
+    allLikedIds,
+    excludeState: getTodayAndQueueDedupeState(userId),
+    initialQueueLength,
+    targetPickCount,
+    startedAt,
+    discoveryMode,
+    debugBroadcastSent,
+    emit,
+    broadcastAppended,
+    logger,
+    recordFallbackStats: recordDjPickNextFallbackStats,
+    sampleIds: sampleN,
+    fetchSongDetails: (ids) => withTimeout(
+      ncmClient.getSongDetails(ids).catch(() => []),
+      LIKED_DETAILS_TIMEOUT_MS,
+      []
+    ),
+    signal
   });
-  if (signal?.aborted) return;
-
-  if (pickedDetails.length === 0) {
-    const appendedCount = getQueue(userId).length - initialQueueLength;
-    logger.warn(
-      {
-        targetCount: targetPickCount,
-        appendedCount,
-        fallbackStats: recordDjPickNextFallbackStats('legacy_random_fallback')
-      },
-      'DJ pick-next fallback: failed to fetch track details'
-    );
-    if (appendedCount > 0) {
-      broadcastAppended(userId, initialQueueLength, targetPickCount, emit, undefined, {
-        agentPickCount: 0,
-        rankedBackfillCount: 0,
-        candidateCount: fallbackIds.length,
-        elapsedMs: Date.now() - startedAt,
-        fallbackPath: 'legacy_random_fallback',
-        discoveryMode
-      });
-    } else {
-      emit({ type: 'dj.pick-next.done', added: false, reason: 'no-candidates' });
-    }
-    return;
-  }
-
-  const pathQueueLength = getQueue(userId).length;
-  for (const pick of pickedDetails) {
-    if (getRemainingPickSlots(userId, initialQueueLength, targetPickCount) <= 0) break;
-    const dedupeKey = buildTrackDedupeKey({
-      id: String(pick.id),
-      name: pick.name,
-      artists: pick.artists
-    });
-    if (isTrackDedupeKeyExcluded(dedupeKey, fallbackExcludeState.dedupeKeys)) continue;
-    addToQueue(userId, {
-      ncmId: String(pick.id),
-      name: pick.name,
-      artists: pick.artists,
-      coverImgUrl: pick.coverImgUrl
-    }, 'end');
-    fallbackExcludeState.ids.add(String(pick.id));
-    if (dedupeKey) fallbackExcludeState.dedupeKeys.add(dedupeKey);
-  }
-  logger.info(
-    {
-      targetCount: targetPickCount,
-      appendedCount: getQueue(userId).length - initialQueueLength,
-      fallbackAppendedCount: getQueue(userId).length - pathQueueLength,
-      sampledCount: pickedIds.length,
-      fallbackStats: recordDjPickNextFallbackStats('legacy_random_fallback')
-    },
-    'DJ pick-next fallback: appended tracks'
-  );
-  broadcastAppended(userId, initialQueueLength, targetPickCount, emit, undefined, {
-    agentPickCount: 0,
-    rankedBackfillCount: 0,
-    candidateCount: fallbackIds.length,
-    elapsedMs: Date.now() - startedAt,
-    fallbackPath: 'legacy_random_fallback',
-    discoveryMode
-  });
-}
-
-function buildLegacyDebugPayload(input: {
-  phase3Debug: Record<string, unknown>;
-  selectedTracks: Array<{ id: string; name: string; artist: string; reason: string; source: string }>;
-  selectedSay: string;
-  partial?: boolean;
-  targetCount?: number;
-  appendedCount?: number;
-  pickedCount?: number;
-  skippedPicks?: SkippedPickLog[];
-}): Record<string, unknown> {
-  return {
-    type: 'dj.debug',
-    ...input.phase3Debug,
-    selectedTracks: input.selectedTracks,
-    selectedSay: input.selectedSay,
-    ...(input.partial !== undefined ? { partial: input.partial } : {}),
-    ...(input.targetCount !== undefined ? { targetCount: input.targetCount } : {}),
-    ...(input.appendedCount !== undefined ? { appendedCount: input.appendedCount } : {}),
-    ...(input.pickedCount !== undefined ? { pickedCount: input.pickedCount } : {}),
-    ...(input.skippedPicks !== undefined ? { skippedPicks: input.skippedPicks } : {})
-  };
 }
 
 function createLegacyCandidateScoreTable(candidates: Track[], likedSampleIds: Set<string>): Array<{
@@ -1235,21 +1004,6 @@ function createLegacyCandidateScoreTable(candidates: Track[], likedSampleIds: Se
       adjustedScore: score
     };
   });
-}
-
-function createLegacySelectedTrackDebug(
-  tracks: Track[],
-  pickSay: string,
-  reasonsById: Record<string, string> = {}
-): Array<{ id: string; name: string; artist: string; reason: string; source: string }> {
-  const reason = pickSay.trim() || 'legacy LLM pick';
-  return tracks.map((track) => ({
-    id: track.id,
-    name: track.name ?? track.id,
-    artist: track.artist ?? '未知艺人',
-    reason: reasonsById[track.id]?.trim() || reason,
-    source: 'legacy_llm'
-  }));
 }
 
 export function createDjPickNextFallbackStatsTracker(): DjPickNextFallbackStatsTracker {
