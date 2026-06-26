@@ -19,6 +19,8 @@ export type LegacySearchQueriesResult = {
   styleFallbackSourceQueries?: string[];
 };
 
+export type LegacyWebArtistSearch = (style: string) => Promise<string[]>;
+
 const QUERY_CAP = 10;
 const LLM_QUOTA = 6;
 const THEME_QUOTA = 2;
@@ -121,4 +123,27 @@ export function buildLegacySearchQueries(input: LegacySearchQueriesInput): Legac
   }
 
   return { searchQueries, themeKeywordsAdded, usedStyleFallback: false };
+}
+
+export async function discoverLegacyWebArtists(
+  styleConcepts: string[],
+  searchArtistsForStyle: LegacyWebArtistSearch
+): Promise<string[]> {
+  if (styleConcepts.length === 0) return [];
+
+  const allWebArtists = new Set<string>();
+  const webArtists: string[] = [];
+  const webResults = await Promise.all(
+    styleConcepts.map((style) => searchArtistsForStyle(style).catch(() => [] as string[]))
+  );
+  for (const artists of webResults) {
+    for (const name of artists) {
+      const lower = name.toLowerCase();
+      if (!allWebArtists.has(lower)) {
+        allWebArtists.add(lower);
+        webArtists.push(name);
+      }
+    }
+  }
+  return webArtists;
 }

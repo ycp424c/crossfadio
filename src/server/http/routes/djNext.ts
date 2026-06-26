@@ -25,6 +25,7 @@ import { buildLegacyPickPrompt } from '../../dj/legacyPickPrompt.js';
 import { handleLegacyRandomFallback } from '../../dj/legacyRandomFallback.js';
 import {
   buildLegacySearchQueries,
+  discoverLegacyWebArtists,
   parseLegacyStyleArtistResponse
 } from '../../dj/legacyStyleDiscovery.js';
 import { buildLegacyStylePrompt } from '../../dj/legacyStylePrompt.js';
@@ -623,23 +624,8 @@ async function doPickNext(
       logger.info({ styleConcepts, llmArtistCount: llmArtists.length }, 'DJ pick-next: LLM suggested styles and artists');
 
       // Web search (Wikipedia) each style concept to find additional artists
-      let webArtists: string[] = [];
+      const webArtists = await discoverLegacyWebArtists(styleConcepts, searchArtistsForStyle);
       if (styleConcepts.length > 0) {
-        const allWebArtists = new Set<string>();
-        const webResults = await Promise.all(
-          styleConcepts.map((style) =>
-            searchArtistsForStyle(style).catch(() => [] as string[])
-          )
-        );
-        for (const artists of webResults) {
-          for (const name of artists) {
-            const lower = name.toLowerCase();
-            if (!allWebArtists.has(lower)) {
-              allWebArtists.add(lower);
-              webArtists.push(name);
-            }
-          }
-        }
         logger.info({ webArtistCount: webArtists.length }, 'DJ pick-next: Wikipedia found additional artists');
       }
 

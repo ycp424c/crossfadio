@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildLegacySearchQueries,
+  discoverLegacyWebArtists,
   parseLegacyStyleArtistResponse
 } from '../../src/server/dj/legacyStyleDiscovery';
 
@@ -98,5 +99,29 @@ describe('Legacy DJ style discovery', () => {
       usedStyleFallback: true,
       styleFallbackSourceQueries: ['A1']
     });
+  });
+
+  it('discovers and deduplicates web artists while swallowing per-style failures', async () => {
+    const calls: string[] = [];
+    const artists = await discoverLegacyWebArtists(
+      ['city pop', 'jazz piano', 'broken style'],
+      async (style) => {
+        calls.push(style);
+        if (style === 'broken style') throw new Error('search failed');
+        if (style === 'city pop') return ['Anri', 'Tatsuro Yamashita'];
+        return ['anri', 'Bill Evans'];
+      }
+    );
+
+    expect(calls).toEqual(['city pop', 'jazz piano', 'broken style']);
+    expect(artists).toEqual(['Anri', 'Tatsuro Yamashita', 'Bill Evans']);
+  });
+
+  it('skips web artist search when there are no style concepts', async () => {
+    const artists = await discoverLegacyWebArtists([], async () => {
+      throw new Error('should not be called');
+    });
+
+    expect(artists).toEqual([]);
   });
 });
