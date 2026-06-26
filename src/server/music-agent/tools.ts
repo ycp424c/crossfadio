@@ -37,6 +37,10 @@ import {
   styleExpansionQueries,
   styleSeedQueryModifiers
 } from './query-planning.js';
+import {
+  getLikedRecallTracks,
+  type NcmTrackLike
+} from './liked-recall.js';
 import { normalizeMusicTrackToken } from './dedupe.js';
 import type { FinalPick } from './schema.js';
 import {
@@ -102,13 +106,6 @@ export type CreateMusicAgentToolsInput = {
   webMusicDiscoveryProvider?: WebMusicDiscoveryProvider | null;
   maxWebDiscoveryMs?: number;
   maxWebDiscoveryHints?: number;
-};
-
-type NcmTrackLike = {
-  id?: number | string | null;
-  name?: string | null;
-  artists?: string[] | null;
-  qualitySignals?: MusicCandidateQualitySignals | null;
 };
 
 type NcmAlbumLike = {
@@ -191,7 +188,6 @@ const MAX_DIVERSIFY_DISPLAY_LIMIT = 5;
 const AVOID_ARTIST_PENALTY_THRESHOLD = 0.18;
 const MAX_QUERY_RECALL_PER_ARTIST_KEY = 2;
 const MAX_ARTIST_FALLBACKS_PER_RECALL = 2;
-const LIKED_RECALL_CACHE_TTL_MS = 10 * 60 * 1000;
 const SEARCH_RECALL_CACHE_TTL_MS = 30 * 60 * 1000;
 const QUALITY_DETAIL_BATCH_LIMIT = 80;
 const QUALITY_SOURCES = new Set<CandidateSource>(['search', 'style_expansion', 'trend']);
@@ -213,8 +209,6 @@ const SEMANTIC_SONG_SEARCH_PATTERNS = [
   /午后|下午|上午|早晨|清晨|晚上|夜晚|深夜|工作|学习|专注|轻松|柔和|不吵|安静|中低能量|低能量|高能量/,
   /女声|男声|女歌手|男歌手|女生唱|男生唱|乐队|律动|合成器|清爽|明亮|提神|低人声|少人声|粤语|华语/
 ];
-const likedIdCache = new Map<string, CacheEntry<string[]>>();
-const likedTrackCache = new Map<string, CacheEntry<NcmTrackLike>>();
 const searchRecallCache = new Map<string, CacheEntry<NcmTrackLike[]>>();
 const WEB_DISCOVERY_STYLE_PATTERNS: Array<{ pattern: RegExp; style: string; priority: number }> = [
   { pattern: /janice\s*vidal|卫兰|my\s*cookie\s*can|就算世界无童话|cantopop|粤语流行|粤语|港乐|香港流行|广东歌/i, style: 'cantopop', priority: 40 },
@@ -663,71 +657,6 @@ export function createMusicAgentTools(input: CreateMusicAgentToolsInput): MusicA
     recordQueryFunnel: () => recordUserQueryFunnel(input.userId, queryFunnelSnapshot(state)),
     recordFinalPicks: (picks) => recordFinalQueryFunnel(input.userId, state, picks)
   };
-}
-
-async function getLikedRecallTracks(
-  input: CreateMusicAgentToolsInput,
-  limit: number,
-  signal?: AbortSignal
-): Promise<NcmTrackLike[] | 'aborted'> {
-  const allIds = await getCachedLikedIds(input);
-  if (signal?.aborted) return 'aborted';
-  const ids = sampleN(allIds, limit);
-  if (ids.length === 0) {
-    return [];
-  }
-  return getCachedLikedTracks(input, ids);
-}
-
-async function getCachedLikedIds(input: CreateMusicAgentToolsInput): Promise<string[]> {
-  const cached = readCache(likedIdCache, input.userId);
-  if (cached) return cached;
-
-  const ids = (await input.ncmClient.getLikedSongIds()).map(String);
-  writeCache(likedIdCache, input.userId, ids, LIKED_RECALL_CACHE_TTL_MS);
-  return ids;
-}
-
-async function getCachedLikedTracks(
-  input: CreateMusicAgentToolsInput,
-  ids: string[]
-): Promise<NcmTrackLike[]> {
-  const cachedTracks = new Map<string, NcmTrackLike>();
-  const missingIds: string[] = [];
-
-  for (const id of ids) {
-    const cached = readCache(likedTrackCache, likedTrackCacheKey(input.userId, id));
-    if (cached) cachedTracks.set(id, cached);
-    else missingIds.push(id);
-  }
-
-  if (missingIds.length > 0) {
-    const fetchedTracks = await input.ncmClient.getSongDetails(missingIds);
-    for (const track of fetchedTracks) {
-      const id = String(track.id);
-      cachedTracks.set(id, track);
-      writeCache(likedTrackCache, likedTrackCacheKey(input.userId, id), track, LIKED_RECALL_CACHE_TTL_MS);
-    }
-  }
-
-  return ids
-    .map((id) => cachedTracks.get(id))
-    .filter((track): track is NcmTrackLike => Boolean(track));
-}
-
-function likedTrackCacheKey(userId: string, trackId: string): string {
-  return `${userId}:${trackId}`;
-}
-
-function sampleN<T>(items: T[], count: number): T[] {
-  if (count >= items.length) return [...items];
-
-  const copy = [...items];
-  for (let index = copy.length - 1; index > 0; index -= 1) {
-    const swapIndex = Math.floor(Math.random() * (index + 1));
-    [copy[index], copy[swapIndex]] = [copy[swapIndex], copy[index]];
-  }
-  return copy.slice(0, count);
 }
 
 async function prepareCandidateQuality(
