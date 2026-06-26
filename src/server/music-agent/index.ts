@@ -6,7 +6,8 @@ import type { NcmClient } from '../ncm/client.js';
 import { CandidatePool } from './candidates.js';
 import { buildMusicAgentContext } from './context.js';
 import { runMusicAgentLoop } from './loop.js';
-import { createMusicAgentTools, type MusicAgentEmbeddingClient } from './tools.js';
+import { createMusicAgentTools } from './tools.js';
+import type { MusicAgentEmbeddingClient } from './semantic-recall.js';
 import {
   createDefaultWebMusicDiscoveryProvider,
   type WebMusicDiscoveryProvider

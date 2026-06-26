@@ -79,17 +79,17 @@ import {
 } from './query-funnel.js';
 import type { FinalPick } from './schema.js';
 import {
-  entityFromStoredRecord,
-  parseEntityRecallInput,
+  parseEntityRecallInput
 } from './entity-hypotheses.js';
-import {
-  findSimilarMusicEntities
-} from '../store/music-entities.js';
 import type { WebMusicDiscoveryProvider } from './web-discovery.js';
 import {
   recallFromEntity,
   type EntityRecallNcmClient
 } from './entity-recall.js';
+import {
+  recallFromSemanticEntities,
+  type MusicAgentEmbeddingClient
+} from './semantic-recall.js';
 import { artistKeys } from './artists.js';
 
 export type ToolObservation = {
@@ -109,13 +109,6 @@ export type MusicAgentToolRegistry = Partial<Record<MusicAgentToolName, MusicAge
   getQueryFunnel?: () => QueryFunnelEntry[];
   recordQueryFunnel?: () => void;
   recordFinalPicks?: (picks: FinalPick[]) => void;
-};
-
-export type MusicAgentEmbeddingClient = {
-  embed: (
-    input: string | string[],
-    opts?: { signal?: AbortSignal }
-  ) => Promise<{ vectors: Float32Array[]; model: string; dimensions: number }>;
 };
 
 type MusicAgentNcmClient = Pick<
@@ -170,7 +163,6 @@ const MAX_TREND_RECALL_LIMIT = 10;
 const MAX_STYLE_EXPANSION_RECALL_LIMIT = 10;
 const DEFAULT_ENTITY_RECALL_LIMIT = 5;
 const DEFAULT_ENTITY_SEARCH_LIMIT = 3;
-const DEFAULT_SEMANTIC_ENTITY_LIMIT = 8;
 const MAX_ENTITY_RECALL_LIMIT = 10;
 const MAX_ENTITY_RECALL_COUNT = 8;
 const MAX_RANK_DISPLAY_LIMIT = 20;
@@ -919,12 +911,16 @@ async function recallFromQueries(options: {
     if (skippedSemanticQueries > 0) {
       const semanticRecall = await recallFromSemanticEntities({
         semanticQueries: artistFilteredQueries.length > 0 ? artistFilteredQueries : sanitizedQueries,
-        source: options.source,
-        evidencePrefix: options.evidencePrefix,
-        scores: options.scores,
-        input: options.input,
-        state: options.state,
-        maxSearches: options.maxSearches,
+        userId: options.input.userId,
+        ncmClient: options.input.ncmClient,
+        candidatePool: options.input.candidatePool,
+        context: options.input.context,
+        queryPlan: options.state.queryPlan,
+        embeddingClient: options.input.embeddingClient,
+        embeddingModel: options.input.embeddingModel,
+        avoidArtists,
+        consumeNcmSearch: () => consumeNcmSearch(options.state, options.maxSearches),
+        consumePlaylistFetch: () => consumePlaylistFetch(options.state, options.input.budget.maxPlaylistFetches),
         signal: options.signal,
         limit: options.limit ?? DEFAULT_ENTITY_RECALL_LIMIT
       });
@@ -1061,113 +1057,6 @@ async function recallFromQueries(options: {
       (artistFallbacks.length > 0 ? ` artist fallback added ${artistFallbackAdded} candidates from ${artistFallbacks.join('、')}.` : ''),
     problems
   );
-}
-
-async function recallFromSemanticEntities(options: {
-  semanticQueries: string[];
-  source: CandidateSource;
-  evidencePrefix: string;
-  scores: MusicCandidateScores;
-  input: CreateMusicAgentToolsInput;
-  state: ToolState;
-  maxSearches: number;
-  signal?: AbortSignal;
-  limit: number;
-}): Promise<{ attempted: boolean; added: number; matchCount: number; problems: string[] }> {
-  if (!options.input.embeddingClient || !options.input.embeddingModel) {
-    return {
-      attempted: false,
-      added: 0,
-      matchCount: 0,
-      problems: ['semantic discovery unavailable: embedding client is not configured']
-    };
-  }
-
-  const text = uniqueStrings([
-    ...options.semanticQueries,
-    ...(options.state.queryPlan?.styleHints ?? []),
-    ...(options.state.queryPlan?.listeningConstraints ?? []),
-    options.input.context.currentUserText,
-    options.input.context.activeDirective,
-    options.input.context.tasteSummary,
-    options.input.context.recentPreferenceSummary
-  ]).join(' ');
-  if (!text) {
-    return {
-      attempted: false,
-      added: 0,
-      matchCount: 0,
-      problems: ['semantic discovery skipped: empty intent text']
-    };
-  }
-
-  try {
-    const embedding = await options.input.embeddingClient.embed(text, { signal: options.signal });
-    if (options.signal?.aborted) {
-      return { attempted: true, added: 0, matchCount: 0, problems: ['aborted'] };
-    }
-    const vector = embedding.vectors[0];
-    if (!vector || vector.length === 0) {
-      return { attempted: true, added: 0, matchCount: 0, problems: ['semantic discovery returned no embedding vector'] };
-    }
-
-    const matches = findSimilarMusicEntities({
-      userId: options.input.userId,
-      model: options.input.embeddingModel,
-      vector,
-      limit: DEFAULT_SEMANTIC_ENTITY_LIMIT
-    });
-    if (matches.length === 0) {
-      return { attempted: true, added: 0, matchCount: 0, problems: ['semantic discovery found no indexed entities'] };
-    }
-
-    const avoidArtists = new Set(
-      [
-        ...avoidArtistsFromContext(options.input.context),
-        ...(options.state.queryPlan?.avoidArtists ?? [])
-      ].flatMap(artistKeys)
-    );
-    const artistCounts = countCandidateArtistKeys(options.input.candidatePool.list());
-    const problems: string[] = [];
-    let added = 0;
-
-    for (const match of matches) {
-      if (options.signal?.aborted) {
-        return { attempted: true, added, matchCount: matches.length, problems: ['aborted'] };
-      }
-      const entity = entityFromStoredRecord(match.entity);
-      if (!entity) {
-        problems.push(`semantic entity skipped: unsupported type ${match.entity.type}`);
-        continue;
-      }
-      const result = await recallFromEntity({
-        entity,
-        ncmClient: options.input.ncmClient,
-        candidatePool: options.input.candidatePool,
-        context: options.input.context,
-        limit: options.limit,
-        searchLimit: DEFAULT_ENTITY_SEARCH_LIMIT,
-        consumeNcmSearch: () => consumeNcmSearch(options.state, options.maxSearches),
-        consumePlaylistFetch: () => consumePlaylistFetch(options.state, options.input.budget.maxPlaylistFetches),
-        avoidArtists,
-        artistCounts,
-        provenanceKind: 'semantic_discovery',
-        signal: options.signal
-      });
-      added += result.added;
-      problems.push(...result.problems);
-      if (added >= options.limit) break;
-    }
-
-    return { attempted: true, added, matchCount: matches.length, problems };
-  } catch (error) {
-    return {
-      attempted: true,
-      added: 0,
-      matchCount: 0,
-      problems: [`semantic discovery failed: ${formatError(error)}`]
-    };
-  }
 }
 
 function recallQueryProvenanceKind(source: CandidateSource): CandidateProvenanceKind {
