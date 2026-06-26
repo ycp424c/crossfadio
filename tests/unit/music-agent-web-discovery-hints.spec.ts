@@ -4,6 +4,7 @@ import {
   defaultWebDiscoveryLocale,
   filterWebDiscoveryHintsForRecall,
   isHardMismatchedWebArtist,
+  objectArrayValue,
   parseMusicEntityHints,
   webDiscoveryIntentText,
   webHintArtistName
@@ -46,6 +47,12 @@ describe('MusicAgent web discovery hints', () => {
     ]);
     expect(isHardMismatchedWebArtist('Slipknot', 'cantopop')).toBe(true);
     expect(isHardMismatchedWebArtist('Slipknot', 'heavy metal')).toBe(false);
+  });
+
+  it('keeps only plain objects when reading raw hint arrays', () => {
+    const plainObject = { kind: 'artist', name: 'Plain Object' };
+    expect(objectArrayValue([plainObject, null, ['nested'], 'text', 1])).toEqual([plainObject]);
+    expect(objectArrayValue({ kind: 'artist' })).toEqual([]);
   });
 
   it('derives default discovery intent, locale, freshness, and recall artist names', () => {

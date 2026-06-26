@@ -48,6 +48,7 @@ import {
 } from './recall-query-filtering.js';
 import {
   filterWebDiscoveryHintsForRecall as filterWebDiscoveryHintsByPolicy,
+  objectArrayValue,
   parseMusicEntityHints
 } from './web-discovery-hints.js';
 import {
@@ -1288,11 +1289,6 @@ async function resolveArtistEntity(options: {
   if (options.signal?.aborted) return null;
   const verified = artists.find((artist) => tokenMatches(name, artist.name));
   return verified ? String(verified.id) : null;
-}
-
-function objectArrayValue(value: unknown): Array<Record<string, unknown>> {
-  if (!Array.isArray(value)) return [];
-  return value.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object' && !Array.isArray(item));
 }
 
 async function recallFromQueries(options: {
