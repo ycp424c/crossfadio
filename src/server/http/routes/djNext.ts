@@ -20,6 +20,7 @@ import { initSseRes, writeSseEvent, endSse } from '../sse.js';
 import { getOrGenerateDailyThemeWithin } from '../../daily-theme.js';
 import { MusicAgent } from '../../music-agent/index.js';
 import { createLegacyCandidatePool } from '../../dj/legacyCandidatePool.js';
+import { loadLegacyLikedSample } from '../../dj/legacyLikedSample.js';
 import { handleLegacyPickNextOutput } from '../../dj/legacyPickNextResult.js';
 import { buildLegacyPickPrompt } from '../../dj/legacyPickPrompt.js';
 import { handleLegacyRandomFallback } from '../../dj/legacyRandomFallback.js';
@@ -549,27 +550,27 @@ async function doPickNext(
       const excludeIds = excludeState.ids;
 
       // ── Phase 1: sample IDs from full liked list, then fetch details ──
-      const candidateIds = allLikedIds.filter((id) => !excludeIds.has(id));
-      const sampledIds = sampleN(candidateIds, candidateMix.likedSampleSize);
-      const sampledDetails = await withTimeout(
-        ncmClient.getSongDetails(sampledIds).catch(() => []),
-        LIKED_DETAILS_TIMEOUT_MS,
-        []
-      );
-      const likedSample: Track[] = sampledDetails
-        .filter((t) => t.artists.length > 0)
-        .map((t) => ({
-          id: String(t.id),
-          name: t.name,
-          artist: t.artists.join(' / ') || undefined
-        }))
-        .filter((track) => !isTrackDedupeKeyExcluded(buildTrackDedupeKey(track), excludeState.dedupeKeys));
+      const likedSampleResult = await loadLegacyLikedSample({
+        allLikedIds,
+        excludeIds,
+        excludeDedupeKeys: excludeState.dedupeKeys,
+        likedSampleSize: candidateMix.likedSampleSize,
+        sampleIds: sampleN,
+        fetchSongDetails: (ids) => withTimeout(
+          ncmClient.getSongDetails(ids).catch(() => []),
+          LIKED_DETAILS_TIMEOUT_MS,
+          []
+        ),
+        buildTrackDedupeKey,
+        isTrackDedupeKeyExcluded
+      });
+      const likedSample = likedSampleResult.likedSample;
 
       logger.info(
         {
           totalLikedIds: allLikedIds.length,
-          candidateCount: candidateIds.length,
-          likedSampleTarget: candidateMix.likedSampleSize,
+          candidateCount: likedSampleResult.candidateCount,
+          likedSampleTarget: likedSampleResult.likedSampleTarget,
           sampledCount: likedSample.length
         },
         'DJ pick-next: sampled liked tracks from full list'
