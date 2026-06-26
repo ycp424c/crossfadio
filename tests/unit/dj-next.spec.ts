@@ -243,6 +243,7 @@ describe('DJ pick-next diagnostics', () => {
     expect(doPickNext).toContain("output.status === 'ok'");
     expect(doPickNext).toContain('const targetPickCount = getAutoFillBatchSize(userId)');
     expect(doPickNext).toContain('createAbortTimeoutSignal(signal, getDjAgentTimeoutMs(targetPickCount))');
+    expect(doPickNext).toContain("discoveryMode !== 'legacy'");
     expect(doPickNext).toContain('includeDailyTheme: dailyThemeEnabled');
     expect(doPickNext).toContain('const excludeState = getTodayAndQueueDedupeState(userId)');
     expect(doPickNext).toContain('const initialQueueLength = getQueue(userId).length');
@@ -277,6 +278,20 @@ describe('DJ pick-next diagnostics', () => {
     expect(doPickNext).toContain('pickAbort.cleanup()');
     expectBefore(doPickNext, 'const pickAbort = createAbortTimeoutSignal(signal, PICK_LLM_TIMEOUT_MS)', 'parseDjCandidatePicks');
     expectBefore(doPickNext, '{ signal: pickAbort.signal }', 'pickAbort.cleanup()');
+  });
+
+  it('skips MusicAgent entirely in legacy discovery mode', () => {
+    const source = readSource('src/server/http/routes/djNext.ts');
+    const doPickNext = extractBetween(source, 'async function doPickNext', 'function broadcastAppended');
+
+    expect(doPickNext).toContain("if (llmConfig && discoveryMode === 'legacy')");
+    expect(doPickNext).toContain('Legacy LLM mode selected, skipping MusicAgent');
+    expect(doPickNext).toContain("if (llmConfig && discoveryMode !== 'legacy' && !signal?.aborted)");
+    expectBefore(
+      doPickNext,
+      "if (llmConfig && discoveryMode === 'legacy')",
+      'const agent = new MusicAgent'
+    );
   });
 
   it('keeps the MusicAgent auto-fill timeout above slow final-pick windows', () => {
@@ -343,6 +358,14 @@ describe('DJ discovery mode prompt parts', () => {
     expect(parts.styleInstruction).toContain('优先推荐符合该用户品味偏好的风格和艺人');
     expect(parts.pickInstruction).toContain('优先选择符合用户品味偏好的歌曲');
   });
+
+  it('documents that legacy mode uses the legacy LLM route', () => {
+    const parts = buildDiscoveryModePromptParts('legacy', tasteHints);
+
+    expect(parts.tasteContext).toContain('跳过 MusicAgent');
+    expect(parts.styleInstruction).toContain('旧版 LLM 自动选曲');
+    expect(parts.userContextLabel).toContain('Legacy LLM 参考');
+  });
 });
 
 describe('DJ candidate source mix', () => {
@@ -354,6 +377,13 @@ describe('DJ candidate source mix', () => {
     expect(explore.likedSampleSize).toBeLessThanOrEqual(Math.floor(explore.searchResultSize / 4));
     expect(explore.preferSearchCandidates).toBe(true);
     expect(comfort.preferSearchCandidates).toBe(false);
+  });
+
+  it('keeps legacy mode on the liked-first legacy LLM candidate mix', () => {
+    const legacy = getCandidateSourceMix('legacy');
+    const comfort = getCandidateSourceMix('comfort');
+
+    expect(legacy).toEqual(comfort);
   });
 });
 

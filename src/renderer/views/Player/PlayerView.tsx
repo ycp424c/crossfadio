@@ -62,7 +62,7 @@ import {
 } from '@renderer/playerDjRefill';
 import { persistQueueSnapshot, restorePersistedQueueSnapshot } from '@renderer/playerQueueCache';
 import { mergeQueueTracksById } from '@renderer/playerTemporaryBans';
-import { AUTO_FILL_LOW_WATER_MARK } from '@shared/dj';
+import { AUTO_FILL_LOW_WATER_MARK, type DiscoveryMode } from '@shared/dj';
 import type { NextTrackResponse, NowPlayingResponse, QueueTrackDto } from '@shared/schema';
 import appMark from '@renderer/assets/image2/crossfadio-mark.svg';
 
@@ -84,7 +84,6 @@ const DJ_ALREADY_RUNNING_BACKOFF_MS = 30000;
 const SEGUE_RETRY_COOLDOWN_MS = 6000; // min ms between segue trigger retries within the same track
 const TRACK_MEDIA_ERROR_MAX_RETRIES = 2;
 
-type DiscoveryMode = 'explore' | 'comfort';
 type ModeVisualConfig = {
   page: string;
   shell: string;
@@ -716,7 +715,13 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
     if (next === discoveryMode) return;
     const prev = discoveryMode;
     setDiscoveryMode(next);
-    setDjStatusText(next === 'explore' ? '探索模式：放宽个人品味权重' : '舒适区模式：提高个人品味匹配');
+    setDjStatusText(
+      next === 'legacy'
+        ? 'Legacy LLM 模式：跳过 MusicAgent'
+        : next === 'explore'
+          ? '探索模式：放宽个人品味权重'
+          : '舒适区模式：提高个人品味匹配'
+    );
     try {
       await saveSettings({ discoveryMode: next });
     } catch (err) {
@@ -1335,19 +1340,33 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
         caption: '一起探索更多未知的好歌',
         taste: '开放探索 · 风格扩展'
       }
-    : {
-        page: 'bg-[radial-gradient(circle_at_15%_0%,rgba(251,146,60,0.18)_0%,transparent_31%),radial-gradient(circle_at_78%_13%,rgba(244,63,94,0.13)_0%,transparent_29%),linear-gradient(135deg,#130d09_0%,#100f10_48%,#050505_100%)]',
-        shell: 'border-orange-200/20 bg-black/44 shadow-[0_0_42px_rgba(251,146,60,0.10)]',
-        panel: 'border-orange-200/14 bg-zinc-950/52',
-        soft: 'border-rose-300/20 bg-rose-400/10 text-rose-100',
-        accent: 'text-orange-200',
-        active: 'border-orange-300/75 bg-orange-400/16 text-orange-50 shadow-[0_0_24px_rgba(251,146,60,0.24)]',
-        inactive: 'border-white/10 bg-white/[0.04] text-zinc-300 hover:border-orange-300/40 hover:text-orange-100',
-        wave: 'bg-rose-300',
-        title: '舒适区模式',
-        caption: '回到你喜欢的风格和熟悉的旋律',
-        taste: '融合品味 · 高匹配'
-      };
+    : discoveryMode === 'legacy'
+      ? {
+          page: 'bg-[radial-gradient(circle_at_12%_0%,rgba(16,185,129,0.18)_0%,transparent_30%),radial-gradient(circle_at_82%_15%,rgba(148,163,184,0.14)_0%,transparent_28%),linear-gradient(135deg,#06110d_0%,#0d1117_48%,#040505_100%)]',
+          shell: 'border-emerald-200/18 bg-black/45 shadow-[0_0_42px_rgba(16,185,129,0.10)]',
+          panel: 'border-emerald-200/14 bg-zinc-950/50',
+          soft: 'border-emerald-300/20 bg-emerald-400/10 text-emerald-100',
+          accent: 'text-emerald-200',
+          active: 'border-emerald-300/75 bg-emerald-400/16 text-emerald-50 shadow-[0_0_24px_rgba(16,185,129,0.24)]',
+          inactive: 'border-white/10 bg-white/[0.04] text-zinc-300 hover:border-emerald-300/40 hover:text-emerald-100',
+          wave: 'bg-emerald-300',
+          title: 'Legacy LLM 模式',
+          caption: '跳过 MusicAgent，使用旧版 LLM 选曲链路',
+          taste: '旧版 LLM · 直接候选'
+        }
+      : {
+          page: 'bg-[radial-gradient(circle_at_15%_0%,rgba(251,146,60,0.18)_0%,transparent_31%),radial-gradient(circle_at_78%_13%,rgba(244,63,94,0.13)_0%,transparent_29%),linear-gradient(135deg,#130d09_0%,#100f10_48%,#050505_100%)]',
+          shell: 'border-orange-200/20 bg-black/44 shadow-[0_0_42px_rgba(251,146,60,0.10)]',
+          panel: 'border-orange-200/14 bg-zinc-950/52',
+          soft: 'border-rose-300/20 bg-rose-400/10 text-rose-100',
+          accent: 'text-orange-200',
+          active: 'border-orange-300/75 bg-orange-400/16 text-orange-50 shadow-[0_0_24px_rgba(251,146,60,0.24)]',
+          inactive: 'border-white/10 bg-white/[0.04] text-zinc-300 hover:border-orange-300/40 hover:text-orange-100',
+          wave: 'bg-rose-300',
+          title: '舒适区模式',
+          caption: '回到你喜欢的风格和熟悉的旋律',
+          taste: '融合品味 · 高匹配'
+        };
   const modeInfoCards = [
     {
       icon: <ShieldCheck className="h-4 w-4" />,
@@ -1619,7 +1638,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
               <p className="mt-2 text-sm text-zinc-400">{modeConfig.caption}</p>
             </div>
             <div className="flex flex-col gap-4 md:flex-row md:items-center">
-              <div className="inline-grid w-full grid-cols-2 gap-1 rounded-xl border border-white/10 bg-black/25 p-1 md:w-[300px]">
+              <div className="inline-grid w-full grid-cols-3 gap-1 rounded-xl border border-white/10 bg-black/25 p-1 md:w-[420px]">
                 <button
                   className={`inline-flex items-center justify-center gap-2 rounded-lg border px-4 py-2.5 text-sm font-medium transition ${
                     discoveryMode === 'explore' ? modeConfig.active : modeConfig.inactive
@@ -1639,6 +1658,17 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
                 >
                   <Home className="h-4 w-4" />
                   舒适区
+                </button>
+                <button
+                  className={`inline-flex items-center justify-center gap-2 rounded-lg border px-4 py-2.5 text-sm font-medium transition ${
+                    discoveryMode === 'legacy' ? modeConfig.active : modeConfig.inactive
+                  }`}
+                  onClick={() => void handleDiscoveryModeChange('legacy')}
+                  title="跳过 MusicAgent，使用旧版 LLM 选曲链路"
+                  type="button"
+                >
+                  <RefreshCw className="h-4 w-4" />
+                  Legacy
                 </button>
               </div>
               <SignalBars colorClass={modeConfig.wave} />
@@ -1842,7 +1872,9 @@ function TodayThemePanel({
             dailyThemeEnabled
               ? discoveryMode === 'explore'
                 ? 'bg-cyan-300'
-                : 'bg-orange-300'
+                : discoveryMode === 'legacy'
+                  ? 'bg-emerald-300'
+                  : 'bg-orange-300'
               : 'bg-zinc-700'
           }`}
           onClick={onToggle}

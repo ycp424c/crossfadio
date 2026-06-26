@@ -1,10 +1,11 @@
 import { ListMusic, MoreVertical, X } from 'lucide-react';
 import type { QueueTrackDto } from '@shared/schema';
+import type { DiscoveryMode } from '@shared/dj';
 
 type QueuePanelProps = {
   queue: QueueTrackDto[];
   currentIndex: number;
-  mode: 'explore' | 'comfort';
+  mode: DiscoveryMode;
   nextId: string | null;
   onSelectIndex: (index: number) => void;
   onDeleteIndex: (index: number) => void;
@@ -19,13 +20,21 @@ export function QueuePanel(props: QueuePanelProps): JSX.Element {
         currentItem: 'border-cyan-300/30 bg-cyan-400/10 text-cyan-50',
         currentMeta: 'text-cyan-200'
       }
-    : {
-        border: 'border-orange-200/15',
-        icon: 'text-orange-200',
-        currentBadge: 'border-rose-300/70 bg-rose-400/15 text-rose-200',
-        currentItem: 'border-rose-300/30 bg-rose-400/10 text-rose-50',
-        currentMeta: 'text-rose-200'
-      };
+    : props.mode === 'legacy'
+      ? {
+          border: 'border-emerald-200/15',
+          icon: 'text-emerald-200',
+          currentBadge: 'border-emerald-300/70 bg-emerald-400/15 text-emerald-100',
+          currentItem: 'border-emerald-300/30 bg-emerald-400/10 text-emerald-50',
+          currentMeta: 'text-emerald-200'
+        }
+      : {
+          border: 'border-orange-200/15',
+          icon: 'text-orange-200',
+          currentBadge: 'border-rose-300/70 bg-rose-400/15 text-rose-200',
+          currentItem: 'border-rose-300/30 bg-rose-400/10 text-rose-50',
+          currentMeta: 'text-rose-200'
+        };
 
   return (
     <section className={`rounded-xl border bg-black/25 p-4 ${tone.border}`}>

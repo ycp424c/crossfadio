@@ -13,14 +13,16 @@ import { DEFAULT_TTS_MODEL, DEFAULT_TTS_VOICE, TTS_PREVIEW_TEXT } from '../../..
 import {
   AUTO_FILL_BATCH_SIZE_MAX,
   AUTO_FILL_BATCH_SIZE_MIN,
+  DISCOVERY_MODE_VALUES,
+  parseDiscoveryMode,
   parseAutoFillBatchSize
 } from '../../../shared/dj.js';
+import type { DiscoveryMode } from '../../../shared/dj.js';
 
 type AuthedRequest = Request & { userId: string; ncmClient: NcmClient };
-export type DiscoveryMode = 'explore' | 'comfort';
 
 function getDiscoveryMode(userId: string): DiscoveryMode {
-  return getPref<DiscoveryMode>(userId, 'discovery.mode') === 'comfort' ? 'comfort' : 'explore';
+  return parseDiscoveryMode(getPref<DiscoveryMode>(userId, 'discovery.mode'));
 }
 
 function getAutoFillBatchSize(userId: string): number {
@@ -64,7 +66,7 @@ export function createGetSettingsHandler() {
 const settingsBodySchema = z.object({
   tts: z.object({ voice: z.string().min(1) }).optional(),
   dailyThemeEnabled: z.boolean().optional(),
-  discoveryMode: z.enum(['explore', 'comfort']).optional(),
+  discoveryMode: z.enum(DISCOVERY_MODE_VALUES).optional(),
   autoFillBatchSize: z.number().int().min(AUTO_FILL_BATCH_SIZE_MIN).max(AUTO_FILL_BATCH_SIZE_MAX).optional()
 });
 export function createSaveSettingsHandler() {

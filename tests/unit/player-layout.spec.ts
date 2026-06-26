@@ -454,6 +454,8 @@ describe('player layout', () => {
     expect(source).toContain('xl:col-span-8');
     expect(source).toContain('xl:col-span-4');
     expect(source).toContain("discoveryMode === 'comfort'");
+    expect(source).toContain("discoveryMode === 'legacy'");
+    expect(source).toContain('Legacy LLM 模式');
     expect(source).toContain('TodayThemePanel');
     expect(source).toContain('TastePanel');
     expect(source).toContain('DjStatusDock');

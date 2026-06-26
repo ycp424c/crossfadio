@@ -22,10 +22,10 @@ import { MusicAgent } from '../../music-agent/index.js';
 import type { MusicAgentRunOutput } from '../../music-agent/schema.js';
 import { buildMusicTrackDedupeKey, isMusicTrackDedupeKeyExcluded } from '../../music-agent/dedupe.js';
 import { formatShanghaiLocalTime, getDaypart, getShanghaiTimeParts } from '../../timezone.js';
-import { parseAutoFillBatchSize } from '../../../shared/dj.js';
+import { parseAutoFillBatchSize, parseDiscoveryMode } from '../../../shared/dj.js';
+import type { DiscoveryMode } from '../../../shared/dj.js';
 
 type AuthedRequest = Request & { userId: string; ncmClient: NcmClient };
-export type DiscoveryMode = 'explore' | 'comfort';
 
 export type DjPickNextFallbackPath =
   | 'music_agent_success'
@@ -128,7 +128,7 @@ export function buildDjTimeContext(date: Date): DjTimeContext {
 }
 
 function getDiscoveryMode(userId: string): DiscoveryMode {
-  return getPref<DiscoveryMode>(userId, 'discovery.mode') === 'comfort' ? 'comfort' : 'explore';
+  return parseDiscoveryMode(getPref<DiscoveryMode>(userId, 'discovery.mode'));
 }
 
 function getAutoFillBatchSize(userId: string): number {
@@ -170,6 +170,15 @@ export function buildDiscoveryModePromptParts(
     };
   }
 
+  if (mode === 'legacy') {
+    return {
+      tasteContext: `\n## Legacy LLM 参考\n${tasteHints.join('\n')}\n（Legacy LLM 模式：跳过 MusicAgent，只使用旧版 LLM 候选生成和白名单选曲链路。）\n`,
+      styleInstruction: '请沿用旧版 LLM 自动选曲思路，根据今日主题、时间、天气、最近播放、DJ 偏好与个人品味，推荐 2-3 个适合当下情境的音乐风格方向。',
+      pickInstruction: '沿用旧版 LLM 选择逻辑：从候选歌曲列表中挑选适合当前情境、用户品味和 DJ 偏好的歌曲，返回候选歌曲 id。',
+      userContextLabel: `Legacy LLM 参考：${tasteHints.join('；')}\n`
+    };
+  }
+
   return {
     tasteContext: `\n## 个人品味外延\n${tasteHints.join('\n')}\n（探索模式：把个人品味当作出发点和边界，向相邻风格、陌生艺人、今日主题、时间、天气与 DJ 偏好扩展；不要只复刻用户已知偏好。）\n`,
     styleInstruction: '请根据今日主题、时间、天气、最近播放、DJ 偏好与个人品味外延，推荐 2-3 个适合当下情境且有新鲜感的音乐风格方向。',
@@ -183,7 +192,7 @@ export function getCandidateSourceMix(mode: DiscoveryMode): {
   searchResultSize: number;
   preferSearchCandidates: boolean;
 } {
-  return mode === 'comfort'
+  return mode === 'comfort' || mode === 'legacy'
     ? {
         likedSampleSize: LIKED_SAMPLE_SIZE,
         searchResultSize: SEARCH_RESULT_SIZE,
@@ -194,6 +203,18 @@ export function getCandidateSourceMix(mode: DiscoveryMode): {
         searchResultSize: SEARCH_RESULT_SIZE,
         preferSearchCandidates: true
       };
+}
+
+function getDiscoveryModeTasteHeading(mode: DiscoveryMode): string {
+  if (mode === 'comfort') return '用户品味偏好';
+  if (mode === 'legacy') return 'Legacy LLM 参考';
+  return '探索外延参考';
+}
+
+function getDiscoveryModeLabel(mode: DiscoveryMode): string {
+  if (mode === 'comfort') return '舒适区模式';
+  if (mode === 'legacy') return 'Legacy LLM 模式';
+  return '探索模式';
 }
 
 function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
@@ -460,7 +481,14 @@ async function doPickNext(
   let legacyFallbackPath: DjPickNextFallbackPath | undefined;
 
   const llmConfig = resolveLlmConfig();
-  if (llmConfig && !signal?.aborted) {
+  if (llmConfig && discoveryMode === 'legacy') {
+    logger.info(
+      { discoveryMode, targetPickCount },
+      'DJ pick-next: Legacy LLM mode selected, skipping MusicAgent'
+    );
+  }
+
+  if (llmConfig && discoveryMode !== 'legacy' && !signal?.aborted) {
     const agentAbort = createAbortTimeoutSignal(signal, getDjAgentTimeoutMs(targetPickCount));
     try {
       const agent = new MusicAgent({ llmConfig });
@@ -910,7 +938,7 @@ async function doPickNext(
 
 ## 当前任务：DJ 自动选曲
 ${themePickNote}
-${activeDirective ? `## 必须优先遵循的短期选歌指令\n${activeDirective}\n\n如果候选池里有符合该指令的歌曲，应优先选择；只有候选池明显不足时才放宽。\n\n` : ''}${tasteHints.length > 0 ? `## ${discoveryMode === 'comfort' ? '用户品味偏好' : '探索外延参考'}\n${tasteHints.join('\n')}\n\n${modePrompt.pickInstruction}\n\n` : ''}${tasteHints.length === 0 ? modePrompt.pickInstruction : ''}
+${activeDirective ? `## 必须优先遵循的短期选歌指令\n${activeDirective}\n\n如果候选池里有符合该指令的歌曲，应优先选择；只有候选池明显不足时才放宽。\n\n` : ''}${tasteHints.length > 0 ? `## ${getDiscoveryModeTasteHeading(discoveryMode)}\n${tasteHints.join('\n')}\n\n${modePrompt.pickInstruction}\n\n` : ''}${tasteHints.length === 0 ? modePrompt.pickInstruction : ''}
 不要重复最近刚播过的歌曲。say 字段用一句话中文说明选曲理由。
 ${timeContext.sayInstruction}
 优先选择艺人名像真实人名或乐队的歌曲，避开艺人名明显是厂牌、合集、影视原声、或自动生成的选项（如"群星""Various Artists""佚名""原声带"等）。
@@ -937,7 +965,7 @@ ${timeContext.sayInstruction}
       const pickUserPrompt = `<context>
 当前时间：${localTime}
 天气：${weatherStr2}
-模式：${discoveryMode === 'comfort' ? '舒适区模式' : '探索模式'}
+模式：${getDiscoveryModeLabel(discoveryMode)}
 ${themeContextUser}${directiveUserContext}${tasteUserContext}</context>
 
 <候选歌曲列表>

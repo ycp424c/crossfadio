@@ -7,7 +7,7 @@ import {
   type NextTrackResponse,
   type NowPlayingResponse
 } from '@shared/schema';
-import type { AutoFillBatchSize } from '@shared/dj';
+import type { AutoFillBatchSize, DiscoveryMode } from '@shared/dj';
 
 type RuntimeConfig = {
   baseUrl: string;
@@ -244,14 +244,14 @@ export type SettingsResponse = {
   llm: LlmSettings;
   tts: TtsSettings;
   dailyThemeEnabled: boolean;
-  discoveryMode: 'explore' | 'comfort';
+  discoveryMode: DiscoveryMode;
   autoFillBatchSize: AutoFillBatchSize;
 };
 
 export type SaveSettingsPayload = {
   tts?: { voice: string };
   dailyThemeEnabled?: boolean;
-  discoveryMode?: 'explore' | 'comfort';
+  discoveryMode?: DiscoveryMode;
   autoFillBatchSize?: AutoFillBatchSize;
 };
 
@@ -295,7 +295,7 @@ export type PlayerContextResponse = {
   theme: { theme: string; keywords: string[] } | null;
   weather: { location: string; tempC: number; desc: string } | null;
   taste: string;
-  discoveryMode: 'explore' | 'comfort';
+  discoveryMode: DiscoveryMode;
 };
 
 export async function getPlayerContext(): Promise<PlayerContextResponse> {

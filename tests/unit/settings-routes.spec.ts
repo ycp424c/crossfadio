@@ -95,6 +95,21 @@ describe('settings routes', () => {
     expect(getRes.body).toMatchObject({ dailyThemeEnabled: false, discoveryMode: 'comfort', autoFillBatchSize: 5 });
   });
 
+  it('PUT saves legacy discoveryMode and GET reflects it', () => {
+    const saveHandler = createSaveSettingsHandler();
+    const saveRes = createJsonResponse();
+    saveHandler(
+      { userId: 'test-user', body: { discoveryMode: 'legacy' } } as never,
+      saveRes as never
+    );
+    expect(saveRes.statusCode).toBe(200);
+
+    const getHandler = createGetSettingsHandler();
+    const getRes = createJsonResponse();
+    getHandler({ userId: 'test-user' } as never, getRes as never);
+    expect(getRes.body).toMatchObject({ discoveryMode: 'legacy' });
+  });
+
   it('rejects autoFillBatchSize outside the supported range', () => {
     const saveHandler = createSaveSettingsHandler();
     const saveRes = createJsonResponse();
