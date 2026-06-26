@@ -20,6 +20,7 @@ import { initSseRes, writeSseEvent, endSse } from '../sse.js';
 import { getOrGenerateDailyThemeWithin } from '../../daily-theme.js';
 import { MusicAgent } from '../../music-agent/index.js';
 import { handleLegacyPickNextOutput } from '../../dj/legacyPickNextResult.js';
+import { buildLegacyPickPrompt } from '../../dj/legacyPickPrompt.js';
 import { handleLegacyRandomFallback } from '../../dj/legacyRandomFallback.js';
 import { createDjPickNextTelemetry } from '../../dj/pickNextTelemetry.js';
 import { createDjPickNextRunner } from '../../dj/pickNextRunner.js';
@@ -191,18 +192,6 @@ export function getCandidateSourceMix(mode: DiscoveryMode): {
         searchResultSize: SEARCH_RESULT_SIZE,
         preferSearchCandidates: true
       };
-}
-
-function getDiscoveryModeTasteHeading(mode: DiscoveryMode): string {
-  if (mode === 'comfort') return '用户品味偏好';
-  if (mode === 'legacy') return 'Legacy LLM 参考';
-  return '探索外延参考';
-}
-
-function getDiscoveryModeLabel(mode: DiscoveryMode): string {
-  if (mode === 'comfort') return '舒适区模式';
-  if (mode === 'legacy') return 'Legacy LLM 模式';
-  return '探索模式';
 }
 
 function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
@@ -792,51 +781,20 @@ async function doPickNext(
       const candidateList = allCandidates
         .map((t, i) => `${i + 1}. id=${t.id} ${t.name ?? t.id} — ${t.artist ?? '未知艺人'}`)
         .join('\n');
-      const weatherStr2 = weather ? `${weather.tempC}°C，${weather.desc}` : '未知';
-
-      const themePickNote = dailyTheme
-        ? `\n## 今日主题\n${dailyTheme.theme}\n\n选曲时可以优先考虑契合今日主题氛围的歌曲，但不必强求。主题只是参考方向。\n`
-        : '';
-
-      const pickSystemPrompt = `${corpus.djPersona || 'You are a DJ.'}
-
-## 当前任务：DJ 自动选曲
-${themePickNote}
-${activeDirective ? `## 必须优先遵循的短期选歌指令\n${activeDirective}\n\n如果候选池里有符合该指令的歌曲，应优先选择；只有候选池明显不足时才放宽。\n\n` : ''}${tasteHints.length > 0 ? `## ${getDiscoveryModeTasteHeading(discoveryMode)}\n${tasteHints.join('\n')}\n\n${modePrompt.pickInstruction}\n\n` : ''}${tasteHints.length === 0 ? modePrompt.pickInstruction : ''}
-不要重复最近刚播过的歌曲。say 字段用一句话中文说明选曲理由。
-${timeContext.sayInstruction}
-优先选择艺人名像真实人名或乐队的歌曲，避开艺人名明显是厂牌、合集、影视原声、或自动生成的选项（如"群星""Various Artists""佚名""原声带"等）。
-只能返回候选歌曲列表中真实存在的 id，不要编造 id，不要返回歌名搜索词。
-
-输出格式：严格 JSON，不要包裹 markdown 代码块。
-{
-  "say": "选曲理由（一句话中文）",
-  "picks": [
-    { "id": "候选歌曲id1", "reason": "为什么这首歌适合当前时段/主题/用户品味（一句话中文）" },
-    { "id": "候选歌曲id2", "reason": "为什么这首歌适合当前时段/主题/用户品味（一句话中文）" }
-  ]
-}`;
-
-      const themeContextUser = dailyTheme
-        ? `今日主题：${dailyTheme.theme}\n`
-        : '';
-
-      const tasteUserContext = modePrompt.userContextLabel;
-      const directiveUserContext = activeDirective
-        ? `短期选歌指令：${activeDirective}\n`
-        : '';
-
-      const pickUserPrompt = `<context>
-当前时间：${localTime}
-天气：${weatherStr2}
-模式：${getDiscoveryModeLabel(discoveryMode)}
-${themeContextUser}${directiveUserContext}${tasteUserContext}</context>
-
-<候选歌曲列表>
-${candidateList}
-</候选歌曲列表>
-
-从以上 ${allCandidates.length} 首候选歌曲中挑选最多 ${targetPickCount} 首；如果高质量候选不足，可以少选，不要为了凑数选择明显不适合的歌曲。`;
+      const { systemPrompt: pickSystemPrompt, userPrompt: pickUserPrompt } = buildLegacyPickPrompt({
+        djPersona: corpus.djPersona,
+        dailyTheme,
+        activeDirective,
+        tasteHints,
+        discoveryMode,
+        modePrompt,
+        timeContext,
+        localTime,
+        weatherText: weather ? `${weather.tempC}°C，${weather.desc}` : '未知',
+        candidateList,
+        candidateCount: allCandidates.length,
+        targetPickCount
+      });
 
       let pickSay = '';
       let pickedTracks: Track[] = [];
