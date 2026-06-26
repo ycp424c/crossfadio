@@ -11,7 +11,6 @@ import { buildTrendContext, type TrendCapableNcmClient } from './trends.js';
 import {
   type CandidateProvenanceKind,
   queryPlanSchema,
-  webMusicDiscoveryInputSchema,
   type AgentBudget,
   type CandidateSource,
   type MusicAgentContextSummary,
@@ -20,8 +19,7 @@ import {
   type MusicCandidateScores,
   type QueryFunnelEntry,
   type QueryPlan,
-  type TrendContext,
-  type WebMusicDiscoveryInput
+  type TrendContext
 } from './schema.js';
 import type { CandidatePool } from './candidates.js';
 import {
@@ -49,17 +47,13 @@ import {
 } from './recall-query-filtering.js';
 import {
   filterWebDiscoveryHintsForRecall as filterWebDiscoveryHintsByPolicy,
-  objectArrayValue,
-  parseMusicEntityHints
+  objectArrayValue
 } from './web-discovery-hints.js';
 import {
   autoFillWebDiscoveryInput,
-  DEFAULT_WEB_DISCOVERY_HINT_LIMIT,
-  isExplicitWebExploreIntent,
-  parseWebMusicDiscoveryInput,
-  selectWebDiscoveryStyle,
-  WEB_DISCOVERY_MAX_HINT_LIMIT
+  selectWebDiscoveryStyle
 } from './web-discovery-planning.js';
+import { runWebMusicDiscovery } from './web-discovery-run.js';
 import {
   autoFillSearchQueries,
   styleExpansionQueries,
@@ -206,7 +200,6 @@ const SEARCH_RECALL_CACHE_TTL_MS = 30 * 60 * 1000;
 const QUALITY_DETAIL_BATCH_LIMIT = 80;
 const MAX_RECALL_QUERY_COUNT = 8;
 const AUTO_FILL_MIN_RECALL_NON_LIKED_TARGET = 8;
-const DEFAULT_WEB_DISCOVERY_TIMEOUT_MS = 6_000;
 const WEB_DISCOVERY_ENTITY_RECALL_LIMIT = 1;
 const searchRecallCache = new Map<string, RecallSearchCacheEntry<NcmTrackLike[]>>();
 export function createMusicAgentTools(input: CreateMusicAgentToolsInput): MusicAgentToolRegistry {
@@ -686,125 +679,28 @@ async function webMusicDiscovery(options: {
   state: ToolState;
   signal?: AbortSignal;
 }): Promise<ToolObservation> {
-  const discoveryInput = parseWebMusicDiscoveryInput(options.toolInput, options.input);
-  const gate = evaluateWebMusicDiscoveryGate({
-    discoveryInput,
-    input: options.input,
-    state: options.state
+  const result = await runWebMusicDiscovery({
+    toolInput: options.toolInput,
+    userId: options.input.userId,
+    context: options.input.context,
+    candidates: options.input.candidatePool.list(),
+    queryFunnel: queryFunnelSnapshot(options.state),
+    webDiscoveryProvider: options.input.webMusicDiscoveryProvider,
+    webDiscoveryCalled: options.state.webDiscoveryCalled,
+    ncmSearches: options.state.ncmSearches,
+    targetExternalCandidateCount: webDiscoveryTargetExternalCandidateCount(options.input),
+    maxWebDiscoveryMs: options.input.maxWebDiscoveryMs,
+    maxWebDiscoveryHints: options.input.maxWebDiscoveryHints,
+    signal: options.signal
   });
-  const baseData = {
-    allowed: gate.allowed,
-    signals: gate.signals,
-    intentCluster: gate.intentCluster
-  };
-
-  if (!gate.allowed) {
-    return observation(
-      options.input.candidatePool,
-      `web discovery skipped: ${gate.reason}.`,
-      [`web discovery denied: ${gate.reason}`],
-      baseData
-    );
-  }
-  if (!options.input.webMusicDiscoveryProvider) {
-    return observation(
-      options.input.candidatePool,
-      'web discovery unavailable: provider is not configured.',
-      ['web discovery unavailable: provider is not configured'],
-      baseData
-    );
-  }
-
-  options.state.webDiscoveryCalled = true;
-  const maxHints = boundedPositiveInt(
-    options.toolInput.maxHints,
-    options.input.maxWebDiscoveryHints ?? DEFAULT_WEB_DISCOVERY_HINT_LIMIT,
-    Math.min(options.input.maxWebDiscoveryHints ?? WEB_DISCOVERY_MAX_HINT_LIMIT, WEB_DISCOVERY_MAX_HINT_LIMIT)
-  );
-  const request = webMusicDiscoveryInputSchema.parse({
-    ...discoveryInput,
-    maxHints
-  });
-
-  try {
-    const result = await withTimeout(
-      options.input.webMusicDiscoveryProvider.discover(request, { signal: options.signal }),
-      options.input.maxWebDiscoveryMs ?? DEFAULT_WEB_DISCOVERY_TIMEOUT_MS
-    );
-    if (options.signal?.aborted) return abortedObservation(options.input.candidatePool);
-    if (result.timedOut) {
-      return observation(
-        options.input.candidatePool,
-        'web discovery timed out before returning hints.',
-        ['web discovery timeout'],
-        { ...baseData, hints: [] }
-      );
-    }
-
-    const parsed = parseMusicEntityHints(result.value, maxHints);
-    return observation(
-      options.input.candidatePool,
-      `web discovery returned ${parsed.hints.length} hints from ${result.value.length} raw hints.`,
-      parsed.problems,
-      { ...baseData, hints: parsed.hints }
-    );
-  } catch (error) {
-    return observation(
-      options.input.candidatePool,
-      'web discovery failed before returning hints.',
-      [`web discovery failed: ${formatError(error)}`],
-      { ...baseData, hints: [] }
-    );
-  }
+  if (result.called) options.state.webDiscoveryCalled = true;
+  if (result.aborted) return abortedObservation(options.input.candidatePool);
+  return observation(options.input.candidatePool, result.summary, result.problems, result.data);
 }
 
-function evaluateWebMusicDiscoveryGate(options: {
-  discoveryInput: WebMusicDiscoveryInput;
-  input: CreateMusicAgentToolsInput;
-  state: ToolState;
-}): { allowed: boolean; reason?: string; signals: string[]; intentCluster: string } {
-  const intentCluster = webDiscoveryIntentCluster(options.input.userId, options.discoveryInput.intent);
-  if (options.input.context.discoveryMode === 'comfort') {
-    return { allowed: false, reason: 'discovery mode is comfort', signals: [], intentCluster };
-  }
-  if (options.state.webDiscoveryCalled) {
-    return { allowed: false, reason: 'already called in this run', signals: [], intentCluster };
-  }
-
-  const signals = webDiscoveryGapSignals(options.input, options.state);
-  if (isExplicitWebExploreIntent(options.discoveryInput, options.input.context)) {
-    return { allowed: true, signals: ['explicit_explore_intent', ...signals], intentCluster };
-  }
-  if (signals.length >= 2) {
-    return { allowed: true, signals, intentCluster };
-  }
-  return { allowed: false, reason: 'exploration gap is not strong enough', signals, intentCluster };
-}
-
-function webDiscoveryGapSignals(input: CreateMusicAgentToolsInput, state: ToolState): string[] {
-  const candidates = input.candidatePool.list();
-  const nonLikedCount = candidates.filter((candidate) => candidate.sources.some((source) => source !== 'liked')).length;
-  const target = input.context.request === 'auto-fill'
-    ? autoFillRecallNonLikedTarget(input.targetPickCount)
-    : Math.max(1, input.targetPickCount ?? 2);
-  const externalSources = new Set(
-    candidates.flatMap((candidate) => candidate.sources.filter((source) => source !== 'liked'))
-  );
-  const sourceCounts = countCandidateArtistKeys(candidates);
-  const maxArtistCount = Math.max(0, ...sourceCounts.values());
-  const queryFunnel = queryFunnelSnapshot(state);
-  return [
-    nonLikedCount < target ? 'sparse_external_candidates' : '',
-    externalSources.size <= 1 ? 'low_source_diversity' : '',
-    candidates.length >= 3 && maxArtistCount / candidates.length >= 0.6 ? 'artist_clustered' : '',
-    queryFunnel.some((entry) => entry.resultCount > 0 && entry.addedCount === 0) ? 'query_funnel_low_yield' : '',
-    state.ncmSearches > 0 && nonLikedCount === 0 ? 'semantic_or_exact_discovery_empty' : ''
-  ].filter(Boolean);
-}
-
-function webDiscoveryIntentCluster(userId: string, intent: string): string {
-  const cluster = normalizeSearchQuery(intent).slice(0, 120) || 'default';
-  return `${userId}:${cluster}`;
+function webDiscoveryTargetExternalCandidateCount(input: CreateMusicAgentToolsInput): number {
+  if (input.context.request === 'auto-fill') return autoFillRecallNonLikedTarget(input.targetPickCount);
+  return Math.max(1, input.targetPickCount ?? 2);
 }
 
 async function recallFromWebDiscoveryHints(options: {
@@ -870,23 +766,6 @@ function filterWebDiscoveryHintsForRecall(
     avoidArtists,
     expectedStyle
   });
-}
-
-async function withTimeout<T>(
-  promise: Promise<T>,
-  timeoutMs: number
-): Promise<{ timedOut: false; value: T } | { timedOut: true }> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    return await Promise.race([
-      promise.then((value) => ({ timedOut: false as const, value })),
-      new Promise<{ timedOut: true }>((resolve) => {
-        timer = setTimeout(() => resolve({ timedOut: true }), Math.max(0, timeoutMs));
-      })
-    ]);
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
 }
 
 function trendRecallQueries(state: ToolState, toolInput: Record<string, unknown>): string[] {
