@@ -178,11 +178,11 @@ describe('DJ pick-next diagnostics', () => {
   });
 
   it('includes a console-table friendly candidate table in legacy debug events', () => {
-    const source = readSource('src/server/http/routes/djNext.ts');
+    const source = readSource('src/server/dj/pickNextRun.ts');
     const legacyCandidatePoolSource = readSource('src/server/dj/legacyCandidatePool.ts');
-    const doPickNext = extractBetween(source, 'async function doPickNext', 'export function serializeDjPickNextErrorForLog');
+    const runDjPickNext = extractBetween(source, 'export async function runDjPickNext', 'export function serializeDjPickNextErrorForLog');
     const phase3DebugCall = extractBetween(
-      doPickNext,
+      runDjPickNext,
       'const { allCandidates, phase3Debug } = createLegacyCandidatePool({',
       '});\n\n      logger.info('
     );
@@ -212,10 +212,10 @@ describe('DJ pick-next diagnostics', () => {
   });
 
   it('logs skipped pick reasons when append paths fall short of the target', () => {
-    const source = readSource('src/server/http/routes/djNext.ts');
+    const source = readSource('src/server/dj/pickNextRun.ts');
     const musicAgentResultSource = readSource('src/server/dj/musicAgentPickNextResult.ts');
     const legacyResultSource = readSource('src/server/dj/legacyPickNextResult.ts');
-    const doPickNext = extractBetween(source, 'async function doPickNext', 'export function serializeDjPickNextErrorForLog');
+    const runDjPickNext = extractBetween(source, 'export async function runDjPickNext', 'export function serializeDjPickNextErrorForLog');
 
     expect(musicAgentResultSource).toContain('const musicAgentSkippedPicks: SkippedPickLog[] = [];');
     expect(legacyResultSource).toContain('const whitelistedSkippedPicks: SkippedPickLog[] = [];');
@@ -225,25 +225,26 @@ describe('DJ pick-next diagnostics', () => {
     expect(musicAgentResultSource).toContain("'dedupe_excluded'");
     expect(legacyResultSource).toContain("'id_excluded'");
     expect(legacyResultSource).toContain("'dedupe_excluded'");
-    expect(doPickNext).toContain('handleLegacyPickNextOutput({');
-    expect(doPickNext).toContain('markDebugBroadcastSent: () => {');
-    expect(doPickNext).not.toContain('excludedIds: Array.from(excludeState.ids),\n            excludedDedupeKeys: Array.from(excludeState.dedupeKeys),\n            skippedPicks');
+    expect(runDjPickNext).toContain('handleLegacyPickNextOutput({');
+    expect(runDjPickNext).toContain('markDebugBroadcastSent: () => {');
+    expect(runDjPickNext).not.toContain('excludedIds: Array.from(excludeState.ids),\n            excludedDedupeKeys: Array.from(excludeState.dedupeKeys),\n            skippedPicks');
   });
 
   it('routes DJ pick-next through MusicAgent with abort and status guards', () => {
     const source = readSource('src/server/http/routes/djNext.ts');
+    const pickNextRunSource = readSource('src/server/dj/pickNextRun.ts');
     const musicAgentResultSource = readSource('src/server/dj/musicAgentPickNextResult.ts');
     const legacyResultSource = readSource('src/server/dj/legacyPickNextResult.ts');
     const randomFallbackSource = readSource('src/server/dj/legacyRandomFallback.ts');
     const telemetrySource = readSource('src/server/dj/pickNextTelemetry.ts');
-    const runnerSetup = extractBetween(source, 'const djPickNextRunner = createDjPickNextRunner', 'type LikedIdsCache');
-    const jsonHandler = extractBetween(source, 'export function createDjPickNextHandler', 'async function doPickNext');
-    const doPickNext = extractBetween(source, 'async function doPickNext', 'export function serializeDjPickNextErrorForLog');
+    const runnerSetup = extractBetween(source, 'const djPickNextRunner = createDjPickNextRunner', 'export function createDjPickNextHandler');
+    const jsonHandler = extractBetween(source, 'export function createDjPickNextHandler', 'function applyClientQueueSnapshot');
+    const runDjPickNext = extractBetween(pickNextRunSource, 'export async function runDjPickNext', 'export function serializeDjPickNextErrorForLog');
     const sseHandler = extractBetween(source, 'export function createSseDjPickNextHandler', 'function getScopedNcmClient');
 
     expect(runnerSetup).toContain('getTargetPickCount: getAutoFillBatchSize');
     expect(runnerSetup).toContain('getJobTimeoutMs');
-    expect(runnerSetup).toContain('doPickNext(userId, ncmClient, emit, signal)');
+    expect(runnerSetup).toContain('runDjPickNext(userId, ncmClient, emit, signal)');
     expect(jsonHandler).toContain('djPickNextRunner.run({');
     expect(jsonHandler).toContain("broadcastToUser(userId, { type: 'dj.pick-next.done', added: false, reason: 'timeout' })");
 
@@ -251,61 +252,77 @@ describe('DJ pick-next diagnostics', () => {
     expect(sseHandler).toContain('djPickNextRunner.run({ userId, ncmClient, emit, signal: controller.signal })');
     expectBefore(sseHandler, 'if (djPickNextRunner.isRunning(userId))', 'applyClientQueueSnapshot(req, userId)');
 
-    expect(doPickNext).toContain('new MusicAgent');
-    expect(doPickNext).toContain("output.status === 'ok'");
-    expect(doPickNext).toContain('const targetPickCount = getAutoFillBatchSize(userId)');
-    expect(doPickNext).toContain('createAbortTimeoutSignal(signal, getDjAgentTimeoutMs(targetPickCount))');
-    expect(doPickNext).toContain("discoveryMode !== 'legacy'");
-    expect(doPickNext).toContain('includeDailyTheme: dailyThemeEnabled');
-    expect(doPickNext).toContain('const excludeState = getTodayAndQueueDedupeState(userId)');
-    expect(doPickNext).toContain('const initialQueueLength = getQueue(userId).length');
-    expect(doPickNext).toContain('excludeTrackIds: excludeState.ids');
-    expect(doPickNext).toContain('excludeTrackDedupeKeys: excludeState.dedupeKeys');
-    expect(doPickNext).toContain('targetPickCount');
-    expect(doPickNext).toContain('handleMusicAgentPickNextOutput({');
-    expect(doPickNext).toContain('setPickReason: (trackId, reason) => djPickReasonCache.set(trackId, reason)');
+    expect(runDjPickNext).toContain('new MusicAgent');
+    expect(runDjPickNext).toContain("output.status === 'ok'");
+    expect(runDjPickNext).toContain('const targetPickCount = getAutoFillBatchSize(userId)');
+    expect(runDjPickNext).toContain('createAbortTimeoutSignal(signal, getDjAgentTimeoutMs(targetPickCount))');
+    expect(runDjPickNext).toContain("discoveryMode !== 'legacy'");
+    expect(runDjPickNext).toContain('includeDailyTheme: dailyThemeEnabled');
+    expect(runDjPickNext).toContain('const excludeState = getTodayAndQueueDedupeState(userId)');
+    expect(runDjPickNext).toContain('const initialQueueLength = getQueue(userId).length');
+    expect(runDjPickNext).toContain('excludeTrackIds: excludeState.ids');
+    expect(runDjPickNext).toContain('excludeTrackDedupeKeys: excludeState.dedupeKeys');
+    expect(runDjPickNext).toContain('targetPickCount');
+    expect(runDjPickNext).toContain('handleMusicAgentPickNextOutput({');
+    expect(runDjPickNext).toContain('setPickReason: (trackId, reason) => djPickReasonCache.set(trackId, reason)');
     expect(musicAgentResultSource).toContain('if (getRemainingPickSlots(userId, initialQueueLength, targetPickCount) <= 0)');
     expect(musicAgentResultSource).toContain('if (hasReachedPickTarget(userId, initialQueueLength, targetPickCount))');
-    expect(doPickNext).toContain('broadcastAppended,');
+    expect(runDjPickNext).toContain('broadcastAppended,');
     expect(musicAgentResultSource).toContain('musicAgentRunMetrics(output, appendedPicks, startedAt, discoveryMode)');
     expect(telemetrySource).toContain('rankedBackfillCount: metrics.rankedBackfillCount');
     expect(telemetrySource).toContain('finalPickDiagnostics: metrics.finalPickDiagnostics');
     expect(musicAgentResultSource).toContain('totalCandidates: getMusicAgentDebugCandidateCount(output)');
     expect(musicAgentResultSource).not.toContain('totalCandidates: output.picks.length');
     expect(musicAgentResultSource).toContain('MusicAgent appended fewer than target');
-    expect(doPickNext).toContain('handleLegacyPickNextOutput({');
+    expect(runDjPickNext).toContain('handleLegacyPickNextOutput({');
     expect(legacyResultSource).toContain('whitelisted picks appended fewer than target');
-    expect(doPickNext).toContain('handleLegacyRandomFallback({');
+    expect(runDjPickNext).toContain('handleLegacyRandomFallback({');
     expect(randomFallbackSource).toContain('getRemainingPickSlots(userId, initialQueueLength, targetPickCount) * 4');
     expect(randomFallbackSource).toContain('targetCount: targetPickCount');
-    expect(source).toContain('const broadcastAppended = djPickNextTelemetry.broadcastAppended');
-    expect(source).toContain('recordFallbackStats: djPickNextTelemetry.recordFallbackStats');
+    expect(pickNextRunSource).toContain('const broadcastAppended = djPickNextTelemetry.broadcastAppended');
+    expect(pickNextRunSource).toContain('recordFallbackStats: djPickNextTelemetry.recordFallbackStats');
     expect(telemetrySource).toContain('addedCount: newTracks.length');
     expect(telemetrySource).toContain('trackNames: names');
     expect(telemetrySource).toContain('trackIds: newTracks.map((track) => track.ncmId)');
 
-    expect(doPickNext).toContain('const styleAbort = createAbortTimeoutSignal(signal, SEARCH_QUERY_LLM_TIMEOUT_MS)');
-    expect(doPickNext).toContain('{ signal: styleAbort.signal }');
-    expect(doPickNext).toContain('styleAbort.cleanup()');
-    expectBefore(doPickNext, 'const styleAbort = createAbortTimeoutSignal(signal, SEARCH_QUERY_LLM_TIMEOUT_MS)', 'new LlmClient(llmConfig).complete');
-    expectBefore(doPickNext, '{ signal: styleAbort.signal }', 'styleAbort.cleanup()');
+    expect(runDjPickNext).toContain('const styleAbort = createAbortTimeoutSignal(signal, SEARCH_QUERY_LLM_TIMEOUT_MS)');
+    expect(runDjPickNext).toContain('{ signal: styleAbort.signal }');
+    expect(runDjPickNext).toContain('styleAbort.cleanup()');
+    expectBefore(runDjPickNext, 'const styleAbort = createAbortTimeoutSignal(signal, SEARCH_QUERY_LLM_TIMEOUT_MS)', 'new LlmClient(llmConfig).complete');
+    expectBefore(runDjPickNext, '{ signal: styleAbort.signal }', 'styleAbort.cleanup()');
 
-    expect(doPickNext).toContain('const pickAbort = createAbortTimeoutSignal(signal, PICK_LLM_TIMEOUT_MS)');
-    expect(doPickNext).toContain('{ signal: pickAbort.signal }');
-    expect(doPickNext).toContain('pickAbort.cleanup()');
-    expectBefore(doPickNext, 'const pickAbort = createAbortTimeoutSignal(signal, PICK_LLM_TIMEOUT_MS)', 'parseDjCandidatePicks');
-    expectBefore(doPickNext, '{ signal: pickAbort.signal }', 'pickAbort.cleanup()');
+    expect(runDjPickNext).toContain('const pickAbort = createAbortTimeoutSignal(signal, PICK_LLM_TIMEOUT_MS)');
+    expect(runDjPickNext).toContain('{ signal: pickAbort.signal }');
+    expect(runDjPickNext).toContain('pickAbort.cleanup()');
+    expectBefore(runDjPickNext, 'const pickAbort = createAbortTimeoutSignal(signal, PICK_LLM_TIMEOUT_MS)', 'parseDjCandidatePicks');
+    expectBefore(runDjPickNext, '{ signal: pickAbort.signal }', 'pickAbort.cleanup()');
+  });
+
+  it('keeps the HTTP route as an adapter around the DJ pick-next run module', () => {
+    const routeSource = readSource('src/server/http/routes/djNext.ts');
+    const pickNextRunSource = readSource('src/server/dj/pickNextRun.ts');
+
+    expect(routeSource).toContain('runDjPickNext(userId, ncmClient, emit, signal)');
+    expect(routeSource).not.toContain('new MusicAgent');
+    expect(routeSource).not.toContain('handleLegacyPickNextOutput');
+    expect(routeSource).not.toContain('handleLegacyRandomFallback');
+    expect(pickNextRunSource).toContain('export async function runDjPickNext');
+    expect(pickNextRunSource).toContain('new MusicAgent');
   });
 
   it('skips MusicAgent entirely in legacy discovery mode', () => {
-    const source = readSource('src/server/http/routes/djNext.ts');
-    const doPickNext = extractBetween(source, 'async function doPickNext', 'function broadcastAppended');
+    const pickNextRunSource = readSource('src/server/dj/pickNextRun.ts');
+    const runDjPickNext = extractBetween(
+      pickNextRunSource,
+      'export async function runDjPickNext',
+      'export function serializeDjPickNextErrorForLog'
+    );
 
-    expect(doPickNext).toContain("if (llmConfig && discoveryMode === 'legacy')");
-    expect(doPickNext).toContain('Legacy LLM mode selected, skipping MusicAgent');
-    expect(doPickNext).toContain("if (llmConfig && discoveryMode !== 'legacy' && !signal?.aborted)");
+    expect(runDjPickNext).toContain("if (llmConfig && discoveryMode === 'legacy')");
+    expect(runDjPickNext).toContain('Legacy LLM mode selected, skipping MusicAgent');
+    expect(runDjPickNext).toContain("if (llmConfig && discoveryMode !== 'legacy' && !signal?.aborted)");
     expectBefore(
-      doPickNext,
+      runDjPickNext,
       "if (llmConfig && discoveryMode === 'legacy')",
       'const agent = new MusicAgent'
     );
@@ -313,16 +330,16 @@ describe('DJ pick-next diagnostics', () => {
 
   it('keeps the MusicAgent auto-fill timeout above slow final-pick windows', () => {
     const musicAgentSource = readSource('src/server/music-agent/index.ts');
-    const djNextSource = readSource('src/server/http/routes/djNext.ts');
+    const pickNextRunSource = readSource('src/server/dj/pickNextRun.ts');
 
     expect(musicAgentSource).toContain('maxMs: largeBatch ? 150_000 : 120_000');
-    expect(djNextSource).toContain('const DJ_AGENT_TIMEOUT_MS = 135_000');
-    expect(djNextSource).toContain('const LARGE_BATCH_DJ_AGENT_TIMEOUT_MS = 165_000');
+    expect(pickNextRunSource).toContain('const DJ_AGENT_TIMEOUT_MS = 135_000');
+    expect(pickNextRunSource).toContain('const LARGE_BATCH_DJ_AGENT_TIMEOUT_MS = 165_000');
   });
 
   it('does not apply stale client queue snapshots to already-running DJ jobs', () => {
     const source = readSource('src/server/http/routes/djNext.ts');
-    const jsonHandler = extractBetween(source, 'export function createDjPickNextHandler', 'async function doPickNext');
+    const jsonHandler = extractBetween(source, 'export function createDjPickNextHandler', 'function applyClientQueueSnapshot');
     const sseHandler = extractBetween(source, 'export function createSseDjPickNextHandler', 'function getScopedNcmClient');
 
     expectBefore(jsonHandler, 'if (djPickNextRunner.isRunning(userId))', 'applyClientQueueSnapshot(req, userId)');
