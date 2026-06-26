@@ -32,6 +32,11 @@ import {
   recordUserQueryFunnel,
   sanitizeSearchQuery
 } from './query-stats.js';
+import {
+  autoFillSearchQueries,
+  styleExpansionQueries,
+  styleSeedQueryModifiers
+} from './query-planning.js';
 import { normalizeMusicTrackToken } from './dedupe.js';
 import type { FinalPick } from './schema.js';
 import {
@@ -186,7 +191,6 @@ const MAX_DIVERSIFY_DISPLAY_LIMIT = 5;
 const AVOID_ARTIST_PENALTY_THRESHOLD = 0.18;
 const MAX_QUERY_RECALL_PER_ARTIST_KEY = 2;
 const MAX_ARTIST_FALLBACKS_PER_RECALL = 2;
-const EXPLORE_AUTO_FILL_MAX_EXACT_SEARCH_QUERIES = 2;
 const LIKED_RECALL_CACHE_TTL_MS = 10 * 60 * 1000;
 const SEARCH_RECALL_CACHE_TTL_MS = 30 * 60 * 1000;
 const QUALITY_DETAIL_BATCH_LIMIT = 80;
@@ -1179,70 +1183,6 @@ async function withTimeout<T>(
   } finally {
     if (timer) clearTimeout(timer);
   }
-}
-
-function autoFillSearchQueries(context: MusicAgentContextSummary, queryPlan: QueryPlan): string[] {
-  const exactTrackQueries = isExploreAutoFillContext(context)
-    ? queryPlan.exactTrackQueries.slice(0, EXPLORE_AUTO_FILL_MAX_EXACT_SEARCH_QUERIES)
-    : queryPlan.exactTrackQueries;
-  return uniqueStrings([
-    ...(context.actionQueries ?? []),
-    ...exactTrackQueries,
-    ...queryPlan.intentQueries,
-    ...queryPlan.tasteAnchorQueries,
-    ...queryPlan.planQueries,
-    ...queryPlan.explorationQueries
-  ]).slice(0, 8);
-}
-
-function isExploreAutoFillContext(context: MusicAgentContextSummary): boolean {
-  return context.request === 'auto-fill' && context.discoveryMode !== 'comfort';
-}
-
-function styleExpansionQueries(context: MusicAgentContextSummary, toolInput: Record<string, unknown>): string[] {
-  const explicitQueries = stringArrayValue(toolInput.queries);
-  const excludedQueries = new Set(stringArrayValue(toolInput.excludeQueries).map(normalizeSearchQuery));
-  const text = [
-    stringValue(toolInput.text),
-    stringValue(toolInput.userText),
-    ...explicitQueries,
-    context.currentUserText,
-    ...(context.actionQueries ?? []),
-    context.activeDirective
-  ].filter(Boolean).join(' ');
-  const knowledge = getMusicKnowledgeSlice({
-    text,
-    daypart: context.currentMoment.daypart
-  });
-  const seedQueries = sourceStyleSeedQueries(knowledge.sourceStyleSeeds, text);
-  const fallbackQueries = explicitQueries.length > 0
-    ? [...seedQueries, ...knowledge.styleAdjacency]
-    : [...seedQueries, ...knowledge.styleAdjacency, ...knowledge.queryTemplates.slice(0, 2)];
-  return uniqueStrings([
-    ...explicitQueries,
-    ...fallbackQueries
-  ])
-    .filter((query) => !excludedQueries.has(normalizeSearchQuery(query)))
-    .slice(0, 8);
-}
-
-function sourceStyleSeedQueries(styleSeeds: string[], text: string): string[] {
-  const modifiers = styleSeedQueryModifiers(text);
-  return uniqueStrings(styleSeeds.flatMap((style) => modifiers.map((modifier) => `${style} ${modifier}`)));
-}
-
-function styleSeedQueryModifiers(text: string): string[] {
-  const normalized = text.toLowerCase();
-  const modifiers: string[] = [];
-  if (/rock|摇滚|乐队|guitar|吉他/.test(normalized)) modifiers.push('乐队');
-  if (/电子|electronic|synth|合成器/.test(normalized)) modifiers.push('synth');
-  if (/女声|女歌手|女生唱|female vocal|female-vocal/.test(normalized)) modifiers.push('女声');
-  if (/粤语|港乐|广东歌|cantonese/.test(normalized)) modifiers.push('粤语');
-  if (/华语|中文|mandarin/.test(normalized)) modifiers.push('华语');
-  if (/别太吵|不要太吵|不吵|安静|轻一点|轻松|quiet|chill/.test(normalized)) modifiers.push('不吵');
-  if (/专注|工作|学习|focus|少人声|低人声/.test(normalized)) modifiers.push('低人声');
-  if (/跑步|运动|running|workout|高能量|提神/.test(normalized)) modifiers.push('律动');
-  return uniqueStrings(modifiers.length > 0 ? modifiers : ['中低能量']);
 }
 
 function trendRecallQueries(state: ToolState, toolInput: Record<string, unknown>): string[] {
