@@ -1,0 +1,156 @@
+import type { CandidatePoolRejectReason } from './candidates.js';
+import type { NcmTrackLike } from './liked-recall.js';
+import type {
+  CandidateSource,
+  MusicAgentContextSummary,
+  MusicCandidate,
+  MusicCandidateQualitySignals,
+  MusicCandidateScores
+} from './schema.js';
+
+const QUALITY_SOURCES = new Set<CandidateSource>(['search', 'style_expansion', 'trend']);
+
+export type UpsertTracksResult = {
+  added: number;
+  inserted: number;
+  mergedById: number;
+  mergedByDedupe: number;
+  mergedByIdAndDedupe: number;
+  invalid: number;
+  rejectedByPool: number;
+  rejectedReasons: Partial<Record<CandidatePoolRejectReason, number>>;
+  skippedAvoidedArtists: number;
+  skippedArtistCap: number;
+};
+
+export function emptyUpsertTracksResult(): UpsertTracksResult {
+  return {
+    added: 0,
+    inserted: 0,
+    mergedById: 0,
+    mergedByDedupe: 0,
+    mergedByIdAndDedupe: 0,
+    invalid: 0,
+    rejectedByPool: 0,
+    rejectedReasons: {},
+    skippedAvoidedArtists: 0,
+    skippedArtistCap: 0
+  };
+}
+
+export function mergeUpsertTracksResult(target: UpsertTracksResult, source: UpsertTracksResult): void {
+  target.added += source.added;
+  target.inserted += source.inserted;
+  target.mergedById += source.mergedById;
+  target.mergedByDedupe += source.mergedByDedupe;
+  target.mergedByIdAndDedupe += source.mergedByIdAndDedupe;
+  target.invalid += source.invalid;
+  target.rejectedByPool += source.rejectedByPool;
+  target.skippedAvoidedArtists += source.skippedAvoidedArtists;
+  target.skippedArtistCap += source.skippedArtistCap;
+  for (const [reason, count] of Object.entries(source.rejectedReasons)) {
+    if (!count) continue;
+    const key = reason as CandidatePoolRejectReason;
+    target.rejectedReasons[key] = (target.rejectedReasons[key] ?? 0) + count;
+  }
+}
+
+export function summarizeCandidateAdmission(result: UpsertTracksResult): string | null {
+  const parts = [
+    result.inserted > 0 ? `inserted=${result.inserted}` : '',
+    result.mergedById > 0 ? `mergedById=${result.mergedById}` : '',
+    result.mergedByDedupe > 0 ? `mergedByDedupe=${result.mergedByDedupe}` : '',
+    result.mergedByIdAndDedupe > 0 ? `mergedByIdAndDedupe=${result.mergedByIdAndDedupe}` : '',
+    result.invalid > 0 ? `invalid=${result.invalid}` : '',
+    rejectedByPoolSummary(result),
+    result.skippedAvoidedArtists > 0 ? `skippedAvoidedArtists=${result.skippedAvoidedArtists}` : '',
+    result.skippedArtistCap > 0 ? `skippedArtistCap=${result.skippedArtistCap}` : ''
+  ].filter(Boolean);
+
+  return parts.length > 0 ? `candidate admission: ${parts.join('; ')}` : null;
+}
+
+export function candidateFromTrack(
+  track: NcmTrackLike,
+  source: CandidateSource,
+  options: { evidence: string; scores: MusicCandidateScores }
+): MusicCandidate | null {
+  const id = track.id === undefined || track.id === null ? '' : String(track.id).trim();
+  const name = track.name?.trim() ?? '';
+  const artist = (track.artists ?? []).map((item) => item.trim()).filter(Boolean).join(' / ');
+  if (!id || !name || !artist) return null;
+
+  return {
+    id,
+    name,
+    artist,
+    sources: [source],
+    evidence: [options.evidence],
+    scores: { ...options.scores },
+    ...qualitySignalsProperty(track.qualitySignals ?? undefined)
+  };
+}
+
+export function usesExternalQuality(candidate: MusicCandidate): boolean {
+  return candidate.sources.every((source) => QUALITY_SOURCES.has(source));
+}
+
+export function sourceScores(source: CandidateSource, context: MusicAgentContextSummary): MusicCandidateScores {
+  const mode = context.discoveryMode;
+  const base: MusicCandidateScores = {
+    intentMatch: 0.62,
+    tasteMatch: 0.58,
+    timeFit: 0.55,
+    planFit: 0.35,
+    novelty: 0.45,
+    recentPenalty: 0,
+    skipPenalty: 0,
+    sourceConfidence: 0.58
+  };
+
+  if (source === 'liked') {
+    return mode === 'comfort'
+      ? { ...base, intentMatch: 0.7, tasteMatch: 0.94, sourceConfidence: 0.88, novelty: 0.35 }
+      : { ...base, intentMatch: 0.62, tasteMatch: 0.72, sourceConfidence: 0.68, novelty: 0.32 };
+  }
+  if (source === 'playlist') {
+    return mode === 'comfort'
+      ? { ...base, tasteMatch: 0.8, sourceConfidence: 0.78 }
+      : { ...base, tasteMatch: 0.66, sourceConfidence: 0.62, novelty: 0.48 };
+  }
+  if (source === 'plan') {
+    return mode === 'comfort'
+      ? { ...base, intentMatch: 0.76, planFit: 0.86, sourceConfidence: 0.72 }
+      : { ...base, intentMatch: 0.72, planFit: 0.76, sourceConfidence: 0.62, novelty: 0.5 };
+  }
+  if (source === 'trend') {
+    return mode === 'comfort'
+      ? { ...base, intentMatch: 0.54, tasteMatch: 0.46, novelty: 0.62, sourceConfidence: 0.58 }
+      : { ...base, intentMatch: 0.66, tasteMatch: 0.52, novelty: 0.82, sourceConfidence: 0.7 };
+  }
+  if (source === 'style_expansion') {
+    return mode === 'comfort'
+      ? { ...base, intentMatch: 0.66, tasteMatch: 0.62, novelty: 0.58, sourceConfidence: 0.58 }
+      : { ...base, intentMatch: 0.78, tasteMatch: 0.62, novelty: 0.8, sourceConfidence: 0.72 };
+  }
+  return mode === 'comfort'
+    ? base
+    : { ...base, intentMatch: 0.76, tasteMatch: 0.64, novelty: 0.78, sourceConfidence: 0.72 };
+}
+
+function rejectedByPoolSummary(result: UpsertTracksResult): string {
+  if (result.rejectedByPool === 0) return '';
+  const reasons = Object.entries(result.rejectedReasons)
+    .filter(([, count]) => count > 0)
+    .map(([reason, count]) => `${reason}=${count}`)
+    .join(', ');
+  return reasons
+    ? `rejectedByPool=${result.rejectedByPool} (${reasons})`
+    : `rejectedByPool=${result.rejectedByPool}`;
+}
+
+function qualitySignalsProperty(
+  qualitySignals: MusicCandidateQualitySignals | undefined
+): { qualitySignals?: MusicCandidateQualitySignals } {
+  return qualitySignals ? { qualitySignals: { ...qualitySignals } } : {};
+}
