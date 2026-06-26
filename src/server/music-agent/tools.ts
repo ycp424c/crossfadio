@@ -35,15 +35,12 @@ import {
 import {
   filterExactSongSearchQueries
 } from './recall-query-filtering.js';
-import {
-  filterWebDiscoveryHintsForRecall as filterWebDiscoveryHintsByPolicy,
-  objectArrayValue
-} from './web-discovery-hints.js';
-import {
-  autoFillWebDiscoveryInput,
-  selectWebDiscoveryStyle
-} from './web-discovery-planning.js';
+import { objectArrayValue } from './web-discovery-hints.js';
+import { autoFillWebDiscoveryInput } from './web-discovery-planning.js';
 import { runWebMusicDiscovery } from './web-discovery-run.js';
+import {
+  recallFromWebDiscoveryHints as runRecallFromWebDiscoveryHints
+} from './web-hint-recall.js';
 import {
   autoFillSearchQueries,
   styleExpansionQueries,
@@ -659,60 +656,23 @@ async function recallFromWebDiscoveryHints(options: {
   signal?: AbortSignal;
   limit: number;
 }): Promise<{ summary: string; problems: string[] }> {
-  const filteredHints = filterWebDiscoveryHintsForRecall(options.hints, options.input, options.state);
-  const parsedInput = parseEntityRecallInput({ hints: filteredHints.hints });
-  const entities = parsedInput.entities.slice(0, MAX_ENTITY_RECALL_COUNT);
   const avoidArtists = new Set(
     [
       ...avoidArtistsFromContext(options.input.context),
       ...(options.state.queryPlan?.avoidArtists ?? [])
     ].flatMap(artistKeys)
   );
-  const artistCounts = countCandidateArtistKeys(options.input.candidatePool.list());
-  const problems = [...filteredHints.problems, ...parsedInput.problems];
-  let added = 0;
-
-  for (const entity of entities) {
-    if (options.signal?.aborted) return { summary: 'web hint entity recall aborted.', problems: ['aborted'] };
-    const result = await recallFromEntity({
-      entity,
-      ncmClient: options.input.ncmClient,
-      candidatePool: options.input.candidatePool,
-      context: options.input.context,
-      limit: options.limit,
-      searchLimit: DEFAULT_ENTITY_SEARCH_LIMIT,
-      consumeNcmSearch: () => consumeNcmSearch(options.state, options.maxSearches),
-      consumePlaylistFetch: () => consumePlaylistFetch(options.state, options.maxPlaylistFetches),
-      avoidArtists,
-      artistCounts,
-      provenanceKind: 'web_hint_recall',
-      signal: options.signal
-    });
-    added += result.added;
-    problems.push(...result.problems);
-  }
-
-  return {
-    summary: `web hint entity recall added ${added} candidates from ${entities.length} entities.`,
-    problems
-  };
-}
-
-function filterWebDiscoveryHintsForRecall(
-  value: unknown,
-  input: CreateMusicAgentToolsInput,
-  state: ToolState
-): { hints: unknown[]; problems: string[] } {
-  const avoidArtists = new Set(
-    [
-      ...avoidArtistsFromContext(input.context),
-      ...(state.queryPlan?.avoidArtists ?? [])
-    ].flatMap(artistKeys)
-  );
-  const expectedStyle = selectWebDiscoveryStyle(input.context, state.queryPlan);
-  return filterWebDiscoveryHintsByPolicy(value, {
+  return runRecallFromWebDiscoveryHints({
+    hints: options.hints,
+    ncmClient: options.input.ncmClient,
+    candidatePool: options.input.candidatePool,
+    context: options.input.context,
+    queryPlan: options.state.queryPlan,
     avoidArtists,
-    expectedStyle
+    consumeNcmSearch: () => consumeNcmSearch(options.state, options.maxSearches),
+    consumePlaylistFetch: () => consumePlaylistFetch(options.state, options.maxPlaylistFetches),
+    signal: options.signal,
+    limit: options.limit
   });
 }
 
