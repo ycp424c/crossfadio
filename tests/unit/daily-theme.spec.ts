@@ -53,4 +53,26 @@ describe('daily theme generation', () => {
     });
     expect(getDailyTheme()).not.toBeNull();
   });
+
+  it('rejects generated themes that pin an all-day theme to night', async () => {
+    vi.setSystemTime(new Date('2026-05-15T06:30:00.000Z'));
+    vi.stubGlobal('fetch', vi.fn(async () =>
+      new Response(JSON.stringify({
+        choices: [{
+          message: {
+            content: JSON.stringify({
+              theme: '春末微风，周五夜晚的惬意时光',
+              keywords: ['周五夜晚', 'city pop']
+            })
+          }
+        }]
+      }), { status: 200, headers: { 'content-type': 'application/json' } })
+    ));
+
+    const theme = await getOrGenerateDailyTheme();
+
+    expect(theme?.theme).not.toContain('夜晚');
+    expect(theme?.theme).not.toContain('周五晚');
+    expect(theme?.keywords).not.toContain('周五夜晚');
+  });
 });

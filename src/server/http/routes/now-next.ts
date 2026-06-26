@@ -39,10 +39,12 @@ export function createNowHandler(fallbackNcmClient?: NcmClient): RequestHandler 
     try {
       const ncmClient = getScopedNcmClient(req, fallbackNcmClient);
       const ncmId = parsed.data.ncmId;
-      const [songUrl, lyric] = await Promise.all([
-        ncmClient.getSongUrl(ncmId),
-        ncmClient.getLyric(ncmId)
+      const [songUrl, lyric, details] = await Promise.all([
+        ncmClient.getSongUrl(ncmId, songUrlQualityOptions(req)),
+        ncmClient.getLyric(ncmId),
+        ncmClient.getSongDetails([ncmId]).catch(() => [])
       ]);
+      const detail = details[0] ?? null;
 
       if (!songUrl?.url) {
         throw new NcmApiError(
@@ -55,6 +57,7 @@ export function createNowHandler(fallbackNcmClient?: NcmClient): RequestHandler 
         ok: true,
         ncmId,
         url: songUrl.url,
+        coverImgUrl: detail?.coverImgUrl ?? null,
         durationMs: estimateDurationMs(songUrl.size, songUrl.br),
         lyric: lyric?.lyric ?? null,
         translation: lyric?.translation ?? null,
@@ -97,7 +100,11 @@ export function createNextHandler(fallbackNcmClient?: NcmClient): RequestHandler
 
     try {
       const ncmClient = getScopedNcmClient(req, fallbackNcmClient);
-      const songUrl = await ncmClient.getSongUrl(nextId);
+      const [songUrl, details] = await Promise.all([
+        ncmClient.getSongUrl(nextId, songUrlQualityOptions(req)),
+        ncmClient.getSongDetails([nextId]).catch(() => [])
+      ]);
+      const detail = details[0] ?? null;
       if (!songUrl?.url) {
         throw new NcmApiError(
           NCM_ERROR_CODE.BAD_RESPONSE,
@@ -107,7 +114,12 @@ export function createNextHandler(fallbackNcmClient?: NcmClient): RequestHandler
 
       const payload = nextTrackResponseSchema.parse({
         ok: true,
-        track: { id: nextId },
+        track: {
+          id: nextId,
+          name: detail?.name,
+          artists: detail?.artists,
+          coverImgUrl: detail?.coverImgUrl ?? null
+        },
         url: songUrl.url,
         durationMs: estimateDurationMs(songUrl.size, songUrl.br),
         timing: defaultTiming()
@@ -181,6 +193,11 @@ function getScopedNcmClient(req: Request, fallback?: NcmClient): NcmClient {
     throw new Error('NCM client missing from request scope');
   }
   return ncmClient;
+}
+
+function songUrlQualityOptions(req: Request): { qualityCacheKey: string } | undefined {
+  const userId = (req as Partial<AuthedRequest>).userId;
+  return userId ? { qualityCacheKey: userId } : undefined;
 }
 
 function classifyError(error: unknown): { code: NcmErrorCode; message: string } {

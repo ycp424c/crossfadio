@@ -80,4 +80,20 @@ describe('plays store', () => {
     const rows = getRecentPlays('test-user', 3);
     expect(rows.length).toBe(3);
   });
+
+  it('getTodayPlayedSongIds returns only tracks played on the local day', async () => {
+    const { getTodayPlayedSongIds } = await import('../../src/server/store/plays');
+    const db = new Database(path.join(dataDir, 'state.db'));
+    db.prepare(
+      `INSERT INTO plays (user_id, song_id, song_name, artist_name, started_at)
+       VALUES (?, ?, ?, ?, datetime('now', '-1 day'))`
+    ).run('test-user', 'yesterday-song', 'Yesterday', 'Artist');
+    db.prepare(
+      `INSERT INTO plays (user_id, song_id, song_name, artist_name, started_at)
+       VALUES (?, ?, ?, ?, datetime('now'))`
+    ).run('test-user', 'today-song', 'Today', 'Artist');
+    db.close();
+
+    expect(getTodayPlayedSongIds('test-user')).toEqual(['today-song']);
+  });
 });

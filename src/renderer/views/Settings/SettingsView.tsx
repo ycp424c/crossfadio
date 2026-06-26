@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { Settings2, Check, AlertCircle, Loader2, Trash2, UserPlus, Shield, Sparkles } from 'lucide-react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { Settings2, Check, AlertCircle, Loader2, Trash2, UserPlus, Shield, Sparkles, Volume2 } from 'lucide-react';
 import {
   getSettings,
   saveSettings,
+  previewTtsVoice,
   getWhitelist,
   getBlockedAttempts,
   addToWhitelist,
@@ -13,15 +14,22 @@ import {
   type TtsSettings,
   type BlockedAttempt
 } from '@renderer/api';
+import { QWEN3_TTS_VOICES } from '@shared/tts';
+import { AUTO_FILL_BATCH_SIZE_OPTIONS, DEFAULT_AUTO_FILL_BATCH_SIZE, type AutoFillBatchSize } from '@shared/dj';
 
 type SaveStatus = { type: 'idle' } | { type: 'saving' } | { type: 'ok' } | { type: 'error'; message: string };
 type WhitelistOpStatus = { type: 'idle' } | { type: 'saving' } | { type: 'ok' } | { type: 'error'; message: string };
+type PreviewStatus = { type: 'idle' } | { type: 'loading' } | { type: 'playing' } | { type: 'error'; message: string };
 
 export function SettingsView(): JSX.Element {
   const [llm, setLlm] = useState<LlmSettings | null>(null);
   const [tts, setTts] = useState<TtsSettings | null>(null);
   const [voice, setVoice] = useState('');
+  const [autoFillBatchSize, setAutoFillBatchSize] = useState<AutoFillBatchSize>(DEFAULT_AUTO_FILL_BATCH_SIZE);
+  const [savedAutoFillBatchSize, setSavedAutoFillBatchSize] = useState<AutoFillBatchSize>(DEFAULT_AUTO_FILL_BATCH_SIZE);
+  const [dailyThemeEnabled, setDailyThemeEnabled] = useState(true);
   const [saveStatus, setSaveStatus] = useState<SaveStatus>({ type: 'idle' });
+  const [previewStatus, setPreviewStatus] = useState<PreviewStatus>({ type: 'idle' });
   const [loading, setLoading] = useState(true);
   const [whitelist, setWhitelist] = useState<string[]>([]);
   const [blocked, setBlocked] = useState<BlockedAttempt[]>([]);
@@ -29,6 +37,7 @@ export function SettingsView(): JSX.Element {
   const [whitelistStatus, setWhitelistStatus] = useState<WhitelistOpStatus>({ type: 'idle' });
   const [isAdmin, setIsAdmin] = useState(true);
   const statusTimerRef = useRef<ReturnType<typeof setTimeout>>();
+  const previewAudioRef = useRef<HTMLAudioElement | null>(null);
 type TasteStatus = { type: 'idle' } | { type: 'analyzing' } | { type: 'ok'; taste: string } | { type: 'error'; message: string };
 
   const [tasteStatus, setTasteStatus] = useState<TasteStatus>({ type: 'idle' });
@@ -58,6 +67,9 @@ type TasteStatus = { type: 'idle' } | { type: 'analyzing' } | { type: 'ok'; tast
           setLlm(s.llm);
           setTts(s.tts);
           setVoice(s.tts.voice);
+          setAutoFillBatchSize(s.autoFillBatchSize);
+          setSavedAutoFillBatchSize(s.autoFillBatchSize);
+          setDailyThemeEnabled(s.dailyThemeEnabled);
         }),
       getWhitelist()
         .then((w) => setWhitelist(w.entries))
@@ -69,7 +81,11 @@ type TasteStatus = { type: 'idle' } | { type: 'analyzing' } | { type: 'ok'; tast
       .catch(() => {/* first launch, no config yet */})
       .finally(() => setLoading(false));
 
-    return () => clearTimeout(statusTimerRef.current);
+    return () => {
+      clearTimeout(statusTimerRef.current);
+      previewAudioRef.current?.pause();
+      previewAudioRef.current = null;
+    };
   }, []);
   const refreshWhitelist = useCallback(async () => {
     const [w, b] = await Promise.all([getWhitelist(), getBlockedAttempts()]);
@@ -90,7 +106,9 @@ type TasteStatus = { type: 'idle' } | { type: 'analyzing' } | { type: 'ok'; tast
   async function handleSave(): Promise<void> {
     setSaveStatus({ type: 'saving' });
     try {
-      await saveSettings({ tts: { voice } });
+      await saveSettings({ tts: { voice }, autoFillBatchSize });
+      setTts((current) => current ? { ...current, voice } : current);
+      setSavedAutoFillBatchSize(autoFillBatchSize);
       setSaveStatus({ type: 'ok' });
       setTimeout(() => setSaveStatus({ type: 'idle' }), 2000);
     } catch (err) {
@@ -98,7 +116,41 @@ type TasteStatus = { type: 'idle' } | { type: 'analyzing' } | { type: 'ok'; tast
     }
   }
 
-  const disabled = voice === tts?.voice;
+  async function handlePreviewVoice(): Promise<void> {
+    if (!voice) return;
+    setPreviewStatus({ type: 'loading' });
+    try {
+      previewAudioRef.current?.pause();
+      const preview = await previewTtsVoice(voice);
+      const audio = new Audio(preview.audioUrl);
+      previewAudioRef.current = audio;
+      audio.addEventListener('ended', () => {
+        if (previewAudioRef.current === audio) setPreviewStatus({ type: 'idle' });
+      }, { once: true });
+      audio.addEventListener('error', () => {
+        if (previewAudioRef.current === audio) setPreviewStatus({ type: 'error', message: '试听播放失败' });
+      }, { once: true });
+      await audio.play();
+      setPreviewStatus({ type: 'playing' });
+    } catch (err) {
+      setPreviewStatus({ type: 'error', message: err instanceof Error ? err.message : '试听生成失败' });
+    }
+  }
+
+  async function handleDailyThemeToggle(): Promise<void> {
+    const next = !dailyThemeEnabled;
+    setDailyThemeEnabled(next);
+    try {
+      await saveSettings({ dailyThemeEnabled: next });
+    } catch {
+      setDailyThemeEnabled(!next); // revert on failure
+    }
+  }
+
+  const disabled = voice === tts?.voice && autoFillBatchSize === savedAutoFillBatchSize;
+  const voiceOptions = voice && !(QWEN3_TTS_VOICES as readonly string[]).includes(voice)
+    ? [voice, ...QWEN3_TTS_VOICES]
+    : QWEN3_TTS_VOICES;
 
   if (loading) {
     return (
@@ -109,13 +161,13 @@ type TasteStatus = { type: 'idle' } | { type: 'analyzing' } | { type: 'ok'; tast
   }
 
   return (
-    <div className="flex h-full flex-col overflow-y-auto bg-zinc-950 text-zinc-100">
-      <div className="flex items-center gap-2 border-b border-zinc-800 px-4 md:px-6 py-4">
+    <div className="flex h-full flex-col overflow-hidden bg-zinc-950 text-zinc-100">
+      <div className="flex shrink-0 items-center gap-2 border-b border-zinc-800 px-4 md:px-6 py-4">
         <Settings2 className="h-5 w-5 text-zinc-400" />
         <h1 className="text-lg font-semibold">设置</h1>
       </div>
 
-      <div className="flex-1 space-y-8 px-4 py-4 md:px-6 md:py-6">
+      <div className="min-h-0 flex-1 space-y-8 overflow-y-auto px-4 py-4 pb-8 md:px-6 md:py-6 md:pb-8">
         {/* LLM section — read-only */}
         <section>
           <h2 className="mb-4 text-sm font-medium uppercase tracking-wider text-zinc-400">
@@ -139,24 +191,116 @@ type TasteStatus = { type: 'idle' } | { type: 'analyzing' } | { type: 'ok'; tast
           </h2>
           <div className="space-y-3 rounded-xl border border-zinc-800 bg-zinc-900 p-4">
             <ReadOnlyField label="API Base URL" value={tts?.baseUrl ?? '—'} />
+            <ReadOnlyField label="模型" value={tts?.model ?? '—'} />
             <ReadOnlyField
               label="状态"
               value={tts?.hasApiKey ? '已配置 API Key' : '未配置 API Key'}
               valueClass={tts?.hasApiKey ? 'text-emerald-400' : 'text-amber-400'}
             />
             <Field label="声音（Voice）">
-              <select
-                value={voice}
-                onChange={(e) => setVoice(e.target.value)}
-                className={inputClass}
-              >
-                {['Cherry', 'Ethan', 'Chelsie', 'Serena', 'Dylan'].map((v) => (
-                  <option key={v} value={v}>{v}</option>
-                ))}
-              </select>
+              <div className="flex flex-col gap-2 sm:flex-row">
+                <select
+                  value={voice}
+                  onChange={(e) => {
+                    setVoice(e.target.value);
+                    setPreviewStatus({ type: 'idle' });
+                  }}
+                  className={inputClass}
+                >
+                  {voiceOptions.map((v) => (
+                    <option key={v} value={v}>{v}</option>
+                  ))}
+                </select>
+                <button
+                  type="button"
+                  onClick={handlePreviewVoice}
+                  disabled={!voice || previewStatus.type === 'loading'}
+                  className="inline-flex shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-lg border border-zinc-700 px-3 py-2 text-sm font-medium text-zinc-100 transition hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {previewStatus.type === 'loading' ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Volume2 className="h-4 w-4" />
+                  )}
+                  {previewStatus.type === 'loading'
+                    ? '生成中'
+                    : previewStatus.type === 'playing'
+                      ? '播放中'
+                      : '试听音色'}
+                </button>
+              </div>
+              {previewStatus.type === 'error' && (
+                <p className="mt-2 text-xs text-red-400">{previewStatus.message}</p>
+              )}
             </Field>
           </div>
         </section>
+
+        <section>
+          <h2 className="mb-4 text-sm font-medium uppercase tracking-wider text-zinc-400">
+            DJ 自动补歌
+          </h2>
+          <div className="space-y-3 rounded-xl border border-zinc-800 bg-zinc-900 p-4">
+            <div>
+              <p className="text-sm text-zinc-200">每次补歌数量</p>
+              <p className="mt-0.5 text-xs text-zinc-500">
+                自动 DJ 每次最多追加的歌曲数。较大的数量会增加候选分析和等待时间。
+              </p>
+            </div>
+            <div className="grid grid-cols-4 gap-2">
+              {AUTO_FILL_BATCH_SIZE_OPTIONS.map((size) => {
+                const active = autoFillBatchSize === size;
+                return (
+                  <button
+                    key={size}
+                    type="button"
+                    aria-pressed={active}
+                    onClick={() => setAutoFillBatchSize(size)}
+                    className={`rounded-lg border px-3 py-2 text-sm font-medium transition ${
+                      active
+                        ? 'border-cyan-500 bg-cyan-500/15 text-cyan-200'
+                        : 'border-zinc-700 bg-zinc-950 text-zinc-300 hover:border-zinc-500 hover:bg-zinc-800'
+                    }`}
+                  >
+                    {size}首
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        </section>
+
+        {/* Daily Theme */}
+        <section>
+          <h2 className="mb-4 text-sm font-medium uppercase tracking-wider text-zinc-400">
+            每日主题
+          </h2>
+          <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm text-zinc-200">启用每日主题</p>
+                <p className="mt-0.5 text-xs text-zinc-500">
+                  关闭后，DJ 选曲和转场将不再参考每日主题
+                </p>
+              </div>
+              <button
+                onClick={handleDailyThemeToggle}
+                className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
+                  dailyThemeEnabled ? 'bg-indigo-600' : 'bg-zinc-700'
+                }`}
+                role="switch"
+                aria-checked={dailyThemeEnabled}
+              >
+                <span
+                  className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
+                    dailyThemeEnabled ? 'translate-x-5' : 'translate-x-0'
+                  }`}
+                />
+              </button>
+            </div>
+          </div>
+        </section>
+
         {/* Taste Analysis */}
         <section>
           <h2 className="mb-4 text-sm font-medium uppercase tracking-wider text-zinc-400">
@@ -346,12 +490,14 @@ type TasteStatus = { type: 'idle' } | { type: 'analyzing' } | { type: 'ok'; tast
       </div>
 
       {/* Footer save bar */}
-      <div className="sticky bottom-0 flex items-center justify-between border-t border-zinc-800 bg-zinc-950 px-4 md:px-6 py-4">
-        <StatusIndicator status={saveStatus} />
+      <div className="flex shrink-0 items-center justify-between gap-3 border-t border-zinc-800 bg-zinc-950 px-4 md:px-6 py-4">
+        <div className="min-w-0 flex-1">
+          <StatusIndicator status={saveStatus} />
+        </div>
         <button
           onClick={handleSave}
           disabled={disabled || saveStatus.type === 'saving'}
-          className="flex items-center gap-2 rounded-lg bg-indigo-600 px-5 py-2 text-sm font-medium text-white transition hover:bg-indigo-500 disabled:opacity-50"
+          className="flex shrink-0 items-center gap-2 rounded-lg bg-indigo-600 px-5 py-2 text-sm font-medium text-white transition hover:bg-indigo-500 disabled:opacity-50"
         >
           {saveStatus.type === 'saving' && <Loader2 className="h-4 w-4 animate-spin" />}
           保存
@@ -397,8 +543,8 @@ function StatusIndicator({ status }: { status: SaveStatus }): JSX.Element {
   }
   if (status.type === 'error') {
     return (
-      <span className="flex items-center gap-1.5 text-sm text-red-400">
-        <AlertCircle className="h-4 w-4" /> {status.message}
+      <span className="flex min-w-0 items-center gap-1.5 text-sm text-red-400">
+        <AlertCircle className="h-4 w-4 shrink-0" /> <span className="truncate">{status.message}</span>
       </span>
     );
   }

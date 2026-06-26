@@ -62,6 +62,71 @@ describe('LlmClient.complete', () => {
     expect(capturedBody?.stream).toBeUndefined();
   });
 
+  it('passes response_format through for structured JSON completions', async () => {
+    let capturedBody: Record<string, unknown> | undefined;
+    mockFetch(async (_url, init) => {
+      capturedBody = JSON.parse(init?.body as string) as Record<string, unknown>;
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: '{"type":"final"}' } }], model: 'gpt-4o'
+      }), { status: 200 });
+    });
+
+    const client = new LlmClient(config);
+    await client.complete([{ role: 'user', content: 'hi' }], {
+      responseFormat: {
+        type: 'json_schema',
+        json_schema: {
+          name: 'music_agent_final_pick',
+          strict: true,
+          schema: {
+            type: 'object',
+            required: ['type'],
+            properties: { type: { const: 'final' } }
+          }
+        }
+      }
+    });
+
+    expect(capturedBody?.response_format).toEqual({
+      type: 'json_schema',
+      json_schema: {
+        name: 'music_agent_final_pick',
+        strict: true,
+        schema: {
+          type: 'object',
+          required: ['type'],
+          properties: { type: { const: 'final' } }
+        }
+      }
+    });
+  });
+
+  it('passes DeepSeek thinking control only for supported models', async () => {
+    const capturedBodies: Array<Record<string, unknown>> = [];
+    mockFetch(async (_url, init) => {
+      capturedBodies.push(JSON.parse(init?.body as string) as Record<string, unknown>);
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: '{"ok":true}' } }],
+        model: 'test-model'
+      }), { status: 200 });
+    });
+
+    await new LlmClient({
+      ...config,
+      baseUrl: 'https://api.deepseek.com',
+      model: 'deepseek-v4-flash'
+    }).complete([{ role: 'user', content: 'json' }], {
+      thinking: { type: 'disabled' }
+    });
+
+    await new LlmClient(config).complete([{ role: 'user', content: 'json' }], {
+      thinking: { type: 'disabled' }
+    });
+
+    expect(capturedBodies[0]?.thinking).toEqual({ type: 'disabled' });
+    expect(capturedBodies[1]).not.toHaveProperty('thinking');
+  });
+
   it('throws LlmError on non-2xx response', async () => {
     mockFetch(async () => new Response('Bad Request', { status: 400 }));
     const client = new LlmClient(config);

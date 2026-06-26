@@ -112,7 +112,7 @@ describe('fallback TTS cache', () => {
       ...baseConfig,
       provider: 'aliyun-qwen',
       baseUrl: 'https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation',
-      model: 'qwen-tts',
+      model: 'qwen3-tts-flash',
       voice: 'Cherry'
     };
     const synthesizedPath = path.join(dataDir, 'normal-cache.wav');

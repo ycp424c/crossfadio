@@ -127,6 +127,80 @@ INSERT INTO plan_new (id, user_id, plan_date, version, payload_json, created_at)
   SELECT id, '__legacy__', plan_date, version, payload_json, created_at FROM plan;
 DROP TABLE plan;
 ALTER TABLE plan_new RENAME TO plan;
+`,
+  `
+CREATE TABLE IF NOT EXISTS music_query_stats (
+  user_id          TEXT NOT NULL,
+  normalized_query TEXT NOT NULL,
+  display_query    TEXT NOT NULL,
+  source           TEXT NOT NULL,
+  searched_count   INTEGER NOT NULL DEFAULT 0,
+  result_count     INTEGER NOT NULL DEFAULT 0,
+  added_count      INTEGER NOT NULL DEFAULT 0,
+  selected_count   INTEGER NOT NULL DEFAULT 0,
+  last_used_order  INTEGER NOT NULL DEFAULT 0,
+  last_used_at     TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at       TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (user_id, normalized_query, source)
+);
+
+CREATE INDEX IF NOT EXISTS idx_music_query_stats_user_recent
+  ON music_query_stats (user_id, last_used_order DESC);
+`,
+  `
+CREATE TABLE IF NOT EXISTS music_entities (
+  user_id             TEXT NOT NULL,
+  id                  TEXT NOT NULL,
+  type                TEXT NOT NULL,
+  provider            TEXT NOT NULL,
+  provider_id         TEXT,
+  title               TEXT,
+  artist              TEXT,
+  album               TEXT,
+  description         TEXT NOT NULL,
+  style_hints_json    TEXT NOT NULL DEFAULT '[]',
+  constraints_json    TEXT NOT NULL DEFAULT '[]',
+  source_signals_json TEXT NOT NULL DEFAULT '[]',
+  last_verified_at    TEXT,
+  selected_count      INTEGER NOT NULL DEFAULT 0,
+  skipped_count       INTEGER NOT NULL DEFAULT 0,
+  last_used_at        TEXT,
+  created_at          TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at          TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (user_id, id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_music_entities_user_type
+  ON music_entities (user_id, type, updated_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_music_entities_user_provider
+  ON music_entities (user_id, provider, provider_id);
+
+CREATE TABLE IF NOT EXISTS music_entity_embeddings (
+  user_id    TEXT NOT NULL,
+  entity_id  TEXT NOT NULL,
+  model      TEXT NOT NULL,
+  dimensions INTEGER NOT NULL,
+  vector     BLOB NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (user_id, entity_id, model),
+  FOREIGN KEY (user_id, entity_id) REFERENCES music_entities(user_id, id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_music_entity_embeddings_user_model
+  ON music_entity_embeddings (user_id, model);
+`,
+  `
+CREATE TABLE IF NOT EXISTS music_entity_index_state (
+  user_id     TEXT NOT NULL,
+  source      TEXT NOT NULL,
+  cursor      TEXT NOT NULL DEFAULT '',
+  last_run_at TEXT,
+  last_error  TEXT,
+  updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (user_id, source)
+);
 `
 ];
 

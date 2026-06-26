@@ -1,13 +1,14 @@
 import { getConfig } from '../config.js';
 import { getPref } from '../store/prefs.js';
+import { DEFAULT_TTS_MODEL, DEFAULT_TTS_VOICE } from '../../shared/tts.js';
 import type { TtsConfig } from './client.js';
 
-export const DEFAULT_TTS_VOICE = 'Cherry';
+export { DEFAULT_TTS_MODEL, DEFAULT_TTS_VOICE } from '../../shared/tts.js';
 
 export const DEFAULT_TTS_CONFIG = {
   provider: 'aliyun-qwen',
   baseUrl: 'https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation',
-  model: 'qwen-tts',
+  model: DEFAULT_TTS_MODEL,
   voice: DEFAULT_TTS_VOICE,
   speed: 1,
   format: 'mp3'

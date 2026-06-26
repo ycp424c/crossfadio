@@ -7,6 +7,7 @@ import {
   type NextTrackResponse,
   type NowPlayingResponse
 } from '@shared/schema';
+import type { AutoFillBatchSize } from '@shared/dj';
 
 type RuntimeConfig = {
   baseUrl: string;
@@ -147,19 +148,27 @@ export async function toggleLikeTrack(id: string, like: boolean): Promise<void> 
 }
 
 export async function saveQueueState(
-  queue: Array<string | { id: string; name?: string; artists?: string[]; durationMs?: number }>,
-  currentIndex: number
+  queue: Array<string | { id: string; name?: string; artists?: string[]; durationMs?: number; coverImgUrl?: string | null }>,
+  currentIndex: number,
+  temporaryBanTracks: Array<{ id: string; name?: string; artists?: string[] }> = []
 ): Promise<void> {
   const result = await requestJson<{ ok: boolean }>('/api/queue/state', {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ queue, currentIndex })
+    body: JSON.stringify({ queue, currentIndex, temporaryBanTracks })
   });
   if (!result.ok) throw new Error('Failed to save queue state');
 }
 
-export async function pickNextTrack(): Promise<{ ok: boolean }> {
-  return requestJson<{ ok: boolean }>('/api/dj/pick-next', { method: 'POST' });
+export async function pickNextTrack(
+  queue: Array<{ id: string; name?: string; artists?: string[]; durationMs?: number; coverImgUrl?: string | null }> = [],
+  currentIndex = 0
+): Promise<{ ok: boolean }> {
+  return requestJson<{ ok: boolean }>('/api/dj/pick-next', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ queue, currentIndex })
+  });
 }
 
 export async function updateLocation(lat: number, lon: number): Promise<void> {
@@ -224,6 +233,7 @@ export type LlmSettings = {
 
 export type TtsSettings = {
   baseUrl: string;
+  model: string;
   hasApiKey: boolean;
   voice: string;
   voiceDefault: string | null;
@@ -233,10 +243,16 @@ export type SettingsResponse = {
   ok: boolean;
   llm: LlmSettings;
   tts: TtsSettings;
+  dailyThemeEnabled: boolean;
+  discoveryMode: 'explore' | 'comfort';
+  autoFillBatchSize: AutoFillBatchSize;
 };
 
 export type SaveSettingsPayload = {
   tts?: { voice: string };
+  dailyThemeEnabled?: boolean;
+  discoveryMode?: 'explore' | 'comfort';
+  autoFillBatchSize?: AutoFillBatchSize;
 };
 
 export async function getSettings(): Promise<SettingsResponse> {
@@ -252,6 +268,24 @@ export async function saveSettings(payload: SaveSettingsPayload): Promise<void> 
   if (!result.ok) throw new Error('Failed to save settings');
 }
 
+export type TtsPreviewResponse = {
+  ok: boolean;
+  audioUrl: string;
+  cached: boolean;
+  voice: string;
+  model: string;
+};
+
+export async function previewTtsVoice(voice: string): Promise<TtsPreviewResponse> {
+  const result = await requestJson<TtsPreviewResponse>('/api/settings/tts-preview', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ voice })
+  });
+  if (!result.ok) throw new Error('Failed to generate TTS preview');
+  return result;
+}
+
 export async function analyzeTaste(): Promise<{ ok: boolean; taste: string; message?: string }> {
   return requestJson<{ ok: boolean; taste: string; message?: string }>('/api/settings/analyze-taste', { method: 'POST' });
 }
@@ -259,7 +293,9 @@ export async function analyzeTaste(): Promise<{ ok: boolean; taste: string; mess
 export type PlayerContextResponse = {
   ok: boolean;
   theme: { theme: string; keywords: string[] } | null;
+  weather: { location: string; tempC: number; desc: string } | null;
   taste: string;
+  discoveryMode: 'explore' | 'comfort';
 };
 
 export async function getPlayerContext(): Promise<PlayerContextResponse> {

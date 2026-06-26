@@ -131,7 +131,9 @@ const THEME_SYSTEM_PROMPT = `你是一位电台节目策划人。根据日期信
 
 要求：
 - 主题简洁有氛围感，10-20字，适合作为当日电台的主题语
+- 主题是全天主题，不要包含早晨、上午、中午、下午、傍晚、晚上、夜晚、深夜、周五晚等具体时段；只有日期本身是平安夜、跨年夜等节日名时才可保留节日里的"夜"
 - 输出3-6个音乐搜索关键词，中英文混合，覆盖主题相关的风格、情绪、场景
+- 关键词也不要包含具体时段词，避免后续选歌把当前时间误判为夜晚或其他时段
 - 关键词用于在网易云音乐搜索歌曲，因此应是实际可搜的风格/情绪词或艺人名
 
 输出格式：严格 JSON，只返回 JSON 对象，不要包裹 markdown 代码块。
@@ -192,17 +194,33 @@ function parseThemeResponse(raw: string, today: string): DailyTheme | null {
       }
     }
 
-    if (!theme || keywords.length === 0) return null;
+    if (!theme || hasDisallowedThemeTimeOfDay(theme, today)) return null;
+
+    const safeKeywords = keywords.filter((keyword) => !hasDisallowedThemeTimeOfDay(keyword, today));
+    if (safeKeywords.length === 0) return null;
 
     return {
       date: today,
       theme: theme.slice(0, 100),
-      keywords: keywords.slice(0, 8),
+      keywords: safeKeywords.slice(0, 8),
       generatedAt: Date.now()
     };
   } catch {
     return null;
   }
+}
+
+function hasDisallowedThemeTimeOfDay(text: string, today: string): boolean {
+  if (isAllowedNightHoliday(text, today)) {
+    return false;
+  }
+
+  return /早晨|清晨|上午|中午|午后|下午|傍晚|黄昏|晚上|夜晚|夜里|深夜|雨夜|周[一二三四五六日天]晚|\b(?:morning|afternoon|evening|night)\b/i.test(text);
+}
+
+function isAllowedNightHoliday(text: string, today: string): boolean {
+  const info = getStaticDateInfo(new Date(today + 'T00:00:00+08:00'));
+  return info.holidays.some((holiday) => holiday.includes('夜') && text.includes(holiday));
 }
 
 // ── Static fallback ──────────────────────────────────────────────────────────

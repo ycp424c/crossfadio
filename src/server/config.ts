@@ -3,10 +3,15 @@ export type ServerConfig = {
   jwtTtlDays: number;
   llm: { baseUrl: string; apiKey: string; model: string };
   tts: { baseUrl: string; apiKey: string; voiceDefault: string | null };
+  embedding: { baseUrl: string; apiKey: string; model: string; dimensions: number } | null;
   host: string;
   allowedOrigins: string[];
   adminNcmId: string | null;
 };
+
+const DEFAULT_EMBEDDING_BASE_URL = 'https://dashscope.aliyuncs.com/compatible-mode/v1';
+const DEFAULT_EMBEDDING_MODEL = 'text-embedding-v4';
+const DEFAULT_EMBEDDING_DIMENSIONS = 1024;
 
 let _config: ServerConfig | null = null;
 
@@ -30,6 +35,7 @@ export function loadConfig(): ServerConfig {
       apiKey: required('CROSSFADIO_TTS_API_KEY'),
       voiceDefault: process.env.CROSSFADIO_TTS_VOICE_DEFAULT?.trim() || null
     },
+    embedding: resolveEmbeddingConfig(),
     host: process.env.CROSSFADIO_HOST?.trim() || '127.0.0.1',
     allowedOrigins: (process.env.CROSSFADIO_ALLOWED_ORIGINS ?? '')
       .split(',')
@@ -48,4 +54,20 @@ export function getConfig(): ServerConfig {
 
 export function resetConfigForTest(): void {
   _config = null;
+}
+
+function resolveEmbeddingConfig(): ServerConfig['embedding'] {
+  const apiKey = process.env.CROSSFADIO_EMBEDDING_API_KEY?.trim();
+  if (!apiKey) return null;
+  return {
+    baseUrl: process.env.CROSSFADIO_EMBEDDING_BASE_URL?.trim() || DEFAULT_EMBEDDING_BASE_URL,
+    apiKey,
+    model: process.env.CROSSFADIO_EMBEDDING_MODEL?.trim() || DEFAULT_EMBEDDING_MODEL,
+    dimensions: resolvePositiveInt(process.env.CROSSFADIO_EMBEDDING_DIMENSIONS, DEFAULT_EMBEDDING_DIMENSIONS)
+  };
+}
+
+function resolvePositiveInt(value: string | undefined, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
 }

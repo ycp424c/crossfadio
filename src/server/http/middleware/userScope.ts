@@ -6,6 +6,8 @@ import { deriveKey, decrypt } from '../../crypto.js';
 import { getConfig } from '../../config.js';
 import { isAllowed } from '../../allowlist.js';
 import { getLogger } from '../../logger.js';
+import { scheduleTasteAnalysisIfDue } from '../routes/taste-analysis.js';
+import { scheduleMusicEntityIndexIfDue } from '../../music-agent/entity-indexer.js';
 
 export async function userScopeMiddleware(
   req: Request,
@@ -40,6 +42,9 @@ export async function userScopeMiddleware(
     const ncmBaseUrl = req.app.locals.ncmBaseUrl as string;
     const ncmClient = new NcmClient(ncmBaseUrl, { getCookie: () => cookie });
     (req as Request & { userId: string; ncmClient: NcmClientType }).ncmClient = ncmClient;
+    // Fire-and-forget background taste analysis if due (won't block request)
+    scheduleTasteAnalysisIfDue(userId, ncmClient);
+    scheduleMusicEntityIndexIfDue(userId, ncmClient);
     next();
   } catch (err) {
     getLogger().error({ err, userId }, 'Failed to decrypt user cookie');

@@ -48,3 +48,29 @@ export function getRecentPlays(userId: string, limit = 50): PlayRecord[] {
     )
     .all(userId, limit) as PlayRecord[];
 }
+
+export function getTodayPlayedSongIds(userId: string): string[] {
+  const db = getDb();
+  const rows = db
+    .prepare<[string]>(
+      `SELECT DISTINCT song_id FROM plays
+       WHERE user_id = ?
+         AND song_id IS NOT NULL
+         AND date(started_at, 'localtime') = date('now', 'localtime')
+       ORDER BY song_id`
+    )
+    .all(userId) as Array<{ song_id: string }>;
+  return rows.map((row) => row.song_id);
+}
+
+export function getTodayPlays(userId: string): PlayRecord[] {
+  const db = getDb();
+  return db
+    .prepare<[string]>(
+      `SELECT * FROM plays
+       WHERE user_id = ?
+         AND date(started_at, 'localtime') = date('now', 'localtime')
+       ORDER BY started_at DESC, id DESC`
+    )
+    .all(userId) as PlayRecord[];
+}

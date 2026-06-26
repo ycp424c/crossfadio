@@ -25,9 +25,22 @@ export type LlmResponse = {
   usage?: LlmUsage;
 };
 
+export type LlmResponseFormat =
+  | { type: 'json_object' }
+  | {
+      type: 'json_schema';
+      json_schema: {
+        name: string;
+        strict?: boolean;
+        schema: Record<string, unknown>;
+      };
+    };
+
 export type LlmCompleteOptions = {
   temperature?: number;
   maxTokens?: number;
+  responseFormat?: LlmResponseFormat;
+  thinking?: { type: 'enabled' | 'disabled' };
   signal?: AbortSignal;
 };
 
@@ -38,8 +51,11 @@ export class LlmClient {
 
   async complete(messages: LlmMessage[], opts: LlmCompleteOptions = {}): Promise<LlmResponse> {
     const body = buildRequestBody(this.config.model, messages, {
+      baseUrl: this.config.baseUrl,
       temperature: opts.temperature,
-      maxTokens: opts.maxTokens
+      maxTokens: opts.maxTokens,
+      responseFormat: opts.responseFormat,
+      thinking: opts.thinking
     });
 
     const resp = await fetch(`${this.config.baseUrl}/chat/completions`, {
@@ -65,8 +81,11 @@ export class LlmClient {
 
   async *stream(messages: LlmMessage[], opts: LlmCompleteOptions = {}): AsyncIterable<string> {
     const body = buildRequestBody(this.config.model, messages, {
+      baseUrl: this.config.baseUrl,
       temperature: opts.temperature,
       maxTokens: opts.maxTokens,
+      responseFormat: opts.responseFormat,
+      thinking: opts.thinking,
       stream: true
     });
 
@@ -131,15 +150,30 @@ function buildHeaders(apiKey: string): Record<string, string> {
 function buildRequestBody(
   model: string,
   messages: LlmMessage[],
-  opts: { temperature?: number; maxTokens?: number; stream?: boolean }
+  opts: {
+    baseUrl: string;
+    temperature?: number;
+    maxTokens?: number;
+    responseFormat?: LlmResponseFormat;
+    thinking?: { type: 'enabled' | 'disabled' };
+    stream?: boolean;
+  }
 ) {
   return {
     model,
     messages,
     ...(opts.stream !== undefined && { stream: opts.stream }),
     ...(opts.temperature !== undefined && { temperature: opts.temperature }),
-    ...(opts.maxTokens !== undefined && { max_tokens: opts.maxTokens })
+    ...(opts.maxTokens !== undefined && { max_tokens: opts.maxTokens }),
+    ...(opts.responseFormat !== undefined && { response_format: opts.responseFormat }),
+    ...(opts.thinking !== undefined && supportsThinkingControl(model, opts.baseUrl) && { thinking: opts.thinking })
   };
+}
+
+function supportsThinkingControl(model: string, baseUrl: string): boolean {
+  const normalizedModel = model.toLowerCase();
+  const normalizedBaseUrl = baseUrl.toLowerCase();
+  return normalizedModel.startsWith('deepseek-v4') || normalizedBaseUrl.includes('api.deepseek.com');
 }
 
 export class LlmError extends Error {

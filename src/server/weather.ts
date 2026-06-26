@@ -2,6 +2,7 @@ import { getLogger } from './logger.js';
 import { getLocation } from './store/location.js';
 
 export type WeatherResult = {
+  location: string;
   tempC: number;
   desc: string;
 };
@@ -18,6 +19,12 @@ export async function fetchWeather(userId?: string): Promise<WeatherResult | nul
   const loc = userId ? getLocation(userId) : null;
   const locationStr = loc ? `${loc.lat.toFixed(4)},${loc.lon.toFixed(4)}` : 'auto';
   const url = `https://wttr.in/${encodeURIComponent(locationStr)}?format=j1`;
+  const logger = getLogger();
+
+  logger.info(
+    { userId, location: locationStr, hasStoredLocation: Boolean(loc) },
+    'Weather fetch using location'
+  );
 
   try {
     const ac = new AbortController();
@@ -30,7 +37,13 @@ export async function fetchWeather(userId?: string): Promise<WeatherResult | nul
       clearTimeout(timer);
     }
 
-    if (!resp.ok) return null;
+    if (!resp.ok) {
+      logger.warn(
+        { userId, location: locationStr, status: resp.status, hasStoredLocation: Boolean(loc) },
+        'Weather fetch returned non-ok response'
+      );
+      return null;
+    }
 
     const data = (await resp.json()) as WttrResponse;
     const current = data?.current_condition?.[0];
@@ -39,9 +52,13 @@ export async function fetchWeather(userId?: string): Promise<WeatherResult | nul
     const tempC = parseFloat(current.temp_C ?? '0');
     const desc = current.weatherDesc?.[0]?.value ?? '';
 
-    return { tempC, desc };
+    logger.info(
+      { userId, location: locationStr, hasStoredLocation: Boolean(loc), tempC, desc },
+      'Weather fetch succeeded'
+    );
+    return { location: locationStr, tempC, desc };
   } catch (err) {
-    getLogger().debug({ err }, 'Weather fetch failed, degrading to null');
+    logger.debug({ err, userId, location: locationStr, hasStoredLocation: Boolean(loc) }, 'Weather fetch failed, degrading to null');
     return null;
   }
 }

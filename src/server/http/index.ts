@@ -18,6 +18,7 @@ import { createNextHandler, createNowHandler } from './routes/now-next.js';
 import { createStartPlayHandler, createEndPlayHandler } from './routes/plays.js';
 import {
   createGetSettingsHandler,
+  createPreviewTtsHandler,
   createSaveSettingsHandler,
   createGetPlayerContextHandler
 } from './routes/settings.js';
@@ -107,6 +108,7 @@ export async function startLocalServer(options: StartLocalServerOptions): Promis
   app.patch('/api/plays/:id', protect, createEndPlayHandler());
   app.get('/api/settings', protect, createGetSettingsHandler());
   app.put('/api/settings', protect, createSaveSettingsHandler());
+  app.post('/api/settings/tts-preview', protect, createPreviewTtsHandler());
   app.post('/api/settings/analyze-taste', protect, createAnalyzeTasteHandler());
   app.get('/api/settings/player-context', protect, createGetPlayerContextHandler());
   app.get('/api/plan/today', protect, createGetTodayPlanHandler({ secrets: null as any }));

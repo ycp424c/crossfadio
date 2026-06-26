@@ -11,15 +11,22 @@ import { loadLikedTracksForPlanning } from '../user-corpus/ncm-liked.js';
 import { getRecentPlays } from '../store/plays.js';
 import { getRecentMessages, saveMessage } from '../store/messages.js';
 import { getPreferenceContext } from '../store/chat-preferences.js';
+import { getPref, deletePref, setPref } from '../store/prefs.js';
 import { fetchWeather } from '../weather.js';
 import { executeActions } from '../agent/actions.js';
 import { getCurrentIndex, getQueue, addToQueue, swapNext } from '../store/queue.js';
 import { broadcastToUser } from './broadcast.js';
 import { getLogger } from '../logger.js';
-import { searchCandidates } from './routes/djNext.js';
+import { buildTrackDedupeKey, isTrackDedupeKeyExcluded, searchCandidates } from './routes/djNext.js';
+import { MusicAgent } from '../music-agent/index.js';
+import { extractChatPreferencesIfDue } from '../music-agent/memory.js';
+import type { MusicAgentRunOutput } from '../music-agent/schema.js';
 
 const RECOMMEND_CANDIDATE_LIMIT = 20;
 const RECOMMEND_PICK_LLM_TIMEOUT_MS = 30_000;
+const ACTIVE_DIRECTIVE_TTL_MS = 6 * 60 * 60 * 1000;
+const RECENT_PLAY_EXCLUDE_COUNT = 30;
+const CHAT_AGENT_TIMEOUT_MS = 60_000;
 
 const activeRecommendJobs = new Map<string, AbortController>();
 
@@ -41,6 +48,7 @@ export async function handleChatMessage(
 
   try {
     saveMessage(userId, 'user', text);
+    applyQueueDirectiveFallbackFromText(userId, text);
 
     const llmConfig = resolveLlmConfig();
     if (!llmConfig) {
@@ -102,6 +110,7 @@ export async function handleChatMessage(
       const fallback = extractSayFromRawChat(streamedRaw);
       send('chat.done', { say: fallback, intent: 'chitchat', actions: [] });
       saveMessage(userId, 'assistant', fallback);
+      scheduleChatPreferenceExtraction(userId, llmConfig);
       return;
     }
 
@@ -112,6 +121,7 @@ export async function handleChatMessage(
       intent: chatOutput.intent,
       actions: chatOutput.actions
     });
+    scheduleChatPreferenceExtraction(userId, llmConfig);
 
     if (chatOutput.actions.length > 0) {
       const songActions = chatOutput.actions.filter(
@@ -133,7 +143,16 @@ export async function handleChatMessage(
             controller.abort(new Error('parent-aborted'));
           }
         };
-        signal?.addEventListener('abort', onParentAbort, { once: true });
+        if (signal?.aborted) {
+          onParentAbort();
+        } else {
+          signal?.addEventListener('abort', onParentAbort, { once: true });
+        }
+        if (controller.signal.aborted) {
+          activeRecommendJobs.delete(jobId);
+          signal?.removeEventListener('abort', onParentAbort);
+          return;
+        }
 
         const reportProgress = (evt: Record<string, unknown>): void => {
           send('chat.recommend.progress', { jobId, ...evt });
@@ -141,18 +160,59 @@ export async function handleChatMessage(
 
         send('chat.recommend.started', { jobId });
 
-        const prevLen = getQueue(userId).length;
         let added = 0;
         try {
-          added = await runChatRecommendPipeline(userId, {
-            actions: songActions,
-            likedTracks,
-            ncmClient,
-            llmConfig,
-            userText: text,
-            onProgress: reportProgress,
-            signal: controller.signal
-          });
+          let shouldRunLegacyFallback = false;
+          try {
+            reportProgress({ phase: 'agent' });
+            const agent = new MusicAgent({ llmConfig });
+            const agentAbort = createAbortTimeoutSignal(controller.signal, CHAT_AGENT_TIMEOUT_MS);
+            try {
+              const output = await agent.recommendFromChat({
+                userId,
+                ncmClient,
+                userText: text,
+                actions: songActions,
+                signal: agentAbort.signal
+              });
+
+              if (controller.signal.aborted) {
+                added = 0;
+              } else if (output.status === 'aborted') {
+                shouldRunLegacyFallback = agentAbort.timedOut();
+              } else if (output.status === 'ok') {
+                const addedTracks = applyMusicAgentPicks(
+                  userId,
+                  output,
+                  songActions.some((a) => a.type === 'swap_next')
+                );
+                added = addedTracks.length;
+                shouldRunLegacyFallback = added === 0;
+                if (!shouldRunLegacyFallback && addedTracks.length > 0) {
+                  reportProgress({ phase: 'done', tracks: addedTracks });
+                }
+              } else {
+                shouldRunLegacyFallback = output.status === 'empty_pool';
+              }
+            } finally {
+              agentAbort.cleanup();
+            }
+          } catch (err) {
+            logger.warn({ err, jobId }, 'Chat recommend MusicAgent error');
+            shouldRunLegacyFallback = !controller.signal.aborted;
+          }
+
+          if (shouldRunLegacyFallback && !controller.signal.aborted) {
+            added = await runChatRecommendPipeline(userId, {
+              actions: songActions,
+              likedTracks,
+              ncmClient,
+              llmConfig,
+              userText: text,
+              onProgress: reportProgress,
+              signal: controller.signal
+            });
+          }
         } catch (err) {
           logger.warn({ err, jobId }, 'Chat recommend pipeline error');
           reportProgress({ phase: 'error', reason: err instanceof Error ? err.message : 'unknown' });
@@ -209,7 +269,7 @@ async function runChatRecommendPipeline(userId: string, input: RecommendPipeline
   onProgress({ phase: 'searching' });
 
   const recentIds = new Set(
-    getRecentPlays(userId, 30)
+    getRecentPlays(userId, RECENT_PLAY_EXCLUDE_COUNT)
       .map((p) => p.song_id)
       .filter((id): id is string => id !== null)
   );
@@ -321,6 +381,96 @@ ${candidateList}
   return added;
 }
 
+function applyMusicAgentPicks(
+  userId: string,
+  output: MusicAgentRunOutput,
+  isSwap: boolean
+): Array<{ name: string; artist: string }> {
+  if (output.status !== 'ok') return [];
+
+  const recentIds = new Set(
+    getRecentPlays(userId, RECENT_PLAY_EXCLUDE_COUNT)
+      .map((play) => play.song_id)
+      .filter((id): id is string => id !== null)
+  );
+  const recentDedupeKeys = getRecentPlays(userId, RECENT_PLAY_EXCLUDE_COUNT)
+    .map((play) => buildTrackDedupeKey({
+      id: play.song_id,
+      name: play.song_name,
+      artist: play.artist_name
+    }))
+    .filter(Boolean);
+  const queuedTracks = getQueue(userId);
+  const queueDedupeKeys = queuedTracks
+    .map((track) => buildTrackDedupeKey({
+      id: track.ncmId,
+      name: track.name,
+      artists: track.artists
+    }))
+    .filter(Boolean);
+  const excludedIds = new Set([...recentIds, ...queuedTracks.map((track) => track.ncmId)]);
+  const excludedDedupeKeys = new Set([...recentDedupeKeys, ...queueDedupeKeys]);
+  const addedTracks: Array<{ name: string; artist: string }> = [];
+  for (const pick of output.picks) {
+    const dedupeKey = buildTrackDedupeKey(pick);
+    if (excludedIds.has(pick.id) || isTrackDedupeKeyExcluded(dedupeKey, excludedDedupeKeys)) continue;
+    excludedIds.add(pick.id);
+    if (dedupeKey) excludedDedupeKeys.add(dedupeKey);
+    const track = {
+      ncmId: pick.id,
+      name: pick.name,
+      artists: pick.artist ? [pick.artist] : []
+    };
+    if (isSwap) {
+      swapNext(userId, track);
+    } else {
+      addToQueue(userId, track, 'end');
+    }
+    addedTracks.push({ name: pick.name ?? pick.id, artist: pick.artist ?? '未知艺人' });
+  }
+  return addedTracks;
+}
+
+function scheduleChatPreferenceExtraction(userId: string, llmConfig: LlmConfig): void {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(new Error('memory-extraction-timeout')), 10_000);
+  void extractChatPreferencesIfDue(userId, new LlmClient(llmConfig), controller.signal)
+    .catch((err) => {
+      getLogger().warn({ err }, 'Chat preference extraction failed');
+    })
+    .finally(() => clearTimeout(timeoutId));
+}
+
+function createAbortTimeoutSignal(
+  parentSignal: AbortSignal | undefined,
+  timeoutMs: number
+): { signal: AbortSignal; cleanup: () => void; timedOut: () => boolean } {
+  const controller = new AbortController();
+  let didTimeOut = false;
+  const timeoutId = setTimeout(() => {
+    didTimeOut = true;
+    controller.abort(new Error('timeout'));
+  }, timeoutMs);
+  const abortFromParent = (): void => {
+    controller.abort(parentSignal?.reason ?? new Error('aborted'));
+  };
+
+  if (parentSignal?.aborted) {
+    abortFromParent();
+  } else {
+    parentSignal?.addEventListener('abort', abortFromParent, { once: true });
+  }
+
+  return {
+    signal: controller.signal,
+    cleanup: () => {
+      clearTimeout(timeoutId);
+      parentSignal?.removeEventListener('abort', abortFromParent);
+    },
+    timedOut: () => didTimeOut
+  };
+}
+
 function fallbackAddFromLiked(userId: string, likedTracks: Track[], excludeIds: Set<string>): number {
   const logger = getLogger();
   const available = likedTracks.filter((t) => !excludeIds.has(t.id));
@@ -351,6 +501,38 @@ function sampleN<T>(arr: T[], n: number): T[] {
     [copy[i], copy[j]] = [copy[j], copy[i]];
   }
   return copy.slice(0, n);
+}
+
+export function extractQueueDirectiveFromText(text: string, now = new Date()): { text: string; expiresAt: string } | null {
+  const normalized = text.trim().toLowerCase();
+  if (!normalized) return null;
+
+  const mentionsFemaleVocals = /女声|女歌手|女生唱|女嗓|女vocal|female\s*(vocal|singer|artist)/i.test(normalized);
+  if (!mentionsFemaleVocals) return null;
+
+  const cancelsFemaleVocals = /不要|别|不用|取消|停止|不想/.test(normalized);
+  if (cancelsFemaleVocals) return {
+    text: '',
+    expiresAt: now.toISOString()
+  };
+
+  return {
+    text: '接下来的自动选歌优先选择女声、女歌手或女性主唱作品；除非候选池明显不足，否则保持这个方向。',
+    expiresAt: new Date(now.getTime() + ACTIVE_DIRECTIVE_TTL_MS).toISOString()
+  };
+}
+
+function applyQueueDirectiveFallbackFromText(userId: string, text: string): void {
+  const directive = extractQueueDirectiveFromText(text);
+  if (!directive) return;
+
+  if (!directive.text) {
+    deletePref(userId, 'queue.activeDirective');
+    return;
+  }
+
+  if (getPref(userId, 'queue.activeDirective')) return;
+  setPref(userId, 'queue.activeDirective', directive);
 }
 
 function formatLocalTime(date: Date): string {

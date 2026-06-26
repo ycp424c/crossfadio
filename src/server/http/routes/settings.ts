@@ -1,12 +1,31 @@
 import { getOrGenerateDailyThemeWithin } from '../../daily-theme.js';
+import { fetchWeather } from '../../weather.js';
 import { loadCorpusFile } from '../../user-corpus/loader.js';
 import type { Request, Response } from 'express';
 import { z } from 'zod';
 import type { NcmClient } from '../../ncm/client.js';
 import { getPref, setPref } from '../../store/prefs.js';
 import { getConfig } from '../../config.js';
+import { TtsClient } from '../../tts/client.js';
+import { resolveTtsConfig } from '../../tts/config.js';
+import { buildSegueAudioUrl } from './segue.js';
+import { DEFAULT_TTS_MODEL, DEFAULT_TTS_VOICE, TTS_PREVIEW_TEXT } from '../../../shared/tts.js';
+import {
+  AUTO_FILL_BATCH_SIZE_MAX,
+  AUTO_FILL_BATCH_SIZE_MIN,
+  parseAutoFillBatchSize
+} from '../../../shared/dj.js';
 
 type AuthedRequest = Request & { userId: string; ncmClient: NcmClient };
+export type DiscoveryMode = 'explore' | 'comfort';
+
+function getDiscoveryMode(userId: string): DiscoveryMode {
+  return getPref<DiscoveryMode>(userId, 'discovery.mode') === 'comfort' ? 'comfort' : 'explore';
+}
+
+function getAutoFillBatchSize(userId: string): number {
+  return parseAutoFillBatchSize(getPref<number>(userId, 'dj.autoFillBatchSize'));
+}
 
 // ── GET /api/settings ─────────────────────────────────────────────────────────
 
@@ -15,6 +34,9 @@ export function createGetSettingsHandler() {
     const { userId } = req as AuthedRequest;
     const config = getConfig();
     const userVoice = getPref<string>(userId, 'tts.voice');
+    const dailyThemeEnabled = getPref<boolean>(userId, 'dailyTheme.enabled') !== false;
+    const discoveryMode = getDiscoveryMode(userId);
+    const autoFillBatchSize = getAutoFillBatchSize(userId);
 
     res.json({
       ok: true,
@@ -25,10 +47,14 @@ export function createGetSettingsHandler() {
       },
       tts: {
         baseUrl: config.tts.baseUrl,
+        model: DEFAULT_TTS_MODEL,
         hasApiKey: Boolean(config.tts.apiKey),
-        voice: userVoice ?? config.tts.voiceDefault ?? 'Cherry',
+        voice: userVoice ?? config.tts.voiceDefault ?? DEFAULT_TTS_VOICE,
         voiceDefault: config.tts.voiceDefault
-      }
+      },
+      dailyThemeEnabled,
+      discoveryMode,
+      autoFillBatchSize
     });
   };
 }
@@ -36,9 +62,11 @@ export function createGetSettingsHandler() {
 // ── PUT /api/settings ─────────────────────────────────────────────────────────
 
 const settingsBodySchema = z.object({
-  tts: z.object({ voice: z.string().min(1) }).optional()
+  tts: z.object({ voice: z.string().min(1) }).optional(),
+  dailyThemeEnabled: z.boolean().optional(),
+  discoveryMode: z.enum(['explore', 'comfort']).optional(),
+  autoFillBatchSize: z.number().int().min(AUTO_FILL_BATCH_SIZE_MIN).max(AUTO_FILL_BATCH_SIZE_MAX).optional()
 });
-
 export function createSaveSettingsHandler() {
   return (req: Request, res: Response): void => {
     const { userId } = req as AuthedRequest;
@@ -50,7 +78,52 @@ export function createSaveSettingsHandler() {
     if (parsed.data.tts?.voice) {
       setPref(userId, 'tts.voice', parsed.data.tts.voice);
     }
+    if (parsed.data.dailyThemeEnabled !== undefined) {
+      setPref(userId, 'dailyTheme.enabled', parsed.data.dailyThemeEnabled);
+    }
+    if (parsed.data.discoveryMode !== undefined) {
+      setPref(userId, 'discovery.mode', parsed.data.discoveryMode);
+    }
+    if (parsed.data.autoFillBatchSize !== undefined) {
+      setPref(userId, 'dj.autoFillBatchSize', parsed.data.autoFillBatchSize);
+    }
     res.json({ ok: true });
+  };
+}
+
+// ── POST /api/settings/tts-preview ───────────────────────────────────────────
+
+const ttsPreviewBodySchema = z.object({
+  voice: z.string().min(1).optional()
+});
+
+export function createPreviewTtsHandler() {
+  return async (req: Request, res: Response): Promise<void> => {
+    const { userId } = req as AuthedRequest;
+    const parsed = ttsPreviewBodySchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      res.status(400).json({ ok: false, error: 'invalid body', details: parsed.error.issues });
+      return;
+    }
+
+    const config = resolveTtsConfig(userId);
+    const voice = parsed.data.voice ?? config.voice;
+    const previewConfig = { ...config, voice };
+    const client = new TtsClient(previewConfig);
+
+    try {
+      const result = await client.synthesize(TTS_PREVIEW_TEXT);
+      res.json({
+        ok: true,
+        audioUrl: buildSegueAudioUrl(result.filePath),
+        cached: result.cached,
+        voice,
+        model: previewConfig.model
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'TTS preview failed';
+      res.status(502).json({ ok: false, error: message });
+    }
   };
 }
 
@@ -59,13 +132,20 @@ export function createSaveSettingsHandler() {
 export function createGetPlayerContextHandler() {
   return async (req: Request, res: Response): Promise<void> => {
     const { userId } = req as AuthedRequest;
-    const theme = await getOrGenerateDailyThemeWithin(3_000);
+    const enabled = getPref<boolean>(userId, 'dailyTheme.enabled') !== false;
+    const discoveryMode = getDiscoveryMode(userId);
+    const [theme, weather] = await Promise.all([
+      enabled ? getOrGenerateDailyThemeWithin(3_000) : Promise.resolve(null),
+      fetchWeather(userId)
+    ]);
     const taste = loadCorpusFile(userId, 'taste.md');
 
     res.json({
       ok: true,
       theme: theme ? { theme: theme.theme, keywords: theme.keywords } : null,
-      taste
+      weather,
+      taste,
+      discoveryMode
     });
   };
 }
