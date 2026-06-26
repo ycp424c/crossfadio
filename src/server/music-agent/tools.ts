@@ -49,14 +49,28 @@ import {
   searchRunKey,
   type QueryFunnelAccumulator
 } from './query-funnel.js';
-import { normalizeMusicTrackToken } from './dedupe.js';
 import type { FinalPick } from './schema.js';
 import {
-  findSimilarMusicEntities,
-  type MusicEntityRecord as StoredMusicEntityRecord
+  albumMatchesEntity,
+  albumMatchesKnownEntityFields,
+  entityArtistName,
+  entityFromStoredRecord,
+  entityId,
+  entityLabel,
+  entityTitle,
+  findVerifiedAlbum,
+  isVerifiedTrackEntity,
+  parseEntityRecallInput,
+  tokenMatches,
+  trackMatchesArtist,
+  trackMatchesKnownEntityFields,
+  type MusicEntityHypothesis
+} from './entity-hypotheses.js';
+import {
+  findSimilarMusicEntities
 } from '../store/music-entities.js';
 import type { WebMusicDiscoveryProvider } from './web-discovery.js';
-import { artistKeys, primaryArtistKey } from './artists.js';
+import { artistKeys } from './artists.js';
 
 export type ToolObservation = {
   summary: string;
@@ -114,24 +128,6 @@ export type CreateMusicAgentToolsInput = {
   webMusicDiscoveryProvider?: WebMusicDiscoveryProvider | null;
   maxWebDiscoveryMs?: number;
   maxWebDiscoveryHints?: number;
-};
-
-type NcmAlbumLike = {
-  id: number | string;
-  name: string;
-  artist?: string | null;
-};
-
-type MusicEntityType = 'track' | 'artist' | 'album' | 'playlist';
-
-type MusicEntityHypothesis = {
-  type: MusicEntityType;
-  title?: string;
-  name?: string;
-  artist?: string;
-  id?: string;
-  providerId?: string;
-  query?: string;
 };
 
 type ToolState = {
@@ -201,7 +197,6 @@ const AUTO_FILL_WEB_DISCOVERY_HINT_LIMIT = 8;
 const WEB_DISCOVERY_ENTITY_RECALL_LIMIT = 1;
 const WEB_DISCOVERY_INTENT_MAX_CHARS = 360;
 const WEB_DISCOVERY_MAX_HINT_LIMIT = 12;
-const WEB_HINT_MIN_CONFIDENCE = 0.45;
 const SEMANTIC_ONLY_QUERY_PROBLEM = 'skipped semantic-only queries; use semantic discovery before NCM song search';
 const SEMANTIC_SONG_SEARCH_PATTERNS = [
   /\b(city\s*pop|indie\s*pop|dream\s*pop|synth[-\s]*pop|cantopop|neo\s*soul|nu\s*jazz|downtempo|electropop)\b/i,
@@ -1521,182 +1516,9 @@ async function resolveArtistEntity(options: {
   return verified ? String(verified.id) : null;
 }
 
-function parseEntityHypotheses(input: Record<string, unknown>): MusicEntityHypothesis[] {
-  return [
-    ...objectArrayValue(input.entities).map(parseEntityHypothesis),
-    ...objectArrayValue(input.tracks).map((item) => parseEntityHypothesis({ ...item, type: 'track' })),
-    ...objectArrayValue(input.artists).map((item) => parseEntityHypothesis({ ...item, type: 'artist' })),
-    ...objectArrayValue(input.albums).map((item) => parseEntityHypothesis({ ...item, type: 'album' })),
-    ...objectArrayValue(input.playlists).map((item) => parseEntityHypothesis({ ...item, type: 'playlist' }))
-  ].filter((entity): entity is MusicEntityHypothesis => Boolean(entity));
-}
-
-function parseEntityRecallInput(input: Record<string, unknown>): {
-  entities: MusicEntityHypothesis[];
-  problems: string[];
-} {
-  const hintResult = parseEntityHypothesesFromHints(input.hints);
-  return {
-    entities: [
-      ...parseEntityHypotheses(input),
-      ...hintResult.entities
-    ],
-    problems: hintResult.problems
-  };
-}
-
-function parseEntityHypothesesFromHints(value: unknown): {
-  entities: MusicEntityHypothesis[];
-  problems: string[];
-} {
-  const entities: MusicEntityHypothesis[] = [];
-  const problems: string[] = [];
-  for (const rawHint of objectArrayValue(value)) {
-    const parsed = musicEntityHintSchema.safeParse(rawHint);
-    if (!parsed.success) {
-      problems.push('web hint skipped: invalid sourced hint');
-      continue;
-    }
-    const hint = parsed.data;
-    if (hint.confidence < WEB_HINT_MIN_CONFIDENCE) {
-      problems.push(`web hint skipped: low confidence for ${hint.name}`);
-      continue;
-    }
-    const entity = entityFromMusicEntityHint(hint);
-    if (entity) {
-      entities.push(entity);
-      continue;
-    }
-    if (hint.kind === 'track' || hint.kind === 'chart_item') {
-      problems.push(`web track hint skipped: missing artist for ${hint.name}`);
-    } else if (hint.kind === 'relationship') {
-      problems.push(`web relationship hint skipped: ${hint.name}`);
-    } else {
-      problems.push(`web hint skipped: unsupported ${hint.kind} ${hint.name}`);
-    }
-  }
-  return { entities, problems };
-}
-
-function entityFromMusicEntityHint(hint: MusicEntityHint): MusicEntityHypothesis | null {
-  if (hint.kind === 'track' || hint.kind === 'chart_item') {
-    if (!hint.artist) return null;
-    return { type: 'track', title: hint.name, artist: hint.artist };
-  }
-  if (hint.kind === 'artist') {
-    return { type: 'artist', name: hint.name };
-  }
-  if (hint.kind === 'album') {
-    return {
-      type: 'album',
-      title: hint.name,
-      ...(hint.artist ? { artist: hint.artist } : {})
-    };
-  }
-  if (hint.kind === 'playlist') {
-    return { type: 'playlist', name: hint.name };
-  }
-  if (hint.kind === 'relationship' && hint.relatedName) {
-    return { type: 'artist', name: hint.relatedName };
-  }
-  return null;
-}
-
-function parseEntityHypothesis(input: Record<string, unknown>): MusicEntityHypothesis | null {
-  const type = parseEntityType(stringValue(input.type));
-  if (!type) return null;
-  const title = stringValue(input.title);
-  const name = stringValue(input.name);
-  const artist = stringValue(input.artist);
-  const id = stringValue(input.id);
-  const providerId = stringValue(input.providerId);
-  const query = stringValue(input.query);
-  return {
-    type,
-    ...(title ? { title } : {}),
-    ...(name ? { name } : {}),
-    ...(artist ? { artist } : {}),
-    ...(id ? { id } : {}),
-    ...(providerId ? { providerId } : {}),
-    ...(query ? { query } : {})
-  };
-}
-
-function parseEntityType(value: string): MusicEntityType | null {
-  const normalized = value.toLowerCase();
-  if (normalized === 'track' || normalized === 'song') return 'track';
-  if (normalized === 'artist' || normalized === 'singer') return 'artist';
-  if (normalized === 'album') return 'album';
-  if (normalized === 'playlist') return 'playlist';
-  return null;
-}
-
 function objectArrayValue(value: unknown): Array<Record<string, unknown>> {
   if (!Array.isArray(value)) return [];
   return value.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object' && !Array.isArray(item));
-}
-
-function entityTitle(entity: MusicEntityHypothesis): string {
-  return entity.title ?? entity.name ?? '';
-}
-
-function entityArtistName(entity: MusicEntityHypothesis): string {
-  return entity.name ?? entity.artist ?? entity.title ?? '';
-}
-
-function entityId(entity: MusicEntityHypothesis): string {
-  return entity.providerId ?? entity.id ?? '';
-}
-
-function entityLabel(entity: MusicEntityHypothesis): string {
-  const title = entityTitle(entity) || entity.query || entityArtistName(entity) || entity.type;
-  return entity.artist ? `${title} - ${entity.artist}` : title;
-}
-
-function isVerifiedTrackEntity(entity: MusicEntityHypothesis, track: NcmTrackLike): boolean {
-  const title = entityTitle(entity);
-  if (!title || !track.name || !tokenMatches(title, track.name)) return false;
-  return !entity.artist || trackMatchesArtist(track, entity.artist);
-}
-
-function trackMatchesKnownEntityFields(entity: MusicEntityHypothesis, track: NcmTrackLike): boolean {
-  const title = entityTitle(entity);
-  if (title && (!track.name || !tokenMatches(title, track.name))) return false;
-  return !entity.artist || trackMatchesArtist(track, entity.artist);
-}
-
-function findVerifiedAlbum(entity: MusicEntityHypothesis, albums: NcmAlbumLike[]): NcmAlbumLike | null {
-  return albums.find((album) => albumMatchesEntity(entity, album)) ?? null;
-}
-
-function albumMatchesEntity(entity: MusicEntityHypothesis, album: NcmAlbumLike): boolean {
-  const title = entityTitle(entity);
-  if (!title || !album.name || !tokenMatches(title, album.name)) return false;
-  return !entity.artist || tokenMatches(entity.artist, album.artist ?? '');
-}
-
-function albumMatchesKnownEntityFields(entity: MusicEntityHypothesis, album: NcmAlbumLike): boolean {
-  const title = entityTitle(entity);
-  if (title && (!album.name || !tokenMatches(title, album.name))) return false;
-  return !entity.artist || tokenMatches(entity.artist, album.artist ?? '');
-}
-
-function trackMatchesArtist(track: NcmTrackLike, artist: string): boolean {
-  const expectedArtist = primaryArtistKey(artist);
-  if (!expectedArtist) return false;
-  return (track.artists ?? []).some((candidate) => {
-    const candidateArtists = artistKeys(candidate);
-    return candidateArtists.some((actual) => tokenMatches(expectedArtist, actual));
-  });
-}
-
-function tokenMatches(expected: string, actual: string): boolean {
-  const left = normalizeMusicTrackToken(expected);
-  const right = normalizeMusicTrackToken(actual);
-  if (!left || !right) return false;
-  if (left === right) return true;
-  const [shorter, longer] = left.length <= right.length ? [left, right] : [right, left];
-  return shorter.length >= 4 && longer.includes(shorter);
 }
 
 function skippedRecallProblems(result: { skippedAvoidedArtists: number; skippedArtistCap: number }): string[] {
@@ -2439,40 +2261,6 @@ function isExactSongSearchQuery(query: string): boolean {
     return true;
   }
   return parts.length >= 3;
-}
-
-function entityFromStoredRecord(entity: StoredMusicEntityRecord): MusicEntityHypothesis | null {
-  if (entity.type === 'chart_item') {
-    return null;
-  }
-  if (entity.type === 'track') {
-    return {
-      type: 'track',
-      ...(entity.title ? { title: entity.title } : {}),
-      ...(entity.artist ? { artist: entity.artist } : {}),
-      ...(entity.providerId ? { providerId: entity.providerId } : {})
-    };
-  }
-  if (entity.type === 'artist') {
-    return {
-      type: 'artist',
-      ...(entity.title ? { name: entity.title } : entity.artist ? { name: entity.artist } : {}),
-      ...(entity.providerId ? { providerId: entity.providerId } : {})
-    };
-  }
-  if (entity.type === 'album') {
-    return {
-      type: 'album',
-      ...(entity.title ? { title: entity.title } : {}),
-      ...(entity.artist ? { artist: entity.artist } : {}),
-      ...(entity.providerId ? { providerId: entity.providerId } : {})
-    };
-  }
-  return {
-    type: 'playlist',
-    ...(entity.title ? { name: entity.title } : {}),
-    ...(entity.providerId ? { providerId: entity.providerId } : {})
-  };
 }
 
 function extractPlanQueries(planSegment: string | null): string[] {
