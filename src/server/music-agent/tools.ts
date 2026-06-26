@@ -24,11 +24,11 @@ import {
 } from './schema.js';
 import type { CandidatePool } from './candidates.js';
 import {
-  candidateFromTrack,
   emptyUpsertTracksResult,
   mergeUpsertTracksResult,
   sourceScores,
   summarizeCandidateAdmission,
+  upsertTracks,
   usesExternalQuality,
   type UpsertTracksResult
 } from './candidate-admission.js';
@@ -195,7 +195,6 @@ const MAX_ENTITY_RECALL_COUNT = 8;
 const MAX_RANK_DISPLAY_LIMIT = 20;
 const MAX_DIVERSIFY_DISPLAY_LIMIT = 5;
 const AVOID_ARTIST_PENALTY_THRESHOLD = 0.18;
-const MAX_QUERY_RECALL_PER_ARTIST_KEY = 2;
 const MAX_ARTIST_FALLBACKS_PER_RECALL = 2;
 const SEARCH_RECALL_CACHE_TTL_MS = 30 * 60 * 1000;
 const QUALITY_DETAIL_BATCH_LIMIT = 80;
@@ -1624,62 +1623,6 @@ function searchCacheKey(query: string, limit: number): string {
   return `${query.trim().toLowerCase()}::${limit}`;
 }
 
-function upsertTracks(
-  pool: CandidatePool,
-  tracks: NcmTrackLike[],
-  source: CandidateSource,
-  options: {
-    evidence: string;
-    scores: MusicCandidateScores;
-    avoidArtists?: ReadonlySet<string>;
-    artistCounts?: Map<string, number>;
-    maxAccepted?: number;
-  }
-): UpsertTracksResult {
-  const result = emptyUpsertTracksResult();
-  const artistCounts = options.artistCounts ?? new Map<string, number>();
-  const maxAccepted = options.maxAccepted ?? Number.POSITIVE_INFINITY;
-  for (const track of tracks) {
-    if (result.added >= maxAccepted) break;
-    const candidate = candidateFromTrack(track, source, options);
-    if (!candidate) {
-      result.invalid += 1;
-      continue;
-    }
-    const artists = artistKeys(candidate.artist);
-    if (artists.some((artist) => options.avoidArtists?.has(artist))) {
-      result.skippedAvoidedArtists += 1;
-      continue;
-    }
-    if (artists.some((artist) => (artistCounts.get(artist) ?? 0) >= MAX_QUERY_RECALL_PER_ARTIST_KEY)) {
-      result.skippedArtistCap += 1;
-      continue;
-    }
-    const upsertResult = pool.upsert(candidate);
-    if (upsertResult.status === 'inserted') {
-      result.added += 1;
-      result.inserted += 1;
-      incrementArtistCounts(artistCounts, artists);
-    } else if (upsertResult.status === 'merged_by_id') {
-      result.added += 1;
-      result.mergedById += 1;
-      incrementArtistCounts(artistCounts, artists);
-    } else if (upsertResult.status === 'merged_by_dedupe') {
-      result.added += 1;
-      result.mergedByDedupe += 1;
-      incrementArtistCounts(artistCounts, artists);
-    } else if (upsertResult.status === 'merged_by_id_and_dedupe') {
-      result.added += 1;
-      result.mergedByIdAndDedupe += 1;
-      incrementArtistCounts(artistCounts, artists);
-    } else {
-      result.rejectedByPool += 1;
-      result.rejectedReasons[upsertResult.reason] = (result.rejectedReasons[upsertResult.reason] ?? 0) + 1;
-    }
-  }
-  return result;
-}
-
 function observation(
   pool: CandidatePool,
   summary: string,
@@ -1834,12 +1777,6 @@ function countArtistKeys(candidates: MusicCandidate[]): Map<string, number> {
     }
   }
   return counts;
-}
-
-function incrementArtistCounts(counts: Map<string, number>, artists: string[]): void {
-  for (const artist of artists) {
-    counts.set(artist, (counts.get(artist) ?? 0) + 1);
-  }
 }
 
 function extractPlanQueries(planSegment: string | null): string[] {

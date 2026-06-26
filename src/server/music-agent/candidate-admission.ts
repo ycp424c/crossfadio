@@ -1,4 +1,5 @@
-import type { CandidatePoolRejectReason } from './candidates.js';
+import { artistKeys } from './artists.js';
+import type { CandidatePool, CandidatePoolRejectReason } from './candidates.js';
 import type { NcmTrackLike } from './liked-recall.js';
 import type {
   CandidateSource,
@@ -9,6 +10,7 @@ import type {
 } from './schema.js';
 
 const QUALITY_SOURCES = new Set<CandidateSource>(['search', 'style_expansion', 'trend']);
+const MAX_QUERY_RECALL_PER_ARTIST_KEY = 2;
 
 export type UpsertTracksResult = {
   added: number;
@@ -21,6 +23,14 @@ export type UpsertTracksResult = {
   rejectedReasons: Partial<Record<CandidatePoolRejectReason, number>>;
   skippedAvoidedArtists: number;
   skippedArtistCap: number;
+};
+
+export type UpsertTracksOptions = {
+  evidence: string;
+  scores: MusicCandidateScores;
+  avoidArtists?: ReadonlySet<string>;
+  artistCounts?: Map<string, number>;
+  maxAccepted?: number;
 };
 
 export function emptyUpsertTracksResult(): UpsertTracksResult {
@@ -36,6 +46,56 @@ export function emptyUpsertTracksResult(): UpsertTracksResult {
     skippedAvoidedArtists: 0,
     skippedArtistCap: 0
   };
+}
+
+export function upsertTracks(
+  pool: CandidatePool,
+  tracks: NcmTrackLike[],
+  source: CandidateSource,
+  options: UpsertTracksOptions
+): UpsertTracksResult {
+  const result = emptyUpsertTracksResult();
+  const artistCounts = options.artistCounts ?? new Map<string, number>();
+  const maxAccepted = options.maxAccepted ?? Number.POSITIVE_INFINITY;
+  for (const track of tracks) {
+    if (result.added >= maxAccepted) break;
+    const candidate = candidateFromTrack(track, source, options);
+    if (!candidate) {
+      result.invalid += 1;
+      continue;
+    }
+    const artists = artistKeys(candidate.artist);
+    if (artists.some((artist) => options.avoidArtists?.has(artist))) {
+      result.skippedAvoidedArtists += 1;
+      continue;
+    }
+    if (artists.some((artist) => (artistCounts.get(artist) ?? 0) >= MAX_QUERY_RECALL_PER_ARTIST_KEY)) {
+      result.skippedArtistCap += 1;
+      continue;
+    }
+    const upsertResult = pool.upsert(candidate);
+    if (upsertResult.status === 'inserted') {
+      result.added += 1;
+      result.inserted += 1;
+      incrementArtistCounts(artistCounts, artists);
+    } else if (upsertResult.status === 'merged_by_id') {
+      result.added += 1;
+      result.mergedById += 1;
+      incrementArtistCounts(artistCounts, artists);
+    } else if (upsertResult.status === 'merged_by_dedupe') {
+      result.added += 1;
+      result.mergedByDedupe += 1;
+      incrementArtistCounts(artistCounts, artists);
+    } else if (upsertResult.status === 'merged_by_id_and_dedupe') {
+      result.added += 1;
+      result.mergedByIdAndDedupe += 1;
+      incrementArtistCounts(artistCounts, artists);
+    } else {
+      result.rejectedByPool += 1;
+      result.rejectedReasons[upsertResult.reason] = (result.rejectedReasons[upsertResult.reason] ?? 0) + 1;
+    }
+  }
+  return result;
 }
 
 export function mergeUpsertTracksResult(target: UpsertTracksResult, source: UpsertTracksResult): void {
@@ -147,6 +207,12 @@ function rejectedByPoolSummary(result: UpsertTracksResult): string {
   return reasons
     ? `rejectedByPool=${result.rejectedByPool} (${reasons})`
     : `rejectedByPool=${result.rejectedByPool}`;
+}
+
+function incrementArtistCounts(counts: Map<string, number>, artists: string[]): void {
+  for (const artist of artists) {
+    counts.set(artist, (counts.get(artist) ?? 0) + 1);
+  }
 }
 
 function qualitySignalsProperty(

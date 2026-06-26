@@ -5,8 +5,10 @@ import {
   mergeUpsertTracksResult,
   sourceScores,
   summarizeCandidateAdmission,
+  upsertTracks,
   usesExternalQuality
 } from '../../src/server/music-agent/candidate-admission';
+import { CandidatePool } from '../../src/server/music-agent/candidates';
 import type { MusicAgentContextSummary, MusicCandidateScores } from '../../src/server/music-agent/schema';
 
 describe('MusicAgent candidate admission helpers', () => {
@@ -76,6 +78,102 @@ describe('MusicAgent candidate admission helpers', () => {
       'candidate admission: inserted=1; mergedById=1; mergedByDedupe=1; mergedByIdAndDedupe=1; invalid=1; rejectedByPool=3 (banned_id=2, pool_full=1); skippedAvoidedArtists=1; skippedArtistCap=1'
     );
     expect(summarizeCandidateAdmission(emptyUpsertTracksResult())).toBeNull();
+  });
+
+  it('upserts tracks through the candidate pool and reports admission outcomes', () => {
+    const pool = new CandidatePool({ bannedIds: ['banned'], maxCandidates: 2 });
+    const artistCounts = new Map([['cap artist', 2]]);
+    const result = upsertTracks(pool, [
+      { id: 'inserted', name: 'First Song', artists: ['Fresh Artist'] },
+      { id: 'second', name: 'Second Song', artists: ['Second Artist'] },
+      { id: 'missing-artist', name: 'No Artist', artists: [] },
+      { id: 'avoided', name: 'Avoided Song', artists: ['Avoid Artist'] },
+      { id: 'capped', name: 'Capped Song', artists: ['Cap Artist'] },
+      { id: 'banned', name: 'Banned Song', artists: ['Banned Artist'] },
+      { id: 'overflow', name: 'Overflow Song', artists: ['Overflow Artist'] }
+    ], 'search', {
+      evidence: '网易云搜索',
+      scores: baseScores(),
+      avoidArtists: new Set(['avoid artist']),
+      artistCounts
+    });
+
+    expect(result).toMatchObject({
+      added: 2,
+      inserted: 2,
+      mergedById: 0,
+      mergedByDedupe: 0,
+      invalid: 1,
+      rejectedByPool: 2,
+      rejectedReasons: { banned_id: 1, pool_full: 1 },
+      skippedAvoidedArtists: 1,
+      skippedArtistCap: 1
+    });
+    expect(pool.count()).toBe(2);
+    expect(pool.get('inserted')?.sources).toEqual(['search']);
+    expect(artistCounts.get('fresh artist')).toBe(1);
+    expect(artistCounts.get('second artist')).toBe(1);
+    expect(artistCounts.get('cap artist')).toBe(2);
+  });
+
+  it('reports candidate pool id and dedupe merges as accepted admissions', () => {
+    const pool = new CandidatePool();
+    const result = upsertTracks(pool, [
+      { id: 'same-id', name: 'Same Id Original', artists: ['Same Id Artist'] },
+      { id: 'same-id', name: 'Same Id Alternate', artists: ['Same Id Guest'] },
+      { id: 'dedupe-a', name: 'Dedupe Song', artists: ['Dedupe Artist'] },
+      { id: 'dedupe-b', name: 'Dedupe Song', artists: ['Dedupe Artist'] }
+    ], 'playlist', {
+      evidence: '歌单召回',
+      scores: baseScores()
+    });
+
+    expect(result).toMatchObject({
+      added: 4,
+      inserted: 2,
+      mergedById: 1,
+      mergedByDedupe: 1,
+      skippedArtistCap: 0,
+      rejectedByPool: 0
+    });
+    expect(pool.count()).toBe(2);
+    expect(pool.get('same-id')?.artist).toBe('Same Id Artist');
+    expect(pool.get('dedupe-a')?.sources).toEqual(['playlist']);
+  });
+
+  it('applies the per-artist cap to collaborator artist keys', () => {
+    const pool = new CandidatePool();
+    const result = upsertTracks(pool, [
+      { id: 'collab', name: 'Collab Song', artists: ['Lead Artist', 'Guest Artist'] }
+    ], 'style_expansion', {
+      evidence: '风格扩展',
+      scores: baseScores(),
+      artistCounts: new Map([['guest artist', 2]])
+    });
+
+    expect(result).toMatchObject({
+      added: 0,
+      inserted: 0,
+      skippedArtistCap: 1
+    });
+    expect(pool.count()).toBe(0);
+  });
+
+  it('stops upserting after the max accepted admission count', () => {
+    const pool = new CandidatePool();
+    const result = upsertTracks(pool, [
+      { id: 'invalid', name: 'Invalid', artists: [] },
+      { id: 'one', name: 'One', artists: ['Artist One'] },
+      { id: 'two', name: 'Two', artists: ['Artist Two'] }
+    ], 'trend', {
+      evidence: '趋势召回',
+      scores: baseScores(),
+      maxAccepted: 1
+    });
+
+    expect(result).toMatchObject({ added: 1, inserted: 1, invalid: 1 });
+    expect(pool.count()).toBe(1);
+    expect(pool.get('two')).toBeUndefined();
   });
 
   it('keeps source score mapping and external quality eligibility stable', () => {
