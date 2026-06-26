@@ -1,15 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import {
   candidateFromTrack,
+  countCandidateArtistKeys,
   emptyUpsertTracksResult,
   mergeUpsertTracksResult,
+  skippedRecallProblems,
   sourceScores,
   summarizeCandidateAdmission,
   upsertTracks,
   usesExternalQuality
 } from '../../src/server/music-agent/candidate-admission';
 import { CandidatePool } from '../../src/server/music-agent/candidates';
-import type { MusicAgentContextSummary, MusicCandidateScores } from '../../src/server/music-agent/schema';
+import type { MusicAgentContextSummary, MusicCandidate, MusicCandidateScores } from '../../src/server/music-agent/schema';
 
 describe('MusicAgent candidate admission helpers', () => {
   it('converts NCM tracks into candidates and clones score and quality signal objects', () => {
@@ -159,6 +161,25 @@ describe('MusicAgent candidate admission helpers', () => {
     expect(pool.count()).toBe(0);
   });
 
+  it('counts candidate artist keys and formats skipped recall problems', () => {
+    expect(Object.fromEntries(countCandidateArtistKeys([
+      candidate({ id: 'lead', artist: 'Lead Artist / Guest Artist' }),
+      candidate({ id: 'guest', artist: 'Guest Artist' })
+    ]))).toEqual({
+      'lead artist': 1,
+      'guest artist': 2
+    });
+
+    expect(skippedRecallProblems({
+      skippedAvoidedArtists: 2,
+      skippedArtistCap: 1
+    })).toEqual([
+      'skipped 2 tracks from recently repeated artists',
+      'skipped 1 tracks after per-artist recall cap'
+    ]);
+    expect(skippedRecallProblems(emptyUpsertTracksResult())).toEqual([]);
+  });
+
   it('stops upserting after the max accepted admission count', () => {
     const pool = new CandidatePool();
     const result = upsertTracks(pool, [
@@ -218,6 +239,18 @@ function baseScores(): MusicCandidateScores {
     recentPenalty: 0,
     skipPenalty: 0,
     sourceConfidence: 0.5
+  };
+}
+
+function candidate(overrides: Partial<MusicCandidate>): MusicCandidate {
+  return {
+    id: 'candidate',
+    name: 'Song',
+    artist: 'Artist',
+    sources: ['search'],
+    evidence: [],
+    scores: baseScores(),
+    ...overrides
   };
 }
 

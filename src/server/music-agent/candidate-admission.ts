@@ -115,6 +115,16 @@ export function mergeUpsertTracksResult(target: UpsertTracksResult, source: Upse
   }
 }
 
+export function countCandidateArtistKeys(candidates: MusicCandidate[]): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const candidate of candidates) {
+    for (const artist of artistKeys(candidate.artist)) {
+      counts.set(artist, (counts.get(artist) ?? 0) + 1);
+    }
+  }
+  return counts;
+}
+
 export function summarizeCandidateAdmission(result: UpsertTracksResult): string | null {
   const parts = [
     result.inserted > 0 ? `inserted=${result.inserted}` : '',
@@ -128,6 +138,13 @@ export function summarizeCandidateAdmission(result: UpsertTracksResult): string 
   ].filter(Boolean);
 
   return parts.length > 0 ? `candidate admission: ${parts.join('; ')}` : null;
+}
+
+export function skippedRecallProblems(result: Pick<UpsertTracksResult, 'skippedAvoidedArtists' | 'skippedArtistCap'>): string[] {
+  return [
+    ...(result.skippedAvoidedArtists > 0 ? [`skipped ${result.skippedAvoidedArtists} tracks from recently repeated artists`] : []),
+    ...(result.skippedArtistCap > 0 ? [`skipped ${result.skippedArtistCap} tracks after per-artist recall cap`] : [])
+  ];
 }
 
 export function candidateFromTrack(

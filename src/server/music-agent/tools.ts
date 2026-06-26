@@ -24,8 +24,10 @@ import {
 } from './schema.js';
 import type { CandidatePool } from './candidates.js';
 import {
+  countCandidateArtistKeys,
   emptyUpsertTracksResult,
   mergeUpsertTracksResult,
+  skippedRecallProblems,
   sourceScores,
   summarizeCandidateAdmission,
   upsertTracks,
@@ -299,7 +301,7 @@ export function createMusicAgentTools(input: CreateMusicAgentToolsInput): MusicA
             ...(state.queryPlan?.avoidArtists ?? [])
           ].flatMap(artistKeys)
         );
-        const artistCounts = countArtistKeys(input.candidatePool.list());
+        const artistCounts = countCandidateArtistKeys(input.candidatePool.list());
         const result = upsertTracks(input.candidatePool, tracks, 'liked', {
           evidence: '网易云红心歌曲',
           scores: sourceScores('liked', input.context),
@@ -425,7 +427,7 @@ export function createMusicAgentTools(input: CreateMusicAgentToolsInput): MusicA
           ...(state.queryPlan?.avoidArtists ?? [])
         ].flatMap(artistKeys)
       );
-      const artistCounts = countArtistKeys(input.candidatePool.list());
+      const artistCounts = countCandidateArtistKeys(input.candidatePool.list());
       const problems: string[] = [...parsedInput.problems];
       let added = 0;
 
@@ -783,7 +785,7 @@ function webDiscoveryGapSignals(input: CreateMusicAgentToolsInput, state: ToolSt
   const externalSources = new Set(
     candidates.flatMap((candidate) => candidate.sources.filter((source) => source !== 'liked'))
   );
-  const sourceCounts = countArtistKeys(candidates);
+  const sourceCounts = countCandidateArtistKeys(candidates);
   const maxArtistCount = Math.max(0, ...sourceCounts.values());
   const queryFunnel = queryFunnelSnapshot(state);
   return [
@@ -818,7 +820,7 @@ async function recallFromWebDiscoveryHints(options: {
       ...(options.state.queryPlan?.avoidArtists ?? [])
     ].flatMap(artistKeys)
   );
-  const artistCounts = countArtistKeys(options.input.candidatePool.list());
+  const artistCounts = countCandidateArtistKeys(options.input.candidatePool.list());
   const problems = [...filteredHints.problems, ...parsedInput.problems];
   let added = 0;
 
@@ -1291,13 +1293,6 @@ function objectArrayValue(value: unknown): Array<Record<string, unknown>> {
   return value.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object' && !Array.isArray(item));
 }
 
-function skippedRecallProblems(result: { skippedAvoidedArtists: number; skippedArtistCap: number }): string[] {
-  return [
-    ...(result.skippedAvoidedArtists > 0 ? [`skipped ${result.skippedAvoidedArtists} tracks from recently repeated artists`] : []),
-    ...(result.skippedArtistCap > 0 ? [`skipped ${result.skippedArtistCap} tracks after per-artist recall cap`] : [])
-  ];
-}
-
 async function recallFromQueries(options: {
   queries: string[];
   source: CandidateSource;
@@ -1380,7 +1375,7 @@ async function recallFromQueries(options: {
   let artistFallbackAdded = 0;
   const problems: string[] = [];
   const admissionTotals = emptyUpsertTracksResult();
-  const artistCounts = countArtistKeys(options.input.candidatePool.list());
+  const artistCounts = countCandidateArtistKeys(options.input.candidatePool.list());
   const attemptedArtistFallbacks = new Set<string>();
   let attemptedArtistFallbackCount = 0;
 
@@ -1561,7 +1556,7 @@ async function recallFromSemanticEntities(options: {
         ...(options.state.queryPlan?.avoidArtists ?? [])
       ].flatMap(artistKeys)
     );
-    const artistCounts = countArtistKeys(options.input.candidatePool.list());
+    const artistCounts = countCandidateArtistKeys(options.input.candidatePool.list());
     const problems: string[] = [];
     let added = 0;
 
@@ -1767,16 +1762,6 @@ function defaultQueryPlan(
     negativeTerms: knowledge.negativeMappings,
     rationale: 'context-derived fallback query plan'
   });
-}
-
-function countArtistKeys(candidates: MusicCandidate[]): Map<string, number> {
-  const counts = new Map<string, number>();
-  for (const candidate of candidates) {
-    for (const artist of artistKeys(candidate.artist)) {
-      counts.set(artist, (counts.get(artist) ?? 0) + 1);
-    }
-  }
-  return counts;
 }
 
 function extractPlanQueries(planSegment: string | null): string[] {
