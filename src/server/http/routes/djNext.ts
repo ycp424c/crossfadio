@@ -23,6 +23,7 @@ import { createLegacyCandidatePool } from '../../dj/legacyCandidatePool.js';
 import { handleLegacyPickNextOutput } from '../../dj/legacyPickNextResult.js';
 import { buildLegacyPickPrompt } from '../../dj/legacyPickPrompt.js';
 import { handleLegacyRandomFallback } from '../../dj/legacyRandomFallback.js';
+import { parseLegacyStyleArtistResponse } from '../../dj/legacyStyleDiscovery.js';
 import { buildLegacyStylePrompt } from '../../dj/legacyStylePrompt.js';
 import { createDjPickNextTelemetry } from '../../dj/pickNextTelemetry.js';
 import { createDjPickNextRunner } from '../../dj/pickNextRunner.js';
@@ -602,36 +603,9 @@ async function doPickNext(
           { signal: styleAbort.signal }
         );
         sqRawSay = sqResp.content;
-        const cleaned = sqResp.content
-          .replace(/^```(?:json)?\s*/i, '')
-          .replace(/\s*```\s*$/, '')
-          .trim();
-        const match = cleaned.match(/\{[\s\S]*\}/);
-        if (match) {
-          const parsed: unknown = JSON.parse(match[0]);
-          if (parsed && typeof parsed === 'object') {
-            const obj = parsed as Record<string, unknown>;
-            const styles = Array.isArray(obj.styles) ? obj.styles : [];
-            const seen = new Set<string>();
-            for (const s of styles) {
-              if (!s || typeof s !== 'object') continue;
-              const style = s as Record<string, unknown>;
-              if (typeof style.style === 'string' && style.style.trim()) {
-                styleConcepts.push(style.style.trim());
-              }
-              const artists = Array.isArray(style.artists) ? style.artists : [];
-              for (const a of artists) {
-                if (typeof a === 'string' && a.trim() && a.trim().length < 50) {
-                  const lower = a.trim().toLowerCase();
-                  if (!seen.has(lower)) {
-                    seen.add(lower);
-                    llmArtists.push(a.trim());
-                  }
-                }
-              }
-            }
-          }
-        }
+        const parsedStyleArtists = parseLegacyStyleArtistResponse(sqResp.content);
+        styleConcepts = parsedStyleArtists.styleConcepts;
+        llmArtists = parsedStyleArtists.llmArtists;
         if (llmArtists.length === 0) {
           logger.warn({ raw: sqResp.content.slice(0, 200) }, 'DJ pick-next: failed to parse style+artists from LLM response');
         }
