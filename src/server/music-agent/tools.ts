@@ -33,6 +33,12 @@ import {
   sanitizeSearchQuery
 } from './query-stats.js';
 import {
+  filterExactSongSearchQueries,
+  formatNoExecutableQueryReason,
+  prepareRecallQueryEligibility,
+  SEMANTIC_ONLY_QUERY_PROBLEM
+} from './recall-query-filtering.js';
+import {
   autoFillSearchQueries,
   styleExpansionQueries,
   styleSeedQueryModifiers
@@ -197,15 +203,6 @@ const AUTO_FILL_WEB_DISCOVERY_HINT_LIMIT = 8;
 const WEB_DISCOVERY_ENTITY_RECALL_LIMIT = 1;
 const WEB_DISCOVERY_INTENT_MAX_CHARS = 360;
 const WEB_DISCOVERY_MAX_HINT_LIMIT = 12;
-const SEMANTIC_ONLY_QUERY_PROBLEM = 'skipped semantic-only queries; use semantic discovery before NCM song search';
-const SEMANTIC_SONG_SEARCH_PATTERNS = [
-  /\b(city\s*pop|indie\s*pop|dream\s*pop|synth[-\s]*pop|cantopop|neo\s*soul|nu\s*jazz|downtempo|electropop)\b/i,
-  /\b(indie\s*rock|alternative\s*rock|soft\s*rock|j[-\s]*pop|k[-\s]*pop|c[-\s]*pop)\b/i,
-  /\b(female\s*(vocal|singer|artist)|male\s*(vocal|singer|artist)|low\s*energy|medium[-\s]*low\s*energy)\b/i,
-  /\b(chill|quiet|focus|workout|relax(?:ed|ing)?|soft|mellow|synth|band|guitar)\b/i,
-  /午后|下午|上午|早晨|清晨|晚上|夜晚|深夜|工作|学习|专注|轻松|柔和|不吵|安静|中低能量|低能量|高能量/,
-  /女声|男声|女歌手|男歌手|女生唱|男生唱|乐队|律动|合成器|清爽|明亮|提神|低人声|少人声|粤语|华语/
-];
 const searchRecallCache = new Map<string, CacheEntry<NcmTrackLike[]>>();
 const WEB_DISCOVERY_STYLE_PATTERNS: Array<{ pattern: RegExp; style: string; priority: number }> = [
   { pattern: /janice\s*vidal|卫兰|my\s*cookie\s*can|就算世界无童话|cantopop|粤语流行|粤语|港乐|香港流行|广东歌/i, style: 'cantopop', priority: 40 },
@@ -1545,9 +1542,13 @@ async function recallFromQueries(options: {
       ...(options.state.queryPlan?.avoidArtists ?? [])
     ].flatMap(artistKeys)
   );
-  const sanitizedQueries = uniqueStrings(options.queries.map(sanitizeSearchQuery).filter(Boolean));
-  const { queries: artistFilteredQueries, skipped: skippedAvoidedQueries } = filterAvoidedQueries(sanitizedQueries, avoidArtists);
-  const { queries: exactTrackQueries, skipped: skippedSemanticQueries } = filterExactSongSearchQueries(artistFilteredQueries);
+  const {
+    sanitizedQueries,
+    artistFilteredQueries,
+    exactTrackQueries,
+    skippedAvoidedQueries,
+    skippedSemanticQueries
+  } = prepareRecallQueryEligibility(options.queries, avoidArtists);
   const preparedQueries = prepareSearchQueriesForRecall({
     userId: options.input.userId,
     queries: exactTrackQueries,
@@ -1708,27 +1709,6 @@ async function recallFromQueries(options: {
       (artistFallbacks.length > 0 ? ` artist fallback added ${artistFallbackAdded} candidates from ${artistFallbacks.join('、')}.` : ''),
     problems
   );
-}
-
-function formatNoExecutableQueryReason(input: {
-  inputQueryCount: number;
-  sanitizedQueryCount: number;
-  artistFilteredQueryCount: number;
-  skippedAvoidedQueries: number;
-  skippedSemanticQueries: number;
-}): string {
-  const reasons: string[] = [];
-  if (input.inputQueryCount === 0) reasons.push('query plan empty');
-  if (input.inputQueryCount > 0 && input.sanitizedQueryCount === 0) reasons.push('queries sanitized to empty');
-  if (input.skippedAvoidedQueries > 0 && input.artistFilteredQueryCount === 0) {
-    reasons.push('all queries skipped for recently repeated artists');
-  }
-  if (input.skippedSemanticQueries > 0) {
-    reasons.push(input.artistFilteredQueryCount === input.skippedSemanticQueries
-      ? 'all queries skipped as semantic-only'
-      : `${input.skippedSemanticQueries} semantic-only queries skipped`);
-  }
-  return reasons.length > 0 ? reasons.join('; ') : 'no exact-track search queries available';
 }
 
 function artistFallbackNameFromQuery(query: string, tracks: NcmTrackLike[]): string {
@@ -2218,49 +2198,6 @@ function incrementArtistCounts(counts: Map<string, number>, artists: string[]): 
   for (const artist of artists) {
     counts.set(artist, (counts.get(artist) ?? 0) + 1);
   }
-}
-
-function filterAvoidedQueries(queries: string[], avoidArtists: ReadonlySet<string>): { queries: string[]; skipped: number } {
-  if (avoidArtists.size === 0) return { queries, skipped: 0 };
-  const kept: string[] = [];
-  let skipped = 0;
-  for (const query of queries) {
-    const normalized = query.toLowerCase();
-    if ([...avoidArtists].some((artist) => artist && normalized.includes(artist))) {
-      skipped += 1;
-      continue;
-    }
-    kept.push(query);
-  }
-  return { queries: kept, skipped };
-}
-
-function filterExactSongSearchQueries(queries: string[]): { queries: string[]; skipped: number } {
-  const kept: string[] = [];
-  let skipped = 0;
-  for (const query of uniqueStrings(queries)) {
-    if (isExactSongSearchQuery(query)) {
-      kept.push(query);
-    } else {
-      skipped += 1;
-    }
-  }
-  return { queries: kept, skipped };
-}
-
-function isExactSongSearchQuery(query: string): boolean {
-  const value = sanitizeSearchQuery(query);
-  if (!value) return false;
-  if (SEMANTIC_SONG_SEARCH_PATTERNS.some((pattern) => pattern.test(value))) return false;
-  if (/^[\p{L}\p{N}'’().]+(?:\s+[—-]\s+|\s+--\s+)[\p{L}\p{N}'’().]+/u.test(value)) return true;
-  if (value.includes(':')) return false;
-  const parts = value.split(/\s+/).filter(Boolean);
-  if (parts.length < 2) return false;
-  if (parts.length > 8) return false;
-  if (parts.some((part) => /[A-Z]/.test(part) || /[\u3400-\u9fffぁ-ゟ゠-ヿ가-힣]/.test(part))) {
-    return true;
-  }
-  return parts.length >= 3;
 }
 
 function extractPlanQueries(planSegment: string | null): string[] {
