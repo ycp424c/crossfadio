@@ -68,6 +68,13 @@ import {
   type NcmTrackLike
 } from './liked-recall.js';
 import {
+  artistFallbackNameFromQuery,
+  readRecallSearchCache,
+  recallSearchCacheKey,
+  writeRecallSearchCache,
+  type RecallSearchCacheEntry
+} from './recall-search.js';
+import {
   queryFunnelSnapshot,
   recordFinalQueryFunnel,
   recordQueryFunnelSearch,
@@ -175,11 +182,6 @@ type AutoFillMixStage = {
   data?: Record<string, unknown>;
 };
 
-type CacheEntry<T> = {
-  value: T;
-  expiresAt: number;
-};
-
 const SUMMARY_MAX_CHARS = 900;
 const DEFAULT_SEARCH_LIMIT = 8;
 const MAX_LIKED_RECALL_LIMIT = 60;
@@ -204,7 +206,7 @@ const MAX_RECALL_QUERY_COUNT = 8;
 const AUTO_FILL_MIN_RECALL_NON_LIKED_TARGET = 8;
 const DEFAULT_WEB_DISCOVERY_TIMEOUT_MS = 6_000;
 const WEB_DISCOVERY_ENTITY_RECALL_LIMIT = 1;
-const searchRecallCache = new Map<string, CacheEntry<NcmTrackLike[]>>();
+const searchRecallCache = new Map<string, RecallSearchCacheEntry<NcmTrackLike[]>>();
 export function createMusicAgentTools(input: CreateMusicAgentToolsInput): MusicAgentToolRegistry {
   const state: ToolState = {
     queryPlan: null,
@@ -1389,15 +1391,15 @@ async function recallFromQueries(options: {
         skippedRepeatedQueries += 1;
         continue;
       }
-      const cacheKey = searchCacheKey(query, limit);
-      let tracks = readCache(searchRecallCache, cacheKey);
+      const cacheKey = recallSearchCacheKey(query, limit);
+      let tracks = readRecallSearchCache(searchRecallCache, cacheKey);
       if (!tracks) {
         if (!consumeNcmSearch(options.state, options.maxSearches)) {
           problems.push('NCM search budget exhausted');
           break;
         }
         tracks = await options.input.ncmClient.searchSongs(query, limit);
-        writeCache(searchRecallCache, cacheKey, tracks, SEARCH_RECALL_CACHE_TTL_MS);
+        writeRecallSearchCache(searchRecallCache, cacheKey, tracks, SEARCH_RECALL_CACHE_TTL_MS);
       }
       options.state.searchedQueryLimits.set(runSearchKey, Math.max(coveredLimit, limit));
       searched.push(query);
@@ -1477,19 +1479,6 @@ async function recallFromQueries(options: {
       (artistFallbacks.length > 0 ? ` artist fallback added ${artistFallbackAdded} candidates from ${artistFallbacks.join('、')}.` : ''),
     problems
   );
-}
-
-function artistFallbackNameFromQuery(query: string, tracks: NcmTrackLike[]): string {
-  const withoutParenthetical = query.replace(/[（(][^）)]*[）)]/g, ' ').trim();
-  const dashParts = withoutParenthetical.split(/\s+(?:—|-|–)\s+/).map((part) => part.trim()).filter(Boolean);
-  const queryArtist = dashParts.length >= 2 ? dashParts.at(-1) ?? '' : '';
-  if (queryArtist) return queryArtist;
-
-  for (const track of tracks) {
-    const artist = track.artists?.find((item) => item?.trim());
-    if (artist) return artist.trim();
-  }
-  return '';
 }
 
 async function recallFromSemanticEntities(options: {
@@ -1595,27 +1584,6 @@ async function recallFromSemanticEntities(options: {
       problems: [`semantic discovery failed: ${formatError(error)}`]
     };
   }
-}
-
-function readCache<T>(cache: Map<string, CacheEntry<T>>, key: string): T | null {
-  const entry = cache.get(key);
-  if (!entry) return null;
-  if (entry.expiresAt <= Date.now()) {
-    cache.delete(key);
-    return null;
-  }
-  return entry.value;
-}
-
-function writeCache<T>(cache: Map<string, CacheEntry<T>>, key: string, value: T, ttlMs: number): void {
-  cache.set(key, {
-    value,
-    expiresAt: Date.now() + ttlMs
-  });
-}
-
-function searchCacheKey(query: string, limit: number): string {
-  return `${query.trim().toLowerCase()}::${limit}`;
 }
 
 function observation(

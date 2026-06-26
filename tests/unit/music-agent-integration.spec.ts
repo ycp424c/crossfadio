@@ -3059,6 +3059,66 @@ describe('createMusicAgentTools', () => {
     expect(afterSecondTrendCalls).toBe(afterFirstTrendCalls);
   });
 
+  it('reuses search recall cache across tool registries before consuming NCM search budget', async () => {
+    const ncmClient = {
+      getLikedSongIds: vi.fn(async () => []),
+      getSongDetails: vi.fn(async () => []),
+      searchSongs: vi.fn(async () => [
+        { id: 'cached-search-1', name: 'Cached Search', artists: ['Cache Artist'] }
+      ]),
+      getPlaylistDetail: vi.fn(async () => null)
+    };
+
+    const { CandidatePool } = await import('../../src/server/music-agent/candidates.js');
+    const { createMusicAgentTools } = await import('../../src/server/music-agent/tools.js');
+    const createTools = (candidatePool: InstanceType<typeof CandidatePool>, maxNcmSearches: number) => createMusicAgentTools({
+      userId: 'user-search-cache',
+      ncmClient: ncmClient as any,
+      context: {
+        request: 'auto-fill',
+        currentUserText: '',
+        currentMoment: { localTime: '周一 13:30', daypart: '下午', weather: null },
+        activeDirective: '',
+        currentPlanSegment: null,
+        tasteSummary: '',
+        recentPreferenceSummary: '',
+        recentPlaySignals: '',
+        queueStateSummary: '',
+        bannedSummary: ''
+      },
+      candidatePool,
+      budget: {
+        maxMs: 10_000,
+        maxSteps: 5,
+        maxLlmCalls: 2,
+        maxToolCalls: 5,
+        maxNcmSearches,
+        maxPlaylistFetches: 0,
+        maxTrendFetchMs: 0,
+        maxCandidates: 20
+      }
+    });
+
+    const firstPool = new CandidatePool();
+    const firstTools = createTools(firstPool, 1);
+    const first = await firstTools.recall_from_ncm_search?.({ queries: ['Cached Search Cache Artist'], limit: 8 });
+    const secondPool = new CandidatePool();
+    const secondTools = createTools(secondPool, 0);
+    const second = await secondTools.recall_from_ncm_search?.({ queries: ['Cached Search Cache Artist'], limit: 8 });
+
+    expect(ncmClient.searchSongs).toHaveBeenCalledTimes(1);
+    expect(first?.summary).toContain('searched 1 queries');
+    expect(second?.summary).toContain('searched 1 queries');
+    expect(secondPool.count()).toBe(1);
+    expect(secondTools.getQueryFunnel?.()).toEqual([
+      expect.objectContaining({
+        query: 'Cached Search Cache Artist',
+        resultCount: 1,
+        addedCount: 1
+      })
+    ]);
+  });
+
   it('front-loads repeated artist penalties into query recall diversity', async () => {
     const ncmClient = {
       getLikedSongIds: vi.fn(async () => []),
