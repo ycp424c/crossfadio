@@ -93,10 +93,10 @@ describe('DJ pick-next diagnostics', () => {
   });
 
   it('includes exclusion lists in DJ debug events for browser diagnostics', () => {
-    const source = readSource('src/server/http/routes/djNext.ts');
+    const source = readSource('src/server/dj/legacyCandidatePool.ts');
 
-    expect(source).toContain('excludedIds: Array.from(excludeState.ids)');
-    expect(source).toContain('excludedDedupeKeys: Array.from(excludeState.dedupeKeys)');
+    expect(source).toContain('excludedIds: Array.from(input.excludeState.ids)');
+    expect(source).toContain('excludedDedupeKeys: Array.from(input.excludeState.dedupeKeys)');
   });
 
   it('includes actually appended MusicAgent final pick reasons in DJ debug events', () => {
@@ -179,16 +179,19 @@ describe('DJ pick-next diagnostics', () => {
 
   it('includes a console-table friendly candidate table in legacy debug events', () => {
     const source = readSource('src/server/http/routes/djNext.ts');
-    const doPickNext = extractBetween(source, 'async function doPickNext', 'function createLegacyCandidateScoreTable');
-    const phase3DebugBlock = extractBetween(
+    const legacyCandidatePoolSource = readSource('src/server/dj/legacyCandidatePool.ts');
+    const doPickNext = extractBetween(source, 'async function doPickNext', 'export function serializeDjPickNextErrorForLog');
+    const phase3DebugCall = extractBetween(
       doPickNext,
-      'const phase3Debug = {',
-      '};\n\n      logger.info('
+      'const { allCandidates, phase3Debug } = createLegacyCandidatePool({',
+      '});\n\n      logger.info('
     );
 
-    expect(source).toContain('function createLegacyCandidateScoreTable');
-    expect(phase3DebugBlock).toContain('candidateScoreTable: createLegacyCandidateScoreTable(allCandidates, likedSampleIds)');
-    expect(source).toContain("sources: likedSampleIds.has(track.id) ? 'liked' : 'search'");
+    expect(phase3DebugCall).toContain('likedSample');
+    expect(phase3DebugCall).toContain('searchedTracks');
+    expect(phase3DebugCall).toContain('preferSearchCandidates: candidateMix.preferSearchCandidates');
+    expect(legacyCandidatePoolSource).toContain('candidateScoreTable: createLegacyCandidateScoreTable(allCandidates, likedSampleIds)');
+    expect(legacyCandidatePoolSource).toContain("sources: likedSampleIds.has(track.id) ? 'liked' : 'search'");
   });
 
   it('summarizes MusicAgent candidate sources for production diagnostics', () => {
@@ -212,7 +215,7 @@ describe('DJ pick-next diagnostics', () => {
     const source = readSource('src/server/http/routes/djNext.ts');
     const musicAgentResultSource = readSource('src/server/dj/musicAgentPickNextResult.ts');
     const legacyResultSource = readSource('src/server/dj/legacyPickNextResult.ts');
-    const doPickNext = extractBetween(source, 'async function doPickNext', 'function createLegacyCandidateScoreTable');
+    const doPickNext = extractBetween(source, 'async function doPickNext', 'export function serializeDjPickNextErrorForLog');
 
     expect(musicAgentResultSource).toContain('const musicAgentSkippedPicks: SkippedPickLog[] = [];');
     expect(legacyResultSource).toContain('const whitelistedSkippedPicks: SkippedPickLog[] = [];');
@@ -235,7 +238,7 @@ describe('DJ pick-next diagnostics', () => {
     const telemetrySource = readSource('src/server/dj/pickNextTelemetry.ts');
     const runnerSetup = extractBetween(source, 'const djPickNextRunner = createDjPickNextRunner', 'type LikedIdsCache');
     const jsonHandler = extractBetween(source, 'export function createDjPickNextHandler', 'async function doPickNext');
-    const doPickNext = extractBetween(source, 'async function doPickNext', 'function createLegacyCandidateScoreTable');
+    const doPickNext = extractBetween(source, 'async function doPickNext', 'export function serializeDjPickNextErrorForLog');
     const sseHandler = extractBetween(source, 'export function createSseDjPickNextHandler', 'function getScopedNcmClient');
 
     expect(runnerSetup).toContain('getTargetPickCount: getAutoFillBatchSize');

@@ -19,6 +19,7 @@ import { getLogger } from '../../logger.js';
 import { initSseRes, writeSseEvent, endSse } from '../sse.js';
 import { getOrGenerateDailyThemeWithin } from '../../daily-theme.js';
 import { MusicAgent } from '../../music-agent/index.js';
+import { createLegacyCandidatePool } from '../../dj/legacyCandidatePool.js';
 import { handleLegacyPickNextOutput } from '../../dj/legacyPickNextResult.js';
 import { buildLegacyPickPrompt } from '../../dj/legacyPickPrompt.js';
 import { handleLegacyRandomFallback } from '../../dj/legacyRandomFallback.js';
@@ -744,25 +745,14 @@ async function doPickNext(
       );
       if (signal?.aborted) return;
 
-      // Combine candidates, deduplicate by ID. Explore mode lists search results first
-      // so red-heart tracks are a smaller, lower-priority part of the candidate pool.
-      const likedSampleIds = new Set(likedSample.map((t) => t.id));
-      const searchedOnlyTracks = searchedTracks.filter((t) => !likedSampleIds.has(t.id));
-      const allCandidates = candidateMix.preferSearchCandidates
-        ? [...searchedOnlyTracks, ...likedSample]
-        : [...likedSample, ...searchedOnlyTracks];
-
-      // Snapshot Phase 3 data for the debug broadcast — always emitted regardless of Phase 4 outcome
-      const phase3Debug = {
-        likedSample: likedSample.map((t) => ({ id: t.id, name: t.name, artist: t.artist })),
-        sqRaw: sqRawSay,
+      const { allCandidates, phase3Debug } = createLegacyCandidatePool({
+        likedSample,
+        searchedTracks,
+        preferSearchCandidates: candidateMix.preferSearchCandidates,
+        sqRawSay,
         searchQueries,
-        searchedTracks: searchedTracks.map((t) => ({ id: t.id, name: t.name, artist: t.artist })),
-        excludedIds: Array.from(excludeState.ids),
-        excludedDedupeKeys: Array.from(excludeState.dedupeKeys),
-        totalCandidates: allCandidates.length,
-        candidateScoreTable: createLegacyCandidateScoreTable(allCandidates, likedSampleIds)
-      };
+        excludeState
+      });
 
       logger.info(
         {
@@ -915,41 +905,6 @@ async function doPickNext(
       []
     ),
     signal
-  });
-}
-
-function createLegacyCandidateScoreTable(candidates: Track[], likedSampleIds: Set<string>): Array<{
-  rank: number;
-  id: string;
-  song: string;
-  artist: string;
-  sources: string;
-  baseScore: number;
-  artistPenalty: number;
-  trackPenalty: number;
-  repeatPenalty: number;
-  qualityPenalty: number;
-  titlePollutionPenalty: number;
-  adjustedScore: number;
-}> {
-  const denominator = Math.max(1, candidates.length - 1);
-  return candidates.map((track, index) => {
-    const rankScore = candidates.length === 1 ? 1 : 1 - (index / denominator);
-    const score = Number(rankScore.toFixed(4));
-    return {
-      rank: index + 1,
-      id: track.id,
-      song: track.name ?? track.id,
-      artist: track.artist ?? '未知艺人',
-      sources: likedSampleIds.has(track.id) ? 'liked' : 'search',
-      baseScore: score,
-      artistPenalty: 0,
-      trackPenalty: 0,
-      repeatPenalty: 0,
-      qualityPenalty: 0,
-      titlePollutionPenalty: 0,
-      adjustedScore: score
-    };
   });
 }
 
