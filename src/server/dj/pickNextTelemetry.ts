@@ -69,6 +69,7 @@ export function createDjPickNextTelemetry(input: { logger?: Logger } = {}): DjPi
         candidateCount: metrics.candidateCount,
         nonLikedCandidateCount: metrics.nonLikedCandidateCount,
         candidateSourceCounts: metrics.candidateSourceCounts,
+        candidateProvenanceCounts: metrics.candidateProvenanceCounts,
         elapsedMs: metrics.elapsedMs,
         fallbackPath: path ?? metrics.fallbackPath,
         discoveryMode: metrics.discoveryMode,

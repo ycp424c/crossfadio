@@ -1,6 +1,10 @@
 import type { CandidateScoreTableRow, MusicCandidate, MusicCandidateQualitySignals } from './schema.js';
 import { areMusicTrackDedupeKeysSimilar, buildMusicTrackDedupeKey } from './dedupe.js';
 import { artistKeys } from './artists.js';
+import {
+  candidateProvenanceLabels,
+  cloneCandidateProvenance
+} from './candidate-provenance.js';
 
 const REPEATED_ARTIST_PENALTY = 0.16;
 const LOW_POPULARITY_THRESHOLD = 40;
@@ -130,6 +134,7 @@ export function buildCandidateScoreTableRows(
       song: candidate.name,
       artist: candidate.artist,
       sources: candidate.sources.join(','),
+      provenance: candidateProvenanceLabels(candidate).join(','),
       baseScore: roundScore(breakdown.baseScore),
       artistPenalty: roundScore(breakdown.artistPenalty),
       trackPenalty: roundScore(breakdown.trackPenalty),
@@ -211,6 +216,7 @@ function cloneCandidate(candidate: MusicCandidate): MusicCandidate {
   return {
     ...candidate,
     sources: [...candidate.sources],
+    ...(candidate.provenance ? { provenance: cloneCandidateProvenance(candidate.provenance) } : {}),
     evidence: [...candidate.evidence],
     scores: { ...candidate.scores },
     ...(candidate.qualitySignals ? { qualitySignals: { ...candidate.qualitySignals } } : {})

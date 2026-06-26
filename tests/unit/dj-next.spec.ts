@@ -197,9 +197,9 @@ describe('DJ pick-next diagnostics', () => {
   it('summarizes MusicAgent candidate sources for production diagnostics', () => {
     expect(getMusicAgentCandidateSourceDiagnostics({
       candidateScoreTable: [
-        { rank: 1, id: '1', song: 'Liked', artist: 'A', sources: 'liked', baseScore: 1, artistPenalty: 0, trackPenalty: 0, repeatPenalty: 0, qualityPenalty: 0, titlePollutionPenalty: 0, adjustedScore: 1 },
-        { rank: 2, id: '2', song: 'Merged', artist: 'B', sources: 'liked,search', baseScore: 1, artistPenalty: 0, trackPenalty: 0, repeatPenalty: 0, qualityPenalty: 0, titlePollutionPenalty: 0, adjustedScore: 1 },
-        { rank: 3, id: '3', song: 'Trend', artist: 'C', sources: 'trend', baseScore: 1, artistPenalty: 0, trackPenalty: 0, repeatPenalty: 0, qualityPenalty: 0, titlePollutionPenalty: 0, adjustedScore: 1 }
+        { rank: 1, id: '1', song: 'Liked', artist: 'A', sources: 'liked', provenance: 'liked', baseScore: 1, artistPenalty: 0, trackPenalty: 0, repeatPenalty: 0, qualityPenalty: 0, titlePollutionPenalty: 0, adjustedScore: 1 },
+        { rank: 2, id: '2', song: 'Merged', artist: 'B', sources: 'liked,search', provenance: 'liked,web_hint_recall', baseScore: 1, artistPenalty: 0, trackPenalty: 0, repeatPenalty: 0, qualityPenalty: 0, titlePollutionPenalty: 0, adjustedScore: 1 },
+        { rank: 3, id: '3', song: 'Trend', artist: 'C', sources: 'trend', provenance: 'trend_recall', baseScore: 1, artistPenalty: 0, trackPenalty: 0, repeatPenalty: 0, qualityPenalty: 0, titlePollutionPenalty: 0, adjustedScore: 1 }
       ]
     })).toEqual({
       nonLikedCandidateCount: 2,
@@ -207,6 +207,11 @@ describe('DJ pick-next diagnostics', () => {
         liked: 2,
         search: 1,
         trend: 1
+      },
+      candidateProvenanceCounts: {
+        liked: 2,
+        web_hint_recall: 1,
+        trend_recall: 1
       }
     });
   });

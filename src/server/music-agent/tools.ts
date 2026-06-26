@@ -9,6 +9,7 @@ import {
 } from './rank.js';
 import { buildTrendContext, type TrendCapableNcmClient } from './trends.js';
 import {
+  type CandidateProvenanceKind,
   queryPlanSchema,
   webMusicDiscoveryInputSchema,
   type AgentBudget,
@@ -446,6 +447,7 @@ export function createMusicAgentTools(input: CreateMusicAgentToolsInput): MusicA
           maxPlaylistFetches: limits.maxPlaylistFetches,
           avoidArtists,
           artistCounts,
+          provenanceKind: 'verified_entity',
           signal
         });
         added += result.added;
@@ -839,6 +841,7 @@ async function recallFromWebDiscoveryHints(options: {
       maxPlaylistFetches: options.maxPlaylistFetches,
       avoidArtists,
       artistCounts,
+      provenanceKind: 'web_hint_recall',
       signal: options.signal
     });
     added += result.added;
@@ -1019,6 +1022,7 @@ async function recallFromEntity(options: {
   maxPlaylistFetches: number;
   avoidArtists: ReadonlySet<string>;
   artistCounts: Map<string, number>;
+  provenanceKind?: CandidateProvenanceKind;
   signal?: AbortSignal;
 }): Promise<{ added: number; problems: string[] }> {
   try {
@@ -1042,6 +1046,7 @@ async function recallTrackEntity(options: {
   maxSearches: number;
   avoidArtists: ReadonlySet<string>;
   artistCounts: Map<string, number>;
+  provenanceKind?: CandidateProvenanceKind;
   signal?: AbortSignal;
 }): Promise<{ added: number; problems: string[] }> {
   const explicitId = entityId(options.entity);
@@ -1056,7 +1061,8 @@ async function recallTrackEntity(options: {
       evidence: `实体曲目: ${entityLabel(options.entity)}`,
       scores: sourceScores('search', options.input.context),
       avoidArtists: options.avoidArtists,
-      artistCounts: options.artistCounts
+      artistCounts: options.artistCounts,
+      provenanceKind: options.provenanceKind
     });
     return {
       added: result.added,
@@ -1085,7 +1091,8 @@ async function recallTrackEntity(options: {
     evidence: `实体曲目: ${entityLabel(options.entity)}`,
     scores: sourceScores('search', options.input.context),
     avoidArtists: options.avoidArtists,
-    artistCounts: options.artistCounts
+    artistCounts: options.artistCounts,
+    provenanceKind: options.provenanceKind
   });
   return {
     added: result.added,
@@ -1102,6 +1109,7 @@ async function recallArtistEntity(options: {
   maxSearches: number;
   avoidArtists: ReadonlySet<string>;
   artistCounts: Map<string, number>;
+  provenanceKind?: CandidateProvenanceKind;
   signal?: AbortSignal;
 }): Promise<{ added: number; problems: string[] }> {
   const artistName = entityArtistName(options.entity);
@@ -1129,7 +1137,8 @@ async function recallArtistEntity(options: {
     evidence: `实体艺人: ${artistName}`,
     scores: sourceScores('search', options.input.context),
     avoidArtists: options.avoidArtists,
-    artistCounts: options.artistCounts
+    artistCounts: options.artistCounts,
+    provenanceKind: options.provenanceKind
   });
   return {
     added: result.added,
@@ -1149,6 +1158,7 @@ async function recallAlbumEntity(options: {
   maxSearches: number;
   avoidArtists: ReadonlySet<string>;
   artistCounts: Map<string, number>;
+  provenanceKind?: CandidateProvenanceKind;
   signal?: AbortSignal;
 }): Promise<{ added: number; problems: string[] }> {
   const explicitId = entityId(options.entity);
@@ -1165,7 +1175,8 @@ async function recallAlbumEntity(options: {
       evidence: `实体专辑: ${detail.name}`,
       scores: sourceScores('search', options.input.context),
       avoidArtists: options.avoidArtists,
-      artistCounts: options.artistCounts
+      artistCounts: options.artistCounts,
+      provenanceKind: options.provenanceKind
     });
     return {
       added: result.added,
@@ -1205,7 +1216,8 @@ async function recallAlbumEntity(options: {
     evidence: `实体专辑: ${detail.name}`,
     scores: sourceScores('search', options.input.context),
     avoidArtists: options.avoidArtists,
-    artistCounts: options.artistCounts
+    artistCounts: options.artistCounts,
+    provenanceKind: options.provenanceKind
   });
   return {
     added: result.added,
@@ -1223,6 +1235,7 @@ async function recallPlaylistEntity(options: {
   maxPlaylistFetches: number;
   avoidArtists: ReadonlySet<string>;
   artistCounts: Map<string, number>;
+  provenanceKind?: CandidateProvenanceKind;
   signal?: AbortSignal;
 }): Promise<{ added: number; problems: string[] }> {
   const name = entityTitle(options.entity) || options.entity.query;
@@ -1263,7 +1276,8 @@ async function recallPlaylistEntity(options: {
     evidence: `实体歌单: ${detail.name}`,
     scores: sourceScores('playlist', options.input.context),
     avoidArtists: options.avoidArtists,
-    artistCounts: options.artistCounts
+    artistCounts: options.artistCounts,
+    provenanceKind: options.provenanceKind
   });
   return {
     added: result.added,
@@ -1403,7 +1417,8 @@ async function recallFromQueries(options: {
         evidence: `${options.evidencePrefix}: ${query}`,
         scores: options.scores,
         avoidArtists,
-        artistCounts
+        artistCounts,
+        provenanceKind: recallQueryProvenanceKind(options.source)
       });
       recordQueryFunnelSearch(options.state, {
         seed: funnelSeeds.get(normalizeSearchQuery(query)),
@@ -1442,6 +1457,7 @@ async function recallFromQueries(options: {
             maxPlaylistFetches: options.input.budget.maxPlaylistFetches,
             avoidArtists,
             artistCounts,
+            provenanceKind: recallQueryProvenanceKind(options.source),
             signal: options.signal
           });
           added += fallback.added;
@@ -1564,6 +1580,7 @@ async function recallFromSemanticEntities(options: {
         maxPlaylistFetches: options.input.budget.maxPlaylistFetches,
         avoidArtists,
         artistCounts,
+        provenanceKind: 'semantic_discovery',
         signal: options.signal
       });
       added += result.added;
@@ -1580,6 +1597,15 @@ async function recallFromSemanticEntities(options: {
       problems: [`semantic discovery failed: ${formatError(error)}`]
     };
   }
+}
+
+function recallQueryProvenanceKind(source: CandidateSource): CandidateProvenanceKind {
+  if (source === 'trend') return 'trend_recall';
+  if (source === 'style_expansion') return 'style_expansion';
+  if (source === 'plan') return 'plan';
+  if (source === 'playlist') return 'playlist';
+  if (source === 'liked') return 'liked';
+  return 'exact_recall';
 }
 
 function observation(

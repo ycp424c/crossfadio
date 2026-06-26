@@ -286,6 +286,10 @@ describe('music-agent ranking', () => {
         name: 'First',
         artist: 'Artist A',
         sources: ['liked', 'search'],
+        provenance: [
+          { kind: 'liked', source: 'liked' },
+          { kind: 'web_hint_recall', source: 'search' }
+        ],
         scores: { ...candidate().scores, intentMatch: 1 }
       }),
       candidate({
@@ -306,6 +310,7 @@ describe('music-agent ranking', () => {
         song: 'First',
         artist: 'Artist A',
         sources: 'liked,search',
+        provenance: 'liked,web_hint_recall',
         baseScore: expect.any(Number),
         artistPenalty: 0.12,
         repeatPenalty: 0,

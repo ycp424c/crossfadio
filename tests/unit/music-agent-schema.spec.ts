@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  candidateProvenanceKindSchema,
   candidateSourceSchema,
   finalPickDiagnosticsSchema,
   musicAgentLoopOutputSchema,
@@ -39,6 +40,7 @@ describe('music-agent schema', () => {
 
   it('accepts trend as a candidate source', () => {
     expect(candidateSourceSchema.parse('trend')).toBe('trend');
+    expect(candidateProvenanceKindSchema.parse('web_hint_recall')).toBe('web_hint_recall');
   });
 
   it('validates a candidate with sources, evidence, and scores', () => {
@@ -47,6 +49,10 @@ describe('music-agent schema', () => {
       name: 'Soft Song',
       artist: 'Singer',
       sources: ['liked', 'trend'],
+      provenance: [
+        { kind: 'liked', source: 'liked' },
+        { kind: 'trend_recall', source: 'trend' }
+      ],
       evidence: ['用户红心歌曲', '近期热搜关联'],
       scores: {
         intentMatch: 0.8,
@@ -62,6 +68,7 @@ describe('music-agent schema', () => {
 
     expect(candidate.id).toBe('101');
     expect(candidate.sources).toContain('trend');
+    expect(candidate.provenance?.map((item) => item.kind)).toEqual(['liked', 'trend_recall']);
   });
 
   it('validates tool_call and final loop outputs', () => {

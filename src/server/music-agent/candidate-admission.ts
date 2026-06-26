@@ -2,12 +2,18 @@ import { artistKeys } from './artists.js';
 import type { CandidatePool, CandidatePoolRejectReason } from './candidates.js';
 import type { NcmTrackLike } from './liked-recall.js';
 import type {
+  CandidateProvenance,
+  CandidateProvenanceKind,
   CandidateSource,
   MusicAgentContextSummary,
   MusicCandidate,
   MusicCandidateQualitySignals,
   MusicCandidateScores
 } from './schema.js';
+import {
+  cloneCandidateProvenance,
+  provenanceForSource
+} from './candidate-provenance.js';
 
 const QUALITY_SOURCES = new Set<CandidateSource>(['search', 'style_expansion', 'trend']);
 const MAX_QUERY_RECALL_PER_ARTIST_KEY = 2;
@@ -31,6 +37,9 @@ export type UpsertTracksOptions = {
   avoidArtists?: ReadonlySet<string>;
   artistCounts?: Map<string, number>;
   maxAccepted?: number;
+  provenance?: CandidateProvenance | CandidateProvenance[];
+  provenanceKind?: CandidateProvenanceKind;
+  provenanceDetail?: string;
 };
 
 export function emptyUpsertTracksResult(): UpsertTracksResult {
@@ -150,7 +159,13 @@ export function skippedRecallProblems(result: Pick<UpsertTracksResult, 'skippedA
 export function candidateFromTrack(
   track: NcmTrackLike,
   source: CandidateSource,
-  options: { evidence: string; scores: MusicCandidateScores }
+  options: {
+    evidence: string;
+    scores: MusicCandidateScores;
+    provenance?: CandidateProvenance | CandidateProvenance[];
+    provenanceKind?: CandidateProvenanceKind;
+    provenanceDetail?: string;
+  }
 ): MusicCandidate | null {
   const id = track.id === undefined || track.id === null ? '' : String(track.id).trim();
   const name = track.name?.trim() ?? '';
@@ -162,10 +177,29 @@ export function candidateFromTrack(
     name,
     artist,
     sources: [source],
+    provenance: candidateProvenanceFromOptions(source, options),
     evidence: [options.evidence],
     scores: { ...options.scores },
     ...qualitySignalsProperty(track.qualitySignals ?? undefined)
   };
+}
+
+function candidateProvenanceFromOptions(
+  source: CandidateSource,
+  options: {
+    evidence: string;
+    provenance?: CandidateProvenance | CandidateProvenance[];
+    provenanceKind?: CandidateProvenanceKind;
+    provenanceDetail?: string;
+  }
+): CandidateProvenance[] {
+  if (options.provenance) {
+    return cloneCandidateProvenance(Array.isArray(options.provenance) ? options.provenance : [options.provenance]);
+  }
+  return [provenanceForSource(source, {
+    kind: options.provenanceKind,
+    detail: options.provenanceDetail
+  })];
 }
 
 export function usesExternalQuality(candidate: MusicCandidate): boolean {

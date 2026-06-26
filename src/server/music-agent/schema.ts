@@ -14,6 +14,28 @@ export const candidateSourceSchema = z.enum([
 
 export type CandidateSource = z.infer<typeof candidateSourceSchema>;
 
+export const candidateProvenanceKindSchema = z.enum([
+  'liked',
+  'playlist',
+  'plan',
+  'exact_recall',
+  'semantic_discovery',
+  'web_hint_recall',
+  'verified_entity',
+  'trend_recall',
+  'style_expansion'
+]);
+
+export type CandidateProvenanceKind = z.infer<typeof candidateProvenanceKindSchema>;
+
+export const candidateProvenanceSchema = z.object({
+  kind: candidateProvenanceKindSchema,
+  source: candidateSourceSchema,
+  detail: z.string().optional()
+});
+
+export type CandidateProvenance = z.infer<typeof candidateProvenanceSchema>;
+
 export const musicAgentToolNameSchema = z.enum([
   'get_context_summary',
   'get_music_knowledge',
@@ -61,6 +83,7 @@ export const musicCandidateSchema = z.object({
   name: z.string().min(1),
   artist: z.string().min(1),
   sources: z.array(candidateSourceSchema).min(1),
+  provenance: z.array(candidateProvenanceSchema).optional(),
   evidence: z.array(z.string()).default([]),
   scores: musicCandidateScoresSchema,
   qualitySignals: musicCandidateQualitySignalsSchema.optional()
@@ -285,6 +308,7 @@ export const candidateScoreTableRowSchema = z.object({
   song: z.string(),
   artist: z.string(),
   sources: z.string(),
+  provenance: z.string().optional(),
   baseScore: z.number(),
   artistPenalty: z.number(),
   trackPenalty: z.number(),

@@ -34,12 +34,17 @@ describe('CandidatePool', () => {
     expect(pool.upsert(candidate({
       id: 'same',
       sources: ['liked'],
+      provenance: [{ kind: 'liked', source: 'liked' }],
       evidence: ['liked evidence'],
       scores: { ...candidate().scores, intentMatch: 0.4, recentPenalty: 0.1 }
     }))).toEqual({ status: 'inserted' });
     expect(pool.upsert(candidate({
       id: 'same',
       sources: ['trend', 'liked'],
+      provenance: [
+        { kind: 'trend_recall', source: 'trend' },
+        { kind: 'liked', source: 'liked' }
+      ],
       evidence: ['trend evidence', 'liked evidence'],
       scores: { ...candidate().scores, intentMatch: 0.9, tasteMatch: 0.8, recentPenalty: 0.3 }
     }))).toEqual({ status: 'merged_by_id' });
@@ -48,6 +53,10 @@ describe('CandidatePool', () => {
 
     expect(pool.count()).toBe(1);
     expect(merged?.sources).toEqual(['liked', 'trend']);
+    expect(merged?.provenance).toEqual([
+      { kind: 'liked', source: 'liked' },
+      { kind: 'trend_recall', source: 'trend' }
+    ]);
     expect(merged?.evidence).toEqual(['liked evidence', 'trend evidence']);
     expect(merged?.scores.intentMatch).toBe(0.9);
     expect(merged?.scores.tasteMatch).toBe(0.8);
@@ -267,6 +276,18 @@ describe('CandidatePool', () => {
       .toThrow(/source mismatch/i);
   });
 
+  it('validateFinalPicks remains source-compatible when provenance is more specific', () => {
+    const pool = new CandidatePool();
+    pool.upsert(candidate({
+      id: 'known',
+      sources: ['search'],
+      provenance: [{ kind: 'web_hint_recall', source: 'search' }]
+    }));
+
+    expect(pool.validateFinalPicks([{ id: 'known', reason: 'fits', source: 'search' }]))
+      .toEqual([{ id: 'known', name: 'Song', artist: 'Artist', reason: 'fits', source: 'search' }]);
+  });
+
   it('validateFinalPicks resolves alias ids to canonical ids', () => {
     const pool = new CandidatePool();
 
@@ -295,8 +316,10 @@ describe('CandidatePool', () => {
 
     const [first] = pool.list();
     first.sources.push('trend');
+    first.provenance?.push({ kind: 'trend_recall', source: 'trend' });
 
     expect(pool.count()).toBe(1);
     expect(pool.get('one')?.sources).toEqual(['liked']);
+    expect(pool.get('one')?.provenance).toBeUndefined();
   });
 });

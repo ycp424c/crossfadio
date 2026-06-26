@@ -22,6 +22,7 @@ export type DjPickNextRunMetrics = {
   candidateCount?: number;
   nonLikedCandidateCount?: number;
   candidateSourceCounts?: Record<string, number>;
+  candidateProvenanceCounts?: Record<string, number>;
   elapsedMs?: number;
   fallbackPath?: DjPickNextFallbackPath;
   discoveryMode?: DiscoveryMode;
@@ -226,8 +227,13 @@ function getMusicAgentDebugCandidateCount(output: MusicAgentRunOutput): number {
 
 export function getMusicAgentCandidateSourceDiagnostics(
   output: Pick<MusicAgentRunOutput, 'candidateScoreTable'>
-): { nonLikedCandidateCount: number; candidateSourceCounts: Record<string, number> } {
+): {
+  nonLikedCandidateCount: number;
+  candidateSourceCounts: Record<string, number>;
+  candidateProvenanceCounts: Record<string, number>;
+} {
   const candidateSourceCounts: Record<string, number> = {};
+  const candidateProvenanceCounts: Record<string, number> = {};
   let nonLikedCandidateCount = 0;
 
   for (const row of output.candidateScoreTable) {
@@ -241,9 +247,16 @@ export function getMusicAgentCandidateSourceDiagnostics(
     for (const source of sources) {
       candidateSourceCounts[source] = (candidateSourceCounts[source] ?? 0) + 1;
     }
+    const provenance = (row.provenance ?? '')
+      .split(',')
+      .map((entry) => entry.trim())
+      .filter(Boolean);
+    for (const entry of provenance) {
+      candidateProvenanceCounts[entry] = (candidateProvenanceCounts[entry] ?? 0) + 1;
+    }
   }
 
-  return { nonLikedCandidateCount, candidateSourceCounts };
+  return { nonLikedCandidateCount, candidateSourceCounts, candidateProvenanceCounts };
 }
 
 function buildMusicAgentDebugPayload(input: {

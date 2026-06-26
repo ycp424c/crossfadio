@@ -32,14 +32,33 @@ describe('MusicAgent candidate admission helpers', () => {
       name: 'City Light',
       artist: 'Fresh Artist / Guest Artist',
       sources: ['search'],
+      provenance: [{ kind: 'exact_recall', source: 'search' }],
       evidence: ['网易云搜索: City Light Fresh Artist'],
       scores,
       qualitySignals: { popularity: 72, titlePollution: 'none' }
     });
     expect(candidate?.scores).not.toBe(scores);
     expect(candidate?.qualitySignals).not.toBe(qualitySignals);
+    expect(candidate?.provenance).toEqual([{ kind: 'exact_recall', source: 'search' }]);
     expect(candidateFromTrack({ id: '', name: 'No Id', artists: ['Artist'] }, 'search', { evidence: '', scores })).toBeNull();
     expect(candidateFromTrack({ id: 'missing-artist', name: 'Song', artists: [] }, 'search', { evidence: '', scores })).toBeNull();
+  });
+
+  it('accepts explicit provenance and clones it when converting tracks', () => {
+    const scores = baseScores();
+    const provenance = { kind: 'web_hint_recall', source: 'search', detail: 'web hint: Fresh Artist' } as const;
+    const candidate = candidateFromTrack({
+      id: 'web-1',
+      name: 'Web Song',
+      artists: ['Fresh Artist']
+    }, 'search', {
+      evidence: 'web hint recall',
+      scores,
+      provenance
+    });
+
+    expect(candidate?.provenance).toEqual([provenance]);
+    expect(candidate?.provenance?.[0]).not.toBe(provenance);
   });
 
   it('merges admission counters and keeps the summary labels stable', () => {
@@ -113,6 +132,7 @@ describe('MusicAgent candidate admission helpers', () => {
     });
     expect(pool.count()).toBe(2);
     expect(pool.get('inserted')?.sources).toEqual(['search']);
+    expect(pool.get('inserted')?.provenance).toEqual([{ kind: 'exact_recall', source: 'search' }]);
     expect(artistCounts.get('fresh artist')).toBe(1);
     expect(artistCounts.get('second artist')).toBe(1);
     expect(artistCounts.get('cap artist')).toBe(2);

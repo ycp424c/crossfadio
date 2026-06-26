@@ -11,6 +11,10 @@ import type {
   MusicCandidateQualitySignals,
   MusicCandidateScores
 } from './schema.js';
+import {
+  cloneCandidateProvenance,
+  mergeCandidateProvenance
+} from './candidate-provenance.js';
 
 export interface CandidatePoolOptions {
   maxCandidates?: number;
@@ -63,6 +67,7 @@ function cloneCandidate(candidate: MusicCandidate): MusicCandidate {
   return {
     ...candidate,
     sources: [...candidate.sources],
+    ...(candidate.provenance ? { provenance: cloneCandidateProvenance(candidate.provenance) } : {}),
     evidence: [...candidate.evidence],
     scores: { ...candidate.scores },
     ...(candidate.qualitySignals ? { qualitySignals: { ...candidate.qualitySignals } } : {})
@@ -87,9 +92,11 @@ function mergeScores(left: MusicCandidateScores, right: MusicCandidateScores): M
 }
 
 function mergeCandidate(existing: MusicCandidate, incoming: MusicCandidate): MusicCandidate {
+  const sources = mergeUnique(existing.sources, incoming.sources);
   return {
     ...existing,
-    sources: mergeUnique(existing.sources, incoming.sources),
+    sources,
+    provenance: mergeCandidateProvenance(existing, incoming, sources),
     evidence: mergeUnique(existing.evidence, incoming.evidence),
     scores: mergeScores(existing.scores, incoming.scores),
     ...qualitySignalsProperty(mergeCandidateQualitySignals(existing.qualitySignals, incoming.qualitySignals))
