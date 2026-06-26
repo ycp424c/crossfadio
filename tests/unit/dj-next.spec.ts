@@ -99,45 +99,45 @@ describe('DJ pick-next diagnostics', () => {
   });
 
   it('includes actually appended MusicAgent final pick reasons in DJ debug events', () => {
-    const source = readSource('src/server/http/routes/djNext.ts');
-    const doPickNext = extractBetween(source, 'async function doPickNext', 'function broadcastAppended');
-    const musicAgentDebugHelper = extractBetween(source, 'function buildMusicAgentDebugPayload', 'function getMusicAgentRoutePath');
+    const source = readSource('src/server/dj/musicAgentPickNextResult.ts');
+    const musicAgentHandler = extractBetween(source, 'export function handleMusicAgentPickNextOutput', 'function getAddedTrackCount');
+    const musicAgentSelectedTrackHelper = extractBetween(source, 'function createMusicAgentSelectedTrackDebug', 'function getMusicAgentShortfallDiagnostics');
 
-    expect(doPickNext).toContain('const appendedPicks: typeof output.picks = [];');
-    expect(doPickNext).toContain('appendedPicks.push(pick);');
-    expect(doPickNext).toContain('emit(buildMusicAgentDebugPayload({ output, appendedPicks, excludeState })');
-    expect(musicAgentDebugHelper).toContain('selectedTracks: createMusicAgentSelectedTrackDebug(appendedPicks)');
-    expect(musicAgentDebugHelper).toContain('reason: pick.reason');
-    expect(musicAgentDebugHelper).toContain('source: pick.source');
+    expect(musicAgentHandler).toContain('const appendedPicks: typeof output.picks = [];');
+    expect(musicAgentHandler).toContain('appendedPicks.push(pick);');
+    expect(musicAgentHandler).toContain('emit(buildMusicAgentDebugPayload({ output, appendedPicks, excludeState })');
+    expect(source).toContain('selectedTracks: createMusicAgentSelectedTrackDebug(appendedPicks)');
+    expect(musicAgentSelectedTrackHelper).toContain('reason: pick.reason');
+    expect(musicAgentSelectedTrackHelper).toContain('source: pick.source');
   });
 
   it('routes MusicAgent ranked fallback picks through legacy LLM instead of appending them', () => {
-    const source = readSource('src/server/http/routes/djNext.ts');
-    const doPickNext = extractBetween(source, 'async function doPickNext', 'function broadcastAppended');
+    const source = readSource('src/server/dj/musicAgentPickNextResult.ts');
+    const handler = extractBetween(source, 'export function handleMusicAgentPickNextOutput', 'function getAddedTrackCount');
     const rankedFallbackBlock = extractBetween(
-      doPickNext,
-      "if (output.status === 'ok' && hasRankedFallbackPicks(output)) {",
-      "} else if (output.status === 'ok') {"
+      handler,
+      'if (hasRankedFallbackPicks(output)) {',
+      'const pathQueueLength = getQueue(userId).length;'
     );
 
-    expect(rankedFallbackBlock).toContain("legacyFallbackPath = 'music_agent_legacy_fallback';");
+    expect(rankedFallbackBlock).toContain("const legacyFallbackPath = 'music_agent_legacy_fallback';");
     expect(rankedFallbackBlock).toContain('rankedFallbackPicks: createMusicAgentSelectedTrackDebug(output.picks)');
     expect(rankedFallbackBlock).toContain('MusicAgent returned ranked fallback picks, using legacy fallback');
     expectBefore(
-      doPickNext,
-      "if (output.status === 'ok' && hasRankedFallbackPicks(output))",
+      handler,
+      'if (hasRankedFallbackPicks(output))',
       'const pathQueueLength = getQueue(userId).length'
     );
     expect(source).toContain('function hasRankedFallbackPicks(output: MusicAgentRunOutput): boolean');
   });
 
   it('emits MusicAgent debug details before broadcasting partial append success', () => {
-    const source = readSource('src/server/http/routes/djNext.ts');
-    const doPickNext = extractBetween(source, 'async function doPickNext', 'function broadcastAppended');
+    const source = readSource('src/server/dj/musicAgentPickNextResult.ts');
+    const handler = extractBetween(source, 'export function handleMusicAgentPickNextOutput', 'function getAddedTrackCount');
     const partialAppendBlock = extractBetween(
-      doPickNext,
+      handler,
       'if (appendedCount > 0) {',
-      "legacyFallbackPath = 'music_agent_legacy_fallback';"
+      "const legacyFallbackPath = 'music_agent_legacy_fallback';"
     );
 
     expect(partialAppendBlock).toContain('emit(buildMusicAgentDebugPayload({');
@@ -215,12 +215,15 @@ describe('DJ pick-next diagnostics', () => {
 
   it('logs skipped pick reasons when append paths fall short of the target', () => {
     const source = readSource('src/server/http/routes/djNext.ts');
+    const musicAgentResultSource = readSource('src/server/dj/musicAgentPickNextResult.ts');
     const doPickNext = extractBetween(source, 'async function doPickNext', 'function broadcastAppended');
 
-    expect(doPickNext).toContain('const musicAgentSkippedPicks: SkippedPickLog[] = [];');
+    expect(musicAgentResultSource).toContain('const musicAgentSkippedPicks: SkippedPickLog[] = [];');
     expect(doPickNext).toContain('const whitelistedSkippedPicks: SkippedPickLog[] = [];');
-    expect(doPickNext).toContain('skippedPicks: musicAgentSkippedPicks');
+    expect(musicAgentResultSource).toContain('skippedPicks: musicAgentSkippedPicks');
     expect(doPickNext).toContain('skippedPicks: whitelistedSkippedPicks');
+    expect(musicAgentResultSource).toContain("'id_excluded'");
+    expect(musicAgentResultSource).toContain("'dedupe_excluded'");
     expect(doPickNext).toContain("'id_excluded'");
     expect(doPickNext).toContain("'dedupe_excluded'");
     expect(doPickNext).not.toContain('excludedIds: Array.from(excludeState.ids),\n            excludedDedupeKeys: Array.from(excludeState.dedupeKeys),\n            skippedPicks');
@@ -228,16 +231,21 @@ describe('DJ pick-next diagnostics', () => {
 
   it('routes DJ pick-next through MusicAgent with abort and status guards', () => {
     const source = readSource('src/server/http/routes/djNext.ts');
-    const runPickNextJob = extractBetween(source, 'async function runPickNextJob', 'async function doPickNext');
+    const musicAgentResultSource = readSource('src/server/dj/musicAgentPickNextResult.ts');
+    const runnerSetup = extractBetween(source, 'const djPickNextRunner = createDjPickNextRunner', 'type LikedIdsCache');
+    const jsonHandler = extractBetween(source, 'export function createDjPickNextHandler', 'async function doPickNext');
     const doPickNext = extractBetween(source, 'async function doPickNext', 'function broadcastAppended');
     const sseHandler = extractBetween(source, 'export function createSseDjPickNextHandler', 'function getScopedNcmClient');
 
-    expect(runPickNextJob).toContain("controller.abort(new Error('job-timeout'))");
-    expect(runPickNextJob).toContain('doPickNext(userId, ncmClient, undefined, controller.signal)');
+    expect(runnerSetup).toContain('getTargetPickCount: getAutoFillBatchSize');
+    expect(runnerSetup).toContain('getJobTimeoutMs');
+    expect(runnerSetup).toContain('doPickNext(userId, ncmClient, emit, signal)');
+    expect(jsonHandler).toContain('djPickNextRunner.run({');
+    expect(jsonHandler).toContain("broadcastToUser(userId, { type: 'dj.pick-next.done', added: false, reason: 'timeout' })");
 
-    expect(sseHandler).toContain("controller.abort(new Error('job-timeout'))");
-    expect(sseHandler).toContain('doPickNext(userId, ncmClient, emit, controller.signal)');
-    expectBefore(sseHandler, 'if (isRunning.get(userId))', 'applyClientQueueSnapshot(req, userId)');
+    expect(sseHandler).toContain("controller.abort(new Error('client-disconnected'))");
+    expect(sseHandler).toContain('djPickNextRunner.run({ userId, ncmClient, emit, signal: controller.signal })');
+    expectBefore(sseHandler, 'if (djPickNextRunner.isRunning(userId))', 'applyClientQueueSnapshot(req, userId)');
 
     expect(doPickNext).toContain('new MusicAgent');
     expect(doPickNext).toContain("output.status === 'ok'");
@@ -250,16 +258,17 @@ describe('DJ pick-next diagnostics', () => {
     expect(doPickNext).toContain('excludeTrackIds: excludeState.ids');
     expect(doPickNext).toContain('excludeTrackDedupeKeys: excludeState.dedupeKeys');
     expect(doPickNext).toContain('targetPickCount');
-    expect(doPickNext).toContain('if (getRemainingPickSlots(userId, initialQueueLength, targetPickCount) <= 0) break');
-    expect(doPickNext).toContain('if (hasReachedPickTarget(userId, initialQueueLength, targetPickCount))');
-    expect(doPickNext).toContain('djPickReasonCache.set(track.ncmId, output.say.trim())');
+    expect(doPickNext).toContain('handleMusicAgentPickNextOutput({');
+    expect(doPickNext).toContain('setPickReason: (trackId, reason) => djPickReasonCache.set(trackId, reason)');
+    expect(musicAgentResultSource).toContain('if (getRemainingPickSlots(userId, initialQueueLength, targetPickCount) <= 0)');
+    expect(musicAgentResultSource).toContain('if (hasReachedPickTarget(userId, initialQueueLength, targetPickCount))');
     expect(doPickNext).toContain('broadcastAppended(');
-    expect(doPickNext).toContain('musicAgentRunMetrics(output, appendedPicks, startedAt, discoveryMode)');
+    expect(musicAgentResultSource).toContain('musicAgentRunMetrics(output, appendedPicks, startedAt, discoveryMode)');
     expect(source).toContain('rankedBackfillCount: metrics.rankedBackfillCount');
     expect(source).toContain('finalPickDiagnostics: metrics.finalPickDiagnostics');
-    expect(source).toContain('totalCandidates: getMusicAgentDebugCandidateCount(output)');
-    expect(doPickNext).not.toContain('totalCandidates: output.picks.length');
-    expect(doPickNext).toContain('MusicAgent appended fewer than target');
+    expect(musicAgentResultSource).toContain('totalCandidates: getMusicAgentDebugCandidateCount(output)');
+    expect(musicAgentResultSource).not.toContain('totalCandidates: output.picks.length');
+    expect(musicAgentResultSource).toContain('MusicAgent appended fewer than target');
     expect(doPickNext).toContain('whitelisted picks appended fewer than target');
     expect(doPickNext).toContain('getRemainingPickSlots(userId, initialQueueLength, targetPickCount) * 4');
     expect(doPickNext).toContain('targetCount: targetPickCount');
@@ -305,11 +314,11 @@ describe('DJ pick-next diagnostics', () => {
 
   it('does not apply stale client queue snapshots to already-running DJ jobs', () => {
     const source = readSource('src/server/http/routes/djNext.ts');
-    const jsonHandler = extractBetween(source, 'export function createDjPickNextHandler', 'async function runPickNextJob');
+    const jsonHandler = extractBetween(source, 'export function createDjPickNextHandler', 'async function doPickNext');
     const sseHandler = extractBetween(source, 'export function createSseDjPickNextHandler', 'function getScopedNcmClient');
 
-    expectBefore(jsonHandler, 'if (isRunning.get(userId))', 'applyClientQueueSnapshot(req, userId)');
-    expectBefore(sseHandler, 'if (isRunning.get(userId))', 'applyClientQueueSnapshot(req, userId)');
+    expectBefore(jsonHandler, 'if (djPickNextRunner.isRunning(userId))', 'applyClientQueueSnapshot(req, userId)');
+    expectBefore(sseHandler, 'if (djPickNextRunner.isRunning(userId))', 'applyClientQueueSnapshot(req, userId)');
     expect(jsonHandler).toContain('res.json({ ok: true, running: true })');
     expect(sseHandler).toContain("endSse(res, 'dj.pick-next.done', { added: false, running: true, reason: 'already-running' })");
   });

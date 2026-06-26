@@ -156,8 +156,9 @@ describe('player layout', () => {
     const sseHandlerBody = source.slice(sseHandlerStart, scopedClientStart);
 
     expect(sseHandlerBody).toContain('writeSseEvent(res, type, payload)');
-    expect(sseHandlerBody).toContain('doPickNext(userId, ncmClient, emit, controller.signal)');
-    expect(sseHandlerBody).toContain("controller.abort(new Error('job-timeout'))");
+    expect(sseHandlerBody).toContain('djPickNextRunner.run({ userId, ncmClient, emit, signal: controller.signal })');
+    expect(sseHandlerBody).toContain("result.status === 'timeout'");
+    expect(sseHandlerBody).toContain("endSse(res, 'dj.pick-next.done', { added: false, reason: 'timeout' })");
   });
 
   it('does not start another DJ pick-next SSE stream while one is already in flight', () => {
