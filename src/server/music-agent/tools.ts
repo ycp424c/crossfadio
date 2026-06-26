@@ -9,9 +9,9 @@ import {
 } from './rank.js';
 import { buildTrendContext, type TrendCapableNcmClient } from './trends.js';
 import {
-  type CandidateProvenanceKind,
   queryPlanSchema,
   type AgentBudget,
+  type CandidateProvenanceKind,
   type CandidateSource,
   type MusicAgentContextSummary,
   type MusicAgentToolName,
@@ -26,7 +26,6 @@ import {
   countCandidateArtistKeys,
   emptyUpsertTracksResult,
   mergeUpsertTracksResult,
-  skippedRecallProblems,
   sourceScores,
   summarizeCandidateAdmission,
   upsertTracks,
@@ -80,25 +79,17 @@ import {
 } from './query-funnel.js';
 import type { FinalPick } from './schema.js';
 import {
-  albumMatchesEntity,
-  albumMatchesKnownEntityFields,
-  entityArtistName,
   entityFromStoredRecord,
-  entityId,
-  entityLabel,
-  entityTitle,
-  findVerifiedAlbum,
-  isVerifiedTrackEntity,
   parseEntityRecallInput,
-  tokenMatches,
-  trackMatchesArtist,
-  trackMatchesKnownEntityFields,
-  type MusicEntityHypothesis
 } from './entity-hypotheses.js';
 import {
   findSimilarMusicEntities
 } from '../store/music-entities.js';
 import type { WebMusicDiscoveryProvider } from './web-discovery.js';
+import {
+  recallFromEntity,
+  type EntityRecallNcmClient
+} from './entity-recall.js';
 import { artistKeys } from './artists.js';
 
 export type ToolObservation = {
@@ -127,20 +118,10 @@ export type MusicAgentEmbeddingClient = {
   ) => Promise<{ vectors: Float32Array[]; model: string; dimensions: number }>;
 };
 
-type EntityCapableNcmClient = Pick<
-  NcmClient,
-  'searchArtists'
-  | 'getArtistTopSongs'
-  | 'searchAlbums'
-  | 'getArtistAlbums'
-  | 'getAlbumDetail'
-  | 'searchPlaylists'
->;
-
 type MusicAgentNcmClient = Pick<
   NcmClient,
   'getLikedSongIds' | 'getSongDetails' | 'searchSongs' | 'getPlaylistDetail'
-> & Partial<TrendCapableNcmClient> & Partial<EntityCapableNcmClient>;
+> & Partial<TrendCapableNcmClient> & Partial<EntityRecallNcmClient>;
 
 export type CreateMusicAgentToolsInput = {
   userId: string;
@@ -432,12 +413,13 @@ export function createMusicAgentTools(input: CreateMusicAgentToolsInput): MusicA
         if (signal?.aborted) return abortedObservation(input.candidatePool);
         const result = await recallFromEntity({
           entity,
-          input,
-          state,
+          ncmClient: input.ncmClient,
+          candidatePool: input.candidatePool,
+          context: input.context,
           limit,
           searchLimit,
-          maxSearches: limits.maxNcmSearches,
-          maxPlaylistFetches: limits.maxPlaylistFetches,
+          consumeNcmSearch: () => consumeNcmSearch(state, limits.maxNcmSearches),
+          consumePlaylistFetch: () => consumePlaylistFetch(state, limits.maxPlaylistFetches),
           avoidArtists,
           artistCounts,
           provenanceKind: 'verified_entity',
@@ -729,12 +711,13 @@ async function recallFromWebDiscoveryHints(options: {
     if (options.signal?.aborted) return { summary: 'web hint entity recall aborted.', problems: ['aborted'] };
     const result = await recallFromEntity({
       entity,
-      input: options.input,
-      state: options.state,
+      ncmClient: options.input.ncmClient,
+      candidatePool: options.input.candidatePool,
+      context: options.input.context,
       limit: options.limit,
       searchLimit: DEFAULT_ENTITY_SEARCH_LIMIT,
-      maxSearches: options.maxSearches,
-      maxPlaylistFetches: options.maxPlaylistFetches,
+      consumeNcmSearch: () => consumeNcmSearch(options.state, options.maxSearches),
+      consumePlaylistFetch: () => consumePlaylistFetch(options.state, options.maxPlaylistFetches),
       avoidArtists,
       artistCounts,
       provenanceKind: 'web_hint_recall',
@@ -891,299 +874,6 @@ function avoidArtistsFromContext(context: MusicAgentContextSummary): string[] {
     .map((item) => item.artist);
 }
 
-async function recallFromEntity(options: {
-  entity: MusicEntityHypothesis;
-  input: CreateMusicAgentToolsInput;
-  state: ToolState;
-  limit: number;
-  searchLimit: number;
-  maxSearches: number;
-  maxPlaylistFetches: number;
-  avoidArtists: ReadonlySet<string>;
-  artistCounts: Map<string, number>;
-  provenanceKind?: CandidateProvenanceKind;
-  signal?: AbortSignal;
-}): Promise<{ added: number; problems: string[] }> {
-  try {
-    if (options.entity.type === 'track') return recallTrackEntity(options);
-    if (options.entity.type === 'artist') return recallArtistEntity(options);
-    if (options.entity.type === 'album') return recallAlbumEntity(options);
-    return recallPlaylistEntity(options);
-  } catch (error) {
-    return {
-      added: 0,
-      problems: [`${options.entity.type} entity ${entityLabel(options.entity)}: ${formatError(error)}`]
-    };
-  }
-}
-
-async function recallTrackEntity(options: {
-  entity: MusicEntityHypothesis;
-  input: CreateMusicAgentToolsInput;
-  state: ToolState;
-  limit: number;
-  maxSearches: number;
-  avoidArtists: ReadonlySet<string>;
-  artistCounts: Map<string, number>;
-  provenanceKind?: CandidateProvenanceKind;
-  signal?: AbortSignal;
-}): Promise<{ added: number; problems: string[] }> {
-  const explicitId = entityId(options.entity);
-  if (explicitId) {
-    const tracks = await options.input.ncmClient.getSongDetails([explicitId]);
-    if (options.signal?.aborted) return { added: 0, problems: ['aborted'] };
-    const verifiedTracks = tracks.filter((track) => trackMatchesKnownEntityFields(options.entity, track));
-    if (verifiedTracks.length === 0) {
-      return { added: 0, problems: [`track entity rejected: ${entityLabel(options.entity)}`] };
-    }
-    const result = upsertTracks(options.input.candidatePool, verifiedTracks.slice(0, options.limit), 'search', {
-      evidence: `实体曲目: ${entityLabel(options.entity)}`,
-      scores: sourceScores('search', options.input.context),
-      avoidArtists: options.avoidArtists,
-      artistCounts: options.artistCounts,
-      provenanceKind: options.provenanceKind
-    });
-    return {
-      added: result.added,
-      problems: skippedRecallProblems(result)
-    };
-  }
-
-  const title = entityTitle(options.entity);
-  if (!title) {
-    return { added: 0, problems: ['track entity skipped: missing title'] };
-  }
-  if (!consumeNcmSearch(options.state, options.maxSearches)) {
-    return { added: 0, problems: ['NCM search budget exhausted'] };
-  }
-
-  const query = uniqueStrings([title, options.entity.artist ?? '']).join(' ');
-  const tracks = await options.input.ncmClient.searchSongs(query, options.limit);
-  if (options.signal?.aborted) return { added: 0, problems: ['aborted'] };
-
-  const verifiedTracks = tracks.filter((track) => isVerifiedTrackEntity(options.entity, track));
-  if (verifiedTracks.length === 0) {
-    return { added: 0, problems: [`track entity rejected: ${entityLabel(options.entity)}`] };
-  }
-
-  const result = upsertTracks(options.input.candidatePool, verifiedTracks, 'search', {
-    evidence: `实体曲目: ${entityLabel(options.entity)}`,
-    scores: sourceScores('search', options.input.context),
-    avoidArtists: options.avoidArtists,
-    artistCounts: options.artistCounts,
-    provenanceKind: options.provenanceKind
-  });
-  return {
-    added: result.added,
-    problems: skippedRecallProblems(result)
-  };
-}
-
-async function recallArtistEntity(options: {
-  entity: MusicEntityHypothesis;
-  input: CreateMusicAgentToolsInput;
-  state: ToolState;
-  limit: number;
-  searchLimit: number;
-  maxSearches: number;
-  avoidArtists: ReadonlySet<string>;
-  artistCounts: Map<string, number>;
-  provenanceKind?: CandidateProvenanceKind;
-  signal?: AbortSignal;
-}): Promise<{ added: number; problems: string[] }> {
-  const artistName = entityArtistName(options.entity);
-  if (!artistName && !entityId(options.entity)) {
-    return { added: 0, problems: ['artist entity skipped: missing name'] };
-  }
-  if (!options.input.ncmClient.getArtistTopSongs || (!entityId(options.entity) && !options.input.ncmClient.searchArtists)) {
-    return { added: 0, problems: ['artist entity skipped: NCM artist expansion unavailable'] };
-  }
-
-  const artistId = await resolveArtistEntity(options);
-  if (!artistId) {
-    return { added: 0, problems: [`artist entity rejected: ${artistName}`] };
-  }
-  if (!consumeNcmSearch(options.state, options.maxSearches)) {
-    return { added: 0, problems: ['NCM search budget exhausted'] };
-  }
-
-  const tracks = await options.input.ncmClient.getArtistTopSongs(artistId);
-  if (options.signal?.aborted) return { added: 0, problems: ['aborted'] };
-  const verifiedTracks = tracks
-    .filter((track) => !artistName || trackMatchesArtist(track, artistName))
-    .slice(0, options.limit);
-  const result = upsertTracks(options.input.candidatePool, verifiedTracks, 'search', {
-    evidence: `实体艺人: ${artistName}`,
-    scores: sourceScores('search', options.input.context),
-    avoidArtists: options.avoidArtists,
-    artistCounts: options.artistCounts,
-    provenanceKind: options.provenanceKind
-  });
-  return {
-    added: result.added,
-    problems: [
-      ...(verifiedTracks.length === 0 ? [`artist entity rejected: ${artistName}`] : []),
-      ...skippedRecallProblems(result)
-    ]
-  };
-}
-
-async function recallAlbumEntity(options: {
-  entity: MusicEntityHypothesis;
-  input: CreateMusicAgentToolsInput;
-  state: ToolState;
-  limit: number;
-  searchLimit: number;
-  maxSearches: number;
-  avoidArtists: ReadonlySet<string>;
-  artistCounts: Map<string, number>;
-  provenanceKind?: CandidateProvenanceKind;
-  signal?: AbortSignal;
-}): Promise<{ added: number; problems: string[] }> {
-  const explicitId = entityId(options.entity);
-  if (explicitId) {
-    if (!options.input.ncmClient.getAlbumDetail) {
-      return { added: 0, problems: ['album entity skipped: NCM album expansion unavailable'] };
-    }
-    const detail = await options.input.ncmClient.getAlbumDetail(explicitId);
-    if (options.signal?.aborted) return { added: 0, problems: ['aborted'] };
-    if (!detail || !albumMatchesKnownEntityFields(options.entity, detail)) {
-      return { added: 0, problems: [`album entity rejected: ${entityLabel(options.entity)}`] };
-    }
-    const result = upsertTracks(options.input.candidatePool, detail.tracks.slice(0, options.limit), 'search', {
-      evidence: `实体专辑: ${detail.name}`,
-      scores: sourceScores('search', options.input.context),
-      avoidArtists: options.avoidArtists,
-      artistCounts: options.artistCounts,
-      provenanceKind: options.provenanceKind
-    });
-    return {
-      added: result.added,
-      problems: skippedRecallProblems(result)
-    };
-  }
-
-  const title = entityTitle(options.entity);
-  if (!title) {
-    return { added: 0, problems: ['album entity skipped: missing title'] };
-  }
-  if (!options.input.ncmClient.searchAlbums || !options.input.ncmClient.getAlbumDetail) {
-    return { added: 0, problems: ['album entity skipped: NCM album expansion unavailable'] };
-  }
-  if (!consumeNcmSearch(options.state, options.maxSearches)) {
-    return { added: 0, problems: ['NCM search budget exhausted'] };
-  }
-
-  const query = uniqueStrings([title, options.entity.artist ?? '']).join(' ');
-  const albums = await options.input.ncmClient.searchAlbums(query, options.searchLimit);
-  if (options.signal?.aborted) return { added: 0, problems: ['aborted'] };
-  const album = findVerifiedAlbum(options.entity, albums);
-  if (!album) {
-    return { added: 0, problems: [`album entity rejected: ${entityLabel(options.entity)}`] };
-  }
-  if (!consumeNcmSearch(options.state, options.maxSearches)) {
-    return { added: 0, problems: ['NCM search budget exhausted'] };
-  }
-
-  const detail = await options.input.ncmClient.getAlbumDetail(String(album.id));
-  if (options.signal?.aborted) return { added: 0, problems: ['aborted'] };
-  if (!detail || !albumMatchesEntity(options.entity, detail)) {
-    return { added: 0, problems: [`album entity rejected: ${entityLabel(options.entity)}`] };
-  }
-
-  const result = upsertTracks(options.input.candidatePool, detail.tracks.slice(0, options.limit), 'search', {
-    evidence: `实体专辑: ${detail.name}`,
-    scores: sourceScores('search', options.input.context),
-    avoidArtists: options.avoidArtists,
-    artistCounts: options.artistCounts,
-    provenanceKind: options.provenanceKind
-  });
-  return {
-    added: result.added,
-    problems: skippedRecallProblems(result)
-  };
-}
-
-async function recallPlaylistEntity(options: {
-  entity: MusicEntityHypothesis;
-  input: CreateMusicAgentToolsInput;
-  state: ToolState;
-  limit: number;
-  searchLimit: number;
-  maxSearches: number;
-  maxPlaylistFetches: number;
-  avoidArtists: ReadonlySet<string>;
-  artistCounts: Map<string, number>;
-  provenanceKind?: CandidateProvenanceKind;
-  signal?: AbortSignal;
-}): Promise<{ added: number; problems: string[] }> {
-  const name = entityTitle(options.entity) || options.entity.query;
-  const explicitId = entityId(options.entity);
-  if (!name && !explicitId) {
-    return { added: 0, problems: ['playlist entity skipped: missing name'] };
-  }
-  if (!explicitId && !options.input.ncmClient.searchPlaylists) {
-    return { added: 0, problems: ['playlist entity skipped: NCM playlist search unavailable'] };
-  }
-
-  let playlistId = explicitId;
-  if (!playlistId) {
-    if (!name) {
-      return { added: 0, problems: ['playlist entity skipped: missing name'] };
-    }
-    if (!consumeNcmSearch(options.state, options.maxSearches)) {
-      return { added: 0, problems: ['NCM search budget exhausted'] };
-    }
-    const playlists = await options.input.ncmClient.searchPlaylists?.(name, options.searchLimit);
-    if (options.signal?.aborted) return { added: 0, problems: ['aborted'] };
-    playlistId = String(playlists?.[0]?.id ?? '');
-  }
-  if (!playlistId) {
-    return { added: 0, problems: [`playlist entity rejected: ${name}`] };
-  }
-  if (!consumePlaylistFetch(options.state, options.maxPlaylistFetches)) {
-    return { added: 0, problems: ['playlist fetch budget exhausted'] };
-  }
-
-  const detail = await options.input.ncmClient.getPlaylistDetail(playlistId);
-  if (options.signal?.aborted) return { added: 0, problems: ['aborted'] };
-  if (!detail) {
-    return { added: 0, problems: [`playlist entity rejected: ${name}`] };
-  }
-
-  const result = upsertTracks(options.input.candidatePool, detail.tracks.slice(0, options.limit), 'playlist', {
-    evidence: `实体歌单: ${detail.name}`,
-    scores: sourceScores('playlist', options.input.context),
-    avoidArtists: options.avoidArtists,
-    artistCounts: options.artistCounts,
-    provenanceKind: options.provenanceKind
-  });
-  return {
-    added: result.added,
-    problems: skippedRecallProblems(result)
-  };
-}
-
-async function resolveArtistEntity(options: {
-  entity: MusicEntityHypothesis;
-  input: CreateMusicAgentToolsInput;
-  state: ToolState;
-  searchLimit: number;
-  maxSearches: number;
-  signal?: AbortSignal;
-}): Promise<string | null> {
-  const explicitId = entityId(options.entity);
-  if (explicitId) return explicitId;
-  const name = entityArtistName(options.entity);
-  if (!name || !options.input.ncmClient.searchArtists) return null;
-  if (!consumeNcmSearch(options.state, options.maxSearches)) return null;
-
-  const artists = await options.input.ncmClient.searchArtists(name, options.searchLimit);
-  if (options.signal?.aborted) return null;
-  const verified = artists.find((artist) => tokenMatches(name, artist.name));
-  return verified ? String(verified.id) : null;
-}
-
 async function recallFromQueries(options: {
   queries: string[];
   source: CandidateSource;
@@ -1328,12 +1018,13 @@ async function recallFromQueries(options: {
           attemptedArtistFallbackCount += 1;
           const fallback = await recallFromEntity({
             entity: { type: 'artist', name: artist },
-            input: options.input,
-            state: options.state,
+            ncmClient: options.input.ncmClient,
+            candidatePool: options.input.candidatePool,
+            context: options.input.context,
             limit: Math.min(options.limit ?? DEFAULT_SEARCH_LIMIT, DEFAULT_ENTITY_RECALL_LIMIT),
             searchLimit: DEFAULT_ENTITY_SEARCH_LIMIT,
-            maxSearches: options.maxSearches,
-            maxPlaylistFetches: options.input.budget.maxPlaylistFetches,
+            consumeNcmSearch: () => consumeNcmSearch(options.state, options.maxSearches),
+            consumePlaylistFetch: () => consumePlaylistFetch(options.state, options.input.budget.maxPlaylistFetches),
             avoidArtists,
             artistCounts,
             provenanceKind: recallQueryProvenanceKind(options.source),
@@ -1451,12 +1142,13 @@ async function recallFromSemanticEntities(options: {
       }
       const result = await recallFromEntity({
         entity,
-        input: options.input,
-        state: options.state,
+        ncmClient: options.input.ncmClient,
+        candidatePool: options.input.candidatePool,
+        context: options.input.context,
         limit: options.limit,
         searchLimit: DEFAULT_ENTITY_SEARCH_LIMIT,
-        maxSearches: options.maxSearches,
-        maxPlaylistFetches: options.input.budget.maxPlaylistFetches,
+        consumeNcmSearch: () => consumeNcmSearch(options.state, options.maxSearches),
+        consumePlaylistFetch: () => consumePlaylistFetch(options.state, options.input.budget.maxPlaylistFetches),
         avoidArtists,
         artistCounts,
         provenanceKind: 'semantic_discovery',
