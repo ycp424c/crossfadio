@@ -23,6 +23,7 @@ import { createLegacyCandidatePool } from '../../dj/legacyCandidatePool.js';
 import { handleLegacyPickNextOutput } from '../../dj/legacyPickNextResult.js';
 import { buildLegacyPickPrompt } from '../../dj/legacyPickPrompt.js';
 import { handleLegacyRandomFallback } from '../../dj/legacyRandomFallback.js';
+import { buildLegacyStylePrompt } from '../../dj/legacyStylePrompt.js';
 import { createDjPickNextTelemetry } from '../../dj/pickNextTelemetry.js';
 import { createDjPickNextRunner } from '../../dj/pickNextRunner.js';
 import {
@@ -574,24 +575,19 @@ async function doPickNext(
         .slice(0, 10)
         .map((p) => `${p.song_name ?? '?'} — ${p.artist_name ?? '?'}`)
         .join('\n');
-      const weatherStr = weather ? `${weather.tempC}°C，${weather.desc}` : '未知';
+      const weatherText = weather ? `${weather.tempC}°C，${weather.desc}` : '未知';
       // Resolve daily theme — either cached or freshly generated
       const dailyTheme = await dailyThemePromise;
       if (signal?.aborted) return;
-      const themeContext = dailyTheme
-        ? `\n今日主题：${dailyTheme.theme}\n主题关键词：${dailyTheme.keywords.join('、')}\n`
-        : '';
-
-      const stylePrompt =
-        `当前时间：${localTime}\n时间约束：${timeContext.contextInstruction}\n天气：${weatherStr}\n最近播放：\n${recentPlayNames}\n` +
-        themeContext +
-        tasteContext +
-        `\n${modePrompt.styleInstruction}` +
-        `对每个风格，列出 3-5 位可以在网易云音乐搜到的代表艺人（华人艺人和海外艺人各半，保证多样性）。` +
-        `style 字段用英文关键词方便检索，artists 里同时包含中外艺人。` +
-        `直接返回 JSON 对象，格式如下：\n` +
-        `{"styles":[{"style":"indie folk","artists":["万能青年旅店","Bon Iver","张玮玮","Sufjan Stevens"]},` +
-        `{"style":"jazz piano","artists":["Bill Evans","上原广美","Keith Jarrett","罗宁"]}]}`;
+      const stylePrompt = buildLegacyStylePrompt({
+        localTime,
+        timeContextInstruction: timeContext.contextInstruction,
+        weatherText,
+        recentPlayNames,
+        dailyTheme,
+        tasteContext,
+        styleInstruction: modePrompt.styleInstruction
+      });
 
       let llmArtists: string[] = [];
       let styleConcepts: string[] = [];
@@ -780,7 +776,7 @@ async function doPickNext(
         modePrompt,
         timeContext,
         localTime,
-        weatherText: weather ? `${weather.tempC}°C，${weather.desc}` : '未知',
+        weatherText,
         candidateList,
         candidateCount: allCandidates.length,
         targetPickCount
