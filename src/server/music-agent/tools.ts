@@ -41,6 +41,14 @@ import {
   getLikedRecallTracks,
   type NcmTrackLike
 } from './liked-recall.js';
+import {
+  queryFunnelSnapshot,
+  recordFinalQueryFunnel,
+  recordQueryFunnelSearch,
+  recordQueryFunnelSnapshot,
+  searchRunKey,
+  type QueryFunnelAccumulator
+} from './query-funnel.js';
 import { normalizeMusicTrackToken } from './dedupe.js';
 import type { FinalPick } from './schema.js';
 import {
@@ -156,12 +164,6 @@ type UpsertTracksResult = {
   rejectedReasons: Partial<Record<CandidatePoolRejectReason, number>>;
   skippedAvoidedArtists: number;
   skippedArtistCap: number;
-};
-
-type QueryFunnelAccumulator = QueryFunnelEntry & {
-  candidateIds: Set<string>;
-  resultIds: Set<string>;
-  order: number;
 };
 
 type CacheEntry<T> = {
@@ -654,8 +656,8 @@ export function createMusicAgentTools(input: CreateMusicAgentToolsInput): MusicA
   return {
     ...registry,
     getQueryFunnel: () => queryFunnelSnapshot(state),
-    recordQueryFunnel: () => recordUserQueryFunnel(input.userId, queryFunnelSnapshot(state)),
-    recordFinalPicks: (picks) => recordFinalQueryFunnel(input.userId, state, picks)
+    recordQueryFunnel: () => recordQueryFunnelSnapshot(input.userId, state, recordUserQueryFunnel),
+    recordFinalPicks: (picks) => recordFinalQueryFunnel(input.userId, state, picks, recordUserQueryFunnel)
   };
 }
 
@@ -2023,94 +2025,6 @@ async function recallFromSemanticEntities(options: {
       problems: [`semantic discovery failed: ${formatError(error)}`]
     };
   }
-}
-
-function recordQueryFunnelSearch(
-  state: ToolState,
-  input: {
-    seed: QueryFunnelEntry | undefined;
-    query: string;
-    source: CandidateSource;
-    tracks: NcmTrackLike[];
-    resultCount: number;
-    addedCount: number;
-    pool: CandidatePool;
-  }
-): void {
-  const normalizedQuery = normalizeSearchQuery(input.query);
-  if (!normalizedQuery) return;
-  const key = queryFunnelKey(input.source, normalizedQuery);
-  const existing = state.queryFunnel.get(key);
-  const candidateIds = new Set(
-    input.tracks
-      .map((track) => track.id === undefined || track.id === null ? '' : String(track.id).trim())
-      .filter((id) => id && input.pool.has(id))
-  );
-  const resultIds = new Set(input.tracks.map(trackResultKey).filter(Boolean));
-  if (existing) {
-    const uniqueAddedCount = [...candidateIds].filter((id) => !existing.candidateIds.has(id)).length;
-    existing.searchedCount += 1;
-    existing.resultCount += input.resultCount;
-    existing.addedCount += uniqueAddedCount;
-    for (const id of candidateIds) existing.candidateIds.add(id);
-    for (const id of resultIds) existing.resultIds.add(id);
-    existing.uniqueResultCount = existing.resultIds.size;
-    return;
-  }
-
-  state.queryFunnel.set(key, {
-    ...(input.seed ?? {
-      query: input.query,
-      normalizedQuery,
-      source: input.source,
-      searchedCount: 0,
-      resultCount: 0,
-      uniqueResultCount: 0,
-      addedCount: 0,
-      selectedCount: 0,
-      scoreMultiplier: 1,
-      repeatPenalty: 0,
-      selectionRate: null
-    }),
-    searchedCount: 1,
-    resultCount: input.resultCount,
-    uniqueResultCount: resultIds.size,
-    addedCount: candidateIds.size,
-    selectedCount: 0,
-    candidateIds,
-    resultIds,
-    order: state.queryFunnel.size
-  });
-}
-
-function queryFunnelSnapshot(state: ToolState): QueryFunnelEntry[] {
-  return [...state.queryFunnel.values()]
-    .sort((left, right) => left.order - right.order)
-    .map(({ candidateIds: _candidateIds, resultIds: _resultIds, order: _order, ...entry }) => ({ ...entry }));
-}
-
-function recordFinalQueryFunnel(userId: string, state: ToolState, picks: FinalPick[]): void {
-  const pickedIds = new Set(picks.map((pick) => pick.id));
-  for (const entry of state.queryFunnel.values()) {
-    entry.selectedCount = [...entry.candidateIds].filter((id) => pickedIds.has(id)).length;
-  }
-  recordUserQueryFunnel(userId, queryFunnelSnapshot(state));
-}
-
-function queryFunnelKey(source: CandidateSource, normalizedQuery: string): string {
-  return `${source}:${normalizedQuery}`;
-}
-
-function searchRunKey(_source: CandidateSource, query: string, _limit: number): string {
-  return normalizeSearchQuery(query);
-}
-
-function trackResultKey(track: NcmTrackLike, index: number): string {
-  const id = track.id === undefined || track.id === null ? '' : String(track.id).trim();
-  if (id) return id;
-  const name = track.name?.trim() ?? '';
-  const artist = track.artists?.join('/').trim() ?? '';
-  return name || artist ? `${normalizeSearchQuery(name)}::${normalizeSearchQuery(artist)}::${index}` : '';
 }
 
 function readCache<T>(cache: Map<string, CacheEntry<T>>, key: string): T | null {
