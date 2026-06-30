@@ -31,7 +31,7 @@ describe('player layout', () => {
     const loadNowPlayingStart = source.indexOf('async function loadNowPlaying');
     const loadLikedQueueBody = source.slice(loadLikedQueueStart, loadNowPlayingStart);
 
-    expect(loadLikedQueueBody).toContain('setQueue([startTrack])');
+    expect(loadLikedQueueBody).toContain('applyQueueSnapshot({ queue: [startTrack], currentIndex: 0 })');
     expect(loadLikedQueueBody).not.toContain('applyingRemoteQueueRef.current = true');
   });
 
@@ -48,8 +48,7 @@ describe('player layout', () => {
     expect(source).toContain('persistQueueSnapshot(queue, currentIndex)');
     expect(initBody).toContain('const restoredQueue = restorePersistedQueueSnapshot();');
     expect(initBody).toContain('if (restoredQueue)');
-    expect(initBody).toContain('setQueue(restoredQueue.queue);');
-    expect(initBody).toContain('setCurrentIndex(restoredQueue.currentIndex);');
+    expect(initBody).toContain('applyQueueSnapshot(restoredQueue);');
     expect(initBody.indexOf('if (restoredQueue)')).toBeLessThan(initBody.indexOf('void loadLikedQueue();'));
   });
 
@@ -104,7 +103,8 @@ describe('player layout', () => {
     const onErrorStart = source.indexOf('function onTrackMediaError(): void');
     const onEndedBody = source.slice(onEndedStart, onErrorStart);
 
-    expect(onEndedBody).toContain('setQueue([])');
+    expect(onEndedBody).toContain('advanceQueueAfterEnded({ queue, currentIndex })');
+    expect(onEndedBody).toContain('applyQueueSnapshot(transition)');
     expect(onEndedBody).toContain("setTrackStatusText('播放完成')");
     expect(source).toContain('persistQueueSnapshot(queue, currentIndex)');
   });
@@ -224,9 +224,12 @@ describe('player layout', () => {
 
     expect(source).toContain('const pendingTemporaryBanTracksRef = useRef<QueueTrackDto[]>([])');
     expect(source).toContain('saveQueueState(queue, currentIndex, temporaryBanTracks)');
-    expect(skipBlock).toContain('rememberTemporaryBans(queue.slice(0, 1))');
-    expect(selectBlock).toContain('rememberTemporaryBans(queue.slice(0, index))');
-    expect(deleteBlock).toContain('rememberTemporaryBans([deletedTrack])');
+    expect(skipBlock).toContain('skipCurrentQueueTrack({ queue, currentIndex })');
+    expect(skipBlock).toContain('rememberTemporaryBans(transition.removedTracks)');
+    expect(selectBlock).toContain('selectQueueTrackAt({ queue, currentIndex }, index)');
+    expect(selectBlock).toContain('rememberTemporaryBans(transition.removedTracks)');
+    expect(deleteBlock).toContain('deleteQueueTrackAt({ queue, currentIndex }, index)');
+    expect(deleteBlock).toContain('rememberTemporaryBans(transition.removedTracks)');
   });
 
   it('logs DJ pick-next debug tables to the browser console', () => {

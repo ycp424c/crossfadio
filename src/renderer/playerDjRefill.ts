@@ -1,4 +1,5 @@
 import type { QueueTrackDto } from '@shared/schema';
+export { appendQueueTrackIfMissing } from './playerQueueRuntime';
 
 type RefillGateInput = {
   isPlaying: boolean;
@@ -27,13 +28,6 @@ export function queueTrackFromSsePayload(payload: unknown): QueueTrackDto | null
     durationMs: typeof track.durationMs === 'number' ? track.durationMs : 0,
     coverImgUrl: typeof track.coverImgUrl === 'string' ? track.coverImgUrl : null
   };
-}
-
-export function appendQueueTrackIfMissing(queue: QueueTrackDto[], track: QueueTrackDto): QueueTrackDto[] {
-  if (queue.some((item) => item.id === track.id)) {
-    return queue;
-  }
-  return [...queue, track];
 }
 
 export function getBackupTrackCount(queueLength: number, currentIndex: number): number {
