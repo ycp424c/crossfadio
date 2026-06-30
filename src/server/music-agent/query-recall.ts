@@ -40,7 +40,12 @@ import type {
   MusicCandidateScores,
   QueryPlan
 } from './schema.js';
-import type { NcmTrackLike } from './liked-recall.js';
+import {
+  getCachedLikedIds,
+  getCachedLikedProfile,
+  type LikedRecallProfile,
+  type NcmTrackLike
+} from './liked-recall.js';
 import { artistKeys } from './artists.js';
 
 const DEFAULT_SEARCH_LIMIT = 8;
@@ -49,6 +54,8 @@ const DEFAULT_ENTITY_SEARCH_LIMIT = 3;
 const MAX_ARTIST_FALLBACKS_PER_RECALL = 2;
 const SEARCH_RECALL_CACHE_TTL_MS = 30 * 60 * 1000;
 const MAX_RECALL_QUERY_COUNT = 8;
+const EXPLORE_LIKED_ARTIST_SEARCH_PENALTY = 0.04;
+const EXPLORE_LIKED_SEARCH_GUARD_SOURCES = new Set<CandidateSource>(['search', 'style_expansion', 'trend']);
 
 const searchRecallCache = new Map<string, RecallSearchCacheEntry<NcmTrackLike[]>>();
 
@@ -149,6 +156,8 @@ export async function runRecallFromQueries(options: QueryRecallRunOptions): Prom
   let skippedAvoidedArtists = 0;
   let skippedArtistCap = 0;
   let skippedRepeatedQueries = 0;
+  let skippedLikedTracks = 0;
+  let likedArtistPenalizedTracks = 0;
   const searched: string[] = [];
   const artistFallbacks: string[] = [];
   let artistFallbackAdded = 0;
@@ -157,6 +166,7 @@ export async function runRecallFromQueries(options: QueryRecallRunOptions): Prom
   const artistCounts = countCandidateArtistKeys(options.candidatePool.list());
   const attemptedArtistFallbacks = new Set<string>();
   let attemptedArtistFallbackCount = 0;
+  let likedSearchGuard: ExploreLikedSearchGuard | null | undefined;
 
   for (const query of queries) {
     if (options.signal?.aborted) return { summary: 'aborted', problems: ['aborted'], aborted: true };
@@ -180,19 +190,35 @@ export async function runRecallFromQueries(options: QueryRecallRunOptions): Prom
       }
       options.queryState.searchedQueryLimits.set(runSearchKey, Math.max(coveredLimit, limit));
       searched.push(query);
+      const rawTracks = tracks;
+      if (rawTracks.length > 0 && likedSearchGuard === undefined) {
+        likedSearchGuard = await loadExploreLikedSearchGuard(options);
+        if (options.signal?.aborted) return { summary: 'aborted', problems: ['aborted'], aborted: true };
+        if (likedSearchGuard) problems.push(...likedSearchGuard.problems);
+      }
+      const likedProfile = likedSearchGuard?.profile ?? null;
+      const likedFilter = filterExploreLikedTracks(rawTracks, likedProfile);
+      tracks = likedFilter.tracks;
+      skippedLikedTracks += likedFilter.skipped;
+      const likedArtistPenaltyCount = countLikedArtistMatches(tracks, likedProfile);
       const result = upsertTracks(options.candidatePool, tracks, options.source, {
         evidence: `${options.evidencePrefix}: ${query}`,
         scores: options.scores,
+        scoreForTrack: likedProfile?.artistKeys.size
+          ? (track) => scoreWithExploreLikedArtistPenalty(track, options.scores, likedProfile)
+          : undefined,
         avoidArtists: options.avoidArtists,
         artistCounts,
         provenanceKind: recallQueryProvenanceKind(options.source)
       });
+      likedArtistPenalizedTracks += likedArtistPenaltyCount;
       recordQueryFunnelSearch(options.queryState, {
         seed: funnelSeeds.get(normalizeSearchQuery(query)),
         query,
         source: options.source,
-        tracks,
-        resultCount: tracks.length,
+        tracks: rawTracks,
+        admittedTracks: tracks,
+        resultCount: rawTracks.length,
         addedCount: result.added,
         pool: options.candidatePool
       });
@@ -200,12 +226,13 @@ export async function runRecallFromQueries(options: QueryRecallRunOptions): Prom
       skippedAvoidedArtists += result.skippedAvoidedArtists;
       skippedArtistCap += result.skippedArtistCap;
       mergeUpsertTracksResult(admissionTotals, result);
+      const artistFallbackTracks = tracks.length > 0 ? tracks : rawTracks;
       if (
         result.added === 0 &&
-        tracks.length > 0 &&
+        artistFallbackTracks.length > 0 &&
         attemptedArtistFallbackCount < MAX_ARTIST_FALLBACKS_PER_RECALL
       ) {
-        const artist = artistFallbackNameFromQuery(query, tracks);
+        const artist = artistFallbackNameFromQuery(query, artistFallbackTracks);
         const fallbackArtistKeys = artistKeys(artist);
         const alreadyAttempted = fallbackArtistKeys.some((artistKey) => attemptedArtistFallbacks.has(artistKey));
         const avoided = fallbackArtistKeys.some((artistKey) => options.avoidArtists.has(artistKey));
@@ -240,6 +267,8 @@ export async function runRecallFromQueries(options: QueryRecallRunOptions): Prom
   }
   if (skippedAvoidedQueries > 0) problems.push(`skipped ${skippedAvoidedQueries} search queries for recently repeated artists`);
   if (skippedSemanticQueries > 0) problems.push(SEMANTIC_ONLY_QUERY_PROBLEM);
+  if (skippedLikedTracks > 0) problems.push(`skipped ${skippedLikedTracks} liked tracks from discovery search results`);
+  if (likedArtistPenalizedTracks > 0) problems.push(`applied weak liked-artist penalty to ${likedArtistPenalizedTracks} discovery search candidates`);
   if (skippedRepeatedQueries > 0) {
     problems.push(skippedRepeatedQueries === 1
       ? 'skipped 1 repeated search query in this run'
@@ -258,6 +287,87 @@ export async function runRecallFromQueries(options: QueryRecallRunOptions): Prom
       (artistFallbacks.length > 0 ? ` artist fallback added ${artistFallbackAdded} candidates from ${artistFallbacks.join('、')}.` : ''),
     problems
   };
+}
+
+type ExploreLikedSearchGuard = {
+  profile: LikedRecallProfile | null;
+  problems: string[];
+};
+
+async function loadExploreLikedSearchGuard(options: QueryRecallRunOptions): Promise<ExploreLikedSearchGuard | null> {
+  if (!shouldApplyExploreLikedSearchGuard(options)) return null;
+
+  try {
+    return {
+      profile: await getCachedLikedProfile({
+        userId: options.userId,
+        ncmClient: options.ncmClient
+      }),
+      problems: []
+    };
+  } catch (error) {
+    try {
+      const ids = await getCachedLikedIds({
+        userId: options.userId,
+        ncmClient: options.ncmClient
+      });
+      return {
+        profile: { ids: new Set(ids), artistKeys: new Set() },
+        problems: [`liked artist profile unavailable: ${formatError(error)}`]
+      };
+    } catch (idError) {
+      return {
+        profile: null,
+        problems: [`liked search dedupe unavailable: ${formatError(idError)}`]
+      };
+    }
+  }
+}
+
+function shouldApplyExploreLikedSearchGuard(options: QueryRecallRunOptions): boolean {
+  return options.context.discoveryMode === 'explore' && EXPLORE_LIKED_SEARCH_GUARD_SOURCES.has(options.source);
+}
+
+function filterExploreLikedTracks(
+  tracks: NcmTrackLike[],
+  profile: LikedRecallProfile | null
+): { tracks: NcmTrackLike[]; skipped: number } {
+  if (!profile || profile.ids.size === 0) {
+    return { tracks, skipped: 0 };
+  }
+
+  const filtered = tracks.filter((track) => !profile.ids.has(normalizeTrackId(track)));
+  return {
+    tracks: filtered,
+    skipped: tracks.length - filtered.length
+  };
+}
+
+function countLikedArtistMatches(tracks: NcmTrackLike[], profile: LikedRecallProfile | null): number {
+  if (!profile || profile.artistKeys.size === 0) return 0;
+  return tracks.filter((track) => trackMatchesLikedArtist(track, profile)).length;
+}
+
+function scoreWithExploreLikedArtistPenalty(
+  track: NcmTrackLike,
+  baseScores: MusicCandidateScores,
+  profile: LikedRecallProfile
+): MusicCandidateScores {
+  if (!trackMatchesLikedArtist(track, profile)) return baseScores;
+  return {
+    ...baseScores,
+    recentPenalty: baseScores.recentPenalty + EXPLORE_LIKED_ARTIST_SEARCH_PENALTY
+  };
+}
+
+function trackMatchesLikedArtist(track: NcmTrackLike, profile: LikedRecallProfile): boolean {
+  return (track.artists ?? [])
+    .flatMap(artistKeys)
+    .some((artist) => profile.artistKeys.has(artist));
+}
+
+function normalizeTrackId(track: NcmTrackLike): string {
+  return track.id === undefined || track.id === null ? '' : String(track.id).trim();
 }
 
 function recallQueryProvenanceKind(source: CandidateSource): CandidateProvenanceKind {

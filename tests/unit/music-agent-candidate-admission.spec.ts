@@ -217,6 +217,26 @@ describe('MusicAgent candidate admission helpers', () => {
     expect(pool.get('two')).toBeUndefined();
   });
 
+  it('can adjust scores per admitted track without mutating the base score object', () => {
+    const pool = new CandidatePool();
+    const base = baseScores();
+    const result = upsertTracks(pool, [
+      { id: 'liked-artist', name: 'Known Artist Search', artists: ['Known Artist'] },
+      { id: 'fresh', name: 'Fresh Search', artists: ['Fresh Artist'] }
+    ], 'search', {
+      evidence: '网易云搜索',
+      scores: base,
+      scoreForTrack: (track) => track.id === 'liked-artist'
+        ? { ...base, recentPenalty: base.recentPenalty + 0.04 }
+        : base
+    });
+
+    expect(result).toMatchObject({ added: 2, inserted: 2 });
+    expect(pool.get('liked-artist')?.scores.recentPenalty).toBe(0.04);
+    expect(pool.get('fresh')?.scores.recentPenalty).toBe(0);
+    expect(base.recentPenalty).toBe(0);
+  });
+
   it('keeps source score mapping and external quality eligibility stable', () => {
     expect(sourceScores('liked', context({ discoveryMode: 'comfort' }))).toMatchObject({ tasteMatch: 0.94, sourceConfidence: 0.88, novelty: 0.35 });
     const exploreExpectations = [

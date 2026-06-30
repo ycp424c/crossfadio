@@ -1,4 +1,5 @@
 import type { NcmClient } from '../ncm/client.js';
+import { artistKeys } from './artists.js';
 import type { MusicCandidateQualitySignals } from './schema.js';
 
 export type NcmTrackLike = {
@@ -15,19 +16,42 @@ export type LikedRecallInput = {
   ncmClient: LikedRecallNcmClient;
 };
 
+export type LikedRecallProfile = {
+  ids: Set<string>;
+  artistKeys: Set<string>;
+};
+
 type CacheEntry<T> = {
   value: T;
   expiresAt: number;
 };
 
+type LikedProfileRefresh = {
+  promise: Promise<void>;
+  timeout: ReturnType<typeof setTimeout> | null;
+};
+
 const LIKED_RECALL_CACHE_TTL_MS = 10 * 60 * 1000;
+const LIKED_DETAIL_BATCH_SIZE = 200;
+const LIKED_PROFILE_ARTIST_DETAIL_LIMIT = LIKED_DETAIL_BATCH_SIZE;
 
 const likedIdCache = new Map<string, CacheEntry<string[]>>();
 const likedTrackCache = new Map<string, CacheEntry<NcmTrackLike>>();
+const likedProfileCache = new Map<string, CacheEntry<LikedRecallProfile>>();
+const likedProfileRefreshes = new Map<string, LikedProfileRefresh>();
 
 export function _resetLikedRecallCacheForTest(): void {
   likedIdCache.clear();
   likedTrackCache.clear();
+  likedProfileCache.clear();
+  for (const refresh of likedProfileRefreshes.values()) {
+    if (refresh.timeout) clearTimeout(refresh.timeout);
+  }
+  likedProfileRefreshes.clear();
+}
+
+export async function _flushLikedProfileRefreshesForTest(): Promise<void> {
+  await Promise.all([...likedProfileRefreshes.values()].map((refresh) => refresh.promise));
 }
 
 export async function getLikedRecallTracks(
@@ -66,8 +90,10 @@ export async function getCachedLikedTracks(
     else missingIds.push(id);
   }
 
-  if (missingIds.length > 0) {
-    const fetchedTracks = await input.ncmClient.getSongDetails(missingIds);
+  for (let start = 0; start < missingIds.length; start += LIKED_DETAIL_BATCH_SIZE) {
+    const batchIds = missingIds.slice(start, start + LIKED_DETAIL_BATCH_SIZE);
+    if (batchIds.length === 0) continue;
+    const fetchedTracks = await input.ncmClient.getSongDetails(batchIds);
     for (const track of fetchedTracks) {
       const id = String(track.id);
       cachedTracks.set(id, track);
@@ -80,8 +106,61 @@ export async function getCachedLikedTracks(
     .filter((track): track is NcmTrackLike => Boolean(track));
 }
 
+export async function getCachedLikedProfile(input: LikedRecallInput): Promise<LikedRecallProfile> {
+  const cached = readCache(likedProfileCache, input.userId);
+  if (cached) return cloneLikedRecallProfile(cached);
+
+  const ids = await getCachedLikedIds(input);
+  const artistDetailIds = ids.slice(0, LIKED_PROFILE_ARTIST_DETAIL_LIMIT);
+  const tracks = artistDetailIds.length > 0 ? await getCachedLikedTracks(input, artistDetailIds) : [];
+  const profile: LikedRecallProfile = {
+    ids: new Set(ids),
+    artistKeys: new Set(tracks.flatMap((track) => (track.artists ?? []).flatMap(artistKeys)))
+  };
+  writeCache(likedProfileCache, input.userId, profile, LIKED_RECALL_CACHE_TTL_MS);
+  if (ids.length > artistDetailIds.length) {
+    refreshFullLikedProfileInBackground(input, ids);
+  }
+  return cloneLikedRecallProfile(profile);
+}
+
 function likedTrackCacheKey(userId: string, trackId: string): string {
   return `${userId}:${trackId}`;
+}
+
+function cloneLikedRecallProfile(profile: LikedRecallProfile): LikedRecallProfile {
+  return {
+    ids: new Set(profile.ids),
+    artistKeys: new Set(profile.artistKeys)
+  };
+}
+
+function refreshFullLikedProfileInBackground(input: LikedRecallInput, ids: string[]): void {
+  if (likedProfileRefreshes.has(input.userId)) return;
+
+  let timeout: ReturnType<typeof setTimeout> | null = null;
+  const promise = new Promise<void>((resolve) => {
+    timeout = setTimeout(() => {
+      const refresh = likedProfileRefreshes.get(input.userId);
+      if (refresh) refresh.timeout = null;
+      void refreshFullLikedProfile(input, ids)
+        .catch(() => {})
+        .finally(() => {
+          likedProfileRefreshes.delete(input.userId);
+          resolve();
+        });
+    }, 0);
+  });
+  likedProfileRefreshes.set(input.userId, { promise, timeout });
+}
+
+async function refreshFullLikedProfile(input: LikedRecallInput, ids: string[]): Promise<void> {
+  const tracks = ids.length > 0 ? await getCachedLikedTracks(input, ids) : [];
+  const profile: LikedRecallProfile = {
+    ids: new Set(ids),
+    artistKeys: new Set(tracks.flatMap((track) => (track.artists ?? []).flatMap(artistKeys)))
+  };
+  writeCache(likedProfileCache, input.userId, profile, LIKED_RECALL_CACHE_TTL_MS);
 }
 
 export function sampleLikedRecallIds<T>(items: T[], count: number): T[] {

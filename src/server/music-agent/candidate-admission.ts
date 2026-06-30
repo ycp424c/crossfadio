@@ -34,6 +34,7 @@ export type UpsertTracksResult = {
 export type UpsertTracksOptions = {
   evidence: string;
   scores: MusicCandidateScores;
+  scoreForTrack?: (track: NcmTrackLike) => MusicCandidateScores;
   avoidArtists?: ReadonlySet<string>;
   artistCounts?: Map<string, number>;
   maxAccepted?: number;
@@ -68,7 +69,10 @@ export function upsertTracks(
   const maxAccepted = options.maxAccepted ?? Number.POSITIVE_INFINITY;
   for (const track of tracks) {
     if (result.added >= maxAccepted) break;
-    const candidate = candidateFromTrack(track, source, options);
+    const candidate = candidateFromTrack(track, source, {
+      ...options,
+      scores: options.scoreForTrack?.(track) ?? options.scores
+    });
     if (!candidate) {
       result.invalid += 1;
       continue;

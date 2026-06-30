@@ -30,6 +30,7 @@ export function recordQueryFunnelSearch(
     query: string;
     source: CandidateSource;
     tracks: NcmTrackLike[];
+    admittedTracks?: NcmTrackLike[];
     resultCount: number;
     addedCount: number;
     pool: QueryFunnelPool;
@@ -39,8 +40,9 @@ export function recordQueryFunnelSearch(
   if (!normalizedQuery) return;
   const key = queryFunnelKey(input.source, normalizedQuery);
   const existing = state.queryFunnel.get(key);
+  const admittedTracks = input.admittedTracks ?? input.tracks;
   const candidateIds = new Set(
-    input.tracks
+    admittedTracks
       .map((track) => track.id === undefined || track.id === null ? '' : String(track.id).trim())
       .filter((id) => id && input.pool.has(id))
   );
