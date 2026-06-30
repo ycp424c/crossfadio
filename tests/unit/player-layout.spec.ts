@@ -184,12 +184,13 @@ describe('player layout', () => {
 
     expect(source).toContain('const queueRef = useRef<QueueTrackDto[]>([])');
     expect(source).toContain('const currentIndexRef = useRef(0)');
-    expect(source).toContain('appendRemoteQueueTrack(appended)');
+    expect(source).toContain('appendRemoteQueueTrack(playerEvent.track)');
+    expect(source).toContain('parsePlayerPickNextSseEvent(type, data)');
     expect(triggerBlock).toContain('const latestQueue = queueRef.current');
     expect(triggerBlock).toContain('shouldTriggerDjRefill({');
     expect(triggerBlock).toContain('queueLength: latestQueue.length');
     expect(triggerBlock).toContain('currentIndex: latestCurrentIndex');
-    expect(triggerBlock).toContain("type === 'queue-appended'");
+    expect(triggerBlock).toContain("playerEvent.type === 'queue-appended'");
   });
 
   it('backs off instead of retrying immediately when DJ pick-next is already running on the server', () => {
@@ -197,7 +198,7 @@ describe('player layout', () => {
     const triggerStart = source.indexOf('// DJ mode: refill when the backup queue reaches the low-water mark');
     const startSegueAudioStart = source.indexOf('maybeStartSegueAudio();', triggerStart);
     const triggerBlock = source.slice(triggerStart, startSegueAudioStart);
-    const doneStart = triggerBlock.indexOf("type === 'dj.pick-next.done'");
+    const doneStart = triggerBlock.indexOf("playerEvent.type === 'dj.pick-next.done'");
     const doneBlock = triggerBlock.slice(doneStart);
 
     expect(source).toContain('const DJ_ALREADY_RUNNING_BACKOFF_MS = 30000');
@@ -234,18 +235,18 @@ describe('player layout', () => {
 
   it('logs DJ pick-next debug tables to the browser console', () => {
     const source = fs.readFileSync(path.join(root, 'src/renderer/views/Player/PlayerView.tsx'), 'utf-8');
-    const debugStart = source.indexOf("type === 'dj.debug'");
-    const doneStart = source.indexOf("type === 'dj.pick-next.done'", debugStart);
+    const debugStart = source.indexOf("playerEvent.type === 'dj.debug'");
+    const doneStart = source.indexOf("playerEvent.type === 'dj.pick-next.done'", debugStart);
     const debugBlock = source.slice(debugStart, doneStart);
 
     expect(debugBlock).toContain('console.info');
     expect(debugBlock).toContain('DJ pick-next exclusion list');
-    expect(debugBlock).toContain('data.excludedIds');
-    expect(debugBlock).toContain('data.excludedDedupeKeys');
-    expect(debugBlock).toContain('data.candidateScoreTable');
+    expect(debugBlock).toContain('excludedIds');
+    expect(debugBlock).toContain('excludedDedupeKeys');
+    expect(debugBlock).toContain('candidateScoreTable');
     expect(debugBlock).toContain('console.table');
     expect(debugBlock).toContain('DJ pick-next candidate scores');
-    expect(debugBlock).toContain('buildDjPickDebugLog(data)');
+    expect(debugBlock).toContain('buildDjPickDebugLog(playerEvent.data)');
     expect(source).toContain('djPickLog.selectedTracks.map');
     expect(source).toContain('track.reason');
   });

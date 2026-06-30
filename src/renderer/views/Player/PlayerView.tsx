@@ -56,9 +56,12 @@ import {
   getBackupTrackCount,
   getDjPickDoneAddedCount,
   getDjPickDoneTrackNames,
-  queueTrackFromSsePayload,
   shouldTriggerDjRefill
 } from '@renderer/playerDjRefill';
+import {
+  parsePlayerPersistentSseEvent,
+  parsePlayerPickNextSseEvent
+} from '@renderer/playerSseEvents';
 import {
   advanceQueueAfterEnded,
   appendQueueTrackIfMissing,
@@ -148,19 +151,6 @@ type DjTrackSample = { id: string; name: string; artist: string };
 type DjSelectedTrack = DjTrackSample & {
   reason: string;
   source: string;
-};
-
-type CandidateScoreTableRow = {
-  rank: number;
-  id: string;
-  song: string;
-  artist: string;
-  sources: string;
-  baseScore: number;
-  artistPenalty: number;
-  trackPenalty: number;
-  repeatPenalty: number;
-  adjustedScore: number;
 };
 
 type DjPickLog = {
@@ -570,32 +560,15 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
     if (!sseToken) return;
     initSseEvents(sseToken);
     const unsub = addSseListener((event, data) => {
-      if (event === 'queue-updated') {
-        const d = data as Record<string, unknown>;
-        const nextQueue: QueueTrackDto[] = Array.isArray(d.queue)
-          ? (d.queue as unknown[]).map((track): QueueTrackDto | null => {
-              if (!track || typeof track !== 'object' || !('ncmId' in track)) return null;
-              const t = track as unknown as Record<string, unknown>;
-              return {
-                id: String(t.ncmId),
-                name: typeof t.name === 'string' ? t.name : `Track ${t.ncmId}`,
-                artists: Array.isArray(t.artists) ? (t.artists as string[]) : [],
-                durationMs: typeof t.durationMs === 'number' ? t.durationMs : 0,
-                coverImgUrl: typeof t.coverImgUrl === 'string' ? t.coverImgUrl : null
-              };
-            })
-            .filter((track): track is QueueTrackDto => track !== null)
-          : [];
-        const nextIndex = typeof d.currentIndex === 'number' ? d.currentIndex : 0;
+      const playerEvent = parsePlayerPersistentSseEvent(event, data);
+      if (!playerEvent) return;
+      if (playerEvent.type === 'queue-updated') {
         applyingRemoteQueueRef.current = true;
         djPickNextBackoffUntilRef.current = 0;
-        applyQueueSnapshot({ queue: nextQueue, currentIndex: nextIndex });
-      } else if (event === 'queue-appended') {
-        const appended = queueTrackFromSsePayload((data as Record<string, unknown>).track);
-        if (appended) {
-          djPickNextBackoffUntilRef.current = 0;
-          appendRemoteQueueTrack(appended);
-        }
+        applyQueueSnapshot({ queue: playerEvent.queue, currentIndex: playerEvent.currentIndex });
+      } else if (playerEvent.type === 'queue-appended') {
+        djPickNextBackoffUntilRef.current = 0;
+        appendRemoteQueueTrack(playerEvent.track);
       }
     });
     return () => { unsub(); closeSseEvents(); };
@@ -1148,17 +1121,12 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
         void (async () => {
           try {
             for await (const { type, data } of streamPickNext({ queue: latestQueue, currentIndex: latestCurrentIndex })) {
-              if (type === 'queue-appended') {
-                const appended = queueTrackFromSsePayload(data.track);
-                if (appended) {
-                  appendRemoteQueueTrack(appended);
-                }
-              } else if (type === 'dj.debug') {
-                const excludedIds = Array.isArray(data.excludedIds) ? data.excludedIds as string[] : [];
-                const excludedDedupeKeys = Array.isArray(data.excludedDedupeKeys) ? data.excludedDedupeKeys as string[] : [];
-                const candidateScoreTable = Array.isArray(data.candidateScoreTable)
-                  ? data.candidateScoreTable as CandidateScoreTableRow[]
-                  : [];
+              const playerEvent = parsePlayerPickNextSseEvent(type, data);
+              if (!playerEvent) continue;
+              if (playerEvent.type === 'queue-appended') {
+                appendRemoteQueueTrack(playerEvent.track);
+              } else if (playerEvent.type === 'dj.debug') {
+                const { excludedIds, excludedDedupeKeys, candidateScoreTable } = playerEvent;
                 console.info('[Crossfadio] DJ pick-next exclusion list', {
                   excludedIds,
                   excludedDedupeKeys,
@@ -1169,16 +1137,16 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
                   console.info('[Crossfadio] DJ pick-next candidate scores');
                   console.table(candidateScoreTable);
                 }
-                setDjPickLog(buildDjPickDebugLog(data));
-              } else if (type === 'dj.pick-next.done') {
-                console.info('[Crossfadio] DJ pick-next done', data);
-                if (data.added) {
+                setDjPickLog(buildDjPickDebugLog(playerEvent.data));
+              } else if (playerEvent.type === 'dj.pick-next.done') {
+                console.info('[Crossfadio] DJ pick-next done', playerEvent.data);
+                if (playerEvent.added) {
                   djPickNextBackoffUntilRef.current = 0;
                   djPickNextLastCallRef.current = Date.now();
-                  setDjStatusText(formatDjPickDoneStatus(data));
-                  setDjPickLog((prev) => prev ?? buildDjPickDoneLog(data));
+                  setDjStatusText(formatDjPickDoneStatus(playerEvent.data));
+                  setDjPickLog((prev) => prev ?? buildDjPickDoneLog(playerEvent.data));
                 } else {
-                  const reason = typeof data.reason === 'string' && data.reason.length > 0 ? data.reason : '稍后重试';
+                  const reason = playerEvent.reason ?? '稍后重试';
                   if (reason === 'already-running') {
                     djPickNextBackoffUntilRef.current = Date.now() + DJ_ALREADY_RUNNING_BACKOFF_MS;
                     const latestBackupTrackCount = getBackupTrackCount(queueRef.current.length, currentIndexRef.current);

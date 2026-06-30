@@ -1,5 +1,5 @@
-import type { QueueTrackDto } from '@shared/schema';
 export { appendQueueTrackIfMissing } from './playerQueueRuntime';
+export { queueTrackFromSsePayload } from './playerSseEvents';
 
 type RefillGateInput = {
   isPlaying: boolean;
@@ -13,22 +13,6 @@ type RefillGateInput = {
   currentIndex: number;
   lowWaterMark: number;
 };
-
-export function queueTrackFromSsePayload(payload: unknown): QueueTrackDto | null {
-  if (!payload || typeof payload !== 'object') return null;
-  const track = payload as Record<string, unknown>;
-  const rawId = track.ncmId ?? track.id;
-  if (rawId === null || rawId === undefined || rawId === '') return null;
-  const id = String(rawId);
-
-  return {
-    id,
-    name: typeof track.name === 'string' ? track.name : `Track ${id}`,
-    artists: Array.isArray(track.artists) ? track.artists.filter((artist): artist is string => typeof artist === 'string') : [],
-    durationMs: typeof track.durationMs === 'number' ? track.durationMs : 0,
-    coverImgUrl: typeof track.coverImgUrl === 'string' ? track.coverImgUrl : null
-  };
-}
 
 export function getBackupTrackCount(queueLength: number, currentIndex: number): number {
   return Math.max(0, queueLength - currentIndex - 1);
