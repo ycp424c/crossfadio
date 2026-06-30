@@ -184,13 +184,14 @@ describe('player layout', () => {
 
     expect(source).toContain('const queueRef = useRef<QueueTrackDto[]>([])');
     expect(source).toContain('const currentIndexRef = useRef(0)');
-    expect(source).toContain('appendRemoteQueueTrack(playerEvent.track)');
-    expect(source).toContain('parsePlayerPickNextSseEvent(type, data)');
+    expect(source).toContain('consumePlayerPickNextStream({');
+    expect(source).toContain('onQueueAppended: appendRemoteQueueTrack');
     expect(triggerBlock).toContain('const latestQueue = queueRef.current');
     expect(triggerBlock).toContain('shouldTriggerDjRefill({');
     expect(triggerBlock).toContain('queueLength: latestQueue.length');
     expect(triggerBlock).toContain('currentIndex: latestCurrentIndex');
-    expect(triggerBlock).toContain("playerEvent.type === 'queue-appended'");
+    expect(triggerBlock).toContain('queue: latestQueue');
+    expect(triggerBlock).toContain('currentIndex: latestCurrentIndex');
   });
 
   it('backs off instead of retrying immediately when DJ pick-next is already running on the server', () => {
@@ -198,7 +199,7 @@ describe('player layout', () => {
     const triggerStart = source.indexOf('// DJ mode: refill when the backup queue reaches the low-water mark');
     const startSegueAudioStart = source.indexOf('maybeStartSegueAudio();', triggerStart);
     const triggerBlock = source.slice(triggerStart, startSegueAudioStart);
-    const doneStart = triggerBlock.indexOf("playerEvent.type === 'dj.pick-next.done'");
+    const doneStart = triggerBlock.indexOf('onDone(playerEvent)');
     const doneBlock = triggerBlock.slice(doneStart);
 
     expect(source).toContain('const DJ_ALREADY_RUNNING_BACKOFF_MS = 30000');
@@ -235,8 +236,8 @@ describe('player layout', () => {
 
   it('logs DJ pick-next debug tables to the browser console', () => {
     const source = fs.readFileSync(path.join(root, 'src/renderer/views/Player/PlayerView.tsx'), 'utf-8');
-    const debugStart = source.indexOf("playerEvent.type === 'dj.debug'");
-    const doneStart = source.indexOf("playerEvent.type === 'dj.pick-next.done'", debugStart);
+    const debugStart = source.indexOf('onDebug(playerEvent)');
+    const doneStart = source.indexOf('onDone(playerEvent)', debugStart);
     const debugBlock = source.slice(debugStart, doneStart);
 
     expect(debugBlock).toContain('console.info');

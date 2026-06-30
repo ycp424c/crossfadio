@@ -49,7 +49,7 @@ import { NowPlayingHero } from '@renderer/components/player/NowPlayingHero';
 import { PlaybackTimeline } from '@renderer/components/player/PlaybackTimeline';
 import { QueuePanel } from '@renderer/components/player/QueuePanel';
 import { TransportControls } from '@renderer/components/player/TransportControls';
-import { initSseEvents, addSseListener, closeSseEvents, streamSegue, streamPickNext } from '@renderer/sse/client';
+import { initSseEvents, addSseListener, closeSseEvents, streamSegue } from '@renderer/sse/client';
 import { useMediaQuery } from '@renderer/lib-hooks';
 import {
   formatDjPickDoneStatus,
@@ -61,9 +61,9 @@ import {
   buildDjPickDoneLog,
   type DjPickLog
 } from '@renderer/playerDjPickLog';
+import { consumePlayerPickNextStream } from '@renderer/playerDjPickNextStream';
 import {
-  parsePlayerPersistentSseEvent,
-  parsePlayerPickNextSseEvent
+  parsePlayerPersistentSseEvent
 } from '@renderer/playerSseEvents';
 import {
   advanceQueueAfterEnded,
@@ -1032,12 +1032,11 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
         setDjStatusText('正在挑选下一首…');
         void (async () => {
           try {
-            for await (const { type, data } of streamPickNext({ queue: latestQueue, currentIndex: latestCurrentIndex })) {
-              const playerEvent = parsePlayerPickNextSseEvent(type, data);
-              if (!playerEvent) continue;
-              if (playerEvent.type === 'queue-appended') {
-                appendRemoteQueueTrack(playerEvent.track);
-              } else if (playerEvent.type === 'dj.debug') {
+            await consumePlayerPickNextStream({
+              queue: latestQueue,
+              currentIndex: latestCurrentIndex,
+              onQueueAppended: appendRemoteQueueTrack,
+              onDebug(playerEvent) {
                 const { excludedIds, excludedDedupeKeys, candidateScoreTable } = playerEvent;
                 console.info('[Crossfadio] DJ pick-next exclusion list', {
                   excludedIds,
@@ -1050,7 +1049,8 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
                   console.table(candidateScoreTable);
                 }
                 setDjPickLog(buildDjPickDebugLog(playerEvent.data));
-              } else if (playerEvent.type === 'dj.pick-next.done') {
+              },
+              onDone(playerEvent) {
                 console.info('[Crossfadio] DJ pick-next done', playerEvent.data);
                 if (playerEvent.added) {
                   djPickNextBackoffUntilRef.current = 0;
@@ -1070,7 +1070,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
                   }
                 }
               }
-            }
+            });
           } catch {
             djPickNextBackoffUntilRef.current = 0;
             djPickNextLastCallRef.current = 0;
