@@ -4,9 +4,9 @@ import {
   isTrackDedupeKeyExcluded
 } from './musicAgentPickNextResult.js';
 import { getAddedTrackCount, getRemainingPickSlots } from './pickNextQueueProgress.js';
+import type { DiscoveryMode } from '../../shared/dj.js';
 import type {
   DedupeState,
-  DiscoveryMode,
   DjEventSink,
   DjPickNextFallbackPath,
   DjPickNextRunMetrics
