@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildDjPickDebugLog } from '../../src/renderer/views/Player/PlayerView';
+import { buildDjPickDebugLog, buildDjPickDoneLog } from '../../src/renderer/playerDjPickLog';
 
 describe('DJ pick debug log', () => {
   it('counts unique query funnel search results and repeated searches separately', () => {
@@ -36,5 +36,23 @@ describe('DJ pick debug log', () => {
     expect(log.searchRepeatedCount).toBe(4);
     expect(log.searchAddedCount).toBe(0);
     expect(log.searchedTracks).toHaveLength(4);
+  });
+
+  it('builds a conservative done log without treating appended tracks as search stats', () => {
+    const log = buildDjPickDoneLog({
+      added: true,
+      addedCount: 2,
+      trackIds: ['11', '12'],
+      trackNames: ['First', 'Second'],
+      totalCandidates: 8
+    });
+
+    expect(log).toMatchObject({
+      searchAddedCount: 0,
+      searchSelectedCount: 0,
+      totalCandidates: 8,
+      selectedSay: '本次补充 2 首。'
+    });
+    expect(log?.selectedTracks.map((track) => track.id)).toEqual(['11', '12']);
   });
 });
