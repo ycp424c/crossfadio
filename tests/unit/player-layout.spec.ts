@@ -68,8 +68,8 @@ describe('player layout', () => {
   it('surfaces waiting segue states instead of falling back to idle text', () => {
     const source = fs.readFileSync(path.join(root, 'src/renderer/views/Player/PlayerView.tsx'), 'utf-8');
 
-    expect(source).toContain("setSegueStatusText('已开播，等待下一首加入队列')");
-    expect(source).toContain("setSegueStatusText('下一首与当前相同，跳过')");
+    expect(source).toContain('getSegueWaitingStatus({');
+    expect(source).toContain('setSegueStatusText(waitingStatus)');
   });
 
   it('clears stale track media immediately when the current track changes', () => {
@@ -89,7 +89,8 @@ describe('player layout', () => {
 
     expect(source).toContain('const TRACK_MEDIA_ERROR_MAX_RETRIES = 2');
     expect(source).toContain('async function retryTrackPlaybackAfterError');
-    expect(source).toContain('getMediaErrorRetryDecision({');
+    expect(source).toContain('getTrackMediaErrorAction({');
+    expect(source).toContain('getTrackMediaRetryResumeDecision({');
     expect(source).toContain('pendingTrackMediaRetryRef.current = {');
     expect(source).toContain('trackMediaRetryRequestIdRef.current += 1');
     expect(source).toContain('currentTrackIdRef.current !== trackId');
@@ -267,7 +268,7 @@ describe('player layout', () => {
     const source = fs.readFileSync(path.join(root, 'src/renderer/views/Player/PlayerView.tsx'), 'utf-8');
 
     expect(source).toContain('const maybeTriggerSegue = useCallback(() => {');
-    expect(source).toContain('if (!audio || audio.paused || !currentTrackId || !nextTrackId) {');
+    expect(source).toContain('getSegueRequestDecision({');
     expect(source).toContain('useEffect(() => {');
     expect(source).toContain('maybeTriggerSegue();');
     expect(source).not.toContain('decision.shouldTriggerSegue &&');
@@ -289,8 +290,8 @@ describe('player layout', () => {
     const nextEffectStart = source.indexOf('useEffect(() => {', maybeStartStart);
     const maybeStartBlock = source.slice(maybeStartStart, nextEffectStart);
 
-    expect(source).toContain('@renderer/audio/seguePlayback');
-    expect(maybeStartBlock).toContain('shouldStartSegueAudio({');
+    expect(source).toContain('@renderer/playerSegueRuntime');
+    expect(maybeStartBlock).toContain('shouldStartPendingSegueAudio({');
     expect(maybeStartBlock).not.toContain('trackAudio.currentTime < crossfadeAtSec');
   });
 

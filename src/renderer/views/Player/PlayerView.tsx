@@ -40,11 +40,6 @@ import {
   updateLocation
 } from '@renderer/api';
 import { getPrefetchDecision } from '@renderer/audio/prefetch';
-import { shouldStartSegueAudio } from '@renderer/audio/seguePlayback';
-import {
-  getMediaErrorRetryDecision,
-  shouldTreatMediaErrorAsEnded
-} from '@renderer/audio/mediaError';
 import { NowPlayingHero } from '@renderer/components/player/NowPlayingHero';
 import { PlaybackTimeline } from '@renderer/components/player/PlaybackTimeline';
 import { QueuePanel } from '@renderer/components/player/QueuePanel';
@@ -62,6 +57,17 @@ import {
   type DjPickLog
 } from '@renderer/playerDjPickLog';
 import { consumePlayerPickNextStream } from '@renderer/playerDjPickNextStream';
+import {
+  getSegueRequestDecision,
+  getSegueWaitingStatus,
+  parseSegueTtsReadyPayload,
+  shouldStartPendingSegueAudio
+} from '@renderer/playerSegueRuntime';
+import {
+  getTrackMediaErrorAction,
+  getTrackMediaRetryResumeDecision,
+  type PendingTrackMediaRetry
+} from '@renderer/playerMediaRuntime';
 import {
   parsePlayerPersistentSseEvent
 } from '@renderer/playerSseEvents';
@@ -140,13 +146,6 @@ type PendingSegueAudio = {
   estimatedDurationSec: number;
   actualDurationSec: number | null;
   started: boolean;
-};
-
-type PendingTrackMediaRetry = {
-  trackId: string;
-  requestId: number;
-  positionSec: number;
-  shouldPlay: boolean;
 };
 
 export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
@@ -330,19 +329,19 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
     const trackAudio = audioRef.current;
     const pending = pendingSegueRef.current;
 
-    if (!trackAudio || trackAudio.paused || !pending || pending.started) {
+    if (!trackAudio || !pending) {
       return;
     }
 
     const crossfadeSec = nowPlayingRef.current?.timing.crossfadeSec ?? DEFAULT_DUCKING_HINT_SEC;
-    const trackDuration = trackAudio.duration;
-    if (!Number.isFinite(trackDuration) || trackDuration <= 0) {
-      return;
-    }
     const segueDurationSec = resolveSegueDurationSec(pending);
-    if (!shouldStartSegueAudio({
+    if (!shouldStartPendingSegueAudio({
+      hasTrackAudio: true,
+      trackPaused: trackAudio.paused,
+      hasPendingAudio: true,
+      pendingStarted: pending.started,
       positionSec: trackAudio.currentTime,
-      trackDurationSec: trackDuration,
+      trackDurationSec: trackAudio.duration,
       crossfadeSec,
       speechDurationSec: segueDurationSec
     })) {
@@ -761,19 +760,19 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
   const maybeTriggerSegue = useCallback(() => {
     const audio = audioRef.current;
     const nextTrackId = nextTrack?.track.id ?? null;
-    if (!audio || audio.paused || !currentTrackId || !nextTrackId) {
-      return;
-    }
-
-    if (nextTrackId === currentTrackId) {
-      return;
-    }
-
-    if (segueSatisfiedForTrackIdRef.current === currentTrackId || segueClientRequestIdRef.current !== null) {
-      return;
-    }
-
-    if (Date.now() - segueLastAttemptAtRef.current < SEGUE_RETRY_COOLDOWN_MS) {
+    const now = Date.now();
+    const decision = getSegueRequestDecision({
+      hasAudio: Boolean(audio),
+      audioPaused: audio?.paused ?? true,
+      currentTrackId,
+      nextTrackId,
+      satisfiedTrackId: segueSatisfiedForTrackIdRef.current,
+      activeRequestId: segueClientRequestIdRef.current,
+      lastAttemptAt: segueLastAttemptAtRef.current,
+      now,
+      retryCooldownMs: SEGUE_RETRY_COOLDOWN_MS
+    });
+    if (!decision.shouldRequest || !currentTrackId || !nextTrackId) {
       return;
     }
 
@@ -781,7 +780,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
     const nextQueueTrack = queue.find((track) => track.id === nextTrackId) ?? null;
     segueClientRequestIdRef.current = clientRequestId;
     segueExpectedFromTrackIdRef.current = currentTrackId;
-    segueLastAttemptAtRef.current = Date.now();
+    segueLastAttemptAtRef.current = now;
     setSegueStatusText(`生成中：${currentTrackId} → ${nextTrackId}`);
     void (async () => {
       try {
@@ -809,37 +808,21 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
               segueSatisfiedForTrackIdRef.current = currentTrackIdRef.current;
             }
 
-            const ttsHintSec =
-              data.segue && typeof data.segue === 'object' && 'duckingHintSec' in data.segue
-                ? Number((data.segue as { duckingHintSec: unknown }).duckingHintSec)
-                : NaN;
-            const speechDurationSec =
-              typeof data.speechDurationSec === 'number' && data.speechDurationSec > 0 ? data.speechDurationSec : NaN;
-            const dynamicHintSec = Number.isFinite(speechDurationSec)
-              ? Math.max(1, speechDurationSec)
-              : Number.isFinite(ttsHintSec) && ttsHintSec > 0
-                ? ttsHintSec
-                : DEFAULT_DUCKING_HINT_SEC;
+            const ttsPayload = parseSegueTtsReadyPayload(data, DEFAULT_DUCKING_HINT_SEC);
+            if (ttsPayload.sayText) setSegueScriptText(ttsPayload.sayText);
 
-            const sayText =
-              data.segue && typeof data.segue === 'object' && 'say' in data.segue
-                ? String((data.segue as { say: unknown }).say).trim()
-                : '';
-            if (sayText) setSegueScriptText(sayText);
-
-            const audioUrl = typeof data.audioUrl === 'string' ? data.audioUrl : null;
-            if (!audioUrl) {
+            if (!ttsPayload.audioUrl) {
               setSegueStatusText('过渡文案已生成（未配置 TTS）');
               continue;
             }
 
             disposeSegueAudio();
-            const audio = new Audio(audioUrl);
+            const audio = new Audio(ttsPayload.audioUrl);
             audio.preload = 'auto';
             audio.volume = 1;
             const pending: PendingSegueAudio = {
               audio,
-              estimatedDurationSec: dynamicHintSec,
+              estimatedDurationSec: ttsPayload.estimatedDurationSec,
               actualDurationSec: null,
               started: false
             };
@@ -861,7 +844,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
 
             pendingSegueRef.current = pending;
             segueAudioRef.current = audio;
-            setSegueStatusText(`过渡语音已就绪（约 ${Math.round(dynamicHintSec)} 秒）`);
+            setSegueStatusText(`过渡语音已就绪（约 ${Math.round(ttsPayload.estimatedDurationSec)} 秒）`);
             maybeStartSegueAudio();
           } else if (type === 'segue.degraded') {
             if (!isActiveSegueMessage(data, segueClientRequestIdRef.current)) continue;
@@ -992,18 +975,15 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
 
     maybeTriggerSegue();
 
-    const nextTrackId = nextTrack?.track.id ?? null;
-    const segueAttempted = segueSatisfiedForTrackIdRef.current === currentTrackId
-      || segueClientRequestIdRef.current !== null
-      || segueLastAttemptAtRef.current > 0;
-
-    if (!segueAttempted && currentTrackId) {
-      // Surface why the trigger hasn't fired yet, so "空闲" doesn't hide a waiting state.
-      if (!nextTrackId) {
-        setSegueStatusText('已开播，等待下一首加入队列');
-      } else if (nextTrackId === currentTrackId) {
-        setSegueStatusText('下一首与当前相同，跳过');
-      }
+    const waitingStatus = getSegueWaitingStatus({
+      currentTrackId,
+      nextTrackId: nextTrack?.track.id ?? null,
+      satisfiedTrackId: segueSatisfiedForTrackIdRef.current,
+      activeRequestId: segueClientRequestIdRef.current,
+      lastAttemptAt: segueLastAttemptAtRef.current
+    });
+    if (waitingStatus) {
+      setSegueStatusText(waitingStatus);
     }
 
     // DJ mode: refill when the backup queue reaches the low-water mark; rate-limited by cooldown.
@@ -1092,27 +1072,25 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
     setDurationSec(audio.duration || 0);
 
     const pendingRetry = pendingTrackMediaRetryRef.current;
-    if (
-      !pendingRetry ||
-      pendingRetry.trackId !== currentTrackIdRef.current ||
-      pendingRetry.requestId !== trackMediaRetryRequestIdRef.current
-    ) {
+    const retryResume = getTrackMediaRetryResumeDecision({
+      pendingRetry,
+      currentTrackId: currentTrackIdRef.current,
+      currentRequestId: trackMediaRetryRequestIdRef.current,
+      audioDurationSec: audio.duration
+    });
+    if (!pendingRetry || !retryResume.shouldResume) {
       return;
     }
 
     pendingTrackMediaRetryRef.current = null;
-    const maxSeekSec = Number.isFinite(audio.duration) && audio.duration > 0
-      ? Math.max(0, audio.duration - 0.5)
-      : pendingRetry.positionSec;
-    const resumeAtSec = Math.min(pendingRetry.positionSec, maxSeekSec);
     try {
-      audio.currentTime = resumeAtSec;
-      setPositionSec(resumeAtSec);
+      audio.currentTime = retryResume.resumeAtSec;
+      setPositionSec(retryResume.resumeAtSec);
     } catch {
       setPositionSec(audio.currentTime || 0);
     }
 
-    setTrackStatusText(`已重试音频流，从 ${Math.round(resumeAtSec)} 秒继续`);
+    setTrackStatusText(`已重试音频流，从 ${Math.round(retryResume.resumeAtSec)} 秒继续`);
     if (pendingRetry.shouldPlay) {
       void audio
         .play()
@@ -1153,20 +1131,21 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
     }
     pendingTrackMediaRetryRef.current = null;
 
-    if (shouldTreatMediaErrorAsEnded({ currentTime: audio.currentTime, duration: audio.duration })) {
+    const trackId = currentTrackIdRef.current;
+    const mediaErrorAction = getTrackMediaErrorAction({
+      currentTimeSec: audio.currentTime,
+      durationSec: audio.duration,
+      retryAttempts: trackMediaRetryAttemptsRef.current,
+      maxRetryAttempts: TRACK_MEDIA_ERROR_MAX_RETRIES,
+      trackId
+    });
+    if (mediaErrorAction.type === 'ended') {
       setTrackStatusText('音频流在结尾断开，继续下一首');
       onEnded();
       return;
     }
 
-    const trackId = currentTrackIdRef.current;
-    const retryDecision = getMediaErrorRetryDecision({
-      currentTime: audio.currentTime,
-      duration: audio.duration,
-      retryAttempts: trackMediaRetryAttemptsRef.current,
-      maxRetryAttempts: TRACK_MEDIA_ERROR_MAX_RETRIES
-    });
-    if (trackId && retryDecision.shouldRetry) {
+    if (trackId && mediaErrorAction.type === 'retry') {
       trackMediaRetryAttemptsRef.current += 1;
       trackMediaRetryRequestIdRef.current += 1;
       const requestId = trackMediaRetryRequestIdRef.current;
@@ -1175,7 +1154,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
       setTrackStatusText(`播放流中断，正在重试 ${attempt}/${TRACK_MEDIA_ERROR_MAX_RETRIES}`);
       void retryTrackPlaybackAfterError(
         trackId,
-        retryDecision.resumeAtSec,
+        mediaErrorAction.resumeAtSec,
         requestId,
         isPlaying || !audio.paused
       );
