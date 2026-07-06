@@ -65,6 +65,7 @@ import {
 } from '@renderer/playerSegueRuntime';
 import {
   getTrackMediaErrorAction,
+  getTrackMediaManualResumeDecision,
   getTrackMediaRetryResumeDecision,
   type PendingTrackMediaRetry
 } from '@renderer/playerMediaRuntime';
@@ -85,7 +86,7 @@ import {
 import { persistQueueSnapshot, restorePersistedQueueSnapshot } from '@renderer/playerQueueCache';
 import { mergeQueueTracksById } from '@renderer/playerTemporaryBans';
 import { AUTO_FILL_LOW_WATER_MARK, type DiscoveryMode } from '@shared/dj';
-import type { NextTrackResponse, NowPlayingResponse, QueueTrackDto } from '@shared/schema';
+import type { NcmQrStatus, NextTrackResponse, NowPlayingResponse, QueueTrackDto } from '@shared/schema';
 import appMark from '@renderer/assets/image2/crossfadio-mark.svg';
 
 
@@ -105,6 +106,7 @@ const DJ_PICK_COOLDOWN_MS = 3000; // min ms between pick-next calls
 const DJ_ALREADY_RUNNING_BACKOFF_MS = 30000;
 const SEGUE_RETRY_COOLDOWN_MS = 6000; // min ms between segue trigger retries within the same track
 const TRACK_MEDIA_ERROR_MAX_RETRIES = 2;
+const QR_LOGIN_POLL_INTERVAL_MS = 2000;
 
 type ModeVisualConfig = {
   page: string;
@@ -119,6 +121,8 @@ type ModeVisualConfig = {
   caption: string;
   taste: string;
 };
+
+type QrLoginPollResult = 'pending' | 'terminal';
 
 function newClientRequestId(): string {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
@@ -220,6 +224,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
   const trackMediaRetryAttemptsRef = useRef(0);
   const trackMediaRetryRequestIdRef = useRef(0);
   const pendingTrackMediaRetryRef = useRef<PendingTrackMediaRetry | null>(null);
+  const trackMediaManualResumeRequiredRef = useRef(false);
 
   useEffect(() => {
     if (!showNcmDropdown) return;
@@ -524,6 +529,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
       trackMediaRetryAttemptsRef.current = 0;
       trackMediaRetryRequestIdRef.current += 1;
       pendingTrackMediaRetryRef.current = null;
+      trackMediaManualResumeRequiredRef.current = false;
       return;
     }
 
@@ -533,6 +539,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
     trackMediaRetryAttemptsRef.current = 0;
     trackMediaRetryRequestIdRef.current += 1;
     pendingTrackMediaRetryRef.current = null;
+    trackMediaManualResumeRequiredRef.current = false;
     segueClientRequestIdRef.current = null;
     segueExpectedFromTrackIdRef.current = null;
     segueSatisfiedForTrackIdRef.current = null;
@@ -561,6 +568,104 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
       setError(err instanceof Error ? err.message : 'session 请求失败');
     }
   }
+
+  async function startNcmQrLogin(): Promise<void> {
+    try {
+      const qr = await createNcmQr();
+      setQrPayload({ key: qr.key, qrimg: qr.qrimg });
+      setTrackStatusText('二维码已生成，等待扫码');
+      setError('');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '创建二维码失败');
+    }
+  }
+
+  async function applyNcmQrStatus(status: NcmQrStatus): Promise<QrLoginPollResult> {
+    if (status.hint === 'forbidden') {
+      setError(status.message || '您没有访问权限，请联系管理员');
+      setTrackStatusText('登录失败：无访问权限');
+      setQrPayload(null);
+      return 'terminal';
+    }
+
+    if (status.hint === 'expired') {
+      setTrackStatusText('二维码已过期，请刷新');
+      setQrPayload(null);
+      return 'terminal';
+    }
+
+    if (status.token) {
+      setSseToken(status.token);
+    }
+
+    if (status.hint === 'authorized') {
+      setTrackStatusText('NCM 登录成功');
+      setQrPayload(null);
+      setShowNcmDropdown(false);
+      setShowNcmSheet(false);
+      await refreshSession();
+      return 'terminal';
+    }
+
+    setTrackStatusText(status.hint === 'scanned' ? '已扫码，等待手机确认' : '等待扫码');
+    return 'pending';
+  }
+
+  async function checkNcmQrStatus(key: string): Promise<QrLoginPollResult> {
+    try {
+      const status = await checkNcmQr(key);
+      return await applyNcmQrStatus(status);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '扫码状态查询失败');
+      return 'pending';
+    }
+  }
+
+  async function checkCurrentNcmQrStatus(): Promise<void> {
+    if (!qrPayload?.key) return;
+    await checkNcmQrStatus(qrPayload.key);
+  }
+
+  async function handleNcmLogout(): Promise<void> {
+    try {
+      await logoutNcm();
+      setSseToken(null);
+      setQrPayload(null);
+      await refreshSession();
+      setTrackStatusText('已登出 NCM');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '登出失败');
+    }
+  }
+
+  useEffect(() => {
+    const key = qrPayload?.key;
+    if (!key) return;
+
+    let cancelled = false;
+    let timer: number | null = null;
+
+    const poll = async (): Promise<void> => {
+      const result = await checkNcmQrStatus(key);
+      if (cancelled || result === 'terminal') {
+        return;
+      }
+      timer = window.setTimeout(() => {
+        void poll();
+      }, QR_LOGIN_POLL_INTERVAL_MS);
+    };
+
+    timer = window.setTimeout(() => {
+      void poll();
+    }, QR_LOGIN_POLL_INTERVAL_MS);
+
+    return () => {
+      cancelled = true;
+      if (timer !== null) {
+        window.clearTimeout(timer);
+      }
+    };
+  }, [qrPayload?.key]);
 
   async function refreshPlayerContext(): Promise<void> {
     const ctx = await getPlayerContext();
@@ -658,6 +763,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
         return;
       }
       setNowPlaying(payload);
+      trackMediaManualResumeRequiredRef.current = false;
       setError('');
 
       if (audioRef.current) {
@@ -694,6 +800,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
         return;
       }
       setNowPlaying(payload);
+      trackMediaManualResumeRequiredRef.current = false;
       setError('');
 
       const audio = audioRef.current;
@@ -715,6 +822,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
         return;
       }
       setIsPlaying(false);
+      trackMediaManualResumeRequiredRef.current = true;
       shouldAutoplayNextRef.current = false;
       setTrackStatusText('播放流中断');
       setError(err instanceof Error ? `音频资源重试失败：${err.message}` : '音频资源重试失败，请稍后重试或切换下一首');
@@ -876,8 +984,34 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
     }
 
     if (audio.paused) {
+      const manualResume = getTrackMediaManualResumeDecision({
+        needsFreshStream: trackMediaManualResumeRequiredRef.current || Boolean(audio.error),
+        trackId: currentTrackIdRef.current,
+        currentTimeSec: audio.currentTime,
+        positionSec
+      });
+      if (manualResume.shouldRefresh) {
+        trackMediaManualResumeRequiredRef.current = false;
+        trackMediaRetryAttemptsRef.current = 0;
+        trackMediaRetryRequestIdRef.current += 1;
+        pendingTrackMediaRetryRef.current = null;
+        setError('');
+        setTrackStatusText(`正在刷新音频流，从 ${Math.round(manualResume.resumeAtSec)} 秒继续`);
+        void retryTrackPlaybackAfterError(
+          manualResume.trackId,
+          manualResume.resumeAtSec,
+          trackMediaRetryRequestIdRef.current,
+          true
+        );
+        return;
+      }
+
       void audio.play().then(() => {
         maybeStartSegueAudio();
+      }).catch((err) => {
+        setIsPlaying(false);
+        setTrackStatusText('播放启动失败');
+        setError(err instanceof Error ? err.message : '播放启动失败，请稍后重试或切换下一首');
       });
       return;
     }
@@ -1120,6 +1254,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
     }
     setIsPlaying(false);
     shouldAutoplayNextRef.current = false;
+    trackMediaManualResumeRequiredRef.current = false;
     applyQueueSnapshot(transition);
     setTrackStatusText('播放完成');
   }
@@ -1162,6 +1297,8 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
     }
 
     setIsPlaying(false);
+    audio.pause();
+    trackMediaManualResumeRequiredRef.current = Boolean(trackId);
     shouldAutoplayNextRef.current = false;
     setTrackStatusText('播放流中断');
     setError('音频资源加载中断，请稍后重试或切换下一首');
@@ -1306,15 +1443,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
                   <div className="flex flex-col gap-1.5 text-xs text-zinc-300">
                     <button
                       className="inline-flex w-full items-center gap-2 rounded border border-zinc-700 bg-zinc-950 px-2.5 py-1.5 hover:border-zinc-500"
-                      onClick={async () => {
-                        try {
-                          const qr = await createNcmQr();
-                          setQrPayload({ key: qr.key, qrimg: qr.qrimg });
-                          setError('');
-                        } catch (err) {
-                          setError(err instanceof Error ? err.message : '创建二维码失败');
-                        }
-                      }}
+                      onClick={() => { void startNcmQrLogin(); }}
                       type="button"
                     >
                       <QrCode className="h-4 w-4 shrink-0" />
@@ -1322,28 +1451,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
                     </button>
                     <button
                       className="inline-flex w-full items-center gap-2 rounded border border-zinc-700 bg-zinc-950 px-2.5 py-1.5 hover:border-zinc-500"
-                      onClick={async () => {
-                        if (!qrPayload?.key) return;
-                        try {
-                          const status = await checkNcmQr(qrPayload.key);
-                          if (status.hint === 'forbidden') {
-                            setError(status.message || '您没有访问权限，请联系管理员');
-                            setTrackStatusText('登录失败：无访问权限');
-                            setQrPayload(null);
-                          } else if (status.hint === 'expired') {
-                            setTrackStatusText('二维码已过期，请刷新');
-                            setQrPayload(null);
-                          } else {
-                            setTrackStatusText(`扫码状态: ${status.hint}`);
-                          }
-                          if (status.token) {
-                            setSseToken(status.token);
-                          }
-                          await refreshSession();
-                        } catch (err) {
-                          setError(err instanceof Error ? err.message : '扫码状态查询失败');
-                        }
-                      }}
+                      onClick={() => { void checkCurrentNcmQrStatus(); }}
                       type="button"
                     >
                       <ScanSearch className="h-4 w-4 shrink-0" />
@@ -1351,16 +1459,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
                     </button>
                     <button
                       className="inline-flex w-full items-center gap-2 rounded border border-zinc-700 bg-zinc-950 px-2.5 py-1.5 hover:border-zinc-500"
-                      onClick={async () => {
-                        try {
-                          await logoutNcm();
-                          setSseToken(null);
-                          await refreshSession();
-                          setTrackStatusText('已登出 NCM');
-                        } catch (err) {
-                          setError(err instanceof Error ? err.message : '登出失败');
-                        }
-                      }}
+                      onClick={() => { void handleNcmLogout(); }}
                       type="button"
                     >
                       <LogOut className="h-4 w-4 shrink-0" />
@@ -1398,15 +1497,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
                     <div className="flex flex-col gap-2 text-sm">
                       <button
                         className="inline-flex w-full items-center justify-center gap-2 rounded-lg border border-zinc-600 bg-zinc-900 px-4 py-2.5 hover:border-zinc-400 transition"
-                        onClick={async () => {
-                          try {
-                            const qr = await createNcmQr();
-                            setQrPayload({ key: qr.key, qrimg: qr.qrimg });
-                            setError('');
-                          } catch (err) {
-                            setError(err instanceof Error ? err.message : '创建二维码失败');
-                          }
-                        }}
+                        onClick={() => { void startNcmQrLogin(); }}
                         type="button"
                       >
                         <QrCode className="h-4 w-4" />
@@ -1414,28 +1505,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
                       </button>
                       <button
                         className="inline-flex w-full items-center justify-center gap-2 rounded-lg border border-zinc-600 bg-zinc-900 px-4 py-2.5 hover:border-zinc-400 transition"
-                        onClick={async () => {
-                          if (!qrPayload?.key) return;
-                          try {
-                            const status = await checkNcmQr(qrPayload.key);
-                            if (status.hint === 'forbidden') {
-                              setError(status.message || '您没有访问权限，请联系管理员');
-                              setTrackStatusText('登录失败：无访问权限');
-                              setQrPayload(null);
-                            } else if (status.hint === 'expired') {
-                              setTrackStatusText('二维码已过期，请刷新');
-                              setQrPayload(null);
-                            } else {
-                              setTrackStatusText(`扫码状态: ${status.hint}`);
-                            }
-                            if (status.token) {
-                              setSseToken(status.token);
-                            }
-                            await refreshSession();
-                          } catch (err) {
-                            setError(err instanceof Error ? err.message : '扫码状态查询失败');
-                          }
-                        }}
+                        onClick={() => { void checkCurrentNcmQrStatus(); }}
                         type="button"
                       >
                         <ScanSearch className="h-4 w-4" />
@@ -1443,16 +1513,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
                       </button>
                       <button
                         className="inline-flex w-full items-center justify-center gap-2 rounded-lg border border-zinc-600 bg-zinc-900 px-4 py-2.5 hover:border-zinc-400 transition"
-                        onClick={async () => {
-                          try {
-                            await logoutNcm();
-                            setSseToken(null);
-                            await refreshSession();
-                            setTrackStatusText('已登出 NCM');
-                          } catch (err) {
-                            setError(err instanceof Error ? err.message : '登出失败');
-                          }
-                        }}
+                        onClick={() => { void handleNcmLogout(); }}
                         type="button"
                       >
                         <LogOut className="h-4 w-4" />

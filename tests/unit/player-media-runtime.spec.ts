@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   getTrackMediaErrorAction,
+  getTrackMediaManualResumeDecision,
   getTrackMediaRetryResumeDecision
 } from '../../src/renderer/playerMediaRuntime';
 
@@ -55,5 +56,28 @@ describe('player media runtime', () => {
       maxRetryAttempts: 2,
       trackId: 'current'
     })).toEqual({ type: 'fail' });
+  });
+
+  it('refreshes the current stream before manual resume after recoverable failure', () => {
+    expect(getTrackMediaManualResumeDecision({
+      needsFreshStream: true,
+      trackId: 'current',
+      currentTimeSec: 92,
+      positionSec: 88
+    })).toEqual({ shouldRefresh: true, trackId: 'current', resumeAtSec: 92 });
+
+    expect(getTrackMediaManualResumeDecision({
+      needsFreshStream: true,
+      trackId: 'current',
+      currentTimeSec: Number.NaN,
+      positionSec: 88
+    })).toEqual({ shouldRefresh: true, trackId: 'current', resumeAtSec: 88 });
+
+    expect(getTrackMediaManualResumeDecision({
+      needsFreshStream: false,
+      trackId: 'current',
+      currentTimeSec: 92,
+      positionSec: 88
+    })).toEqual({ shouldRefresh: false });
   });
 });

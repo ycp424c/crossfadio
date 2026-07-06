@@ -13,7 +13,7 @@
     "build:server": "tsc -p tsconfig.node.json",
     "build": "pnpm build:web && pnpm build:server",
     "check": "tsc -p tsconfig.node.json --noEmit && tsc -p tsconfig.web.json --noEmit",
-    "test": "vitest run",
+    "test": "sh scripts/run-tests.sh",
     "start": "node out/server/index.js",
     "preview": "pnpm build && pnpm start"
   },

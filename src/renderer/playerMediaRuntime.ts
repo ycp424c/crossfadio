@@ -31,6 +31,16 @@ export type TrackMediaErrorAction =
       type: 'fail';
     };
 
+export type TrackMediaManualResumeDecision =
+  | {
+      shouldRefresh: false;
+    }
+  | {
+      shouldRefresh: true;
+      trackId: string;
+      resumeAtSec: number;
+    };
+
 export function getTrackMediaRetryResumeDecision(input: {
   pendingRetry: PendingTrackMediaRetry | null;
   currentTrackId: string | null;
@@ -77,4 +87,27 @@ export function getTrackMediaErrorAction(input: {
   }
 
   return { type: 'fail' };
+}
+
+export function getTrackMediaManualResumeDecision(input: {
+  needsFreshStream: boolean;
+  trackId: string | null;
+  currentTimeSec: number;
+  positionSec: number;
+}): TrackMediaManualResumeDecision {
+  if (!input.needsFreshStream || !input.trackId) {
+    return { shouldRefresh: false };
+  }
+
+  const resumeAtSec = Number.isFinite(input.currentTimeSec) && input.currentTimeSec > 0
+    ? input.currentTimeSec
+    : Number.isFinite(input.positionSec) && input.positionSec > 0
+      ? input.positionSec
+      : 0;
+
+  return {
+    shouldRefresh: true,
+    trackId: input.trackId,
+    resumeAtSec
+  };
 }

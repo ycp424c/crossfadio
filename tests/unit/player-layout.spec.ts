@@ -487,4 +487,33 @@ describe('player layout', () => {
     expect(source).toContain('showNcmDropdown');
     expect(source).toContain('setShowNcmDropdown');
   });
+
+  it('PlayerView polls NCM QR login status automatically while preserving manual checks', () => {
+    const source = fs.readFileSync(
+      path.join(root, 'src/renderer/views/Player/PlayerView.tsx'),
+      'utf-8'
+    );
+
+    expect(source).toContain('const QR_LOGIN_POLL_INTERVAL_MS = 2000');
+    expect(source).toContain('async function checkNcmQrStatus');
+    expect(source).toContain('async function checkCurrentNcmQrStatus');
+    expect(source).toContain('window.setTimeout(() => {');
+    expect(source.match(/void checkCurrentNcmQrStatus/g)?.length ?? 0).toBeGreaterThanOrEqual(2);
+  });
+
+  it('PlayerView refreshes a failed track stream before manual playback resumes', () => {
+    const source = fs.readFileSync(
+      path.join(root, 'src/renderer/views/Player/PlayerView.tsx'),
+      'utf-8'
+    );
+    const playPauseStart = source.indexOf('function handlePlayPause(): void');
+    const prevStart = source.indexOf('function handlePrev(): void');
+    const playPauseBody = source.slice(playPauseStart, prevStart);
+
+    expect(source).toContain('trackMediaManualResumeRequiredRef');
+    expect(playPauseBody).toContain('getTrackMediaManualResumeDecision({');
+    expect(playPauseBody).toContain('retryTrackPlaybackAfterError(');
+    expect(playPauseBody).toContain('trackMediaRetryAttemptsRef.current = 0');
+    expect(source).toContain('trackMediaManualResumeRequiredRef.current = Boolean(trackId)');
+  });
 });
