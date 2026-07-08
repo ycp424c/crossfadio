@@ -8,6 +8,10 @@ import { getQueue } from '../store/queue.js';
 import { getPref } from '../store/prefs.js';
 import { getActiveTemporaryQueueBans } from '../store/temporary-bans.js';
 import { loadLatestPlan } from '../store/plan.js';
+import {
+  getPersonalDjContextSnapshot,
+  type PersonalDjContextRecord
+} from '../store/personal-dj-context.js';
 import { formatShanghaiDate, formatShanghaiLocalTime, getDaypart, getShanghaiTimeParts } from '../timezone.js';
 import {
   musicAgentContextSummarySchema,
@@ -74,10 +78,39 @@ export async function buildMusicAgentContext(input: BuildMusicAgentContextInput)
     queueStateSummary: buildQueueStateSummary(input.userId),
     recentArtistPenalties: buildRecentArtistPenalties(input.userId, now),
     recentTrackPenalties: buildRecentTrackPenalties(input.userId, now),
+    ...buildPersonalDjContextForMusicAgent(input.userId, now),
     bannedSummary: buildBannedSummary(input.userId, now)
   };
 
   return musicAgentContextSummarySchema.parse(context);
+}
+
+function buildPersonalDjContextForMusicAgent(
+  userId: string,
+  now: Date
+): Pick<MusicAgentContextSummary, 'personalDjContext'> {
+  const snapshot = getPersonalDjContextSnapshot(userId, now);
+  if (!snapshot.current) return {};
+
+  return {
+    personalDjContext: {
+      summary: truncate(snapshot.current.payload.summary, 1200),
+      currentState: snapshot.current.payload.currentState,
+      musicGuidance: snapshot.current.payload.musicGuidance,
+      musicHints: snapshot.current.payload.musicHints,
+      segueGuidance: snapshot.current.payload.segueGuidance,
+      trend: snapshot.trend.map(toPersonalDjTrendContext)
+    }
+  };
+}
+
+function toPersonalDjTrendContext(record: PersonalDjContextRecord): NonNullable<MusicAgentContextSummary['personalDjContext']>['trend'][number] {
+  return {
+    uploadedAt: record.uploadedAt,
+    summary: truncate(record.payload.summary, 500),
+    musicGuidance: record.payload.musicGuidance,
+    musicHints: record.payload.musicHints
+  };
 }
 
 function getDiscoveryMode(userId: string): 'explore' | 'comfort' {

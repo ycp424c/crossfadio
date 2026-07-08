@@ -218,6 +218,52 @@ export const musicKnowledgeSliceSchema = z.object({
 
 export type MusicKnowledgeSlice = z.infer<typeof musicKnowledgeSliceSchema>;
 
+export const musicAgentPersonalDjContextSchema = z.object({
+  summary: z.string().max(1200),
+  currentState: z.object({
+    activity: z.string().max(120).optional(),
+    energy: z.enum(['low', 'medium', 'high']).optional(),
+    attention: z.enum(['low_distraction', 'normal', 'high_stimulation']).optional(),
+    mood: z.string().max(160).optional()
+  }).strict().optional(),
+  musicGuidance: z.object({
+    energyCurve: z.enum(['downshift', 'steady', 'uplift', 'mixed']).optional(),
+    preferredTextures: z.array(z.string().max(80)).max(12).default([]),
+    avoidTextures: z.array(z.string().max(80)).max(12).default([]),
+    vocalPreference: z.enum(['vocal', 'instrumental', 'mixed', 'unknown']).optional(),
+    novelty: z.enum(['comfort', 'balanced', 'explore']).optional()
+  }).strict(),
+  musicHints: z.array(z.object({
+    kind: z.enum(['artist', 'track', 'style', 'scene']),
+    label: z.string().max(160),
+    strength: z.enum(['weak', 'medium', 'strong']),
+    reason: z.string().max(300)
+  }).strict()).max(12).default([]),
+  segueGuidance: z.object({
+    tone: z.string().max(240).optional(),
+    privacyRule: z.string().max(500)
+  }).strict(),
+  trend: z.array(z.object({
+    uploadedAt: z.string(),
+    summary: z.string().max(500),
+    musicGuidance: z.object({
+      energyCurve: z.enum(['downshift', 'steady', 'uplift', 'mixed']).optional(),
+      preferredTextures: z.array(z.string().max(80)).max(12).default([]),
+      avoidTextures: z.array(z.string().max(80)).max(12).default([]),
+      vocalPreference: z.enum(['vocal', 'instrumental', 'mixed', 'unknown']).optional(),
+      novelty: z.enum(['comfort', 'balanced', 'explore']).optional()
+    }).strict(),
+    musicHints: z.array(z.object({
+      kind: z.enum(['artist', 'track', 'style', 'scene']),
+      label: z.string().max(160),
+      strength: z.enum(['weak', 'medium', 'strong']),
+      reason: z.string().max(300)
+    }).strict()).max(12).default([])
+  }).strict()).max(20).default([])
+}).strict();
+
+export type MusicAgentPersonalDjContext = z.infer<typeof musicAgentPersonalDjContextSchema>;
+
 export const musicAgentContextSummarySchema = z.object({
   request: z.enum(['auto-fill', 'chat-recommend']),
   discoveryMode: z.enum(['explore', 'comfort']).default('explore'),
@@ -245,6 +291,7 @@ export const musicAgentContextSummarySchema = z.object({
     artist: z.string().default(''),
     penalty: z.number().min(0)
   })).optional(),
+  personalDjContext: musicAgentPersonalDjContextSchema.optional(),
   bannedSummary: z.string().default('')
 });
 

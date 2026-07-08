@@ -71,30 +71,30 @@ Modify:
 
 ### Tasks
 
-- [ ] Add `dj_events` migration.
-- [ ] Add `personal_dj_contexts` migration.
-- [ ] Add `personal_dj_context_tokens` migration.
-- [ ] Implement strict zod payload schemas for the first seven DJ Event types.
-- [ ] Implement named per-user token generation with prefix `cfdj_ctx_`, one-time plaintext return, hash-only storage, revoke, and `last_used_at`.
-- [ ] Allow multiple active Bridge Tokens per user, with an active-token cap of 10.
-- [ ] Implement `POST /api/personal-dj-context` using Bridge Token auth.
-- [ ] Implement current/trend lookup:
+- [x] Add `dj_events` migration.
+- [x] Add `personal_dj_contexts` migration.
+- [x] Add `personal_dj_context_tokens` migration.
+- [x] Implement strict zod payload schemas for the first seven DJ Event types.
+- [x] Implement named per-user token generation with prefix `cfdj_ctx_`, one-time plaintext return, hash-only storage, revoke, and `last_used_at`.
+- [x] Allow multiple active Bridge Tokens per user, with an active-token cap of 10.
+- [x] Implement `POST /api/personal-dj-context` using Bridge Token auth.
+- [x] Implement current/trend lookup:
   - latest non-revoked context is current.
   - prior records within 24 hours are trend records.
   - older non-current records are deleted opportunistically on write/read.
-- [ ] Append `personal_context_uploaded` DJ Event on successful upload.
-- [ ] Add Settings API for token list/create/revoke using existing JWT auth.
-- [ ] Do not broadcast Personal DJ Context uploads to the player SSE stream in the first version.
+- [x] Append `personal_context_uploaded` DJ Event on successful upload.
+- [x] Add Settings API for token list/create/revoke using existing JWT auth.
+- [x] Do not broadcast Personal DJ Context uploads to the player SSE stream in the first version.
 
 ### Acceptance
 
-- [ ] A valid Bridge Token can upload a strict Personal DJ Context payload.
-- [ ] Invalid/revoked Bridge Tokens cannot upload.
-- [ ] Bridge Token cannot read settings, queue, messages, or context history.
-- [ ] Unknown top-level payload fields are rejected.
-- [ ] Oversized payloads are rejected.
-- [ ] Latest context remains current until replaced or revoked.
-- [ ] Old non-current contexts older than 24 hours are deleted.
+- [x] A valid Bridge Token can upload a strict Personal DJ Context payload.
+- [x] Invalid/revoked Bridge Tokens cannot upload.
+- [x] Bridge Token cannot read settings, queue, messages, or context history.
+- [x] Unknown top-level payload fields are rejected.
+- [x] Oversized payloads are rejected.
+- [x] Latest context remains current until replaced or revoked.
+- [x] Old non-current contexts older than 24 hours are deleted.
 
 ## Phase 1.5: Settings Management UI
 
@@ -149,26 +149,26 @@ Modify:
 
 ### Tasks
 
-- [ ] Add `DjContextSnapshot` as the upper context object.
-- [ ] Keep `MusicAgentContextSummary` nested under `DjContextSnapshot.musicSelectionContext`.
-- [ ] Include current Personal DJ Context and 24-hour trend records in `DjContextSnapshot`.
-- [ ] Expose only Personal DJ Context summary/guidance fields to LLM prompts; keep source refs for Settings, debugging, and audit.
-- [ ] Move pick-next use-case orchestration into `DJAgent.pickNext()`.
-- [ ] Keep LLM and `MusicAgent` unable to directly mutate queue.
-- [ ] Apply queue mutations through a queue port/adapter.
-- [ ] Append `selection_started` before MusicAgent execution.
-- [ ] Append one `track_selected` per accepted pick, using per-track `Selection Rationale`.
-- [ ] Append `queue_changed` after queue mutation, with result summary only.
-- [ ] Preserve current HTTP/SSE contract and debug events.
-- [ ] Preserve legacy fallback behavior.
+- [x] Add `DjContextSnapshot` as the upper context object.
+- [x] Keep `MusicAgentContextSummary` nested under `DjContextSnapshot.musicSelectionContext`.
+- [x] Include current Personal DJ Context and 24-hour trend records in `DjContextSnapshot`.
+- [x] Expose only Personal DJ Context summary/guidance fields to LLM prompts; keep source refs for Settings, debugging, and audit.
+- [x] Move the MusicAgent pick-next path orchestration into `DJAgent.pickNext()`.
+- [x] Keep LLM and `MusicAgent` unable to directly mutate queue.
+- [x] Apply queue mutations through a queue port/adapter.
+- [x] Append `selection_started` before MusicAgent execution.
+- [x] Append one `track_selected` per accepted pick, using per-track `Selection Rationale`.
+- [x] Append `queue_changed` after queue mutation, with result summary only.
+- [x] Preserve current HTTP/SSE contract and debug events.
+- [x] Preserve legacy fallback behavior.
 
 ### Acceptance
 
-- [ ] Existing pick-next tests still pass.
-- [ ] A successful MusicAgent pick-next writes `selection_started`, `track_selected`, and `queue_changed`.
-- [ ] `track_selected` includes per-track rationale and batch rationale.
-- [ ] Ranked fallback and legacy fallback behavior remains visible in telemetry.
-- [ ] Personal DJ Context can influence prompt/context without bypassing CandidatePool validation.
+- [x] Existing pick-next tests still pass.
+- [x] A successful MusicAgent pick-next writes `selection_started`, `track_selected`, and `queue_changed`.
+- [x] `track_selected` includes per-track rationale and batch rationale.
+- [x] Ranked fallback and legacy fallback behavior remains visible in telemetry.
+- [x] Personal DJ Context can influence prompt/context without bypassing CandidatePool validation.
 
 ## Phase 3: DJAgent Segue Orchestration
 

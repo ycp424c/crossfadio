@@ -13,7 +13,12 @@ import {
   type WebMusicDiscoveryProvider
 } from './web-discovery.js';
 import type { MusicAgentFallbackLogEvent } from './loop.js';
-import type { AgentBudget, MusicAgentLlmClient, MusicAgentRunOutput } from './schema.js';
+import type {
+  AgentBudget,
+  MusicAgentContextSummary,
+  MusicAgentLlmClient,
+  MusicAgentRunOutput
+} from './schema.js';
 import { parseAutoFillBatchSize } from '../../shared/dj.js';
 import { getActiveTemporaryQueueBanDedupeState } from '../store/temporary-bans.js';
 
@@ -51,6 +56,7 @@ export type PickNextInput = {
   excludeTrackIds?: Set<string>;
   excludeTrackDedupeKeys?: Set<string>;
   targetPickCount?: number;
+  context?: MusicAgentContextSummary;
   now?: Date;
 };
 
@@ -97,7 +103,7 @@ export class MusicAgent {
   async pickNext(input: PickNextInput): Promise<MusicAgentRunOutput> {
     const targetPickCount = parseAutoFillBatchSize(input.targetPickCount);
     const budget = pickNextBudget(targetPickCount);
-    const context = await buildMusicAgentContext({
+    const context = input.context ?? await buildMusicAgentContext({
       userId: input.userId,
       ncmClient: input.ncmClient,
       request: 'auto-fill',

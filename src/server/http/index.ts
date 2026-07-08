@@ -42,6 +42,14 @@ import {
 } from './routes/whitelist.js';
 import { createRuntimeHandler } from './routes/runtime.js';
 import {
+  createCreatePersonalDjContextTokenHandler,
+  createGetPersonalDjContextStatusHandler,
+  createListPersonalDjContextTokensHandler,
+  createPostPersonalDjContextHandler,
+  createRevokeCurrentPersonalDjContextHandler,
+  createRevokePersonalDjContextTokenHandler
+} from './routes/personal-dj-context.js';
+import {
   createGetLikedIdsHandler,
   createGetLikedQueueHandler,
   createLikeTrackHandler,
@@ -50,6 +58,7 @@ import {
 import { authMiddleware } from './middleware/auth.js';
 import { userScopeMiddleware } from './middleware/userScope.js';
 import { adminMiddleware } from './middleware/admin.js';
+import { personalDjContextBridgeAuth } from './middleware/personalDjContextBridgeAuth.js';
 import { createSseEventsHandler, createSseChatHandler, createSseCancelRecommendHandler } from './routes/sse-events.js';
 
 export type LocalServer = {
@@ -95,6 +104,9 @@ export async function startLocalServer(options: StartLocalServerOptions): Promis
   app.get('/api/ncm/login/status', createNcmQrStatusHandler(options.ncmAuth));
   app.get('/api/segue/audio/*', createSegueAudioHandler());
 
+  // ── Bridge-token routes ─────────────────────────────────────────────────────
+  app.post('/api/personal-dj-context', personalDjContextBridgeAuth, createPostPersonalDjContextHandler());
+
   // ── Protected routes ──────────────────────────────────────────────────────
   const protect = [authMiddleware, userScopeMiddleware];
   const adminProtect = [authMiddleware, userScopeMiddleware, adminMiddleware];
@@ -111,6 +123,11 @@ export async function startLocalServer(options: StartLocalServerOptions): Promis
   app.post('/api/settings/tts-preview', protect, createPreviewTtsHandler());
   app.post('/api/settings/analyze-taste', protect, createAnalyzeTasteHandler());
   app.get('/api/settings/player-context', protect, createGetPlayerContextHandler());
+  app.get('/api/settings/personal-dj-context', protect, createGetPersonalDjContextStatusHandler());
+  app.post('/api/settings/personal-dj-context/revoke-current', protect, createRevokeCurrentPersonalDjContextHandler());
+  app.get('/api/settings/personal-dj-context/tokens', protect, createListPersonalDjContextTokensHandler());
+  app.post('/api/settings/personal-dj-context/tokens', protect, createCreatePersonalDjContextTokenHandler());
+  app.delete('/api/settings/personal-dj-context/tokens/:id', protect, createRevokePersonalDjContextTokenHandler());
   app.get('/api/plan/today', protect, createGetTodayPlanHandler({ secrets: null as any }));
   app.post('/api/plan/regenerate', protect, createRegeneratePlanHandler({ secrets: null as any }));
   app.post('/api/plan/replan-segment', protect, createReplanSegmentHandler({ secrets: null as any }));

@@ -118,7 +118,7 @@ describe('DJ pick-next diagnostics', () => {
     const rankedFallbackBlock = extractBetween(
       handler,
       'if (hasRankedFallbackPicks(output)) {',
-      'const pathQueueLength = getQueue(userId).length;'
+      'const pathQueueLength = queuePort.getQueue(userId).length;'
     );
 
     expect(rankedFallbackBlock).toContain("const legacyFallbackPath = 'music_agent_legacy_fallback';");
@@ -127,7 +127,7 @@ describe('DJ pick-next diagnostics', () => {
     expectBefore(
       handler,
       'if (hasRankedFallbackPicks(output))',
-      'const pathQueueLength = getQueue(userId).length'
+      'const pathQueueLength = queuePort.getQueue(userId).length'
     );
     expect(source).toContain('function hasRankedFallbackPicks(output: MusicAgentRunOutput): boolean');
   });
@@ -238,6 +238,8 @@ describe('DJ pick-next diagnostics', () => {
   it('routes DJ pick-next through MusicAgent with abort and status guards', () => {
     const source = readSource('src/server/http/routes/djNext.ts');
     const pickNextRunSource = readSource('src/server/dj/pickNextRun.ts');
+    const djAgentSource = readSource('src/server/dj-agent/index.ts');
+    const djAgentEventsSource = readSource('src/server/dj-agent/events.ts');
     const musicAgentResultSource = readSource('src/server/dj/musicAgentPickNextResult.ts');
     const legacyResultSource = readSource('src/server/dj/legacyPickNextResult.ts');
     const randomFallbackSource = readSource('src/server/dj/legacyRandomFallback.ts');
@@ -257,21 +259,33 @@ describe('DJ pick-next diagnostics', () => {
     expect(sseHandler).toContain('djPickNextRunner.run({ userId, ncmClient, emit, signal: controller.signal })');
     expectBefore(sseHandler, 'if (djPickNextRunner.isRunning(userId))', 'applyClientQueueSnapshot(req, userId)');
 
+    expect(runDjPickNext).toContain('new DJAgent');
     expect(runDjPickNext).toContain('new MusicAgent');
-    expect(runDjPickNext).toContain("output.status === 'ok'");
+    expect(runDjPickNext).toContain('const output = result.output');
+    expect(runDjPickNext).toContain("result.status === 'handled'");
+    expect(runDjPickNext).toContain("result.status === 'legacy-fallback'");
+    expect(djAgentSource).toContain("output.status !== 'ok'");
     expect(runDjPickNext).toContain('const targetPickCount = getAutoFillBatchSize(userId)');
     expect(runDjPickNext).toContain('createAbortTimeoutSignal(signal, getDjAgentTimeoutMs(targetPickCount))');
     expect(runDjPickNext).toContain("discoveryMode !== 'legacy'");
     expect(runDjPickNext).toContain('includeDailyTheme: dailyThemeEnabled');
     expect(runDjPickNext).toContain('const excludeState = getTodayAndQueueDedupeState(userId)');
     expect(runDjPickNext).toContain('const initialQueueLength = getQueue(userId).length');
-    expect(runDjPickNext).toContain('excludeTrackIds: excludeState.ids');
-    expect(runDjPickNext).toContain('excludeTrackDedupeKeys: excludeState.dedupeKeys');
+    expect(djAgentSource).toContain('excludeTrackIds: input.excludeState.ids');
+    expect(djAgentSource).toContain('excludeTrackDedupeKeys: input.excludeState.dedupeKeys');
+    expect(djAgentSource).toContain('context: snapshot.musicSelectionContext');
     expect(runDjPickNext).toContain('targetPickCount');
-    expect(runDjPickNext).toContain('handleMusicAgentPickNextOutput({');
+    expect(djAgentSource).toContain('handleMusicAgentPickNextOutput({');
+    expect(djAgentSource).toContain('appendSelectionStartedEvent({');
+    expect(djAgentSource).toContain('appendMusicAgentSelectionEvents({');
+    expect(djAgentEventsSource).toContain("type: 'selection_started'");
+    expect(djAgentEventsSource).toContain("type: 'track_selected'");
+    expect(djAgentEventsSource).toContain("type: 'queue_changed'");
     expect(runDjPickNext).toContain('setPickReason: (trackId, reason) => djPickReasonCache.set(trackId, reason)');
-    expect(musicAgentResultSource).toContain('if (getRemainingPickSlots(userId, initialQueueLength, targetPickCount) <= 0)');
-    expect(musicAgentResultSource).toContain('if (hasReachedPickTarget(userId, initialQueueLength, targetPickCount))');
+    expect(musicAgentResultSource).toContain('if (getRemainingPickSlots(userId, initialQueueLength, targetPickCount, queuePort) <= 0)');
+    expect(musicAgentResultSource).toContain('if (hasReachedPickTarget(userId, initialQueueLength, targetPickCount, queuePort))');
+    expect(musicAgentResultSource).toContain('queuePort.addToQueue(userId, {');
+    expect(musicAgentResultSource).toContain('queuePort.getQueue(userId)');
     expect(runDjPickNext).toContain('broadcastAppended,');
     expect(musicAgentResultSource).toContain('musicAgentRunMetrics(output, appendedPicks, startedAt, discoveryMode)');
     expect(telemetrySource).toContain('rankedBackfillCount: metrics.rankedBackfillCount');
@@ -329,7 +343,7 @@ describe('DJ pick-next diagnostics', () => {
     expectBefore(
       runDjPickNext,
       "if (llmConfig && discoveryMode === 'legacy')",
-      'const agent = new MusicAgent'
+      'const agent = new DJAgent'
     );
   });
 

@@ -145,6 +145,43 @@ describe('MusicAgent pick-next result handling', () => {
     );
   });
 
+  it('applies MusicAgent queue mutations through an injected queue port', () => {
+    const queue: ReturnType<typeof getQueue> = [];
+    const queuePort = {
+      getQueue: vi.fn(() => [...queue]),
+      addToQueue: vi.fn((_userId: string, track: typeof queue[number]) => {
+        queue.push(track);
+      })
+    };
+
+    const result = handleMusicAgentPickNextOutput({
+      userId: 'music-agent-result-user',
+      output: makeOutput([
+        { id: '211', name: 'Port Song', artist: 'Port Artist', reason: 'port fit', source: 'search' }
+      ]),
+      excludeState: { ids: new Set(), dedupeKeys: new Set() },
+      initialQueueLength: 0,
+      targetPickCount: 1,
+      startedAt: Date.now() - 50,
+      discoveryMode: 'explore',
+      emit: vi.fn(),
+      broadcastAppended: vi.fn(),
+      logger: { warn: vi.fn() },
+      queuePort,
+      setPickReason: vi.fn(),
+      fallbackStatsSnapshot: () => ({ totalRuns: 0, fallbackRuns: 0, fallbackRate: 0, fallbackPaths: {} })
+    });
+
+    expect(result).toEqual({ status: 'handled', debugBroadcastSent: true });
+    expect(queuePort.addToQueue).toHaveBeenCalledWith(
+      'music-agent-result-user',
+      { ncmId: '211', name: 'Port Song', artists: ['Port Artist'] },
+      'end'
+    );
+    expect(queue).toMatchObject([{ ncmId: '211', name: 'Port Song' }]);
+    expect(getQueue('music-agent-result-user')).toEqual([]);
+  });
+
   it('broadcasts partial success when only part of the target can be appended', () => {
     const emit = vi.fn();
     const setPickReason = vi.fn();

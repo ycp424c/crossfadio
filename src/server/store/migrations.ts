@@ -201,7 +201,59 @@ CREATE TABLE IF NOT EXISTS music_entity_index_state (
   updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
   PRIMARY KEY (user_id, source)
 );
-`
+`,
+  `
+CREATE TABLE IF NOT EXISTS dj_events (
+  id                 TEXT PRIMARY KEY,
+  user_id            TEXT NOT NULL,
+  type               TEXT NOT NULL,
+  correlation_id     TEXT NOT NULL,
+  causation_event_id TEXT,
+  run_id             TEXT,
+  track_id           TEXT,
+  payload_json       TEXT NOT NULL,
+  created_at         TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_dj_events_user_created
+  ON dj_events (user_id, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_dj_events_user_correlation
+  ON dj_events (user_id, correlation_id, created_at ASC);
+
+CREATE INDEX IF NOT EXISTS idx_dj_events_user_track
+  ON dj_events (user_id, track_id, created_at DESC);
+`,
+  `
+CREATE TABLE IF NOT EXISTS personal_dj_contexts (
+  id               TEXT PRIMARY KEY,
+  user_id          TEXT NOT NULL,
+  payload_json     TEXT NOT NULL,
+  payload_hash     TEXT NOT NULL,
+  source_kind      TEXT NOT NULL,
+  source_bundle_id TEXT,
+  slice_count      INTEGER NOT NULL DEFAULT 0,
+  uploaded_at      TEXT NOT NULL,
+  revoked_at       TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_personal_dj_contexts_user_uploaded
+  ON personal_dj_contexts (user_id, uploaded_at DESC);
+
+CREATE TABLE IF NOT EXISTS personal_dj_context_tokens (
+  id           TEXT PRIMARY KEY,
+  user_id      TEXT NOT NULL,
+  name         TEXT NOT NULL,
+  token_hash   TEXT NOT NULL UNIQUE,
+  scope        TEXT NOT NULL,
+  created_at   TEXT NOT NULL,
+  last_used_at TEXT,
+  revoked_at   TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_personal_dj_context_tokens_user
+  ON personal_dj_context_tokens (user_id, created_at DESC);
+  `
 ];
 
 export function runMigrations(db: Database.Database): void {

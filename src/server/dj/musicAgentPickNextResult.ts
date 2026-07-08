@@ -1,7 +1,7 @@
 import type { MusicAgentRunOutput } from '../music-agent/schema.js';
 import { buildMusicTrackDedupeKey, isMusicTrackDedupeKeyExcluded } from '../music-agent/dedupe.js';
-import { addToQueue, getQueue } from '../store/queue.js';
 import type { DiscoveryMode } from '../../shared/dj.js';
+import { defaultDJAgentQueuePort, type DJAgentQueuePort } from '../dj-agent/ports.js';
 import { getRemainingPickSlots, hasReachedPickTarget } from './pickNextQueueProgress.js';
 
 export type DjPickNextFallbackPath =
@@ -78,6 +78,7 @@ export function handleMusicAgentPickNextOutput(input: {
   emit: DjEventSink;
   broadcastAppended: BroadcastAppended;
   logger: Logger;
+  queuePort?: DJAgentQueuePort;
   setPickReason(trackId: string, reason: string): void;
   fallbackStatsSnapshot(): unknown;
 }): MusicAgentPickNextHandlingResult {
@@ -92,6 +93,7 @@ export function handleMusicAgentPickNextOutput(input: {
     emit,
     broadcastAppended,
     logger,
+    queuePort = defaultDJAgentQueuePort,
     setPickReason,
     fallbackStatsSnapshot
   } = input;
@@ -120,12 +122,12 @@ export function handleMusicAgentPickNextOutput(input: {
     return { status: 'legacy-fallback', legacyFallbackPath, debugBroadcastSent: false };
   }
 
-  const pathQueueLength = getQueue(userId).length;
+  const pathQueueLength = queuePort.getQueue(userId).length;
   const appendedPicks: typeof output.picks = [];
   const musicAgentSkippedPicks: SkippedPickLog[] = [];
 
   for (const pick of output.picks) {
-    if (getRemainingPickSlots(userId, initialQueueLength, targetPickCount) <= 0) {
+    if (getRemainingPickSlots(userId, initialQueueLength, targetPickCount, queuePort) <= 0) {
       musicAgentSkippedPicks.push(createSkippedPickLog(pick, 'no_remaining_slots', buildTrackDedupeKey(pick)));
       break;
     }
@@ -138,7 +140,7 @@ export function handleMusicAgentPickNextOutput(input: {
       musicAgentSkippedPicks.push(createSkippedPickLog(pick, 'dedupe_excluded', dedupeKey));
       continue;
     }
-    addToQueue(userId, {
+    queuePort.addToQueue(userId, {
       ncmId: pick.id,
       name: pick.name,
       artists: pick.artist ? [pick.artist] : []
@@ -148,8 +150,8 @@ export function handleMusicAgentPickNextOutput(input: {
     if (dedupeKey) excludeState.dedupeKeys.add(dedupeKey);
   }
 
-  if (getQueue(userId).length > pathQueueLength) {
-    const pathNewTracks = getQueue(userId).slice(pathQueueLength);
+  if (queuePort.getQueue(userId).length > pathQueueLength) {
+    const pathNewTracks = queuePort.getQueue(userId).slice(pathQueueLength);
     const pickReason = output.say.trim();
     if (pickReason) {
       for (const track of pathNewTracks) {
@@ -158,7 +160,7 @@ export function handleMusicAgentPickNextOutput(input: {
     }
   }
 
-  if (hasReachedPickTarget(userId, initialQueueLength, targetPickCount)) {
+  if (hasReachedPickTarget(userId, initialQueueLength, targetPickCount, queuePort)) {
     emit(buildMusicAgentDebugPayload({ output, appendedPicks, excludeState }));
     broadcastAppended(
       userId,
@@ -171,7 +173,7 @@ export function handleMusicAgentPickNextOutput(input: {
     return { status: 'handled', debugBroadcastSent: true };
   }
 
-  const appendedCount = getQueue(userId).length - initialQueueLength;
+  const appendedCount = queuePort.getQueue(userId).length - initialQueueLength;
   if (appendedCount > 0) {
     emit(buildMusicAgentDebugPayload({
       output,

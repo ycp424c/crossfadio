@@ -16,6 +16,7 @@ import { broadcastToUser } from '../http/broadcast.js';
 import { getLogger } from '../logger.js';
 import { getOrGenerateDailyThemeWithin } from '../daily-theme.js';
 import { MusicAgent } from '../music-agent/index.js';
+import { DJAgent } from '../dj-agent/index.js';
 import { createLegacyCandidatePool } from './legacyCandidatePool.js';
 import { loadLegacyLikedSample } from './legacyLikedSample.js';
 import { handleLegacyPickNextOutput } from './legacyPickNextResult.js';
@@ -31,7 +32,6 @@ import { createDjPickNextTelemetry } from './pickNextTelemetry.js';
 import {
   buildTrackDedupeKey,
   getMusicAgentCandidateSourceDiagnostics,
-  handleMusicAgentPickNextOutput,
   isTrackDedupeKeyExcluded
 } from './musicAgentPickNextResult.js';
 import type {
@@ -394,16 +394,27 @@ export async function runDjPickNext(
   if (llmConfig && discoveryMode !== 'legacy' && !signal?.aborted) {
     const agentAbort = createAbortTimeoutSignal(signal, getDjAgentTimeoutMs(targetPickCount));
     try {
-      const agent = new MusicAgent({ llmConfig });
-      const output = await agent.pickNext({
+      const agent = new DJAgent({
+        musicAgentFactory: (config) => new MusicAgent({ llmConfig: config })
+      });
+      const result = await agent.pickNext({
         userId,
         ncmClient,
-        signal: agentAbort.signal,
+        llmConfig,
         includeDailyTheme: dailyThemeEnabled,
-        excludeTrackIds: excludeState.ids,
-        excludeTrackDedupeKeys: excludeState.dedupeKeys,
-        targetPickCount
+        signal: agentAbort.signal,
+        excludeState,
+        initialQueueLength,
+        targetPickCount,
+        startedAt,
+        discoveryMode,
+        emit,
+        broadcastAppended,
+        logger,
+        setPickReason: (trackId, reason) => djPickReasonCache.set(trackId, reason),
+        fallbackStatsSnapshot: () => djPickNextFallbackStats.snapshot()
       });
+      const output = result.output;
       if (signal?.aborted) return;
       if (output.status === 'aborted') {
         if (!agentAbort.timedOut()) return;
@@ -413,24 +424,13 @@ export async function runDjPickNext(
           'DJ pick-next: MusicAgent timed out, using legacy fallback'
         );
       }
-      if (output.status === 'ok') {
-        const handled = handleMusicAgentPickNextOutput({
-          userId,
-          output,
-          excludeState,
-          initialQueueLength,
-          targetPickCount,
-          startedAt,
-          discoveryMode,
-          emit,
-          broadcastAppended,
-          logger,
-          setPickReason: (trackId, reason) => djPickReasonCache.set(trackId, reason),
-          fallbackStatsSnapshot: () => djPickNextFallbackStats.snapshot()
-        });
-        debugBroadcastSent = handled.debugBroadcastSent;
-        if (handled.status === 'handled') return;
-        legacyFallbackPath = handled.legacyFallbackPath;
+      if (result.status === 'handled') {
+        debugBroadcastSent = result.debugBroadcastSent;
+        return;
+      }
+      if (result.status === 'legacy-fallback') {
+        debugBroadcastSent = result.debugBroadcastSent;
+        legacyFallbackPath = result.legacyFallbackPath;
       }
     } catch (err) {
       if (signal?.aborted) return;
