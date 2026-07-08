@@ -2,19 +2,9 @@ import { randomBytes } from 'node:crypto';
 import path from 'node:path';
 import type { Request, Response } from 'express';
 import { z } from 'zod';
-import { computeStream } from '../../agent/compute.js';
-import { buildSystemPrompt } from '../../agent/modes.js';
 import { trackSchema } from '../../agent/schema.js';
-import type { Fragments } from '../../agent/schema.js';
-import { buildSegueTrackContext } from '../../agent/segue-context.js';
 import { resolveLlmConfig } from '../../llm/config.js';
 import type { NcmClient } from '../../ncm/client.js';
-import { loadUserCorpus } from '../../user-corpus/loader.js';
-import { loadLikedTracksForPlanning } from '../../user-corpus/ncm-liked.js';
-import { getRecentPlays } from '../../store/plays.js';
-import { getRecentMessages } from '../../store/messages.js';
-import { saveSegue, getRecentSegues } from '../../store/segues.js';
-import { fetchWeather } from '../../weather.js';
 import { TtsClient } from '../../tts/client.js';
 import { resolveTtsConfig } from '../../tts/config.js';
 import { getTtsCacheDir } from '../../tts/cache.js';
@@ -28,8 +18,7 @@ import { getDjPickReason } from './djNext.js';
 import { broadcastToUser } from '../broadcast.js';
 import { getLogger } from '../../logger.js';
 import { initSseRes, writeSseEvent, endSse } from '../sse.js';
-import { getDailyTheme } from '../../daily-theme.js';
-import { getPref } from '../../store/prefs.js';
+import { generateSegue } from '../../dj-agent/segue.js';
 
 const SEGUE_LLM_TIMEOUT_MS = 60_000;
 const SEGUE_TTS_TIMEOUT_MS = 30_000;
@@ -149,93 +138,27 @@ async function runSegueJob(
       return;
     }
 
-    const corpus = loadUserCorpus(userId);
-    const likedTracks = await loadLikedTracksForPlanning(ncmClient);
-    if (signal.aborted) return;
-    const trackContext = await loadSegueContext(from, to, ncmClient, logger);
-    if (signal.aborted) return;
-    const weather = await fetchWeather(userId);
-    if (signal.aborted) return;
-    const now = new Date();
-
-    const dailyThemeEnabled = getPref<boolean>(userId, 'dailyTheme.enabled') !== false;
-    const dailyTheme = dailyThemeEnabled ? getDailyTheme() : null;
-    const dailyThemeStr = dailyTheme
-      ? `今日主题：${dailyTheme.theme}（关键词：${dailyTheme.keywords.join('、')}）`
-      : undefined;
-
-    const djPickReason = getDjPickReason(to.id);
-
-    const fragments: Fragments = {
-      mode: 'segue',
-      system: buildSystemPrompt(corpus.djPersona || 'You are a DJ.', 'segue'),
-      corpus: {
-        taste: corpus.taste,
-        routines: corpus.routines,
-        moodRules: corpus.moodRules,
-        playlists: corpus.playlists,
-        likedTracks
-      },
-      env: {
-        nowIso: now.toISOString(),
-        localTime: formatLocalTime(now),
-        weather,
-        nowPlaying: {
-          id: from.id,
-          name: trackContext.fromTrack.name ?? '',
-          artist: trackContext.fromTrack.artist ?? '',
-          durationMs: null
-        },
-        dailyTheme: dailyThemeStr
-      },
-      memory: { recentPlays: getRecentPlays(userId, 50), recentChat: getRecentMessages(userId, 20), recentSegues: getRecentSegues(userId, 10) },
-      input: {
-        kind: 'segueTrigger',
-        from: trackContext.fromTrack,
-        to: trackContext.toTrack,
-        context: {
-          from: trackContext.fromContext,
-          to: trackContext.toContext,
-          ...(djPickReason ? { djPickReason } : {})
-        }
-      },
-      trace: { triggeredBy: 'segue-hook', lastDecision: null }
-    };
-
-    let finalOutput: unknown = null;
-
-    for await (const event of computeStream(fragments, { llmConfig, signal })) {
-      if (signal.aborted) return;
-      if (event.type === 'delta') {
-        emit({ type: 'segue.delta', say: event.say });
-      } else if (event.type === 'done') {
-        finalOutput = event.output;
-      }
-    }
+    const segueResult = await generateSegue({
+      userId,
+      from,
+      to,
+      ncmClient,
+      llmConfig,
+      signal,
+      djPickReasonFallback: getDjPickReason(to.id),
+      emitDelta: (say) => emit({ type: 'segue.delta', say })
+    });
 
     clearTimeout(llmTimeout);
     if (signal.aborted) return;
 
-    if (!finalOutput || typeof finalOutput !== 'object' || !('say' in finalOutput)) {
+    if (!segueResult) {
       emit({ type: 'segue.degraded', reason: 'parse-failed' });
       return;
     }
 
-    const segueOutput = finalOutput as {
-      say: string;
-      duckingHintSec: number;
-      filterSweep: boolean;
-      emotionTag: string;
-    };
+    const segueOutput = segueResult.segue;
     const textDerivedSpeechDurationSec = estimateTtsDurationSec(segueOutput.say);
-
-    saveSegue(userId, {
-      fromId: from.id,
-      fromName: trackContext.fromTrack.name,
-      toId: to.id,
-      toName: trackContext.toTrack.name,
-      say: segueOutput.say
-    });
 
     const ttsConfig = resolveTtsConfig(userId);
     if (!ttsConfig) {
@@ -309,14 +232,6 @@ function abortReason(value: unknown): string | null {
     return value.message.replace(/^segue:/, '');
   }
   return null;
-}
-
-function formatLocalTime(date: Date): string {
-  const weekdays = ['日', '一', '二', '三', '四', '五', '六'];
-  const day = weekdays[date.getDay()];
-  const hh = String(date.getHours()).padStart(2, '0');
-  const mm = String(date.getMinutes()).padStart(2, '0');
-  return `周${day} ${hh}:${mm}`;
 }
 
 export function createSseSegueHandler(opts: SegueRouteOptions) {
@@ -410,68 +325,4 @@ function getScopedNcmClient(req: Request, fallback?: NcmClient): NcmClient {
     throw new Error('NCM client missing from request scope');
   }
   return ncmClient;
-}
-
-async function loadSegueContext(
-  from: z.infer<typeof trackSchema>,
-  to: z.infer<typeof trackSchema>,
-  ncmClient: NcmClient,
-  logger: ReturnType<typeof getLogger>
-): Promise<{
-  fromTrack: z.infer<typeof trackSchema>;
-  toTrack: z.infer<typeof trackSchema>;
-  fromContext: ReturnType<typeof buildSegueTrackContext>;
-  toContext: ReturnType<typeof buildSegueTrackContext>;
-}> {
-  const [detailRows, fromLyric, toLyric, fromWikiSummary, toWikiSummary] = await Promise.all([
-    ncmClient.getSongDetails([from.id, to.id]).catch((err) => {
-      logger.debug({ err, fromId: from.id, toId: to.id }, 'Failed to load song details for segue context');
-      return [];
-    }),
-    ncmClient.getLyric(from.id).catch((err) => {
-      logger.debug({ err, id: from.id }, 'Failed to load source lyric for segue context');
-      return null;
-    }),
-    ncmClient.getLyric(to.id).catch((err) => {
-      logger.debug({ err, id: to.id }, 'Failed to load target lyric for segue context');
-      return null;
-    }),
-    ncmClient.getSongWikiSummary(from.id).catch((err) => {
-      logger.debug({ err, id: from.id }, 'Failed to load source wiki summary for segue context');
-      return null;
-    }),
-    ncmClient.getSongWikiSummary(to.id).catch((err) => {
-      logger.debug({ err, id: to.id }, 'Failed to load target wiki summary for segue context');
-      return null;
-    })
-  ]);
-
-  const detailMap = new Map(detailRows.map((detail) => [String(detail.id), detail]));
-  const fromContext = buildSegueTrackContext({
-    track: from,
-    detail: detailMap.get(from.id) ?? null,
-    lyric: fromLyric,
-    wikiSummary: fromWikiSummary
-  });
-  const toContext = buildSegueTrackContext({
-    track: to,
-    detail: detailMap.get(to.id) ?? null,
-    lyric: toLyric,
-    wikiSummary: toWikiSummary
-  });
-
-  return {
-    fromTrack: {
-      id: from.id,
-      name: fromContext.name,
-      artist: fromContext.artist
-    },
-    toTrack: {
-      id: to.id,
-      name: toContext.name,
-      artist: toContext.artist
-    },
-    fromContext,
-    toContext
-  };
 }

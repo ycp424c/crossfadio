@@ -9,6 +9,7 @@ import type { Action } from './schema.js';
 export type ActionContext = {
   userId: string;
   ncmClient: NcmClient;
+  onQueueActiveDirectiveUpdated?: (directive: { text: string; expiresAt: string } | null) => void;
 };
 
 export type ActionResult = {
@@ -83,7 +84,7 @@ export async function executeActions(
           setPref(ctx.userId, 'plan.replanHint', action.hint);
           break;
         case 'set_pref':
-          applySetPrefAction(ctx.userId, action.key, action.value);
+          applySetPrefAction(ctx.userId, action.key, action.value, ctx.onQueueActiveDirectiveUpdated);
           break;
         default:
           logger.warn({ action }, 'Unknown action type');
@@ -96,14 +97,21 @@ export async function executeActions(
   return { queueChanged };
 }
 
-function applySetPrefAction(userId: string, key: string, value: unknown): void {
+function applySetPrefAction(
+  userId: string,
+  key: string,
+  value: unknown,
+  onQueueActiveDirectiveUpdated?: (directive: { text: string; expiresAt: string } | null) => void
+): void {
   if (key === 'queue.activeDirective') {
     const directive = normalizeQueueActiveDirective(value);
     if (!directive) {
       deletePref(userId, key);
+      onQueueActiveDirectiveUpdated?.(null);
       return;
     }
     setPref(userId, key, directive);
+    onQueueActiveDirectiveUpdated?.(directive);
     return;
   }
 

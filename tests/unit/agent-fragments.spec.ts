@@ -123,6 +123,51 @@ describe('assembleMessages', () => {
     expect(msgs[3].content).toContain('电子 / 治愈');
   });
 
+  it('renders selection rationale and personal segue guidance without source refs', () => {
+    const f: Fragments = {
+      ...base,
+      mode: 'segue',
+      input: {
+        kind: 'segueTrigger',
+        from: { id: 'a', name: 'Song A', artist: 'Artist A' },
+        to: { id: 'b', name: 'Song B', artist: 'Artist B' },
+        context: {
+          from: {
+            id: 'a',
+            name: 'Song A',
+            artist: 'Artist A',
+            lyricExcerpt: '',
+            lyricKeywords: [],
+            tags: []
+          },
+          to: {
+            id: 'b',
+            name: 'Song B',
+            artist: 'Artist B',
+            lyricExcerpt: '',
+            lyricKeywords: [],
+            tags: []
+          },
+          selectionRationale: '这首歌承接刚才的低干扰节奏。',
+          personalSegueGuidance: {
+            summary: '当前在专注写代码。',
+            tone: '克制、熟悉',
+            privacyRule: '只说宽泛状态，不暴露原始记录。'
+          }
+        }
+      }
+    };
+
+    const content = assembleMessages(f)[3].content;
+    expect(content).toContain('<selection_rationale>这首歌承接刚才的低干扰节奏。</selection_rationale>');
+    expect(content).toContain('<personal_segue_guidance>');
+    expect(content).toContain('当前状态摘要：当前在专注写代码。');
+    expect(content).toContain('口吻：克制、熟悉');
+    expect(content).toContain('隐私规则：只说宽泛状态，不暴露原始记录。');
+    expect(content).not.toContain('sliceRefs');
+    expect(content).not.toContain('citationLabel');
+  });
+
   it('renders weather as unknown when null', () => {
     const f: Fragments = { ...base, env: { ...base.env, weather: null } };
     const msgs = assembleMessages(f);

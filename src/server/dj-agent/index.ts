@@ -12,6 +12,7 @@ import type {
   DJAgentPickNextResult
 } from './ports.js';
 import { defaultDJAgentQueuePort } from './ports.js';
+import { generateSegue, type GenerateSegueInput, type GenerateSegueResult } from './segue.js';
 
 export type DJAgentOptions = {
   musicAgentFactory?: DJAgentMusicAgentFactory;
@@ -92,9 +93,14 @@ export class DJAgent {
       runId
     };
   }
+
+  async generateSegue(input: GenerateSegueInput): Promise<GenerateSegueResult | null> {
+    return generateSegue(input);
+  }
 }
 
 export { buildDjContextSnapshot } from './context.js';
+export { generateSegue } from './segue.js';
 export type { DjContextSnapshot } from './context.js';
 export type {
   DJAgentPickNextInput,

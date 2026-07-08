@@ -10,9 +10,16 @@ import {
   removeFromWhitelist,
   unblockUser,
   analyzeTaste,
+  getPersonalDjContextStatus,
+  listPersonalDjContextTokens,
+  createPersonalDjContextToken,
+  revokePersonalDjContextToken,
+  revokeCurrentPersonalDjContext,
   type LlmSettings,
   type TtsSettings,
-  type BlockedAttempt
+  type BlockedAttempt,
+  type PersonalDjContextStatusResponse,
+  type PersonalDjContextToken
 } from '@renderer/api';
 import { QWEN3_TTS_VOICES } from '@shared/tts';
 import { AUTO_FILL_BATCH_SIZE_OPTIONS, DEFAULT_AUTO_FILL_BATCH_SIZE, type AutoFillBatchSize } from '@shared/dj';
@@ -20,6 +27,8 @@ import { AUTO_FILL_BATCH_SIZE_OPTIONS, DEFAULT_AUTO_FILL_BATCH_SIZE, type AutoFi
 type SaveStatus = { type: 'idle' } | { type: 'saving' } | { type: 'ok' } | { type: 'error'; message: string };
 type WhitelistOpStatus = { type: 'idle' } | { type: 'saving' } | { type: 'ok' } | { type: 'error'; message: string };
 type PreviewStatus = { type: 'idle' } | { type: 'loading' } | { type: 'playing' } | { type: 'error'; message: string };
+type PersonalContextOpStatus = { type: 'idle' } | { type: 'loading' } | { type: 'ok'; message: string } | { type: 'error'; message: string };
+type TasteStatus = { type: 'idle' } | { type: 'analyzing' } | { type: 'ok'; taste: string } | { type: 'error'; message: string };
 
 export function SettingsView(): JSX.Element {
   const [llm, setLlm] = useState<LlmSettings | null>(null);
@@ -36,9 +45,13 @@ export function SettingsView(): JSX.Element {
   const [newNcmId, setNewNcmId] = useState('');
   const [whitelistStatus, setWhitelistStatus] = useState<WhitelistOpStatus>({ type: 'idle' });
   const [isAdmin, setIsAdmin] = useState(true);
+  const [personalContextStatus, setPersonalContextStatus] = useState<PersonalDjContextStatusResponse | null>(null);
+  const [personalContextTokens, setPersonalContextTokens] = useState<PersonalDjContextToken[]>([]);
+  const [newPersonalTokenName, setNewPersonalTokenName] = useState('LifeMesh Bridge');
+  const [createdPersonalToken, setCreatedPersonalToken] = useState<string | null>(null);
+  const [personalContextOpStatus, setPersonalContextOpStatus] = useState<PersonalContextOpStatus>({ type: 'idle' });
   const statusTimerRef = useRef<ReturnType<typeof setTimeout>>();
   const previewAudioRef = useRef<HTMLAudioElement | null>(null);
-type TasteStatus = { type: 'idle' } | { type: 'analyzing' } | { type: 'ok'; taste: string } | { type: 'error'; message: string };
 
   const [tasteStatus, setTasteStatus] = useState<TasteStatus>({ type: 'idle' });
 
@@ -60,6 +73,15 @@ type TasteStatus = { type: 'idle' } | { type: 'analyzing' } | { type: 'ok'; tast
     }
   }
 
+  async function refreshPersonalContext(): Promise<void> {
+    const [status, tokens] = await Promise.all([
+      getPersonalDjContextStatus(),
+      listPersonalDjContextTokens()
+    ]);
+    setPersonalContextStatus(status);
+    setPersonalContextTokens(tokens.tokens);
+  }
+
   useEffect(() => {
     Promise.all([
       getSettings()
@@ -76,7 +98,11 @@ type TasteStatus = { type: 'idle' } | { type: 'analyzing' } | { type: 'ok'; tast
         .catch(() => setIsAdmin(false)),
       getBlockedAttempts()
         .then((b) => setBlocked(b.blocked))
-        .catch(() => {})
+        .catch(() => {}),
+      refreshPersonalContext()
+        .catch((err) => {
+          setPersonalContextOpStatus({ type: 'error', message: err instanceof Error ? err.message : '个人上下文状态加载失败' });
+        })
     ])
       .catch(() => {/* first launch, no config yet */})
       .finally(() => setLoading(false));
@@ -147,7 +173,48 @@ type TasteStatus = { type: 'idle' } | { type: 'analyzing' } | { type: 'ok'; tast
     }
   }
 
+  async function handleCreatePersonalContextToken(): Promise<void> {
+    setPersonalContextOpStatus({ type: 'loading' });
+    try {
+      const result = await createPersonalDjContextToken(newPersonalTokenName);
+      setCreatedPersonalToken(result.token.token);
+      await refreshPersonalContext();
+      setPersonalContextOpStatus({ type: 'ok', message: 'Bridge Token 已创建，明文只显示这一次' });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : '创建 Bridge Token 失败';
+      setPersonalContextOpStatus({
+        type: 'error',
+        message: message.includes('token limit') ? '已达到 10 个 active Bridge Token 上限，请先撤销旧 Token' : message
+      });
+    }
+  }
+
+  async function handleRevokePersonalContextToken(id: string): Promise<void> {
+    setPersonalContextOpStatus({ type: 'loading' });
+    try {
+      await revokePersonalDjContextToken(id);
+      if (createdPersonalToken) setCreatedPersonalToken(null);
+      await refreshPersonalContext();
+      setPersonalContextOpStatus({ type: 'ok', message: 'Bridge Token 已撤销' });
+    } catch (err) {
+      setPersonalContextOpStatus({ type: 'error', message: err instanceof Error ? err.message : '撤销 Bridge Token 失败' });
+    }
+  }
+
+  async function handleRevokeCurrentPersonalContext(): Promise<void> {
+    setPersonalContextOpStatus({ type: 'loading' });
+    try {
+      await revokeCurrentPersonalDjContext();
+      await refreshPersonalContext();
+      setPersonalContextOpStatus({ type: 'ok', message: '当前 Personal DJ Context 已撤销' });
+    } catch (err) {
+      setPersonalContextOpStatus({ type: 'error', message: err instanceof Error ? err.message : '撤销当前上下文失败' });
+    }
+  }
+
   const disabled = voice === tts?.voice && autoFillBatchSize === savedAutoFillBatchSize;
+  const activePersonalTokenCount = personalContextTokens.filter((token) => !token.revokedAt).length;
+  const personalTokenLimitReached = activePersonalTokenCount >= 10;
   const voiceOptions = voice && !(QWEN3_TTS_VOICES as readonly string[]).includes(voice)
     ? [voice, ...QWEN3_TTS_VOICES]
     : QWEN3_TTS_VOICES;
@@ -297,6 +364,114 @@ type TasteStatus = { type: 'idle' } | { type: 'analyzing' } | { type: 'ok'; tast
                   }`}
                 />
               </button>
+            </div>
+          </div>
+        </section>
+
+        <section>
+          <h2 className="mb-4 text-sm font-medium uppercase tracking-wider text-zinc-400">
+            Personal Context / Integrations
+          </h2>
+          <PersonalContextStatusIndicator status={personalContextOpStatus} />
+          <div className="space-y-5 rounded-xl border border-zinc-800 bg-zinc-900 p-4">
+            <div className="grid gap-3 md:grid-cols-2">
+              <ReadOnlyField
+                label="上下文状态"
+                value={personalContextStatus?.currentActive ? 'Active' : personalContextStatus?.latest?.revokedAt ? 'Revoked' : '未上传'}
+                valueClass={personalContextStatus?.currentActive ? 'text-emerald-400' : personalContextStatus?.latest ? 'text-amber-400' : 'text-zinc-500'}
+              />
+              <ReadOnlyField
+                label="最近上传"
+                value={formatDateTime(personalContextStatus?.latest?.uploadedAt)}
+              />
+              <ReadOnlyField
+                label="来源"
+                value={personalContextStatus?.latest?.sourceKind ?? '—'}
+              />
+              <ReadOnlyField
+                label="保留记录"
+                value={`${personalContextStatus?.retainedRecordCount ?? 0} 条，趋势 ${personalContextStatus?.trendCount ?? 0} 条`}
+              />
+            </div>
+            {personalContextStatus?.latest?.summary && (
+              <div className="rounded-lg border border-zinc-800 bg-zinc-950 p-3">
+                <p className="mb-1 text-xs font-medium uppercase tracking-wider text-zinc-500">当前摘要</p>
+                <p className="text-sm leading-relaxed text-zinc-300">{personalContextStatus.latest.summary}</p>
+              </div>
+            )}
+            <div className="flex flex-col gap-2 sm:flex-row">
+              <input
+                type="text"
+                value={newPersonalTokenName}
+                onChange={(event) => setNewPersonalTokenName(event.target.value)}
+                placeholder="Bridge Token 名称"
+                className={inputClass}
+              />
+              <button
+                type="button"
+                onClick={handleCreatePersonalContextToken}
+                disabled={personalTokenLimitReached || personalContextOpStatus.type === 'loading'}
+                className="inline-flex shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {personalContextOpStatus.type === 'loading' ? <Loader2 className="h-4 w-4 animate-spin" /> : <Shield className="h-4 w-4" />}
+                创建 Bridge Token
+              </button>
+              <button
+                type="button"
+                onClick={handleRevokeCurrentPersonalContext}
+                disabled={!personalContextStatus?.currentActive || personalContextOpStatus.type === 'loading'}
+                className="inline-flex shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-lg border border-zinc-700 px-4 py-2 text-sm font-medium text-zinc-100 transition hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <Trash2 className="h-4 w-4" />
+                撤销当前上下文
+              </button>
+            </div>
+            {personalTokenLimitReached && (
+              <p className="text-xs text-amber-400">已达到 10 个 active Bridge Token 上限，请先撤销旧 Token。</p>
+            )}
+            {createdPersonalToken && (
+              <div className="rounded-lg border border-amber-800 bg-amber-950/40 p-3">
+                <p className="mb-2 text-xs font-medium uppercase tracking-wider text-amber-300">Bridge Token 明文只显示这一次</p>
+                <code className="block break-all rounded bg-zinc-950 px-3 py-2 text-xs text-amber-100">{createdPersonalToken}</code>
+              </div>
+            )}
+            <div>
+              <h3 className="mb-2 text-xs font-medium uppercase tracking-wider text-zinc-500">
+                Bridge Tokens
+                {personalContextTokens.length > 0 && (
+                  <span className="ml-1.5 text-zinc-600">({personalContextTokens.length})</span>
+                )}
+              </h3>
+              {personalContextTokens.length === 0 ? (
+                <p className="text-sm text-zinc-600">暂无 Bridge Token</p>
+              ) : (
+                <ul className="space-y-1">
+                  {personalContextTokens.map((token) => (
+                    <li key={token.id} className="flex items-center justify-between gap-3 rounded-lg px-2 py-2 hover:bg-zinc-800/50">
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2">
+                          <span className="truncate text-sm font-medium text-zinc-200">{token.name}</span>
+                          <span className={`rounded px-1.5 py-0.5 text-[11px] ${token.revokedAt ? 'bg-zinc-800 text-zinc-500' : 'bg-emerald-500/10 text-emerald-400'}`}>
+                            {token.revokedAt ? 'revoked' : 'active'}
+                          </span>
+                        </div>
+                        <p className="mt-0.5 truncate text-xs text-zinc-500">
+                          created {formatDateTime(token.createdAt)} · last used {formatDateTime(token.lastUsedAt)}
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => void handleRevokePersonalContextToken(token.id)}
+                        disabled={Boolean(token.revokedAt) || personalContextOpStatus.type === 'loading'}
+                        className="rounded p-1 text-zinc-600 transition hover:bg-zinc-700 hover:text-red-400 disabled:cursor-not-allowed disabled:opacity-40"
+                        title="撤销 Bridge Token"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
             </div>
           </div>
         </section>
@@ -574,6 +749,38 @@ function WhitelistStatusIndicator({ status }: { status: WhitelistOpStatus }): JS
     );
   }
   return <span />;
+}
+
+function PersonalContextStatusIndicator({ status }: { status: PersonalContextOpStatus }): JSX.Element {
+  if (status.type === 'loading') {
+    return (
+      <span className="mb-2 flex items-center gap-1.5 text-sm text-zinc-400">
+        <Loader2 className="h-4 w-4 animate-spin" /> 处理中...
+      </span>
+    );
+  }
+  if (status.type === 'ok') {
+    return (
+      <span className="mb-2 flex items-center gap-1.5 text-sm text-emerald-400">
+        <Check className="h-4 w-4" /> {status.message}
+      </span>
+    );
+  }
+  if (status.type === 'error') {
+    return (
+      <span className="mb-2 flex items-center gap-1.5 text-sm text-red-400">
+        <AlertCircle className="h-4 w-4" /> {status.message}
+      </span>
+    );
+  }
+  return <span />;
+}
+
+function formatDateTime(value: string | null | undefined): string {
+  if (!value) return '—';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString();
 }
 
 const inputClass =

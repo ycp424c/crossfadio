@@ -137,11 +137,15 @@ export function createGetPersonalDjContextStatusHandler() {
   return (req: Request, res: Response): void => {
     const { userId } = req as AuthedRequest;
     const snapshot = getPersonalDjContextSnapshot(userId);
+    const records = listPersonalDjContexts(userId, 20);
+    const latest = records[0] ?? null;
     res.json({
       ok: true,
       current: snapshot.current ? summarizeContextRecord(snapshot.current) : null,
+      latest: latest ? summarizeContextRecord(latest) : null,
+      currentActive: snapshot.current !== null,
       trendCount: snapshot.trend.length,
-      retainedRecordCount: listPersonalDjContexts(userId, 20).length
+      retainedRecordCount: records.length
     });
   };
 }

@@ -15,6 +15,7 @@ import { getPref, deletePref, setPref } from '../store/prefs.js';
 import { fetchWeather } from '../weather.js';
 import { executeActions } from '../agent/actions.js';
 import { getCurrentIndex, getQueue, addToQueue, swapNext } from '../store/queue.js';
+import { appendDjEvent, type DjEventRecord } from '../store/dj-events.js';
 import { broadcastToUser } from './broadcast.js';
 import { getLogger } from '../logger.js';
 import { buildTrackDedupeKey, isTrackDedupeKeyExcluded, searchCandidates } from './routes/djNext.js';
@@ -47,7 +48,8 @@ export async function handleChatMessage(
   const logger = getLogger();
 
   try {
-    saveMessage(userId, 'user', text);
+    const userMessageId = saveMessage(userId, 'user', text);
+    appendListenerRequestReceivedEvent(userId, userMessageId, text);
     applyQueueDirectiveFallbackFromText(userId, text);
 
     const llmConfig = resolveLlmConfig();
@@ -134,6 +136,8 @@ export async function handleChatMessage(
 
       if (isRecommend) {
         const jobId = randomBytes(6).toString('hex');
+        const runId = `chat-recommend-${jobId}`;
+        const isSwap = songActions.some((a) => a.type === 'swap_next');
         const controller = new AbortController();
         activeRecommendJobs.set(jobId, controller);
 
@@ -159,8 +163,15 @@ export async function handleChatMessage(
         };
 
         send('chat.recommend.started', { jobId });
+        const selectionStartedEvent = appendChatSelectionStartedEvent({
+          userId,
+          runId,
+          userText: text,
+          targetCount: Math.min(2, Math.max(1, songActions.length))
+        });
 
         let added = 0;
+        let recommendationTracks: ChatAddedTrack[] = [];
         try {
           let shouldRunLegacyFallback = false;
           try {
@@ -184,12 +195,13 @@ export async function handleChatMessage(
                 const addedTracks = applyMusicAgentPicks(
                   userId,
                   output,
-                  songActions.some((a) => a.type === 'swap_next')
+                  isSwap
                 );
+                recommendationTracks = addedTracks;
                 added = addedTracks.length;
                 shouldRunLegacyFallback = added === 0;
                 if (!shouldRunLegacyFallback && addedTracks.length > 0) {
-                  reportProgress({ phase: 'done', tracks: addedTracks });
+                  reportProgress({ phase: 'done', tracks: toChatProgressTracks(addedTracks) });
                 }
               } else {
                 shouldRunLegacyFallback = output.status === 'empty_pool';
@@ -203,7 +215,7 @@ export async function handleChatMessage(
           }
 
           if (shouldRunLegacyFallback && !controller.signal.aborted) {
-            added = await runChatRecommendPipeline(userId, {
+            recommendationTracks = await runChatRecommendPipeline(userId, {
               actions: songActions,
               likedTracks,
               ncmClient,
@@ -212,6 +224,7 @@ export async function handleChatMessage(
               onProgress: reportProgress,
               signal: controller.signal
             });
+            added = recommendationTracks.length;
           }
         } catch (err) {
           logger.warn({ err, jobId }, 'Chat recommend pipeline error');
@@ -222,6 +235,13 @@ export async function handleChatMessage(
         }
 
         if (added > 0) {
+          appendChatRecommendationEvents({
+            userId,
+            runId,
+            selectionStartedEvent,
+            tracks: recommendationTracks,
+            action: isSwap ? 'swap_next' : 'append'
+          });
           broadcastToUser(userId, { type: 'queue-updated', queue: getQueue(userId), currentIndex: getCurrentIndex(userId) });
         }
 
@@ -230,11 +250,19 @@ export async function handleChatMessage(
           (a) => a.type !== 'swap_next' && a.type !== 'add_to_queue'
         );
         if (otherActions.length > 0 && !signal?.aborted) {
-          await executeActions(otherActions, { userId, ncmClient });
+          await executeActions(otherActions, {
+            userId,
+            ncmClient,
+            onQueueActiveDirectiveUpdated: (directive) => appendDirectiveUpdatedEvent(userId, directive?.text ?? null, 'chat')
+          });
         }
       } else {
         if (signal?.aborted) return;
-        const result = await executeActions(chatOutput.actions, { userId, ncmClient });
+        const result = await executeActions(chatOutput.actions, {
+          userId,
+          ncmClient,
+          onQueueActiveDirectiveUpdated: (directive) => appendDirectiveUpdatedEvent(userId, directive?.text ?? null, 'chat')
+        });
         if (result.queueChanged) {
           broadcastToUser(userId, { type: 'queue-updated', queue: getQueue(userId), currentIndex: getCurrentIndex(userId) });
         }
@@ -256,7 +284,16 @@ type RecommendPipelineInput = {
   signal: AbortSignal;
 };
 
-async function runChatRecommendPipeline(userId: string, input: RecommendPipelineInput): Promise<number> {
+type ChatAddedTrack = {
+  id: string;
+  name: string;
+  artist: string;
+  selectionRationale: string;
+  source?: string;
+  position: 'end' | 'after_current';
+};
+
+async function runChatRecommendPipeline(userId: string, input: RecommendPipelineInput): Promise<ChatAddedTrack[]> {
   const logger = getLogger();
   const { actions, likedTracks, ncmClient, llmConfig, userText, onProgress, signal } = input;
 
@@ -264,7 +301,7 @@ async function runChatRecommendPipeline(userId: string, input: RecommendPipeline
     .map((a) => a.pick.query)
     .filter((q) => q.trim().length > 0);
 
-  if (keywords.length === 0) return 0;
+  if (keywords.length === 0) return [];
 
   onProgress({ phase: 'searching' });
 
@@ -276,7 +313,7 @@ async function runChatRecommendPipeline(userId: string, input: RecommendPipeline
   const currentQueueIds = new Set(getQueue(userId).map((t) => t.ncmId));
   const excludeIds = new Set([...recentIds, ...currentQueueIds]);
 
-  if (signal.aborted) return 0;
+  if (signal.aborted) return [];
 
   const searchedTracks = await searchCandidates(
     keywords,
@@ -294,7 +331,7 @@ async function runChatRecommendPipeline(userId: string, input: RecommendPipeline
 
   if (allCandidates.length === 0) {
     onProgress({ phase: 'error', reason: 'no-candidates' });
-    return fallbackAddFromLiked(userId, likedTracks, excludeIds);
+    return fallbackAddFromLiked(userId, likedTracks, excludeIds, actions.some((a) => a.type === 'swap_next'));
   }
 
   onProgress({ phase: 'picking', candidateCount: allCandidates.length });
@@ -319,7 +356,7 @@ ${candidateList}
 
   let chosenIndices: number[] = [];
   try {
-    if (signal.aborted) return 0;
+    if (signal.aborted) return [];
     const pickResp = await withTimeout(
       new LlmClient(llmConfig).complete(
         [
@@ -348,15 +385,15 @@ ${candidateList}
     logger.warn({ err }, 'Chat recommend: LLM pick failed, using top search results');
   }
 
-  if (signal.aborted) return 0;
+  if (signal.aborted) return [];
 
   if (chosenIndices.length === 0) {
     chosenIndices = allCandidates.slice(0, 2).map((_, i) => i + 1);
   }
 
-  let added = 0;
-  const addedTracks: Array<{ name: string; artist: string }> = [];
   const isSwap = actions.some((a) => a.type === 'swap_next');
+  const position = isSwap ? 'after_current' : 'end';
+  const addedTracks: ChatAddedTrack[] = [];
   const alreadyQueued = new Set(getQueue(userId).map((t) => t.ncmId));
   for (const idx of chosenIndices) {
     const track = allCandidates[idx - 1];
@@ -371,21 +408,27 @@ ${candidateList}
         'end'
       );
     }
-    addedTracks.push({ name: track.name ?? track.id, artist: track.artist ?? '未知艺人' });
-    added++;
+    addedTracks.push({
+      id: track.id,
+      name: track.name ?? track.id,
+      artist: track.artist ?? '未知艺人',
+      selectionRationale: 'Matched the listener chat recommendation request.',
+      source: 'legacy_chat_recommend',
+      position
+    });
   }
 
-  onProgress({ phase: 'done', tracks: addedTracks });
+  onProgress({ phase: 'done', tracks: toChatProgressTracks(addedTracks) });
 
-  logger.info({ added, chosenIndices, totalCandidates: allCandidates.length }, 'Chat recommend: added tracks');
-  return added;
+  logger.info({ added: addedTracks.length, chosenIndices, totalCandidates: allCandidates.length }, 'Chat recommend: added tracks');
+  return addedTracks;
 }
 
 function applyMusicAgentPicks(
   userId: string,
   output: MusicAgentRunOutput,
   isSwap: boolean
-): Array<{ name: string; artist: string }> {
+): ChatAddedTrack[] {
   if (output.status !== 'ok') return [];
 
   const recentIds = new Set(
@@ -410,7 +453,8 @@ function applyMusicAgentPicks(
     .filter(Boolean);
   const excludedIds = new Set([...recentIds, ...queuedTracks.map((track) => track.ncmId)]);
   const excludedDedupeKeys = new Set([...recentDedupeKeys, ...queueDedupeKeys]);
-  const addedTracks: Array<{ name: string; artist: string }> = [];
+  const addedTracks: ChatAddedTrack[] = [];
+  const position = isSwap ? 'after_current' : 'end';
   for (const pick of output.picks) {
     const dedupeKey = buildTrackDedupeKey(pick);
     if (excludedIds.has(pick.id) || isTrackDedupeKeyExcluded(dedupeKey, excludedDedupeKeys)) continue;
@@ -426,7 +470,14 @@ function applyMusicAgentPicks(
     } else {
       addToQueue(userId, track, 'end');
     }
-    addedTracks.push({ name: pick.name ?? pick.id, artist: pick.artist ?? '未知艺人' });
+    addedTracks.push({
+      id: pick.id,
+      name: pick.name ?? pick.id,
+      artist: pick.artist ?? '未知艺人',
+      selectionRationale: truncate(pick.reason || output.say, 1000) || 'Selected by MusicAgent chat recommendation.',
+      source: pick.source,
+      position
+    });
   }
   return addedTracks;
 }
@@ -471,20 +522,38 @@ function createAbortTimeoutSignal(
   };
 }
 
-function fallbackAddFromLiked(userId: string, likedTracks: Track[], excludeIds: Set<string>): number {
+function fallbackAddFromLiked(
+  userId: string,
+  likedTracks: Track[],
+  excludeIds: Set<string>,
+  isSwap: boolean
+): ChatAddedTrack[] {
   const logger = getLogger();
   const available = likedTracks.filter((t) => !excludeIds.has(t.id));
-  if (available.length === 0) return 0;
+  if (available.length === 0) return [];
 
   const picked = sampleN(available, Math.min(2, available.length));
+  const addedTracks: ChatAddedTrack[] = [];
   for (const track of picked) {
-    addToQueue(userId,
-      { ncmId: track.id, name: track.name, artists: track.artist ? [track.artist] : [] },
-      'end'
-    );
+    if (isSwap) {
+      swapNext(userId, { ncmId: track.id, name: track.name, artists: track.artist ? [track.artist] : [] });
+    } else {
+      addToQueue(userId,
+        { ncmId: track.id, name: track.name, artists: track.artist ? [track.artist] : [] },
+        'end'
+      );
+    }
+    addedTracks.push({
+      id: track.id,
+      name: track.name ?? track.id,
+      artist: track.artist ?? '未知艺人',
+      selectionRationale: 'Fallback matched a liked track to the listener chat request.',
+      source: 'liked_fallback',
+      position: isSwap ? 'after_current' : 'end'
+    });
   }
   logger.info({ count: picked.length }, 'Chat recommend: fallback added from liked');
-  return picked.length;
+  return addedTracks;
 }
 
 function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
@@ -528,11 +597,118 @@ function applyQueueDirectiveFallbackFromText(userId: string, text: string): void
 
   if (!directive.text) {
     deletePref(userId, 'queue.activeDirective');
+    appendDirectiveUpdatedEvent(userId, null, 'fallback');
     return;
   }
 
   if (getPref(userId, 'queue.activeDirective')) return;
   setPref(userId, 'queue.activeDirective', directive);
+  appendDirectiveUpdatedEvent(userId, directive.text, 'fallback');
+}
+
+function appendListenerRequestReceivedEvent(userId: string, messageId: number, text: string): void {
+  appendDjEvent({
+    userId,
+    type: 'listener_request_received',
+    payload: {
+      messageId,
+      requestSummary: truncate(text, 800)
+    }
+  });
+}
+
+function appendDirectiveUpdatedEvent(
+  userId: string,
+  directive: string | null,
+  source: 'chat' | 'fallback'
+): void {
+  appendDjEvent({
+    userId,
+    type: 'directive_updated',
+    payload: {
+      directive: directive ? truncate(directive, 800) : null,
+      source
+    }
+  });
+}
+
+function appendChatSelectionStartedEvent(input: {
+  userId: string;
+  runId: string;
+  userText: string;
+  targetCount: number;
+}): DjEventRecord {
+  return appendDjEvent({
+    userId: input.userId,
+    type: 'selection_started',
+    correlationId: input.runId,
+    runId: input.runId,
+    payload: {
+      trigger: 'chat_recommend',
+      targetCount: input.targetCount,
+      activeDirective: getActiveDirectiveText(input.userId),
+      batchRationale: truncate(input.userText, 1000)
+    }
+  });
+}
+
+function appendChatRecommendationEvents(input: {
+  userId: string;
+  runId: string;
+  selectionStartedEvent: DjEventRecord;
+  tracks: ChatAddedTrack[];
+  action: 'append' | 'swap_next';
+}): void {
+  const selectionEvents = input.tracks.map((track, index) => appendDjEvent({
+    userId: input.userId,
+    type: 'track_selected',
+    correlationId: input.runId,
+    causationEventId: input.selectionStartedEvent.id,
+    runId: input.runId,
+    trackId: track.id,
+    payload: {
+      trackId: track.id,
+      trackName: track.name,
+      artist: track.artist,
+      selectionRationale: track.selectionRationale,
+      source: track.source,
+      pickOrder: index + 1
+    }
+  }));
+
+  appendDjEvent({
+    userId: input.userId,
+    type: 'queue_changed',
+    correlationId: input.runId,
+    causationEventId: selectionEvents[selectionEvents.length - 1]?.id ?? input.selectionStartedEvent.id,
+    runId: input.runId,
+    payload: {
+      action: input.action,
+      trackIds: input.tracks.map((track) => track.id),
+      position: input.action === 'swap_next' ? 'after_current' : 'end',
+      afterQueuePreview: getQueue(input.userId).slice(0, 12).map((track) => ({
+        id: track.ncmId,
+        ...(track.name ? { name: track.name } : {}),
+        ...(track.artists?.length ? { artist: track.artists.join(' / ') } : {})
+      }))
+    }
+  });
+}
+
+function getActiveDirectiveText(userId: string): string | undefined {
+  const directive = getPref<{ text?: string }>(userId, 'queue.activeDirective');
+  const text = directive?.text?.trim();
+  return text ? truncate(text, 800) : undefined;
+}
+
+function toChatProgressTracks(tracks: ChatAddedTrack[]): Array<{ name: string; artist: string }> {
+  return tracks.map((track) => ({ name: track.name, artist: track.artist }));
+}
+
+function truncate(value: string | undefined, maxLength: number): string {
+  const trimmed = value?.trim() ?? '';
+  if (trimmed.length <= maxLength) return trimmed;
+  return trimmed.slice(0, maxLength);
 }
 
 function formatLocalTime(date: Date): string {

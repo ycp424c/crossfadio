@@ -302,6 +302,71 @@ export async function getPlayerContext(): Promise<PlayerContextResponse> {
   return requestJson<PlayerContextResponse>('/api/settings/player-context');
 }
 
+// ── Personal DJ Context ────────────────────────────────────────────────────────
+
+export type PersonalDjContextStatusRecord = {
+  id: string;
+  generatedAt: string;
+  uploadedAt: string;
+  summary: string;
+  sourceKind: string;
+  sourceBundleId: string | null;
+  sliceCount: number;
+  musicHintCount: number;
+  revokedAt: string | null;
+};
+
+export type PersonalDjContextStatusResponse = {
+  ok: boolean;
+  current: PersonalDjContextStatusRecord | null;
+  latest: PersonalDjContextStatusRecord | null;
+  currentActive: boolean;
+  trendCount: number;
+  retainedRecordCount: number;
+};
+
+export type PersonalDjContextToken = {
+  id: string;
+  name: string;
+  scope: string;
+  createdAt: string;
+  lastUsedAt: string | null;
+  revokedAt: string | null;
+};
+
+export type CreatedPersonalDjContextToken = PersonalDjContextToken & {
+  token: string;
+};
+
+export async function getPersonalDjContextStatus(): Promise<PersonalDjContextStatusResponse> {
+  return requestJson<PersonalDjContextStatusResponse>('/api/settings/personal-dj-context');
+}
+
+export async function revokeCurrentPersonalDjContext(): Promise<{ ok: boolean; revoked: boolean }> {
+  return requestJson<{ ok: boolean; revoked: boolean }>('/api/settings/personal-dj-context/revoke-current', {
+    method: 'POST'
+  });
+}
+
+export async function listPersonalDjContextTokens(): Promise<{ ok: boolean; tokens: PersonalDjContextToken[] }> {
+  return requestJson<{ ok: boolean; tokens: PersonalDjContextToken[] }>('/api/settings/personal-dj-context/tokens');
+}
+
+export async function createPersonalDjContextToken(name?: string): Promise<{ ok: boolean; token: CreatedPersonalDjContextToken }> {
+  return requestJson<{ ok: boolean; token: CreatedPersonalDjContextToken }>('/api/settings/personal-dj-context/tokens', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(name?.trim() ? { name: name.trim() } : {})
+  });
+}
+
+export async function revokePersonalDjContextToken(id: string): Promise<{ ok: boolean; revoked: boolean }> {
+  return requestJson<{ ok: boolean; revoked: boolean }>(
+    `/api/settings/personal-dj-context/tokens/${encodeURIComponent(id)}`,
+    { method: 'DELETE' }
+  );
+}
+
 
 // ── Whitelist ───────────────────────────────────────────────────────────────────
 

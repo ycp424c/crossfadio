@@ -139,6 +139,8 @@ function renderSegueContext(f: Fragments): string {
   const to = f.input.context.to;
 
   const djPickReason = f.input.context.djPickReason;
+  const selectionRationale = f.input.context.selectionRationale;
+  const personalSegueGuidance = f.input.context.personalSegueGuidance;
 
   return `
 <segue_context>
@@ -155,6 +157,9 @@ function renderSegueContext(f: Fragments): string {
 标签：${to.tags.join(' / ') || '无'}
 歌词片段：${to.lyricExcerpt || '无'}
 歌词关键词：${to.lyricKeywords.join(' / ') || '无'}
-</to_track>${djPickReason ? `\n<dj_pick_reason>${djPickReason}</dj_pick_reason>` : ''}
+</to_track>${djPickReason ? `\n<dj_pick_reason>${djPickReason}</dj_pick_reason>` : ''}${selectionRationale ? `\n<selection_rationale>${selectionRationale}</selection_rationale>` : ''}${personalSegueGuidance ? `
+<personal_segue_guidance>
+${personalSegueGuidance.summary ? `当前状态摘要：${personalSegueGuidance.summary}\n` : ''}${personalSegueGuidance.tone ? `口吻：${personalSegueGuidance.tone}\n` : ''}隐私规则：${personalSegueGuidance.privacyRule}
+</personal_segue_guidance>` : ''}
 </segue_context>`;
 }

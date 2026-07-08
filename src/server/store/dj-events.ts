@@ -170,6 +170,21 @@ export function getRecentDjEvents(userId: string, limit = 50): DjEventRecord[] {
   return rows.map(mapDjEventRow);
 }
 
+export function getRecentTrackSelectedEvent(
+  userId: string,
+  trackId: string
+): DjEventRecord | null {
+  const row = getDb()
+    .prepare<[string, string], DjEventRow>(
+      `SELECT * FROM dj_events
+       WHERE user_id = ? AND type = 'track_selected' AND track_id = ?
+       ORDER BY created_at DESC, rowid DESC
+       LIMIT 1`
+    )
+    .get(userId, trackId);
+  return row ? mapDjEventRow(row) : null;
+}
+
 function mapDjEventRow(row: DjEventRow): DjEventRecord {
   return {
     id: row.id,

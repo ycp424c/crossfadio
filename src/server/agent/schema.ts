@@ -123,7 +123,14 @@ export const fragmentsSchema = z.object({
         .object({
           from: segueTrackContextSchema,
           to: segueTrackContextSchema,
-          djPickReason: z.string().optional()
+          djPickReason: z.string().optional(),
+          selectionRationale: z.string().optional(),
+          selectionEventId: z.string().optional(),
+          personalSegueGuidance: z.object({
+            summary: z.string().optional(),
+            tone: z.string().optional(),
+            privacyRule: z.string()
+          }).optional()
         })
         .optional()
     }),

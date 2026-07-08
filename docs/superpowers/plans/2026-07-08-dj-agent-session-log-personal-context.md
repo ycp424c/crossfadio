@@ -110,24 +110,24 @@ Modify:
 
 ### Tasks
 
-- [ ] Add a Personal Context / Integrations section in Settings.
-- [ ] List Bridge Tokens by name, creation time, last used time, and revoked state.
-- [ ] Create a Bridge Token through the JWT-protected Settings API.
-- [ ] Enforce the active-token cap and show a clear error when the cap is reached.
-- [ ] Show token plaintext only once after creation.
-- [ ] Revoke tokens.
-- [ ] Show current Personal DJ Context status:
+- [x] Add a Personal Context / Integrations section in Settings.
+- [x] List Bridge Tokens by name, creation time, last used time, and revoked state.
+- [x] Create a Bridge Token through the JWT-protected Settings API.
+- [x] Enforce the active-token cap and show a clear error when the cap is reached.
+- [x] Show token plaintext only once after creation.
+- [x] Revoke tokens.
+- [x] Show current Personal DJ Context status:
   - latest upload time
   - source kind
   - retained recent records count
   - whether current context is active or revoked
-- [ ] Add a manual "revoke current Personal DJ Context" action.
+- [x] Add a manual "revoke current Personal DJ Context" action.
 
 ### Acceptance
 
-- [ ] A logged-in user can create and revoke Bridge Tokens from Settings.
-- [ ] Token plaintext is not shown after the creation response.
-- [ ] Settings UI is not required for script-level Phase 1 acceptance.
+- [x] A logged-in user can create and revoke Bridge Tokens from Settings.
+- [x] Token plaintext is not shown after the creation response.
+- [x] Settings UI is not required for script-level Phase 1 acceptance.
 
 ## Phase 2: DJAgent Pick-next Orchestration
 
@@ -186,25 +186,25 @@ Modify:
 
 ### Tasks
 
-- [ ] Add `DJAgent.generateSegue()`.
-- [ ] Preserve existing segue response schema:
+- [x] Add `DJAgent.generateSegue()`.
+- [x] Preserve existing segue response schema:
   - `say`
   - `duckingHintSec`
   - `filterSweep`
   - `emotionTag`
-- [ ] Preserve current `/api/sse/segue` contract and TTS/cache/fallback behavior.
-- [ ] Resolve the target track's most relevant `track_selected` event by explicit relation or track id + recency.
-- [ ] Add Selection Rationale and Personal DJ Context guidance to segue prompt context.
-- [ ] Do not expose Personal DJ Context source refs or citation labels to the segue LLM prompt.
-- [ ] Append `segue_generated` after successful generation.
-- [ ] Do not expose private LifeMesh details in generated segue; use `segueGuidance.privacyRule`.
+- [x] Preserve current `/api/sse/segue` contract and TTS/cache/fallback behavior.
+- [x] Resolve the target track's most relevant `track_selected` event by explicit relation or track id + recency.
+- [x] Add Selection Rationale and Personal DJ Context guidance to segue prompt context.
+- [x] Do not expose Personal DJ Context source refs or citation labels to the segue LLM prompt.
+- [x] Append `segue_generated` after successful generation.
+- [x] Do not expose private LifeMesh details in generated segue; use `segueGuidance.privacyRule`.
 
 ### Acceptance
 
-- [ ] Segue generation can refer to why the next track was selected.
-- [ ] Existing segue route tests still pass.
-- [ ] `segue_generated` is recorded with from/to track ids and linked selection event when available.
-- [ ] TTS behavior remains unchanged.
+- [x] Segue generation can refer to why the next track was selected.
+- [x] Existing segue route tests still pass.
+- [x] `segue_generated` is recorded with from/to track ids and linked selection event when available.
+- [x] TTS behavior remains unchanged.
 
 ## Phase 4: Crossfadio Personal DJ Context Skill
 
@@ -272,21 +272,21 @@ Create:
 
 ### Tasks
 
-- [ ] Build payload from `lifemesh bundle --source all --sensitivity-cap Private --max-slices 12`.
-- [ ] Do not upload raw slice content or full bundle.
-- [ ] Default behavior writes local JSON only.
-- [ ] Upload requires explicit `--upload` or a separate upload script invocation.
-- [ ] Support `--task`, `--max-slices`, and `--sensitivity-cap` overrides.
-- [ ] Do not enable `--include-unverified` by default.
-- [ ] Read `CROSSFADIO_BASE_URL` and `CROSSFADIO_PERSONAL_DJ_CONTEXT_TOKEN`.
-- [ ] Print only upload status, expiry/retention semantics, slice count, and summary-level fields.
+- [x] Build payload from `lifemesh bundle --source all --sensitivity-cap Private --max-slices 12`.
+- [x] Do not upload raw slice content or full bundle.
+- [x] Default behavior writes local JSON only.
+- [x] Upload requires explicit `--upload` or a separate upload script invocation.
+- [x] Support `--task`, `--max-slices`, and `--sensitivity-cap` overrides.
+- [x] Do not enable `--include-unverified` by default.
+- [x] Read `CROSSFADIO_BASE_URL` and `CROSSFADIO_PERSONAL_DJ_CONTEXT_TOKEN`.
+- [x] Print only upload status, expiry/retention semantics, slice count, and summary-level fields.
 
 ### Acceptance
 
-- [ ] Skill can generate a valid payload without uploading.
-- [ ] Skill can upload with a valid Bridge Token.
-- [ ] Skill never prints or uploads raw LifeMesh slice content.
-- [ ] Upload result creates a `personal_context_uploaded` DJ Event.
+- [x] Skill can generate a valid payload without uploading.
+- [x] Skill can upload with a valid Bridge Token.
+- [x] Skill never prints or uploads raw LifeMesh slice content.
+- [x] Upload result creates a `personal_context_uploaded` DJ Event.
 
 ## Phase 5: Chat Integration Later
 
@@ -294,10 +294,10 @@ Chat is not the core first path. Keep the existing chat decision chain in the fi
 
 Later tasks:
 
-- [ ] Append `listener_request_received` when user chat is saved.
-- [ ] Append `directive_updated` when queue active directive changes.
-- [ ] Append selection events when chat recommendation adds tracks.
-- [ ] Consider `DJAgent.handleChat()` only after pick-next and segue are stable.
+- [x] Append `listener_request_received` when user chat is saved.
+- [x] Append `directive_updated` when queue active directive changes.
+- [x] Append selection events when chat recommendation adds tracks.
+- [x] Consider `DJAgent.handleChat()` only after pick-next and segue are stable. Decision: defer until pick-next and segue behavior has stabilized in production.
 
 ## End-to-End Acceptance Scenario
 
