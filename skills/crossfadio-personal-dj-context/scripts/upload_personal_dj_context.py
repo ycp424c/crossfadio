@@ -13,6 +13,10 @@ from pathlib import Path
 from typing import Any
 
 
+class UploadError(RuntimeError):
+    pass
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Upload Crossfadio Personal DJ Context JSON.")
     parser.add_argument("--file", required=True, help="Generated Personal DJ Context JSON file.")
@@ -34,7 +38,11 @@ def main() -> int:
         return 2
 
     payload = read_json(Path(args.file).expanduser())
-    response = upload_payload(args.base_url, args.token, payload, args.timeout)
+    try:
+        response = upload_payload(args.base_url, args.token, payload, args.timeout)
+    except UploadError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
 
     source = payload.get("source") if isinstance(payload.get("source"), dict) else {}
     slice_refs = source.get("sliceRefs") if isinstance(source, dict) else []
@@ -81,16 +89,20 @@ def upload_payload(
             response_body = response.read().decode("utf-8")
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
-        print(f"upload failed: status={exc.code} body={detail[:500]}", file=sys.stderr)
-        return {}
+        raise UploadError(f"upload failed: status={exc.code} body={detail[:500]}") from exc
     except urllib.error.URLError as exc:
-        print(f"upload failed: {exc.reason}", file=sys.stderr)
-        return {}
+        raise UploadError(f"upload failed: {exc.reason}") from exc
+    except TimeoutError as exc:
+        raise UploadError(f"upload failed: {exc}") from exc
+    except OSError as exc:
+        raise UploadError(f"upload failed: {exc}") from exc
 
-    parsed = json.loads(response_body)
+    try:
+        parsed = json.loads(response_body)
+    except json.JSONDecodeError as exc:
+        raise UploadError(f"upload failed: unexpected response {response_body[:500]}") from exc
     if not isinstance(parsed, dict) or not parsed.get("ok"):
-        print(f"upload failed: unexpected response {response_body[:500]}", file=sys.stderr)
-        return {}
+        raise UploadError(f"upload failed: unexpected response {response_body[:500]}")
     return parsed
 
 

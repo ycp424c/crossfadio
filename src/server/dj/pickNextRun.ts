@@ -39,6 +39,7 @@ import type {
   DjEventSink,
   DjPickNextFallbackPath
 } from './musicAgentPickNextResult.js';
+import type { DjSelectionEventContext } from './eventLogging.js';
 import { formatShanghaiLocalTime, getDaypart, getShanghaiTimeParts } from '../timezone.js';
 import { parseAutoFillBatchSize, parseDiscoveryMode } from '../../shared/dj.js';
 import type { DiscoveryMode } from '../../shared/dj.js';
@@ -382,6 +383,7 @@ export async function runDjPickNext(
   const excludeState = getTodayAndQueueDedupeState(userId);
   const initialQueueLength = getQueue(userId).length;
   let legacyFallbackPath: DjPickNextFallbackPath | undefined;
+  let djEventContext: DjSelectionEventContext | undefined;
 
   const llmConfig = resolveLlmConfig();
   if (llmConfig && discoveryMode === 'legacy') {
@@ -415,6 +417,10 @@ export async function runDjPickNext(
         fallbackStatsSnapshot: () => djPickNextFallbackStats.snapshot()
       });
       const output = result.output;
+      djEventContext = {
+        runId: result.runId,
+        selectionStartedEventId: result.selectionStartedEventId
+      };
       if (signal?.aborted) return;
       if (output.status === 'aborted') {
         if (!agentAbort.timedOut()) return;
@@ -711,6 +717,7 @@ export async function runDjPickNext(
           startedAt,
           discoveryMode,
           legacyFallbackPath,
+          djEventContext,
           emit,
           broadcastAppended,
           logger,
@@ -762,6 +769,7 @@ export async function runDjPickNext(
     startedAt,
     discoveryMode,
     debugBroadcastSent,
+    djEventContext,
     emit,
     broadcastAppended,
     logger,

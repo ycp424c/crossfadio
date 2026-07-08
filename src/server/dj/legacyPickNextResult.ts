@@ -5,6 +5,12 @@ import {
   createSkippedPickLog,
   isTrackDedupeKeyExcluded
 } from './musicAgentPickNextResult.js';
+import {
+  appendQueueAppendEvents,
+  ensureSelectionStartedEvent,
+  queueTrackArtist,
+  type DjSelectionEventContext
+} from './eventLogging.js';
 import { getRemainingPickSlots, hasReachedPickTarget } from './pickNextQueueProgress.js';
 import type { DiscoveryMode } from '../../shared/dj.js';
 import type {
@@ -52,6 +58,7 @@ export function handleLegacyPickNextOutput(input: {
   startedAt: number;
   discoveryMode: DiscoveryMode;
   legacyFallbackPath?: DjPickNextFallbackPath;
+  djEventContext?: DjSelectionEventContext;
   emit: DjEventSink;
   broadcastAppended: BroadcastAppended;
   logger: Logger;
@@ -75,6 +82,7 @@ export function handleLegacyPickNextOutput(input: {
     startedAt,
     discoveryMode,
     legacyFallbackPath,
+    djEventContext,
     emit,
     broadcastAppended,
     logger,
@@ -124,10 +132,30 @@ export function handleLegacyPickNextOutput(input: {
 
   if (getQueue(userId).length > pathQueueLength) {
     const pathNewTracks = getQueue(userId).slice(pathQueueLength);
-    for (const track of pathNewTracks) {
+    const selectedTracks = pathNewTracks.map((track, index) => {
       const trackReason = pickReasonsById[track.ncmId]?.trim() || pickSay.trim();
       if (trackReason) setPickReason(track.ncmId, trackReason);
-    }
+      return {
+        id: track.ncmId,
+        name: track.name,
+        artist: queueTrackArtist(track),
+        selectionRationale: trackReason || 'Selected by legacy DJ fallback.',
+        batchRationale: pickSay,
+        source: successPath,
+        pickOrder: index + 1
+      };
+    });
+    const eventContext = ensureSelectionStartedEvent({
+      userId,
+      targetPickCount,
+      context: djEventContext,
+      batchRationale: pickSay
+    });
+    appendQueueAppendEvents({
+      userId,
+      context: eventContext,
+      tracks: selectedTracks
+    });
   }
 
   if (hasReachedPickTarget(userId, initialQueueLength, targetPickCount)) {

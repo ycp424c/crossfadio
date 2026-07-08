@@ -167,7 +167,7 @@ export async function handleChatMessage(
           userId,
           runId,
           userText: text,
-          targetCount: Math.min(2, Math.max(1, songActions.length))
+          targetCount: isSwap ? 1 : Math.min(2, Math.max(1, songActions.length))
         });
 
         let added = 0;
@@ -296,6 +296,8 @@ type ChatAddedTrack = {
 async function runChatRecommendPipeline(userId: string, input: RecommendPipelineInput): Promise<ChatAddedTrack[]> {
   const logger = getLogger();
   const { actions, likedTracks, ncmClient, llmConfig, userText, onProgress, signal } = input;
+  const isSwap = actions.some((a) => a.type === 'swap_next');
+  const maxAdded = isSwap ? 1 : 2;
 
   const keywords = actions
     .map((a) => a.pick.query)
@@ -345,14 +347,14 @@ async function runChatRecommendPipeline(userId: string, input: RecommendPipeline
     .map((t, i) => `${i + 1}. ${t.name ?? t.id} — ${t.artist ?? '未知艺人'}`)
     .join('\n');
 
-  const pickSystemPrompt = `你是一个 DJ。根据候选歌曲列表和用户请求，挑选 1-2 首最匹配的歌曲。只输出 JSON 数组（1-based 索引），例如：[3] 或 [3, 7]。不要输出任何其他内容。`;
+  const pickSystemPrompt = `你是一个 DJ。根据候选歌曲列表和用户请求，挑选 ${maxAdded === 1 ? '1 首' : '1-2 首'}最匹配的歌曲。只输出 JSON 数组（1-based 索引），例如：[3]${maxAdded === 1 ? '' : ' 或 [3, 7]'}。不要输出任何其他内容。`;
 
   const pickUserPrompt = `<用户请求>${userText}</用户请求>
 <候选歌曲>
 ${candidateList}
 </候选歌曲>
 
-从以上 ${allCandidates.length} 首候选中挑选 1-2 首最符合用户请求的歌曲。只输出 JSON 数组。`;
+从以上 ${allCandidates.length} 首候选中挑选 ${maxAdded === 1 ? '1 首' : '1-2 首'}最符合用户请求的歌曲。只输出 JSON 数组。`;
 
   let chosenIndices: number[] = [];
   try {
@@ -378,7 +380,7 @@ ${candidateList}
       if (Array.isArray(parsed)) {
         chosenIndices = parsed
           .filter((n): n is number => typeof n === 'number' && n >= 1 && n <= allCandidates.length)
-          .slice(0, 2);
+          .slice(0, maxAdded);
       }
     }
   } catch (err) {
@@ -388,10 +390,9 @@ ${candidateList}
   if (signal.aborted) return [];
 
   if (chosenIndices.length === 0) {
-    chosenIndices = allCandidates.slice(0, 2).map((_, i) => i + 1);
+    chosenIndices = allCandidates.slice(0, maxAdded).map((_, i) => i + 1);
   }
 
-  const isSwap = actions.some((a) => a.type === 'swap_next');
   const position = isSwap ? 'after_current' : 'end';
   const addedTracks: ChatAddedTrack[] = [];
   const alreadyQueued = new Set(getQueue(userId).map((t) => t.ncmId));
@@ -416,6 +417,7 @@ ${candidateList}
       source: 'legacy_chat_recommend',
       position
     });
+    if (addedTracks.length >= maxAdded) break;
   }
 
   onProgress({ phase: 'done', tracks: toChatProgressTracks(addedTracks) });
@@ -455,6 +457,7 @@ function applyMusicAgentPicks(
   const excludedDedupeKeys = new Set([...recentDedupeKeys, ...queueDedupeKeys]);
   const addedTracks: ChatAddedTrack[] = [];
   const position = isSwap ? 'after_current' : 'end';
+  const maxAdded = isSwap ? 1 : output.picks.length;
   for (const pick of output.picks) {
     const dedupeKey = buildTrackDedupeKey(pick);
     if (excludedIds.has(pick.id) || isTrackDedupeKeyExcluded(dedupeKey, excludedDedupeKeys)) continue;
@@ -478,6 +481,7 @@ function applyMusicAgentPicks(
       source: pick.source,
       position
     });
+    if (addedTracks.length >= maxAdded) break;
   }
   return addedTracks;
 }
@@ -532,7 +536,7 @@ function fallbackAddFromLiked(
   const available = likedTracks.filter((t) => !excludeIds.has(t.id));
   if (available.length === 0) return [];
 
-  const picked = sampleN(available, Math.min(2, available.length));
+  const picked = sampleN(available, Math.min(isSwap ? 1 : 2, available.length));
   const addedTracks: ChatAddedTrack[] = [];
   for (const track of picked) {
     if (isSwap) {

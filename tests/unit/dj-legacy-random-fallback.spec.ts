@@ -1,10 +1,28 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { handleLegacyRandomFallback } from '../../src/server/dj/legacyRandomFallback';
+import { initDb, _resetDbForTest } from '../../src/server/store/db';
+import { getRecentDjEvents } from '../../src/server/store/dj-events';
 import { getQueue, setQueueState } from '../../src/server/store/queue';
+
+const originalDataDir = process.env.CROSSFADIO_DATA_DIR;
+let dataDir: string;
 
 describe('Legacy DJ random fallback handling', () => {
   beforeEach(() => {
+    dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'crossfadio-dj-legacy-random-'));
+    process.env.CROSSFADIO_DATA_DIR = dataDir;
+    initDb();
     setQueueState('legacy-random-user', [], 0);
+  });
+
+  afterEach(() => {
+    _resetDbForTest();
+    setQueueState('legacy-random-user', [], 0);
+    if (originalDataDir === undefined) delete process.env.CROSSFADIO_DATA_DIR;
+    else process.env.CROSSFADIO_DATA_DIR = originalDataDir;
   });
 
   it('emits done and records no-candidates when every liked song is excluded', async () => {
@@ -103,6 +121,38 @@ describe('Legacy DJ random fallback handling', () => {
       'DJ pick-next fallback: appended tracks'
     );
     expect(recordFallbackStats).toHaveBeenCalledWith('legacy_random_fallback');
+    const events = getRecentDjEvents('legacy-random-user', 10);
+    expect(events.find((event) => event.type === 'selection_started')?.payload).toMatchObject({
+      trigger: 'auto_fill',
+      targetCount: 2,
+      batchRationale: '随机 fallback（LLM 未配置或选歌失败）'
+    });
+    const selectedEvents = events.filter((event) => event.type === 'track_selected');
+    expect(selectedEvents).toHaveLength(2);
+    expect(selectedEvents.map((event) => event.trackId).sort()).toEqual(['201', '202']);
+    expect(selectedEvents.map((event) => event.payload)).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        trackId: '201',
+        trackName: 'Fallback One',
+        artist: 'Artist One',
+        selectionRationale: 'Selected by legacy random fallback from liked tracks.',
+        source: 'legacy_random_fallback',
+        pickOrder: 1
+      }),
+      expect.objectContaining({
+        trackId: '202',
+        trackName: 'Fallback Two',
+        artist: 'Artist Two',
+        selectionRationale: 'Selected by legacy random fallback from liked tracks.',
+        source: 'legacy_random_fallback',
+        pickOrder: 2
+      })
+    ]));
+    expect(events.find((event) => event.type === 'queue_changed')?.payload).toMatchObject({
+      action: 'append',
+      trackIds: ['201', '202'],
+      position: 'end'
+    });
     expect(broadcastAppended).toHaveBeenCalledWith(
       'legacy-random-user',
       0,

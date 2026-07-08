@@ -63,6 +63,7 @@ export type DJAgentPickNextHandledResult = {
   debugBroadcastSent: true;
   output: MusicAgentRunOutput;
   runId: string;
+  selectionStartedEventId: string;
 };
 
 export type DJAgentPickNextFallbackResult = {
@@ -71,6 +72,7 @@ export type DJAgentPickNextFallbackResult = {
   debugBroadcastSent: false;
   output: MusicAgentRunOutput;
   runId: string;
+  selectionStartedEventId: string;
 };
 
 export type DJAgentPickNextAbortedResult = {
@@ -78,6 +80,7 @@ export type DJAgentPickNextAbortedResult = {
   debugBroadcastSent: false;
   output: MusicAgentRunOutput;
   runId: string;
+  selectionStartedEventId: string;
 };
 
 export type DJAgentPickNextResult =

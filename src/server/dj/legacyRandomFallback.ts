@@ -3,6 +3,12 @@ import {
   buildTrackDedupeKey,
   isTrackDedupeKeyExcluded
 } from './musicAgentPickNextResult.js';
+import {
+  appendQueueAppendEvents,
+  ensureSelectionStartedEvent,
+  queueTrackArtist,
+  type DjSelectionEventContext
+} from './eventLogging.js';
 import { getAddedTrackCount, getRemainingPickSlots } from './pickNextQueueProgress.js';
 import type { DiscoveryMode } from '../../shared/dj.js';
 import type {
@@ -42,6 +48,7 @@ export async function handleLegacyRandomFallback(input: {
   startedAt: number;
   discoveryMode: DiscoveryMode;
   debugBroadcastSent: boolean;
+  djEventContext?: DjSelectionEventContext;
   emit: DjEventSink;
   broadcastAppended: BroadcastAppended;
   logger: Logger;
@@ -59,6 +66,7 @@ export async function handleLegacyRandomFallback(input: {
     startedAt,
     discoveryMode,
     debugBroadcastSent,
+    djEventContext,
     emit,
     broadcastAppended,
     logger,
@@ -166,6 +174,29 @@ export async function handleLegacyRandomFallback(input: {
     }, 'end');
     excludeState.ids.add(String(pick.id));
     if (dedupeKey) excludeState.dedupeKeys.add(dedupeKey);
+  }
+  const pathNewTracks = getQueue(userId).slice(pathQueueLength);
+  if (pathNewTracks.length > 0) {
+    const fallbackRationale = '随机 fallback（LLM 未配置或选歌失败）';
+    const eventContext = ensureSelectionStartedEvent({
+      userId,
+      targetPickCount,
+      context: djEventContext,
+      batchRationale: fallbackRationale
+    });
+    appendQueueAppendEvents({
+      userId,
+      context: eventContext,
+      tracks: pathNewTracks.map((track, index) => ({
+        id: track.ncmId,
+        name: track.name,
+        artist: queueTrackArtist(track),
+        selectionRationale: 'Selected by legacy random fallback from liked tracks.',
+        batchRationale: fallbackRationale,
+        source: 'legacy_random_fallback',
+        pickOrder: index + 1
+      }))
+    });
   }
   logger.info(
     {

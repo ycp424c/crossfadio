@@ -1,13 +1,21 @@
 import fs from 'node:fs';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
+import { promisify } from 'node:util';
 import { describe, expect, it } from 'vitest';
 
 const root = process.cwd();
+const execFileAsync = promisify(execFile);
 const buildScript = path.join(
   root,
   'skills/crossfadio-personal-dj-context/scripts/build_personal_dj_context.py'
+);
+const uploadScript = path.join(
+  root,
+  'skills/crossfadio-personal-dj-context/scripts/upload_personal_dj_context.py'
 );
 
 describe('crossfadio Personal DJ Context skill scripts', () => {
@@ -77,4 +85,59 @@ describe('crossfadio Personal DJ Context skill scripts', () => {
     expect(payload).toHaveProperty('summary');
     expect(payload).toHaveProperty('segueGuidance');
   });
+
+  it('fails with a non-zero status when upload is rejected', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'crossfadio-personal-dj-context-upload-'));
+    const payloadPath = path.join(tmpDir, 'payload.json');
+    fs.writeFileSync(payloadPath, JSON.stringify({ schemaVersion: 1 }));
+    const server = createServer((_req, res) => {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: 'boom' }));
+    });
+
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()));
+    try {
+      const address = server.address() as AddressInfo;
+      const result = await runScript('python3', [
+        uploadScript,
+        '--file',
+        payloadPath,
+        '--base-url',
+        `http://127.0.0.1:${address.port}`,
+        '--token',
+        'cfdj_ctx_test',
+        '--timeout',
+        '2'
+      ]);
+
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain('upload failed: status=500');
+      expect(result.stdout).not.toContain('uploaded Personal DJ Context');
+    } finally {
+      await new Promise<void>((resolve, reject) => {
+        server.close((err) => (err ? reject(err) : resolve()));
+      });
+    }
+  });
 });
+
+async function runScript(command: string, args: string[]): Promise<{ status: number | null; stdout: string; stderr: string }> {
+  try {
+    const result = await execFileAsync(command, args, {
+      cwd: root,
+      encoding: 'utf-8'
+    });
+    return {
+      status: 0,
+      stdout: result.stdout,
+      stderr: result.stderr
+    };
+  } catch (err) {
+    const failed = err as { code?: number | null; stdout?: string; stderr?: string };
+    return {
+      status: typeof failed.code === 'number' ? failed.code : null,
+      stdout: failed.stdout ?? '',
+      stderr: failed.stderr ?? ''
+    };
+  }
+}

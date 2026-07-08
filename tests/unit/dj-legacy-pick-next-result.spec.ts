@@ -1,10 +1,28 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { handleLegacyPickNextOutput } from '../../src/server/dj/legacyPickNextResult';
+import { initDb, _resetDbForTest } from '../../src/server/store/db';
+import { getRecentDjEvents } from '../../src/server/store/dj-events';
 import { getQueue, setQueueState } from '../../src/server/store/queue';
+
+const originalDataDir = process.env.CROSSFADIO_DATA_DIR;
+let dataDir: string;
 
 describe('Legacy DJ pick-next result handling', () => {
   beforeEach(() => {
+    dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'crossfadio-dj-legacy-result-'));
+    process.env.CROSSFADIO_DATA_DIR = dataDir;
+    initDb();
     setQueueState('legacy-result-user', [], 0);
+  });
+
+  afterEach(() => {
+    _resetDbForTest();
+    setQueueState('legacy-result-user', [], 0);
+    if (originalDataDir === undefined) delete process.env.CROSSFADIO_DATA_DIR;
+    else process.env.CROSSFADIO_DATA_DIR = originalDataDir;
   });
 
   it('appends legacy LLM picks, emits selected track debug, and broadcasts completion', () => {
@@ -62,6 +80,38 @@ describe('Legacy DJ pick-next result handling', () => {
       ]
     }));
     expect(emit.mock.invocationCallOrder[0]).toBeLessThan(broadcastAppended.mock.invocationCallOrder[0]);
+    const events = getRecentDjEvents('legacy-result-user', 10);
+    expect(events.find((event) => event.type === 'selection_started')?.payload).toMatchObject({
+      trigger: 'auto_fill',
+      targetCount: 2,
+      batchRationale: '接下来维持这个推进感。'
+    });
+    const selectedEvents = events.filter((event) => event.type === 'track_selected');
+    expect(selectedEvents).toHaveLength(2);
+    expect(selectedEvents.map((event) => event.trackId).sort()).toEqual(['201', '202']);
+    expect(selectedEvents.map((event) => event.payload)).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        trackId: '201',
+        trackName: 'Detailed One',
+        artist: 'Detail Artist',
+        selectionRationale: '第一首理由',
+        source: 'legacy_llm_success',
+        pickOrder: 1
+      }),
+      expect.objectContaining({
+        trackId: '202',
+        trackName: 'Detailed Two',
+        artist: 'Second Artist',
+        selectionRationale: '第二首理由',
+        source: 'legacy_llm_success',
+        pickOrder: 2
+      })
+    ]));
+    expect(events.find((event) => event.type === 'queue_changed')?.payload).toMatchObject({
+      action: 'append',
+      trackIds: ['201', '202'],
+      position: 'end'
+    });
     expect(broadcastAppended).toHaveBeenCalledWith(
       'legacy-result-user',
       0,
@@ -134,6 +184,18 @@ describe('Legacy DJ pick-next result handling', () => {
       }),
       'DJ pick-next: whitelisted picks appended fewer than target'
     );
+    const events = getRecentDjEvents('legacy-result-user', 10);
+    expect(events.find((event) => event.type === 'selection_started')?.payload).toMatchObject({
+      trigger: 'auto_fill',
+      targetCount: 2,
+      batchRationale: '留一点明亮的尾巴。'
+    });
+    expect(events.filter((event) => event.type === 'track_selected').map((event) => event.trackId)).toEqual(['301']);
+    expect(events.find((event) => event.type === 'queue_changed')?.payload).toMatchObject({
+      action: 'append',
+      trackIds: ['301'],
+      position: 'end'
+    });
     expect(broadcastAppended).toHaveBeenCalledWith(
       'legacy-result-user',
       0,

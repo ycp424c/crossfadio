@@ -57,7 +57,8 @@ export class DJAgent {
         status: 'aborted',
         debugBroadcastSent: false,
         output,
-        runId
+        runId,
+        selectionStartedEventId: selectionStartedEvent.id
       };
     }
 
@@ -90,7 +91,8 @@ export class DJAgent {
     return {
       ...handled,
       output,
-      runId
+      runId,
+      selectionStartedEventId: selectionStartedEvent.id
     };
   }
 

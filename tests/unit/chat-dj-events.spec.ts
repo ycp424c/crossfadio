@@ -213,6 +213,79 @@ describe('chat DJ event integration', () => {
       position: 'end'
     });
   });
+
+  it('limits chat swap_next recommendations to one track so queue order matches DJ events', async () => {
+    const userId = 'chat-events-user-4';
+    setQueue(userId, [
+      { ncmId: 'current-track', name: 'Current', artists: ['Current Artist'] },
+      { ncmId: 'old-next', name: 'Old Next', artists: ['Old Artist'] }
+    ]);
+    mocks.computeStream.mockImplementation(async function* () {
+      yield {
+        type: 'done',
+        output: {
+          mode: 'chat',
+          say: '我换下一首',
+          intent: 'adjust_queue',
+          actions: [
+            {
+              type: 'swap_next',
+              pick: { query: 'brighter city pop' },
+              position: 'after_current'
+            }
+          ]
+        }
+      };
+    });
+    mocks.recommendFromChat.mockResolvedValue({
+      status: 'ok',
+      mode: 'chat_recommend',
+      say: '下一首更明亮',
+      picks: [
+        {
+          id: 'track-1',
+          name: 'Track One',
+          artist: 'Artist One',
+          reason: 'best next transition',
+          source: 'search'
+        },
+        {
+          id: 'track-2',
+          name: 'Track Two',
+          artist: 'Artist Two',
+          reason: 'second option',
+          source: 'search'
+        }
+      ],
+      rejected: [],
+      queryFunnel: [],
+      trace: [],
+      candidateScoreTable: []
+    });
+
+    await handleChatMessage(userId, mockNcmClient(), '把下一首换得明亮一点', vi.fn());
+
+    expect(getQueue(userId).map((track) => track.ncmId)).toEqual(['current-track', 'track-1', 'old-next']);
+    const events = getRecentDjEvents(userId, 10);
+    expect(events.find((event) => event.type === 'selection_started')?.payload).toMatchObject({
+      trigger: 'chat_recommend',
+      targetCount: 1,
+      batchRationale: '把下一首换得明亮一点'
+    });
+    const selectedEvents = events.filter((event) => event.type === 'track_selected');
+    expect(selectedEvents).toHaveLength(1);
+    expect(selectedEvents[0]?.payload).toMatchObject({
+      trackId: 'track-1',
+      trackName: 'Track One',
+      selectionRationale: 'best next transition',
+      pickOrder: 1
+    });
+    expect(events.find((event) => event.type === 'queue_changed')?.payload).toMatchObject({
+      action: 'swap_next',
+      trackIds: ['track-1'],
+      position: 'after_current'
+    });
+  });
 });
 
 function mockNcmClient(): NcmClient {
