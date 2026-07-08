@@ -20,6 +20,22 @@ _Avoid_: random variety, shuffle
 A DJ selection run that continues the playback queue by choosing what should play after the current queue, whether invoked by automatic refill or a DJ pick-next endpoint.
 _Avoid_: chat recommendation, explicit add-song request
 
+**DJ Session Log**:
+A per-user record of DJ-relevant continuity across conversation, selection, playback, and segue moments. It explains the DJ's recent context and decisions without replacing the current playback or storage model.
+_Avoid_: event-sourcing source of truth, debug log, raw transcript
+
+**DJ Event**:
+A single DJ-relevant decision or context-changing action in the DJ Session Log, such as receiving a listener request, updating a directive, receiving personal DJ context, selecting a track, changing the queue, or generating a segue.
+_Avoid_: chat turn, technical event, SSE event, log line
+
+**Selection Rationale**:
+The DJ-facing reason an individual playable candidate was chosen for the current moment, including how it fits the listener, queue, context, or transition. A batch-level explanation may accompany a DJ Pick-next Run, but it does not replace the per-track rationale.
+_Avoid_: batch summary, debug reason, ranking score, prompt trace
+
+**Personal DJ Context**:
+A personal-state summary provided to the DJ for music selection and segue tone. The latest record represents current state, while recent prior records may indicate short-term change; it is derived from an external personal context system and should not be treated as a raw personal data archive or durable Crossfadio memory.
+_Avoid_: LifeMesh dump, user profile, raw personal notes
+
 **Pick Order**:
 The order in which songs selected by a DJ pick-next run should be appended to the playback queue.
 _Avoid_: shuffle order, display order
