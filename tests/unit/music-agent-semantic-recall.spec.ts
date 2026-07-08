@@ -109,6 +109,9 @@ function context(overrides: Partial<MusicAgentContextSummary>): MusicAgentContex
 function plan(overrides: Partial<QueryPlan>): QueryPlan {
   return {
     exactTrackQueries: [],
+    artistAnchors: [],
+    albumAnchors: [],
+    playlistQueries: [],
     intentQueries: [],
     tasteAnchorQueries: [],
     planQueries: [],

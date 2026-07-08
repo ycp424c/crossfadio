@@ -143,11 +143,16 @@ describe('music-agent schema', () => {
   it('separates exact track queries from semantic discovery hints in query plans', () => {
     const plan = queryPlanSchema.parse({
       exactTrackQueries: ['Candy 具島直子'],
+      artistAnchors: ['具島直子'],
+      playlistQueries: ['city pop 女声'],
       styleHints: ['city pop'],
       listeningConstraints: ['下午', '中低能量']
     });
 
     expect(plan.exactTrackQueries).toEqual(['Candy 具島直子']);
+    expect(plan.artistAnchors).toEqual(['具島直子']);
+    expect(plan.albumAnchors).toEqual([]);
+    expect(plan.playlistQueries).toEqual(['city pop 女声']);
     expect(plan.styleHints).toEqual(['city pop']);
     expect(plan.listeningConstraints).toEqual(['下午', '中低能量']);
     expect(plan.intentQueries).toEqual([]);

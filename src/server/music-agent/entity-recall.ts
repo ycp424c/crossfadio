@@ -21,8 +21,10 @@ import {
 } from './entity-hypotheses.js';
 import type {
   CandidateProvenanceKind,
+  CandidateSource,
   MusicAgentContextSummary
 } from './schema.js';
+import type { NcmPlaylistSearchResult } from '../../shared/schema.js';
 
 export type EntityRecallNcmClient = Pick<
   NcmClient,
@@ -48,6 +50,7 @@ export type EntityRecallOptions = {
   consumePlaylistFetch: () => boolean;
   avoidArtists: ReadonlySet<string>;
   artistCounts: Map<string, number>;
+  source?: CandidateSource;
   provenanceKind?: CandidateProvenanceKind;
   signal?: AbortSignal;
 };
@@ -56,6 +59,11 @@ export type EntityRecallResult = {
   added: number;
   problems: string[];
 };
+
+const EXPANDED_TRACK_VARIANT_PATTERN = /翻唱|cover|tribute|karaoke|instrumental|伴奏|ktv|铃声|原唱|男声版|女声版|sped\s*up|slow\s*&\s*reverb|slowed|acapella|a cappella/i;
+const COLLECTION_TITLE_VARIANT_PATTERN = /翻唱|cover|tribute|karaoke|instrumental|伴奏|ktv|铃声|睡眠|白噪音|asmr|sped\s*up|slow\s*&\s*reverb|acapella|a cappella/i;
+const MALE_VOCAL_QUERY_PATTERN = /男声|男歌手|男生唱|\bmale(?:[\s-]*(?:vocal|vocals|singer|artist))?\b/i;
+const FEMALE_VOCAL_QUERY_PATTERN = /女声|女歌手|女生唱|\bfemale(?:[\s-]*(?:vocal|vocals|singer|artist))?\b/i;
 
 export async function recallFromEntity(options: EntityRecallOptions): Promise<EntityRecallResult> {
   try {
@@ -80,9 +88,10 @@ async function recallTrackEntity(options: EntityRecallOptions): Promise<EntityRe
     if (verifiedTracks.length === 0) {
       return { added: 0, problems: [`track entity rejected: ${entityLabel(options.entity)}`] };
     }
-    const result = upsertTracks(options.candidatePool, verifiedTracks.slice(0, options.limit), 'search', {
+    const source = entityRecallSource(options, 'search');
+    const result = upsertTracks(options.candidatePool, verifiedTracks.slice(0, options.limit), source, {
       evidence: `实体曲目: ${entityLabel(options.entity)}`,
-      scores: sourceScores('search', options.context),
+      scores: sourceScores(source, options.context),
       avoidArtists: options.avoidArtists,
       artistCounts: options.artistCounts,
       provenanceKind: options.provenanceKind
@@ -110,9 +119,10 @@ async function recallTrackEntity(options: EntityRecallOptions): Promise<EntityRe
     return { added: 0, problems: [`track entity rejected: ${entityLabel(options.entity)}`] };
   }
 
-  const result = upsertTracks(options.candidatePool, verifiedTracks, 'search', {
+  const source = entityRecallSource(options, 'search');
+  const result = upsertTracks(options.candidatePool, verifiedTracks, source, {
     evidence: `实体曲目: ${entityLabel(options.entity)}`,
-    scores: sourceScores('search', options.context),
+    scores: sourceScores(source, options.context),
     avoidArtists: options.avoidArtists,
     artistCounts: options.artistCounts,
     provenanceKind: options.provenanceKind
@@ -144,10 +154,12 @@ async function recallArtistEntity(options: EntityRecallOptions): Promise<EntityR
   if (options.signal?.aborted) return { added: 0, problems: ['aborted'] };
   const verifiedTracks = tracks
     .filter((track) => !artistName || trackMatchesArtist(track, artistName))
+    .filter(isUsableExpandedTrack)
     .slice(0, options.limit);
-  const result = upsertTracks(options.candidatePool, verifiedTracks, 'search', {
+  const source = entityRecallSource(options, 'search');
+  const result = upsertTracks(options.candidatePool, verifiedTracks, source, {
     evidence: `实体艺人: ${artistName}`,
-    scores: sourceScores('search', options.context),
+    scores: sourceScores(source, options.context),
     avoidArtists: options.avoidArtists,
     artistCounts: options.artistCounts,
     provenanceKind: options.provenanceKind
@@ -172,9 +184,11 @@ async function recallAlbumEntity(options: EntityRecallOptions): Promise<EntityRe
     if (!detail || !albumMatchesKnownEntityFields(options.entity, detail)) {
       return { added: 0, problems: [`album entity rejected: ${entityLabel(options.entity)}`] };
     }
-    const result = upsertTracks(options.candidatePool, detail.tracks.slice(0, options.limit), 'search', {
+    const tracks = detail.tracks.filter(isUsableExpandedTrack).slice(0, options.limit);
+    const source = entityRecallSource(options, 'search');
+    const result = upsertTracks(options.candidatePool, tracks, source, {
       evidence: `实体专辑: ${detail.name}`,
-      scores: sourceScores('search', options.context),
+      scores: sourceScores(source, options.context),
       avoidArtists: options.avoidArtists,
       artistCounts: options.artistCounts,
       provenanceKind: options.provenanceKind
@@ -199,7 +213,10 @@ async function recallAlbumEntity(options: EntityRecallOptions): Promise<EntityRe
   const query = uniqueStrings([title, options.entity.artist ?? '']).join(' ');
   const albums = await options.ncmClient.searchAlbums(query, options.searchLimit);
   if (options.signal?.aborted) return { added: 0, problems: ['aborted'] };
-  const album = findVerifiedAlbum(options.entity, albums);
+  const album = findVerifiedAlbum(
+    options.entity,
+    albums.filter((item) => isUsableCollectionTitle(item.name))
+  );
   if (!album) {
     return { added: 0, problems: [`album entity rejected: ${entityLabel(options.entity)}`] };
   }
@@ -213,9 +230,11 @@ async function recallAlbumEntity(options: EntityRecallOptions): Promise<EntityRe
     return { added: 0, problems: [`album entity rejected: ${entityLabel(options.entity)}`] };
   }
 
-  const result = upsertTracks(options.candidatePool, detail.tracks.slice(0, options.limit), 'search', {
+  const tracks = detail.tracks.filter(isUsableExpandedTrack).slice(0, options.limit);
+  const source = entityRecallSource(options, 'search');
+  const result = upsertTracks(options.candidatePool, tracks, source, {
     evidence: `实体专辑: ${detail.name}`,
-    scores: sourceScores('search', options.context),
+    scores: sourceScores(source, options.context),
     avoidArtists: options.avoidArtists,
     artistCounts: options.artistCounts,
     provenanceKind: options.provenanceKind
@@ -246,7 +265,8 @@ async function recallPlaylistEntity(options: EntityRecallOptions): Promise<Entit
     }
     const playlists = await options.ncmClient.searchPlaylists?.(name, options.searchLimit);
     if (options.signal?.aborted) return { added: 0, problems: ['aborted'] };
-    playlistId = String(playlists?.[0]?.id ?? '');
+    const playlist = findVerifiedPlaylist(name, playlists ?? []);
+    playlistId = String(playlist?.id ?? '');
   }
   if (!playlistId) {
     return { added: 0, problems: [`playlist entity rejected: ${name}`] };
@@ -261,9 +281,15 @@ async function recallPlaylistEntity(options: EntityRecallOptions): Promise<Entit
     return { added: 0, problems: [`playlist entity rejected: ${name}`] };
   }
 
-  const result = upsertTracks(options.candidatePool, detail.tracks.slice(0, options.limit), 'playlist', {
+  if (name && !playlistTitleMatchesQuery(name, detail.name)) {
+    return { added: 0, problems: [`playlist entity rejected: ${name}`] };
+  }
+
+  const tracks = detail.tracks.filter(isUsableExpandedTrack).slice(0, options.limit);
+  const source = entityRecallSource(options, 'playlist');
+  const result = upsertTracks(options.candidatePool, tracks, source, {
     evidence: `实体歌单: ${detail.name}`,
-    scores: sourceScores('playlist', options.context),
+    scores: sourceScores(source, options.context),
     avoidArtists: options.avoidArtists,
     artistCounts: options.artistCounts,
     provenanceKind: options.provenanceKind
@@ -272,6 +298,52 @@ async function recallPlaylistEntity(options: EntityRecallOptions): Promise<Entit
     added: result.added,
     problems: skippedRecallProblems(result)
   };
+}
+
+function findVerifiedPlaylist(
+  query: string,
+  playlists: NcmPlaylistSearchResult[]
+): NcmPlaylistSearchResult | null {
+  return playlists.find((playlist) => (
+    playlist.trackCount > 0 &&
+    isUsableCollectionTitle(playlist.name) &&
+    playlistTitleMatchesQuery(query, playlist.name)
+  )) ?? null;
+}
+
+function playlistTitleMatchesQuery(query: string, title: string): boolean {
+  const required = playlistRequiredPatterns(query);
+  if (required.length === 0) return true;
+  return required.every((pattern) => pattern.test(title));
+}
+
+function playlistRequiredPatterns(query: string): RegExp[] {
+  const normalized = query.toLowerCase();
+  const patterns: RegExp[] = [];
+  if (/粤语|港乐|广东歌|cantopop/.test(normalized)) patterns.push(/粤语|港乐|广东|cantopop/i);
+  if (/华语|中文|国语|mandarin|c[-\s]*pop/.test(normalized)) patterns.push(/华语|中文|国语|mandarin|c[-\s]*pop/i);
+  if (/city\s*pop|citypop|城市流行/.test(normalized)) patterns.push(/city\s*pop|citypop|城市流行/i);
+  if (/indie\s*pop|独立流行/.test(normalized)) patterns.push(/indie\s*pop|独立流行/i);
+  if (/dream\s*pop|梦幻流行/.test(normalized)) patterns.push(/dream\s*pop|梦幻流行/i);
+  if (/synth[-\s]*pop|合成器/.test(normalized)) patterns.push(/synth[-\s]*pop|合成器/i);
+  if (/rock|摇滚/.test(normalized)) patterns.push(/rock|摇滚/i);
+  if (/j[-\s]*pop|日语|日系/.test(normalized)) patterns.push(/j[-\s]*pop|日语|日系/i);
+  if (/k[-\s]*pop|韩语|韩系/.test(normalized)) patterns.push(/k[-\s]*pop|韩语|韩系/i);
+  if (MALE_VOCAL_QUERY_PATTERN.test(normalized)) patterns.push(MALE_VOCAL_QUERY_PATTERN);
+  if (FEMALE_VOCAL_QUERY_PATTERN.test(normalized)) patterns.push(FEMALE_VOCAL_QUERY_PATTERN);
+  return patterns;
+}
+
+function isUsableCollectionTitle(title: string): boolean {
+  return !COLLECTION_TITLE_VARIANT_PATTERN.test(title);
+}
+
+function isUsableExpandedTrack(track: { name?: string | null }): boolean {
+  return !EXPANDED_TRACK_VARIANT_PATTERN.test(track.name ?? '');
+}
+
+function entityRecallSource(options: EntityRecallOptions, fallback: CandidateSource): CandidateSource {
+  return options.source ?? fallback;
 }
 
 async function resolveArtistEntity(options: EntityRecallOptions): Promise<string | null> {

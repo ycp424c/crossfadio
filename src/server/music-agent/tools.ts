@@ -42,6 +42,7 @@ import {
   recallFromWebDiscoveryHints as runRecallFromWebDiscoveryHints
 } from './web-hint-recall.js';
 import {
+  autoFillPlaylistQueries,
   autoFillSearchQueries,
   styleExpansionQueries,
   styleSeedQueryModifiers
@@ -55,7 +56,8 @@ import {
 } from './query-funnel.js';
 import type { FinalPick } from './schema.js';
 import {
-  parseEntityRecallInput
+  parseEntityRecallInput,
+  type MusicEntityHypothesis
 } from './entity-hypotheses.js';
 import type { WebMusicDiscoveryProvider } from './web-discovery.js';
 import {
@@ -119,7 +121,7 @@ type ToolState = {
 };
 
 type AutoFillMixStage = {
-  stage: 'search' | 'style_expansion' | 'trend' | 'web_discovery' | 'web_hint_recall';
+  stage: 'search' | 'entity_recall' | 'style_expansion' | 'trend' | 'web_discovery' | 'web_hint_recall';
   summary: string;
   candidateCount: number;
   problems: string[];
@@ -139,6 +141,14 @@ const DEFAULT_ENTITY_RECALL_LIMIT = 5;
 const DEFAULT_ENTITY_SEARCH_LIMIT = 3;
 const MAX_ENTITY_RECALL_LIMIT = 10;
 const MAX_ENTITY_RECALL_COUNT = 8;
+const AUTO_FILL_MAX_ARTIST_ENTITY_RECALLS = 3;
+const AUTO_FILL_MAX_ALBUM_ENTITY_RECALLS = 2;
+const AUTO_FILL_MAX_PLAYLIST_ENTITY_RECALLS = 3;
+const AUTO_FILL_ARTIST_ENTITY_TRACK_LIMIT = 3;
+const AUTO_FILL_ALBUM_ENTITY_TRACK_LIMIT = 4;
+const AUTO_FILL_PLAYLIST_ENTITY_TRACK_LIMIT = 4;
+const TREND_MAX_ARTIST_ENTITY_RECALLS = 4;
+const TREND_ARTIST_ENTITY_TRACK_LIMIT = 3;
 const MAX_RANK_DISPLAY_LIMIT = 20;
 const MAX_DIVERSIFY_DISPLAY_LIMIT = 5;
 const AVOID_ARTIST_PENALTY_THRESHOLD = 0.18;
@@ -400,11 +410,8 @@ export function createMusicAgentTools(input: CreateMusicAgentToolsInput): MusicA
 
     recall_from_trending: async (toolInput, signal) => {
       if (signal?.aborted) return abortedObservation(input.candidatePool);
-      return recallFromQueries({
-        queries: trendRecallQueries(state, toolInput),
-        source: 'trend',
-        evidencePrefix: '趋势线索',
-        scores: sourceScores('trend', input.context),
+      return recallFromTrend({
+        toolInput,
         input,
         state,
         maxSearches: limits.maxNcmSearches,
@@ -462,27 +469,20 @@ export function createMusicAgentTools(input: CreateMusicAgentToolsInput): MusicA
         return finish();
       }
 
-      const style = await recallFromQueries({
-        queries: styleExpansionQueries(input.context, { excludeQueries: searchQueries }),
-        source: 'style_expansion',
-        evidencePrefix: '风格扩展',
-        scores: sourceScores('style_expansion', input.context),
+      const entities = await recallAutoFillEntities({
         input,
         state,
         maxSearches: limits.maxNcmSearches,
-        signal,
-        limit: 5
+        maxPlaylistFetches: limits.maxPlaylistFetches,
+        signal
       });
-      addStage('style_expansion', style);
+      addStage('entity_recall', entities);
       if (hasEnoughAutoFillNonLikedCandidates(input.candidatePool, input.targetPickCount)) {
         return finish();
       }
 
-      const trend = await recallFromQueries({
-        queries: trendRecallQueries(state, {}),
-        source: 'trend',
-        evidencePrefix: '趋势线索',
-        scores: sourceScores('trend', input.context),
+      const trend = await recallFromTrend({
+        toolInput: {},
         input,
         state,
         maxSearches: limits.maxNcmSearches,
@@ -647,6 +647,193 @@ function webDiscoveryTargetExternalCandidateCount(input: CreateMusicAgentToolsIn
   return Math.max(1, input.targetPickCount ?? 2);
 }
 
+async function recallAutoFillEntities(options: {
+  input: CreateMusicAgentToolsInput;
+  state: ToolState;
+  maxSearches: number;
+  maxPlaylistFetches: number;
+  signal?: AbortSignal;
+}): Promise<ToolObservation> {
+  const queryPlan = options.state.queryPlan;
+  if (!queryPlan) {
+    return observation(options.input.candidatePool, 'entity recall skipped: no query plan.');
+  }
+  const avoidArtists = new Set(
+    [
+      ...avoidArtistsFromContext(options.input.context),
+      ...queryPlan.avoidArtists
+    ].flatMap(artistKeys)
+  );
+  const artistCounts = countCandidateArtistKeys(options.input.candidatePool.list());
+  const entities = autoFillEntityHypotheses(options.input.context, queryPlan, avoidArtists);
+  if (entities.length === 0) {
+    return observation(options.input.candidatePool, 'entity recall skipped: no artist, album, or playlist anchors.');
+  }
+
+  let added = 0;
+  const problems: string[] = [];
+  const expanded: string[] = [];
+  for (const item of entities) {
+    if (options.signal?.aborted) return abortedObservation(options.input.candidatePool);
+    const result = await recallFromEntity({
+      entity: item.entity,
+      ncmClient: options.input.ncmClient,
+      candidatePool: options.input.candidatePool,
+      context: options.input.context,
+      limit: item.limit,
+      searchLimit: DEFAULT_ENTITY_SEARCH_LIMIT,
+      consumeNcmSearch: () => consumeNcmSearch(options.state, options.maxSearches),
+      consumePlaylistFetch: () => consumePlaylistFetch(options.state, options.maxPlaylistFetches),
+      avoidArtists,
+      artistCounts,
+      provenanceKind: 'verified_entity',
+      signal: options.signal
+    });
+    added += result.added;
+    expanded.push(`${item.entity.type}:${entityDisplayName(item.entity)}=${result.added}`);
+    problems.push(...result.problems);
+  }
+
+  return observation(
+    options.input.candidatePool,
+    `entity recall expanded ${entities.length} anchors and added ${added} candidates: ${expanded.join('、')}.`,
+    problems
+  );
+}
+
+function autoFillEntityHypotheses(
+  context: MusicAgentContextSummary,
+  queryPlan: QueryPlan,
+  avoidArtists: ReadonlySet<string>
+): Array<{ entity: MusicEntityHypothesis; limit: number }> {
+  const artistAnchors = uniqueStrings(queryPlan.artistAnchors)
+    .filter((artist) => !artistKeys(artist).some((key) => avoidArtists.has(key)))
+    .slice(0, AUTO_FILL_MAX_ARTIST_ENTITY_RECALLS)
+    .map((name) => ({
+      entity: { type: 'artist' as const, name },
+      limit: AUTO_FILL_ARTIST_ENTITY_TRACK_LIMIT
+    }));
+  const albumAnchors = uniqueStrings(queryPlan.albumAnchors)
+    .slice(0, AUTO_FILL_MAX_ALBUM_ENTITY_RECALLS)
+    .map((title) => ({
+      entity: { type: 'album' as const, title },
+      limit: AUTO_FILL_ALBUM_ENTITY_TRACK_LIMIT
+    }));
+  const playlistAnchors = autoFillPlaylistQueries(context, queryPlan)
+    .slice(0, AUTO_FILL_MAX_PLAYLIST_ENTITY_RECALLS)
+    .map((name) => ({
+      entity: { type: 'playlist' as const, name },
+      limit: AUTO_FILL_PLAYLIST_ENTITY_TRACK_LIMIT
+    }));
+  return [...artistAnchors, ...playlistAnchors, ...albumAnchors];
+}
+
+function entityDisplayName(entity: MusicEntityHypothesis): string {
+  return entity.name ?? entity.title ?? entity.query ?? entity.type;
+}
+
+async function recallFromTrend(options: {
+  toolInput: Record<string, unknown>;
+  input: CreateMusicAgentToolsInput;
+  state: ToolState;
+  maxSearches: number;
+  signal?: AbortSignal;
+  limit: number;
+}): Promise<ToolObservation> {
+  const observations: ToolObservation[] = [];
+  const queries = trendRecallQueries(options.state, options.toolInput);
+  if (queries.length > 0) {
+    observations.push(await recallFromQueries({
+      queries,
+      source: 'trend',
+      evidencePrefix: '趋势线索',
+      scores: sourceScores('trend', options.input.context),
+      input: options.input,
+      state: options.state,
+      maxSearches: options.maxSearches,
+      signal: options.signal,
+      limit: options.limit
+    }));
+  }
+
+  if (options.signal?.aborted) return abortedObservation(options.input.candidatePool);
+  const artistObservation = await recallTrendArtistEntities(options);
+  if (artistObservation) observations.push(artistObservation);
+
+  if (observations.length === 0) {
+    return observation(
+      options.input.candidatePool,
+      'trend recall skipped: no trend track or artist inputs.',
+      ['no trend recall inputs available']
+    );
+  }
+  if (observations.length === 1) return observations[0];
+
+  return observation(
+    options.input.candidatePool,
+    observations.map((item) => item.summary).join(' | '),
+    observations.flatMap((item) => item.problems ?? [])
+  );
+}
+
+async function recallTrendArtistEntities(options: {
+  input: CreateMusicAgentToolsInput;
+  state: ToolState;
+  maxSearches: number;
+  signal?: AbortSignal;
+  limit: number;
+}): Promise<ToolObservation | null> {
+  const hotArtists = uniqueStrings(options.state.trendContext?.hotArtists ?? []);
+  if (hotArtists.length === 0) return null;
+
+  const avoidArtists = new Set(
+    [
+      ...avoidArtistsFromContext(options.input.context),
+      ...(options.state.queryPlan?.avoidArtists ?? [])
+    ].flatMap(artistKeys)
+  );
+  const artistCounts = countCandidateArtistKeys(options.input.candidatePool.list());
+  const entities = hotArtists
+    .filter((artist) => !artistKeys(artist).some((key) => avoidArtists.has(key)))
+    .slice(0, TREND_MAX_ARTIST_ENTITY_RECALLS)
+    .map((name) => ({ type: 'artist' as const, name }));
+  if (entities.length === 0) {
+    return observation(options.input.candidatePool, 'trend artist entity recall skipped: all hot artists are avoided.');
+  }
+
+  let added = 0;
+  const problems: string[] = [];
+  const expanded: string[] = [];
+  const limit = Math.min(options.limit, TREND_ARTIST_ENTITY_TRACK_LIMIT);
+  for (const entity of entities) {
+    if (options.signal?.aborted) return abortedObservation(options.input.candidatePool);
+    const result = await recallFromEntity({
+      entity,
+      ncmClient: options.input.ncmClient,
+      candidatePool: options.input.candidatePool,
+      context: options.input.context,
+      limit,
+      searchLimit: DEFAULT_ENTITY_SEARCH_LIMIT,
+      consumeNcmSearch: () => consumeNcmSearch(options.state, options.maxSearches),
+      consumePlaylistFetch: () => consumePlaylistFetch(options.state, options.input.budget.maxPlaylistFetches),
+      avoidArtists,
+      artistCounts,
+      source: 'trend',
+      provenanceKind: 'trend_recall',
+      signal: options.signal
+    });
+    added += result.added;
+    expanded.push(`${entity.name}=${result.added}`);
+    problems.push(...result.problems);
+  }
+
+  return observation(
+    options.input.candidatePool,
+    `trend artist entity recall expanded ${entities.length} artists and added ${added} candidates: ${expanded.join('、')}.`,
+    problems
+  );
+}
+
 async function recallFromWebDiscoveryHints(options: {
   hints: unknown;
   input: CreateMusicAgentToolsInput;
@@ -680,9 +867,7 @@ function trendRecallQueries(state: ToolState, toolInput: Record<string, unknown>
   const trendContext = state.trendContext;
   const trendQueries = trendContext
     ? [
-        ...trendContext.chartTrackHints.map((hint) => `${hint.title} ${hint.artist}`),
-        ...trendContext.hotStyles,
-        ...trendContext.hotArtists
+        ...trendContext.chartTrackHints.map((hint) => `${hint.title} ${hint.artist}`)
       ]
     : state.queryPlan?.trendQueries ?? [];
   return uniqueStrings([...stringArrayValue(toolInput.queries), ...trendQueries]).slice(0, 8);
@@ -756,6 +941,9 @@ function sanitizeQueryPlan(plan: QueryPlan): QueryPlan {
   return queryPlanSchema.parse({
     ...plan,
     exactTrackQueries: uniqueStrings(plan.exactTrackQueries.map(sanitizeSearchQuery)),
+    artistAnchors: uniqueStrings(plan.artistAnchors.map(sanitizeSearchQuery)),
+    albumAnchors: uniqueStrings(plan.albumAnchors.map(sanitizeSearchQuery)),
+    playlistQueries: uniqueStrings(plan.playlistQueries.map(sanitizeSearchQuery)),
     intentQueries: uniqueStrings(plan.intentQueries.map(sanitizeSearchQuery)),
     tasteAnchorQueries: uniqueStrings(plan.tasteAnchorQueries.map(sanitizeSearchQuery)),
     planQueries: uniqueStrings(plan.planQueries.map(sanitizeSearchQuery)),
@@ -769,6 +957,9 @@ function sanitizeQueryPlan(plan: QueryPlan): QueryPlan {
 function hasQueryPlanRecallQueries(plan: QueryPlan): boolean {
   return [
     ...plan.exactTrackQueries,
+    ...plan.artistAnchors,
+    ...plan.albumAnchors,
+    ...plan.playlistQueries,
     ...plan.intentQueries,
     ...plan.tasteAnchorQueries,
     ...plan.planQueries,
@@ -780,6 +971,9 @@ function hasQueryPlanRecallQueries(plan: QueryPlan): boolean {
 function mergeQueryPlans(base: QueryPlan, overlay: QueryPlan): QueryPlan {
   return queryPlanSchema.parse({
     exactTrackQueries: overlay.exactTrackQueries.length > 0 ? overlay.exactTrackQueries : base.exactTrackQueries,
+    artistAnchors: overlay.artistAnchors.length > 0 ? overlay.artistAnchors : base.artistAnchors,
+    albumAnchors: overlay.albumAnchors.length > 0 ? overlay.albumAnchors : base.albumAnchors,
+    playlistQueries: overlay.playlistQueries.length > 0 ? overlay.playlistQueries : base.playlistQueries,
     intentQueries: overlay.intentQueries.length > 0 ? overlay.intentQueries : base.intentQueries,
     tasteAnchorQueries: overlay.tasteAnchorQueries.length > 0 ? overlay.tasteAnchorQueries : base.tasteAnchorQueries,
     planQueries: overlay.planQueries.length > 0 ? overlay.planQueries : base.planQueries,
@@ -900,6 +1094,9 @@ function summarizeTrendContext(context: TrendContext): string {
 function summarizeQueryPlan(plan: QueryPlan): string {
   return truncate([
     plan.exactTrackQueries.length ? `exactTracks=${plan.exactTrackQueries.join('、')}` : '',
+    plan.artistAnchors.length ? `artists=${plan.artistAnchors.join('、')}` : '',
+    plan.albumAnchors.length ? `albums=${plan.albumAnchors.join('、')}` : '',
+    plan.playlistQueries.length ? `playlists=${plan.playlistQueries.join('、')}` : '',
     plan.intentQueries.length ? `intent=${plan.intentQueries.join('、')}` : '',
     plan.tasteAnchorQueries.length ? `taste=${plan.tasteAnchorQueries.join('、')}` : '',
     plan.planQueries.length ? `plan=${plan.planQueries.join('、')}` : '',
@@ -966,6 +1163,9 @@ function defaultQueryPlan(
 
   return queryPlanSchema.parse({
     exactTrackQueries,
+    artistAnchors: [],
+    albumAnchors: [],
+    playlistQueries: [],
     intentQueries: explicitQueries,
     tasteAnchorQueries: [],
     planQueries,

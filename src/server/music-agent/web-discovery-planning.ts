@@ -108,6 +108,8 @@ export function selectWebDiscoveryStyle(
   addText([context.currentUserText, ...(context.actionQueries ?? []), context.activeDirective].join(' '), 100);
   addText(context.currentPlanSegment ?? '', 80);
   addText([...(queryPlan?.exactTrackQueries ?? [])].join(' '), 95);
+  addText([...(queryPlan?.artistAnchors ?? [])].join(' '), 90);
+  addText([...(queryPlan?.playlistQueries ?? [])].join(' '), 75);
   addText([
     ...(queryPlan?.tasteAnchorQueries ?? []),
     ...(queryPlan?.planQueries ?? []),
@@ -137,6 +139,8 @@ export function compactWebDiscoveryIntent(
     context.currentPlanSegment ?? '',
     style ? `style:${style}` : '',
     ...(queryPlan?.exactTrackQueries.slice(0, 3) ?? []),
+    ...(queryPlan?.artistAnchors.slice(0, 3) ?? []),
+    ...(queryPlan?.playlistQueries.slice(0, 2) ?? []),
     ...(queryPlan?.tasteAnchorQueries.slice(0, 2) ?? []),
     ...(queryPlan?.planQueries.slice(0, 2) ?? []),
     ...(queryPlan?.explorationQueries.slice(0, 2) ?? []),

@@ -93,6 +93,9 @@ export type MusicCandidate = z.infer<typeof musicCandidateSchema>;
 
 export const queryPlanSchema = z.object({
   exactTrackQueries: z.array(z.string()).default([]),
+  artistAnchors: z.array(z.string()).default([]),
+  albumAnchors: z.array(z.string()).default([]),
+  playlistQueries: z.array(z.string()).default([]),
   intentQueries: z.array(z.string()).default([]),
   tasteAnchorQueries: z.array(z.string()).default([]),
   planQueries: z.array(z.string()).default([]),

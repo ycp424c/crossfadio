@@ -81,6 +81,122 @@ describe('MusicAgent entity recall', () => {
     expect(getArtistTopSongs).not.toHaveBeenCalled();
     expect(pool.count()).toBe(0);
   });
+
+  it('chooses the first playlist whose title satisfies required anchors', async () => {
+    const pool = new CandidatePool();
+    const getPlaylistDetail = vi.fn(async (id: string) => ({
+      id,
+      name: '粤语男声精选，唱尽难眠心事',
+      tracks: [
+        { id: 'p-1', name: 'Good Cantonese One', artists: ['Singer A'] },
+        { id: 'p-2', name: 'Good Cantonese Two', artists: ['Singer B'] },
+        { id: 'p-3', name: '翻唱｜温柔男声', artists: ['Singer C'] }
+      ]
+    }));
+    const ncmClient = ncmClientStub({
+      searchPlaylists: vi.fn(async () => [
+        { id: 'wrong-language', name: '【日语】干净温暖的男声', trackCount: 119, coverImgUrl: null },
+        { id: 'cover-only', name: '粤语：温柔男声翻唱', trackCount: 21, coverImgUrl: null },
+        { id: 'good-playlist', name: '粤语男声精选，唱尽难眠心事', trackCount: 44, coverImgUrl: null }
+      ]),
+      getPlaylistDetail
+    });
+
+    const result = await recallFromEntity({
+      entity: { type: 'playlist', name: '粤语 男声 温暖' },
+      ncmClient,
+      candidatePool: pool,
+      context: context(),
+      limit: 4,
+      searchLimit: 5,
+      consumeNcmSearch: vi.fn(() => true),
+      consumePlaylistFetch: vi.fn(() => true),
+      avoidArtists: new Set(),
+      artistCounts: new Map(),
+      provenanceKind: 'verified_entity'
+    });
+
+    expect(result).toEqual({ added: 2, problems: [] });
+    expect(getPlaylistDetail).toHaveBeenCalledWith('good-playlist');
+    expect(pool.list().map((candidate) => candidate.name)).toEqual([
+      'Good Cantonese One',
+      'Good Cantonese Two'
+    ]);
+  });
+
+  it('does not require a male title anchor for English female-vocal playlist queries', async () => {
+    const pool = new CandidatePool();
+    const getPlaylistDetail = vi.fn(async (id: string) => ({
+      id,
+      name: 'city pop 女声精选',
+      tracks: [
+        { id: 'female-1', name: 'City Pop One', artists: ['Singer A'] }
+      ]
+    }));
+    const ncmClient = ncmClientStub({
+      searchPlaylists: vi.fn(async () => [
+        { id: 'female-playlist', name: 'city pop 女声精选', trackCount: 18, coverImgUrl: null }
+      ]),
+      getPlaylistDetail
+    });
+
+    const result = await recallFromEntity({
+      entity: { type: 'playlist', name: 'city pop female vocal' },
+      ncmClient,
+      candidatePool: pool,
+      context: context(),
+      limit: 4,
+      searchLimit: 5,
+      consumeNcmSearch: vi.fn(() => true),
+      consumePlaylistFetch: vi.fn(() => true),
+      avoidArtists: new Set(),
+      artistCounts: new Map(),
+      provenanceKind: 'verified_entity'
+    });
+
+    expect(result).toEqual({ added: 1, problems: [] });
+    expect(getPlaylistDetail).toHaveBeenCalledWith('female-playlist');
+    expect(pool.list().map((candidate) => candidate.name)).toEqual(['City Pop One']);
+  });
+
+  it('skips low-quality album matches and filters variant tracks from album expansion', async () => {
+    const pool = new CandidatePool();
+    const getAlbumDetail = vi.fn(async (id: string) => ({
+      id,
+      name: 'Origins (Deluxe)',
+      artist: 'Imagine Dragons',
+      tracks: [
+        { id: 'a-1', name: 'Natural', artists: ['Imagine Dragons'] },
+        { id: 'a-2', name: 'Natural (Instrumental Version)', artists: ['DJ Cover That'] },
+        { id: 'a-3', name: 'Bones', artists: ['Imagine Dragons'] }
+      ]
+    }));
+    const ncmClient = ncmClientStub({
+      searchAlbums: vi.fn(async () => [
+        { id: 'bad-album', name: 'Origins (Instrumental)', artist: 'DJ Cover That' },
+        { id: 'good-album', name: 'Origins (Deluxe)', artist: 'Imagine Dragons' }
+      ]),
+      getAlbumDetail
+    });
+
+    const result = await recallFromEntity({
+      entity: { type: 'album', title: 'Origins' },
+      ncmClient,
+      candidatePool: pool,
+      context: context(),
+      limit: 4,
+      searchLimit: 5,
+      consumeNcmSearch: vi.fn(() => true),
+      consumePlaylistFetch: vi.fn(() => true),
+      avoidArtists: new Set(),
+      artistCounts: new Map(),
+      provenanceKind: 'verified_entity'
+    });
+
+    expect(result).toEqual({ added: 2, problems: [] });
+    expect(getAlbumDetail).toHaveBeenCalledWith('good-album');
+    expect(pool.list().map((candidate) => candidate.name)).toEqual(['Natural', 'Bones']);
+  });
 });
 
 function ncmClientStub(overrides: Partial<EntityRecallNcmClient> = {}): EntityRecallNcmClient {

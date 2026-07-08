@@ -1669,6 +1669,90 @@ describe('createMusicAgentTools', () => {
     expect(observation?.summary).toContain('web hint entity recall added 1 candidates');
   });
 
+  it('auto-fill mix routes broad exploration anchors through entity recall instead of song search', async () => {
+    const ncmClient = {
+      getLikedSongIds: vi.fn(async () => []),
+      getSongDetails: vi.fn(async () => []),
+      searchSongs: vi.fn(async (query: string) => query === 'Exact Song Artist'
+        ? [{ id: 'exact-1', name: 'Exact Song', artists: ['Artist'] }]
+        : []),
+      searchArtists: vi.fn(async () => [{ id: 'artist-1', name: 'Fresh Artist' }]),
+      getArtistTopSongs: vi.fn(async () => [
+        { id: 'artist-track-1', name: 'Fresh One', artists: ['Fresh Artist'] },
+        { id: 'artist-track-2', name: 'Fresh Two', artists: ['Fresh Artist'] },
+        { id: 'artist-track-cover', name: 'Fresh Song Cover', artists: ['Fresh Artist'] }
+      ]),
+      searchPlaylists: vi.fn(async () => [
+        { id: 'wrong-language', name: '【日语】干净温暖的男声', trackCount: 100, coverImgUrl: null },
+        { id: 'playlist-1', name: '粤语男声精选，唱尽难眠心事', trackCount: 44, coverImgUrl: null }
+      ]),
+      getPlaylistDetail: vi.fn(async () => ({
+        id: 'playlist-1',
+        name: '粤语男声精选，唱尽难眠心事',
+        tracks: [
+          { id: 'playlist-track-1', name: 'Playlist One', artists: ['Singer A'] },
+          { id: 'playlist-track-2', name: 'Playlist Two', artists: ['Singer B'] }
+        ]
+      }))
+    };
+
+    const { CandidatePool } = await import('../../src/server/music-agent/candidates.js');
+    const { createMusicAgentTools } = await import('../../src/server/music-agent/tools.js');
+    const candidatePool = new CandidatePool();
+    const tools = createMusicAgentTools({
+      userId: 'auto-fill-entity-plan',
+      ncmClient: ncmClient as any,
+      context: {
+        request: 'auto-fill',
+        discoveryMode: 'explore',
+        currentUserText: '下午想听港乐男声，不要太吵',
+        currentMoment: { localTime: '周一 16:00', daypart: '下午', weather: null },
+        activeDirective: '',
+        currentPlanSegment: null,
+        tasteSummary: '长期偏好粤语、叙事感、低人声。',
+        recentPreferenceSummary: '近期偏好港乐男声和温暖旋律。',
+        recentPlaySignals: '',
+        queueStateSummary: '',
+        bannedSummary: ''
+      },
+      candidatePool,
+      budget: {
+        maxMs: 10_000,
+        maxSteps: 3,
+        maxLlmCalls: 2,
+        maxToolCalls: 3,
+        maxNcmSearches: 8,
+        maxPlaylistFetches: 3,
+        maxTrendFetchMs: 0,
+        maxCandidates: 20
+      },
+      targetPickCount: 5
+    });
+    await tools.expand_queries?.({
+      exactTrackQueries: ['Exact Song Artist'],
+      artistAnchors: ['Fresh Artist'],
+      playlistQueries: ['港乐 男声'],
+      intentQueries: ['港乐 男声 温暖'],
+      tasteAnchorQueries: ['下午 专注'],
+      explorationQueries: ['粤语 叙事 不吵'],
+      styleHints: ['cantopop'],
+      listeningConstraints: ['下午', '男声', '不吵']
+    });
+
+    const observation = await tools.recall_auto_fill_mix?.({});
+
+    expect(ncmClient.searchSongs.mock.calls.map((call) => call[0])).toEqual(['Exact Song Artist']);
+    expect(ncmClient.searchSongs).not.toHaveBeenCalledWith('港乐 男声 温暖', expect.any(Number));
+    expect(ncmClient.searchSongs).not.toHaveBeenCalledWith('下午 专注', expect.any(Number));
+    expect(ncmClient.searchSongs).not.toHaveBeenCalledWith('粤语 叙事 不吵', expect.any(Number));
+    expect(ncmClient.searchArtists).toHaveBeenCalledWith('Fresh Artist', 3);
+    expect(ncmClient.searchPlaylists.mock.calls[0]?.[0]).toBe('港乐 男声');
+    expect(candidatePool.get('exact-1')).toBeDefined();
+    expect(candidatePool.get('artist-track-1')).toBeDefined();
+    expect(candidatePool.get('playlist-track-1')).toBeDefined();
+    expect(JSON.stringify(observation?.data)).toContain('entity_recall');
+  });
+
   it('auto-fill mix prefers cantopop web discovery when exact anchors include Cantonese artists', async () => {
     const ncmClient = {
       getLikedSongIds: vi.fn(async () => []),
@@ -3297,6 +3381,84 @@ describe('createMusicAgentTools', () => {
 
     expect(await rankedIds('explore')).toEqual(['search-1', 'liked-1']);
     expect(await rankedIds('comfort')).toEqual(['liked-1', 'search-1']);
+  });
+
+  it('recalls cached trend hot artists through verified artist expansion', async () => {
+    const ncmClient = {
+      getLikedSongIds: vi.fn(async () => []),
+      getSongDetails: vi.fn(async () => []),
+      searchSongs: vi.fn(async () => []),
+      searchArtists: vi.fn(async () => [{ id: 'trend-artist', name: 'Cached Artist' }]),
+      getArtistTopSongs: vi.fn(async () => [
+        { id: 'trend-artist-1', name: 'Trend Artist One', artists: ['Cached Artist'] }
+      ]),
+      getPlaylistDetail: vi.fn(async () => null),
+      getSearchHotDetail: vi.fn(async () => {
+        throw new Error('should not fetch search hot');
+      }),
+      getTopSongHints: vi.fn(async () => {
+        throw new Error('should not fetch top songs');
+      }),
+      getArtistToplist: vi.fn(async () => {
+        throw new Error('should not fetch artists');
+      })
+    };
+    const { CandidatePool } = await import('../../src/server/music-agent/candidates.js');
+    const { createMusicAgentTools } = await import('../../src/server/music-agent/tools.js');
+    const { writeTrendCache } = await import('../../src/server/music-agent/trends.js');
+    await writeTrendCache({
+      fetchedAt: new Date().toISOString(),
+      locale: 'zh-CN',
+      sources: ['ncm_artist_toplist'],
+      hotArtists: ['Cached Artist'],
+      hotStyles: [],
+      chartTrackHints: [],
+      confidence: 1
+    });
+
+    const candidatePool = new CandidatePool();
+    const tools = createMusicAgentTools({
+      userId: 'trend-hot-artist-recall',
+      ncmClient: ncmClient as any,
+      context: {
+        request: 'chat-recommend',
+        currentUserText: '',
+        currentMoment: { localTime: '周四 15:00', daypart: '下午', weather: null },
+        activeDirective: '',
+        currentPlanSegment: null,
+        tasteSummary: '',
+        recentPreferenceSummary: '',
+        recentPlaySignals: '',
+        queueStateSummary: '',
+        bannedSummary: ''
+      },
+      candidatePool,
+      budget: {
+        maxMs: 10_000,
+        maxSteps: 3,
+        maxLlmCalls: 2,
+        maxToolCalls: 2,
+        maxNcmSearches: 4,
+        maxPlaylistFetches: 0,
+        maxTrendFetchMs: 0,
+        maxCandidates: 20
+      }
+    });
+
+    await tools.get_trend_context?.({});
+    const observation = await tools.recall_from_trending?.({ limit: 3 });
+
+    expect(ncmClient.searchSongs).not.toHaveBeenCalled();
+    expect(ncmClient.searchArtists).toHaveBeenCalledWith('Cached Artist', 3);
+    expect(ncmClient.getArtistTopSongs).toHaveBeenCalledWith('trend-artist');
+    expect(candidatePool.get('trend-artist-1')).toMatchObject({
+      id: 'trend-artist-1',
+      name: 'Trend Artist One',
+      artist: 'Cached Artist',
+      sources: ['trend'],
+      provenance: [{ kind: 'trend_recall', source: 'trend' }]
+    });
+    expect(observation?.summary).toContain('trend artist entity recall expanded 1 artists');
   });
 
   it('reads cached trend context when chat trend fetch budget is zero', async () => {
