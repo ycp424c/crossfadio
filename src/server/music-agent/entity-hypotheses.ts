@@ -45,10 +45,48 @@ export function parseEntityRecallInput(input: Record<string, unknown>): {
   return {
     entities: [
       ...parseEntityHypotheses(input),
+      ...parseQueryPlanEntityHypotheses(input),
       ...hintResult.entities
     ],
     problems: hintResult.problems
   };
+}
+
+function parseQueryPlanEntityHypotheses(input: Record<string, unknown>): MusicEntityHypothesis[] {
+  return [
+    ...stringArrayValue(input.exactTrackQueries).map(parseTrackQueryEntity),
+    ...stringArrayValue(input.artistAnchors).map((name) => ({ type: 'artist' as const, name })),
+    ...stringArrayValue(input.albumAnchors).map(parseAlbumQueryEntity),
+    ...stringArrayValue(input.playlistQueries).map((name) => ({ type: 'playlist' as const, name }))
+  ];
+}
+
+function parseTrackQueryEntity(query: string): MusicEntityHypothesis {
+  const parsed = splitTitleArtistQuery(query);
+  return {
+    type: 'track',
+    title: parsed.title,
+    query,
+    ...(parsed.artist ? { artist: parsed.artist } : {})
+  };
+}
+
+function parseAlbumQueryEntity(query: string): MusicEntityHypothesis {
+  const parsed = splitTitleArtistQuery(query);
+  return {
+    type: 'album',
+    title: parsed.title,
+    query,
+    ...(parsed.artist ? { artist: parsed.artist } : {})
+  };
+}
+
+function splitTitleArtistQuery(query: string): { title: string; artist: string } {
+  const match = query.match(/^(.*)\s+(?:—|–|-)\s+(.+)$/);
+  if (!match) return { title: query, artist: '' };
+  const title = match[1]?.trim() || query;
+  const artist = match[2]?.trim() ?? '';
+  return { title, artist };
 }
 
 export function parseEntityHypothesesFromHints(value: unknown): {
@@ -155,12 +193,14 @@ export function entityLabel(entity: MusicEntityHypothesis): string {
 }
 
 export function isVerifiedTrackEntity(entity: MusicEntityHypothesis, track: NcmTrackLike): boolean {
+  if (entity.query && !trackMatchesEntityQuery(entity.query, track)) return false;
   const title = entityTitle(entity);
   if (!title || !track.name || !tokenMatches(title, track.name)) return false;
   return !entity.artist || trackMatchesArtist(track, entity.artist);
 }
 
 export function trackMatchesKnownEntityFields(entity: MusicEntityHypothesis, track: NcmTrackLike): boolean {
+  if (entity.query && !trackMatchesEntityQuery(entity.query, track)) return false;
   const title = entityTitle(entity);
   if (title && (!track.name || !tokenMatches(title, track.name))) return false;
   return !entity.artist || trackMatchesArtist(track, entity.artist);
@@ -171,12 +211,14 @@ export function findVerifiedAlbum(entity: MusicEntityHypothesis, albums: NcmAlbu
 }
 
 export function albumMatchesEntity(entity: MusicEntityHypothesis, album: NcmAlbumLike): boolean {
+  if (entity.query && !albumMatchesEntityQuery(entity.query, album)) return false;
   const title = entityTitle(entity);
   if (!title || !album.name || !tokenMatches(title, album.name)) return false;
   return !entity.artist || tokenMatches(entity.artist, album.artist ?? '');
 }
 
 export function albumMatchesKnownEntityFields(entity: MusicEntityHypothesis, album: NcmAlbumLike): boolean {
+  if (entity.query && !albumMatchesEntityQuery(entity.query, album)) return false;
   const title = entityTitle(entity);
   if (title && (!album.name || !tokenMatches(title, album.name))) return false;
   return !entity.artist || tokenMatches(entity.artist, album.artist ?? '');
@@ -198,6 +240,14 @@ export function tokenMatches(expected: string, actual: string): boolean {
   if (left === right) return true;
   const [shorter, longer] = left.length <= right.length ? [left, right] : [right, left];
   return shorter.length >= 4 && longer.includes(shorter);
+}
+
+function trackMatchesEntityQuery(query: string, track: NcmTrackLike): boolean {
+  return tokenMatches(query, [track.name, ...(track.artists ?? [])].filter(Boolean).join(' '));
+}
+
+function albumMatchesEntityQuery(query: string, album: NcmAlbumLike): boolean {
+  return tokenMatches(query, [album.name, album.artist ?? ''].filter(Boolean).join(' '));
 }
 
 export function entityFromStoredRecord(entity: StoredMusicEntityRecord): MusicEntityHypothesis | null {
@@ -237,6 +287,13 @@ export function entityFromStoredRecord(entity: StoredMusicEntityRecord): MusicEn
 function objectArrayValue(value: unknown): Array<Record<string, unknown>> {
   if (!Array.isArray(value)) return [];
   return value.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object' && !Array.isArray(item));
+}
+
+function stringArrayValue(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map(stringValue)
+    .filter(Boolean);
 }
 
 function stringValue(value: unknown): string {

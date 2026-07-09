@@ -1054,6 +1054,64 @@ describe('createMusicAgentTools', () => {
     expect(candidatePool.get('302')).toBeUndefined();
   });
 
+  it('accepts query-plan shaped exact track queries in recall_from_entities', async () => {
+    const ncmClient = {
+      getLikedSongIds: vi.fn(async () => []),
+      getSongDetails: vi.fn(async () => []),
+      searchSongs: vi.fn(async () => [
+        { id: 302, name: 'Candy', artists: ['Wrong Artist'] },
+        { id: 301, name: 'Candy', artists: ['具島直子'] }
+      ]),
+      getPlaylistDetail: vi.fn(async () => null)
+    };
+
+    const { CandidatePool } = await import('../../src/server/music-agent/candidates.js');
+    const { createMusicAgentTools } = await import('../../src/server/music-agent/tools.js');
+    const candidatePool = new CandidatePool();
+    const tools = createMusicAgentTools({
+      userId: 'entity-track-query-plan-compat',
+      ncmClient: ncmClient as any,
+      context: {
+        request: 'chat-recommend',
+        currentUserText: '下午 city pop 女声',
+        currentMoment: { localTime: '周四 15:00', daypart: '下午', weather: null },
+        activeDirective: '',
+        currentPlanSegment: null,
+        tasteSummary: '',
+        recentPreferenceSummary: '',
+        recentPlaySignals: '',
+        queueStateSummary: '',
+        bannedSummary: ''
+      },
+      candidatePool,
+      budget: {
+        maxMs: 10_000,
+        maxSteps: 3,
+        maxLlmCalls: 2,
+        maxToolCalls: 2,
+        maxNcmSearches: 2,
+        maxPlaylistFetches: 0,
+        maxTrendFetchMs: 0,
+        maxCandidates: 20
+      }
+    });
+
+    const observation = await tools.recall_from_entities?.({
+      exactTrackQueries: ['Candy 具島直子']
+    });
+
+    expect(ncmClient.searchSongs).toHaveBeenCalledWith('Candy 具島直子', 5);
+    expect(observation?.summary).toContain('entity recall expanded 1 entities and added 1 candidates');
+    expect(observation?.problems ?? []).not.toContain('no music entities provided');
+    expect(candidatePool.get('302')).toBeUndefined();
+    expect(candidatePool.get('301')).toMatchObject({
+      id: '301',
+      name: 'Candy',
+      artist: '具島直子',
+      sources: ['search']
+    });
+  });
+
   it('requires the expected primary artist when verifying multi-artist track entities', async () => {
     const ncmClient = {
       getLikedSongIds: vi.fn(async () => []),

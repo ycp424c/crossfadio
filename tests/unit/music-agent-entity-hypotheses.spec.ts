@@ -36,6 +36,26 @@ describe('MusicAgent entity hypotheses', () => {
     ]);
   });
 
+  it('coerces query-plan shaped entity recall input into verifiable entities', () => {
+    const result = parseEntityRecallInput({
+      exactTrackQueries: ['风继续吹(Live) — 张国荣', 'Candy 具島直子'],
+      artistAnchors: ['AGA'],
+      albumAnchors: ['miss.G — 具島直子'],
+      playlistQueries: ['粤语 city pop 女声'],
+      styleHints: ['city pop'],
+      listeningConstraints: ['female vocal']
+    });
+
+    expect(result.entities).toEqual([
+      { type: 'track', title: '风继续吹(Live)', query: '风继续吹(Live) — 张国荣', artist: '张国荣' },
+      { type: 'track', title: 'Candy 具島直子', query: 'Candy 具島直子' },
+      { type: 'artist', name: 'AGA' },
+      { type: 'album', title: 'miss.G', query: 'miss.G — 具島直子', artist: '具島直子' },
+      { type: 'playlist', name: '粤语 city pop 女声' }
+    ]);
+    expect(result.problems).toEqual([]);
+  });
+
   it('keeps collaborator-aware artist matching for verified track entities', () => {
     const track = {
       id: 'track-1',
