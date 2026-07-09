@@ -176,6 +176,19 @@ describe('CandidatePool', () => {
     expect(pool.list().map((item) => item.id)).toEqual(['allowed-track']);
   });
 
+  it('exposes candidate ban reasons before upsert when ids or dedupe keys are known', () => {
+    const pool = new CandidatePool({
+      bannedIds: ['blocked-id'],
+      bannedArtists: new Set(['Blocked Artist']),
+      bannedTrackKeys: new Set([buildCandidateDedupeKey({ name: 'Blocked', artist: 'Other' })])
+    });
+
+    expect(pool.rejectReasonForTrack({ id: 'blocked-id', name: 'Other', artist: 'Allowed Artist' })).toBe('banned_id');
+    expect(pool.rejectReasonForTrack({ name: 'Blocked (Live)', artist: 'Other / Guest' })).toBe('banned_dedupe');
+    expect(pool.rejectReasonForTrack({ name: 'Allowed', artist: 'Blocked Artist / Guest' })).toBe('banned_artist');
+    expect(pool.rejectReasonForTrack({ name: 'Allowed', artist: 'Allowed Artist' })).toBeNull();
+  });
+
   it('merges id and dedupe conflicts into the existing id entry', () => {
     const pool = new CandidatePool();
 

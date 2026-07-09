@@ -29,6 +29,8 @@ export type CandidatePoolRejectReason =
   | 'banned_artist'
   | 'pool_full';
 
+export type CandidatePoolBanRejectReason = Exclude<CandidatePoolRejectReason, 'pool_full'>;
+
 export type CandidatePoolUpsertResult =
   | { status: 'inserted' }
   | { status: 'merged_by_id' }
@@ -39,6 +41,10 @@ export type CandidatePoolUpsertResult =
 type CandidateDedupeInput = {
   name?: string | null;
   artist?: string | null;
+};
+
+type CandidateRejectInput = CandidateDedupeInput & {
+  id?: string | null;
 };
 
 type CandidatePoolEntry = {
@@ -162,9 +168,27 @@ export class CandidatePool {
     this.bannedTrackKeys = new Set(options.bannedTrackKeys ?? []);
   }
 
+  rejectReasonForTrack(input: CandidateRejectInput): CandidatePoolBanRejectReason | null {
+    const id = input.id === undefined || input.id === null ? '' : String(input.id).trim();
+    if (id && this.bannedIds.has(id)) {
+      return 'banned_id';
+    }
+
+    const name = input.name?.trim() ?? '';
+    const artist = input.artist?.trim() ?? '';
+    const dedupeKey = buildCandidateDedupeKey({ name, artist });
+    if (isMusicTrackDedupeKeyExcluded(dedupeKey, this.bannedTrackKeys)) {
+      return 'banned_dedupe';
+    }
+
+    return artist && artistParts(artist).some((artistPart) => this.bannedArtists.has(artistPart))
+      ? 'banned_artist'
+      : null;
+  }
+
   upsert(candidate: MusicCandidate): CandidatePoolUpsertResult {
     const dedupeKey = buildCandidateDedupeKey(candidate);
-    const rejectReason = this.rejectReason(candidate, dedupeKey);
+    const rejectReason = this.rejectReason(candidate);
 
     if (rejectReason) {
       return { status: 'rejected', reason: rejectReason };
@@ -327,18 +351,8 @@ export class CandidatePool {
     }
   }
 
-  private rejectReason(candidate: MusicCandidate, dedupeKey: string): CandidatePoolRejectReason | null {
-    if (this.bannedIds.has(candidate.id)) {
-      return 'banned_id';
-    }
-
-    if (isMusicTrackDedupeKeyExcluded(dedupeKey, this.bannedTrackKeys)) {
-      return 'banned_dedupe';
-    }
-
-    return artistParts(candidate.artist).some((artist) => this.bannedArtists.has(artist))
-      ? 'banned_artist'
-      : null;
+  private rejectReason(candidate: MusicCandidate): CandidatePoolRejectReason | null {
+    return this.rejectReasonForTrack(candidate);
   }
 
   private findDedupedId(dedupeKey: string): string | undefined {

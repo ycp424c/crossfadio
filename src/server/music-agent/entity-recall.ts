@@ -1,9 +1,11 @@
 import type { NcmClient } from '../ncm/client.js';
 import type { CandidatePool } from './candidates.js';
 import {
+  rejectedPoolRecallProblems,
   skippedRecallProblems,
   sourceScores,
-  upsertTracks
+  upsertTracks,
+  type UpsertTracksResult
 } from './candidate-admission.js';
 import {
   albumMatchesEntity,
@@ -24,6 +26,7 @@ import type {
   CandidateSource,
   MusicAgentContextSummary
 } from './schema.js';
+import type { NcmTrackLike } from './liked-recall.js';
 import type { NcmPlaylistSearchResult } from '../../shared/schema.js';
 
 export type EntityRecallNcmClient = Pick<
@@ -64,6 +67,8 @@ const EXPANDED_TRACK_VARIANT_PATTERN = /翻唱|cover|tribute|karaoke|instrumenta
 const COLLECTION_TITLE_VARIANT_PATTERN = /翻唱|cover|tribute|karaoke|instrumental|伴奏|ktv|铃声|睡眠|白噪音|asmr|sped\s*up|slow\s*&\s*reverb|acapella|a cappella/i;
 const MALE_VOCAL_QUERY_PATTERN = /男声|男歌手|男生唱|\bmale(?:[\s-]*(?:vocal|vocals|singer|artist))?\b/i;
 const FEMALE_VOCAL_QUERY_PATTERN = /女声|女歌手|女生唱|\bfemale(?:[\s-]*(?:vocal|vocals|singer|artist))?\b/i;
+const ARTIST_TOP_SONG_RANDOM_WINDOW = 12;
+const ARTIST_TOP_SONG_RANDOMIZE_MIN_TRACKS = 3;
 
 export async function recallFromEntity(options: EntityRecallOptions): Promise<EntityRecallResult> {
   try {
@@ -98,7 +103,7 @@ async function recallTrackEntity(options: EntityRecallOptions): Promise<EntityRe
     });
     return {
       added: result.added,
-      problems: skippedRecallProblems(result)
+      problems: entityRecallProblems(result)
     };
   }
 
@@ -129,7 +134,7 @@ async function recallTrackEntity(options: EntityRecallOptions): Promise<EntityRe
   });
   return {
     added: result.added,
-    problems: skippedRecallProblems(result)
+    problems: entityRecallProblems(result)
   };
 }
 
@@ -152,10 +157,10 @@ async function recallArtistEntity(options: EntityRecallOptions): Promise<EntityR
 
   const tracks = await options.ncmClient.getArtistTopSongs(artistId);
   if (options.signal?.aborted) return { added: 0, problems: ['aborted'] };
-  const verifiedTracks = tracks
+  const eligibleTracks = tracks
     .filter((track) => !artistName || trackMatchesArtist(track, artistName))
-    .filter(isUsableExpandedTrack)
-    .slice(0, options.limit);
+    .filter(isUsableExpandedTrack);
+  const verifiedTracks = sampleArtistTopSongs(eligibleTracks, options.limit);
   const source = entityRecallSource(options, 'search');
   const result = upsertTracks(options.candidatePool, verifiedTracks, source, {
     evidence: `实体艺人: ${artistName}`,
@@ -167,10 +172,27 @@ async function recallArtistEntity(options: EntityRecallOptions): Promise<EntityR
   return {
     added: result.added,
     problems: [
-      ...(verifiedTracks.length === 0 ? [`artist entity rejected: ${artistName}`] : []),
-      ...skippedRecallProblems(result)
+      ...(eligibleTracks.length === 0 ? [`artist entity rejected: ${artistName}`] : []),
+      ...entityRecallProblems(result)
     ]
   };
+}
+
+function sampleArtistTopSongs(tracks: NcmTrackLike[], limit: number): NcmTrackLike[] {
+  if (tracks.length < ARTIST_TOP_SONG_RANDOMIZE_MIN_TRACKS) {
+    return tracks.slice(0, limit);
+  }
+  const windowSize = Math.min(tracks.length, Math.max(limit, ARTIST_TOP_SONG_RANDOM_WINDOW));
+  const shuffled = shuffleTracks(tracks.slice(0, windowSize));
+  return shuffled.slice(0, limit);
+}
+
+function shuffleTracks(tracks: NcmTrackLike[]): NcmTrackLike[] {
+  for (let index = tracks.length - 1; index > 0; index -= 1) {
+    const swapIndex = Math.floor(Math.random() * (index + 1));
+    [tracks[index], tracks[swapIndex]] = [tracks[swapIndex], tracks[index]];
+  }
+  return tracks;
 }
 
 async function recallAlbumEntity(options: EntityRecallOptions): Promise<EntityRecallResult> {
@@ -195,7 +217,7 @@ async function recallAlbumEntity(options: EntityRecallOptions): Promise<EntityRe
     });
     return {
       added: result.added,
-      problems: skippedRecallProblems(result)
+      problems: entityRecallProblems(result)
     };
   }
 
@@ -241,7 +263,7 @@ async function recallAlbumEntity(options: EntityRecallOptions): Promise<EntityRe
   });
   return {
     added: result.added,
-    problems: skippedRecallProblems(result)
+    problems: entityRecallProblems(result)
   };
 }
 
@@ -296,8 +318,15 @@ async function recallPlaylistEntity(options: EntityRecallOptions): Promise<Entit
   });
   return {
     added: result.added,
-    problems: skippedRecallProblems(result)
+    problems: entityRecallProblems(result)
   };
+}
+
+function entityRecallProblems(result: UpsertTracksResult): string[] {
+  return [
+    ...skippedRecallProblems(result),
+    ...rejectedPoolRecallProblems(result)
+  ];
 }
 
 function findVerifiedPlaylist(

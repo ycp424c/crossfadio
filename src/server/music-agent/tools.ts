@@ -21,6 +21,7 @@ import {
   type TrendContext
 } from './schema.js';
 import type { CandidatePool } from './candidates.js';
+import type { CandidatePoolBanRejectReason } from './candidates.js';
 import {
   countCandidateArtistKeys,
   sourceScores,
@@ -56,6 +57,8 @@ import {
 } from './query-funnel.js';
 import type { FinalPick } from './schema.js';
 import {
+  entityArtistName,
+  entityTitle,
   parseEntityRecallInput,
   type MusicEntityHypothesis
 } from './entity-hypotheses.js';
@@ -141,6 +144,7 @@ const DEFAULT_ENTITY_RECALL_LIMIT = 5;
 const DEFAULT_ENTITY_SEARCH_LIMIT = 3;
 const MAX_ENTITY_RECALL_LIMIT = 10;
 const MAX_ENTITY_RECALL_COUNT = 8;
+const MAX_ENTITY_RECALL_SCAN_COUNT = 16;
 const AUTO_FILL_MAX_ARTIST_ENTITY_RECALLS = 3;
 const AUTO_FILL_MAX_ALBUM_ENTITY_RECALLS = 2;
 const AUTO_FILL_MAX_PLAYLIST_ENTITY_RECALLS = 3;
@@ -279,9 +283,64 @@ export function createMusicAgentTools(input: CreateMusicAgentToolsInput): MusicA
         stringValue(toolInput.playlistId)
       ]);
       if (playlistIds.length === 0) {
-        return observation(input.candidatePool, 'playlist recall skipped: no playlist ids.', [
-          'no playlist ids provided'
+        const playlistQueries = uniqueStrings([
+          ...stringArrayValue(toolInput.playlistQueries),
+          ...stringArrayValue(toolInput.queries),
+          ...stringArrayValue(toolInput.names),
+          stringValue(toolInput.query),
+          stringValue(toolInput.name)
         ]);
+        if (playlistQueries.length === 0) {
+          return observation(input.candidatePool, 'playlist recall skipped: no playlist ids.', [
+            'no playlist ids provided'
+          ]);
+        }
+        const limit = boundedPositiveInt(toolInput.limit, DEFAULT_ENTITY_RECALL_LIMIT, MAX_ENTITY_RECALL_LIMIT);
+        const searchLimit = Math.min(limit, DEFAULT_ENTITY_SEARCH_LIMIT);
+        const avoidArtists = contextAvoidArtistSet(input.context, state.queryPlan);
+        const artistCounts = countCandidateArtistKeys(input.candidatePool.list());
+        let added = 0;
+        const problems: string[] = [];
+        const queries = playlistQueries.slice(0, MAX_ENTITY_RECALL_COUNT);
+        let attemptedQueryCount = 0;
+        let stoppedReason: string | undefined;
+        for (const query of queries) {
+          if (signal?.aborted) return abortedObservation(input.candidatePool);
+          const result = await recallFromEntity({
+            entity: { type: 'playlist', name: query },
+            ncmClient: input.ncmClient,
+            candidatePool: input.candidatePool,
+            context: input.context,
+            limit,
+            searchLimit,
+            consumeNcmSearch: () => consumeNcmSearch(state, limits.maxNcmSearches),
+            consumePlaylistFetch: () => consumePlaylistFetch(state, limits.maxPlaylistFetches),
+            avoidArtists,
+            artistCounts,
+            provenanceKind: 'verified_entity',
+            signal
+          });
+          attemptedQueryCount += 1;
+          added += result.added;
+          problems.push(...result.problems);
+          if (isNcmSearchBudgetExhausted(result)) {
+            stoppedReason = 'ncm_search_budget_exhausted';
+            break;
+          }
+          if (isPlaylistFetchBudgetExhausted(result)) {
+            stoppedReason = 'playlist_fetch_budget_exhausted';
+            break;
+          }
+        }
+        return observation(
+          input.candidatePool,
+          `playlist recall searched ${attemptedQueryCount} queries and added ${added} candidates.`,
+          problems,
+          {
+            attemptedQueryCount,
+            ...(stoppedReason ? { stoppedReason } : {})
+          }
+        );
       }
 
       let added = 0;
@@ -341,28 +400,44 @@ export function createMusicAgentTools(input: CreateMusicAgentToolsInput): MusicA
     recall_from_entities: async (toolInput, signal) => {
       if (signal?.aborted) return abortedObservation(input.candidatePool);
       const parsedInput = parseEntityRecallInput(toolInput);
-      const entities = parsedInput.entities.slice(0, MAX_ENTITY_RECALL_COUNT);
+      const avoidArtists = contextAvoidArtistSet(input.context, state.queryPlan);
+      const selectedInput = selectEntityRecallInputs(parsedInput.entities, avoidArtists, input.candidatePool);
+      const entities = selectedInput.entities;
       if (entities.length === 0) {
-        return observation(input.candidatePool, 'entity recall skipped: no entities.', [
-          'no music entities provided',
-          ...parsedInput.problems
-        ]);
+        const hadEntitiesBeforeFiltering = parsedInput.entities.length > 0;
+        return observation(
+          input.candidatePool,
+          hadEntitiesBeforeFiltering
+            ? 'entity recall skipped: all entities were filtered before recall.'
+            : 'entity recall skipped: no entities.',
+          [
+            ...(hadEntitiesBeforeFiltering ? [] : ['no music entities provided']),
+            ...parsedInput.problems,
+            ...selectedInput.problems
+          ],
+          { prefilteredEntityCount: parsedInput.entities.length - entities.length }
+        );
       }
 
       const limit = boundedPositiveInt(toolInput.limit, DEFAULT_ENTITY_RECALL_LIMIT, MAX_ENTITY_RECALL_LIMIT);
       const searchLimit = Math.min(limit, DEFAULT_ENTITY_SEARCH_LIMIT);
-      const avoidArtists = new Set(
-        [
-          ...avoidArtistsFromContext(input.context),
-          ...(state.queryPlan?.avoidArtists ?? [])
-        ].flatMap(artistKeys)
-      );
       const artistCounts = countCandidateArtistKeys(input.candidatePool.list());
-      const problems: string[] = [...parsedInput.problems];
+      const problems: string[] = [...parsedInput.problems, ...selectedInput.problems];
       let added = 0;
+      let attemptedEntityCount = 0;
+      let productiveEntityCount = 0;
+      let scannedEntityCount = 0;
+      let stoppedReason: string | undefined;
 
       for (const entity of entities) {
         if (signal?.aborted) return abortedObservation(input.candidatePool);
+        if (productiveEntityCount >= MAX_ENTITY_RECALL_COUNT) break;
+        if (scannedEntityCount >= MAX_ENTITY_RECALL_SCAN_COUNT) {
+          problems.push(`entity recall stopped after scanning ${MAX_ENTITY_RECALL_SCAN_COUNT} entities`);
+          stoppedReason = 'scan_limit';
+          break;
+        }
+        scannedEntityCount += 1;
         const result = await recallFromEntity({
           entity,
           ncmClient: input.ncmClient,
@@ -377,14 +452,29 @@ export function createMusicAgentTools(input: CreateMusicAgentToolsInput): MusicA
           provenanceKind: 'verified_entity',
           signal
         });
+        attemptedEntityCount += 1;
         added += result.added;
         problems.push(...result.problems);
+        if (result.added > 0) {
+          productiveEntityCount += 1;
+        }
+        if (isNcmSearchBudgetExhausted(result)) {
+          stoppedReason = 'ncm_search_budget_exhausted';
+          break;
+        }
       }
 
       return observation(
         input.candidatePool,
-        `entity recall expanded ${entities.length} entities and added ${added} candidates.`,
-        problems
+        `entity recall attempted ${attemptedEntityCount} entities, produced ${productiveEntityCount} productive entities, and added ${added} candidates.`,
+        problems,
+        {
+          attemptedEntityCount,
+          productiveEntityCount,
+          scannedEntityCount,
+          prefilteredEntityCount: parsedInput.entities.length - entities.length,
+          ...(stoppedReason ? { stoppedReason } : {})
+        }
       );
     },
 
@@ -970,6 +1060,88 @@ function avoidArtistsFromContext(context: MusicAgentContextSummary): string[] {
     .map((item) => item.artist);
 }
 
+function contextAvoidArtistSet(
+  context: MusicAgentContextSummary,
+  queryPlan: QueryPlan | null
+): Set<string> {
+  return new Set(
+    [
+      ...avoidArtistsFromContext(context),
+      ...(queryPlan?.avoidArtists ?? [])
+    ].flatMap(artistKeys)
+  );
+}
+
+function selectEntityRecallInputs(
+  entities: MusicEntityHypothesis[],
+  avoidArtists: ReadonlySet<string>,
+  candidatePool: CandidatePool
+): { entities: MusicEntityHypothesis[]; problems: string[] } {
+  let skippedAvoided = 0;
+  const skippedBanned = new Map<CandidatePoolBanRejectReason, number>();
+  const selected: MusicEntityHypothesis[] = [];
+  for (const entity of entities) {
+    if (isAvoidedEntityRecallInput(entity, avoidArtists)) {
+      skippedAvoided += 1;
+      continue;
+    }
+    const banReason = entityBanRejectReason(entity, candidatePool);
+    if (banReason) {
+      skippedBanned.set(banReason, (skippedBanned.get(banReason) ?? 0) + 1);
+      continue;
+    }
+    selected.push(entity);
+  }
+  const skippedBannedTotal = [...skippedBanned.values()].reduce((sum, count) => sum + count, 0);
+  return {
+    entities: selected,
+    problems: [
+      ...(skippedAvoided > 0 ? [`skipped ${skippedAvoided} entity queries for recently repeated artists`] : []),
+      ...(skippedBannedTotal > 0
+        ? [`skipped ${skippedBannedTotal} entity queries already blocked by candidate bans (${formatReasonCounts(skippedBanned)})`]
+        : [])
+    ]
+  };
+}
+
+function isAvoidedEntityRecallInput(
+  entity: MusicEntityHypothesis,
+  avoidArtists: ReadonlySet<string>
+): boolean {
+  const artist = entity.type === 'artist'
+    ? entityArtistName(entity)
+    : entity.type === 'track' || entity.type === 'album'
+      ? entity.artist ?? ''
+      : '';
+  return artist.length > 0 && artistKeys(artist).some((key) => avoidArtists.has(key));
+}
+
+function entityBanRejectReason(
+  entity: MusicEntityHypothesis,
+  candidatePool: CandidatePool
+): CandidatePoolBanRejectReason | null {
+  if (entity.type !== 'track') return null;
+  const id = entity.providerId ?? entity.id ?? '';
+  const title = entityTitle(entity);
+  const artist = entity.artist ?? '';
+  if (!id && (!title || !artist)) return null;
+  return candidatePool.rejectReasonForTrack({ id, name: title, artist });
+}
+
+function formatReasonCounts(reasons: ReadonlyMap<string, number>): string {
+  return [...reasons.entries()]
+    .map(([reason, count]) => `${reason}=${count}`)
+    .join(', ');
+}
+
+function isNcmSearchBudgetExhausted(result: { problems: string[] }): boolean {
+  return result.problems.includes('NCM search budget exhausted');
+}
+
+function isPlaylistFetchBudgetExhausted(result: { problems: string[] }): boolean {
+  return result.problems.includes('playlist fetch budget exhausted');
+}
+
 async function recallFromQueries(options: {
   queries: string[];
   source: CandidateSource;
@@ -981,12 +1153,7 @@ async function recallFromQueries(options: {
   signal?: AbortSignal;
   limit?: number;
 }): Promise<ToolObservation> {
-  const avoidArtists = new Set(
-    [
-      ...avoidArtistsFromContext(options.input.context),
-      ...(options.state.queryPlan?.avoidArtists ?? [])
-    ].flatMap(artistKeys)
-  );
+  const avoidArtists = contextAvoidArtistSet(options.input.context, options.state.queryPlan);
   const result = await runRecallFromQueries({
     queries: options.queries,
     source: options.source,

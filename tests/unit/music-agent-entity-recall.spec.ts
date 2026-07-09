@@ -47,6 +47,37 @@ describe('MusicAgent entity recall', () => {
     ]);
   });
 
+  it('reports candidate-pool rejects for track entity recall admissions', async () => {
+    const pool = new CandidatePool({ bannedIds: ['track-1'] });
+    const ncmClient = ncmClientStub({
+      getSongDetails: vi.fn(async () => [{
+        id: 'track-1',
+        name: 'City Light',
+        artists: ['Fresh Artist']
+      }])
+    });
+
+    const result = await recallFromEntity({
+      entity: { type: 'track', providerId: 'track-1', title: 'City Light', artist: 'Fresh Artist' },
+      ncmClient,
+      candidatePool: pool,
+      context: context(),
+      limit: 3,
+      searchLimit: 3,
+      consumeNcmSearch: vi.fn(() => true),
+      consumePlaylistFetch: vi.fn(() => true),
+      avoidArtists: new Set(),
+      artistCounts: new Map(),
+      provenanceKind: 'verified_entity'
+    });
+
+    expect(result).toEqual({
+      added: 0,
+      problems: ['candidate admission: rejectedByPool=1 (banned_id=1)']
+    });
+    expect(pool.count()).toBe(0);
+  });
+
   it('uses the provided search-budget callback for artist entity expansion', async () => {
     const pool = new CandidatePool();
     const getArtistTopSongs = vi.fn(async () => [{
@@ -80,6 +111,43 @@ describe('MusicAgent entity recall', () => {
     expect(consumeNcmSearch).toHaveBeenCalledTimes(2);
     expect(getArtistTopSongs).not.toHaveBeenCalled();
     expect(pool.count()).toBe(0);
+  });
+
+  it('samples artist top songs before the per-artist admission cap', async () => {
+    const pool = new CandidatePool();
+    const randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0);
+    const ncmClient = ncmClientStub({
+      searchArtists: vi.fn(async () => [{ id: 'artist-1', name: 'Fresh Artist' }]),
+      getArtistTopSongs: vi.fn(async () => [
+        { id: 'top-1', name: 'Top One', artists: ['Fresh Artist'] },
+        { id: 'top-2', name: 'Top Two', artists: ['Fresh Artist'] },
+        { id: 'top-3', name: 'Top Three', artists: ['Fresh Artist'] },
+        { id: 'top-4', name: 'Top Four', artists: ['Fresh Artist'] },
+        { id: 'top-5', name: 'Top Five', artists: ['Fresh Artist'] }
+      ])
+    });
+
+    try {
+      const result = await recallFromEntity({
+        entity: { type: 'artist', name: 'Fresh Artist' },
+        ncmClient,
+        candidatePool: pool,
+        context: context(),
+        limit: 5,
+        searchLimit: 3,
+        consumeNcmSearch: vi.fn(() => true),
+        consumePlaylistFetch: vi.fn(() => true),
+        avoidArtists: new Set(),
+        artistCounts: new Map(),
+        provenanceKind: 'verified_entity'
+      });
+
+      expect(result.added).toBe(2);
+      expect(pool.list().map((candidate) => candidate.id)).toEqual(['top-2', 'top-3']);
+      expect(pool.get('top-1')).toBeUndefined();
+    } finally {
+      randomSpy.mockRestore();
+    }
   });
 
   it('chooses the first playlist whose title satisfies required anchors', async () => {

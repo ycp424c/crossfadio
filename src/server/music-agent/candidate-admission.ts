@@ -160,6 +160,13 @@ export function skippedRecallProblems(result: Pick<UpsertTracksResult, 'skippedA
   ];
 }
 
+export function rejectedPoolRecallProblems(
+  result: Pick<UpsertTracksResult, 'rejectedByPool' | 'rejectedReasons'>
+): string[] {
+  const summary = rejectedByPoolSummary(result);
+  return summary ? [`candidate admission: ${summary}`] : [];
+}
+
 export function candidateFromTrack(
   track: NcmTrackLike,
   source: CandidateSource,
@@ -248,7 +255,7 @@ export function sourceScores(source: CandidateSource, context: MusicAgentContext
     : { ...base, intentMatch: 0.76, tasteMatch: 0.64, novelty: 0.78, sourceConfidence: 0.72 };
 }
 
-function rejectedByPoolSummary(result: UpsertTracksResult): string {
+function rejectedByPoolSummary(result: Pick<UpsertTracksResult, 'rejectedByPool' | 'rejectedReasons'>): string {
   if (result.rejectedByPool === 0) return '';
   const reasons = Object.entries(result.rejectedReasons)
     .filter(([, count]) => count > 0)
