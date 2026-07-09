@@ -8,7 +8,7 @@ type CallRecord = { messages: LlmMessage[] };
  *
  * Usage:
  *   const fake = new FakeLlmClient();
- *   fake.queueResponse('{"mode":"plan",...}');      // for complete()
+ *   fake.queueResponse('{"mode":"chat",...}');      // for complete()
  *   fake.queueStreamDeltas(['hello', ' world']);     // for stream()
  */
 export class FakeLlmClient implements LlmClientLike {

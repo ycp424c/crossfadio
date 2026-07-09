@@ -62,7 +62,7 @@ export async function executeActions(
           break;
         }
         case 'ban_artist':
-          // Artist bans are advisory — store as pref for future plan generation
+          // Artist bans are advisory for future picks.
           setPref(ctx.userId, `ban.artist.${action.artist}`, true);
           break;
         case 'ban_track': {
@@ -76,12 +76,8 @@ export async function executeActions(
           break;
         }
         case 'adjust_mood':
-          // Store mood adjustment as pref — future plan/segue picks it up
+          // Store mood adjustment as pref for future picks and segues.
           setPref(ctx.userId, 'queue.moodOverride', { mood: action.mood, applyTo: action.applyTo, n: action.n });
-          break;
-        case 'replan_segment':
-          // Replan is handled by the caller via the plan API; just record the hint
-          setPref(ctx.userId, 'plan.replanHint', action.hint);
           break;
         case 'set_pref':
           applySetPrefAction(ctx.userId, action.key, action.value, ctx.onQueueActiveDirectiveUpdated);

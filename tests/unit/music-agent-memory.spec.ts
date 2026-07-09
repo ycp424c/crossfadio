@@ -281,7 +281,6 @@ describe('music agent context builder', () => {
       expiresAt: '2026-06-04T08:30:00+08:00'
     });
     setPref(userId, 'queue.moodOverride', { mood: '通勤轻快' });
-    setPref(userId, 'plan.replanHint', { mood: '减少伤感' });
 
     const { buildMusicAgentContext } = await import('../../src/server/music-agent/context.js');
     const { musicAgentContextSummarySchema } = await import('../../src/server/music-agent/schema.js');
@@ -312,7 +311,7 @@ describe('music agent context builder', () => {
       { artist: '阿雅', penalty: 0.3 }
     ]);
     expect(context.bannedSummary).toContain('通勤轻快');
-    expect(context.bannedSummary).toContain('减少伤感');
+    expect(context.bannedSummary).not.toContain('plan.replanHint');
   });
 
   it('builds long-lived track penalties from repeated play history with slow decay', async () => {

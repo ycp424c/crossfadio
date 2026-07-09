@@ -27,7 +27,7 @@ function resolveClient(opts: ComputeOptions): LlmClientLike {
 }
 
 /**
- * Non-streaming: plan mode (and any non-stream call).
+ * Non-streaming agent call.
  * Returns a validated AgentOutput, retrying once on schema failure.
  */
 export async function computeSync(

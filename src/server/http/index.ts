@@ -23,12 +23,6 @@ import {
   createGetPlayerContextHandler
 } from './routes/settings.js';
 import { createAnalyzeTasteHandler } from './routes/taste-analysis.js';
-import {
-  createGetTodayPlanHandler,
-  createRegeneratePlanHandler,
-  createReplanSegmentHandler,
-  createGapFillHandler
-} from './routes/plan.js';
 import { createSegueTriggerHandler, createSegueAudioHandler, createSseSegueHandler } from './routes/segue.js';
 import { createDjPickNextHandler, createSseDjPickNextHandler } from './routes/djNext.js';
 import { createGetRecentMessagesHandler } from './routes/messages.js';
@@ -128,10 +122,6 @@ export async function startLocalServer(options: StartLocalServerOptions): Promis
   app.get('/api/settings/personal-dj-context/tokens', protect, createListPersonalDjContextTokensHandler());
   app.post('/api/settings/personal-dj-context/tokens', protect, createCreatePersonalDjContextTokenHandler());
   app.delete('/api/settings/personal-dj-context/tokens/:id', protect, createRevokePersonalDjContextTokenHandler());
-  app.get('/api/plan/today', protect, createGetTodayPlanHandler({ secrets: null as any }));
-  app.post('/api/plan/regenerate', protect, createRegeneratePlanHandler({ secrets: null as any }));
-  app.post('/api/plan/replan-segment', protect, createReplanSegmentHandler({ secrets: null as any }));
-  app.post('/api/plan/gap-fill', protect, createGapFillHandler({ secrets: null as any }));
   app.get('/api/queue/liked/ids', protect, createGetLikedIdsHandler());
   app.get('/api/queue/liked', protect, createGetLikedQueueHandler());
   app.post('/api/queue/like', protect, createLikeTrackHandler());

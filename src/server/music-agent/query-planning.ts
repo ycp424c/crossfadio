@@ -12,14 +12,13 @@ export function autoFillSearchQueries(context: MusicAgentContextSummary, queryPl
   const exactTrackQueries = isExploreAutoFillContext(context)
     ? queryPlan.exactTrackQueries.slice(0, EXPLORE_AUTO_FILL_MAX_EXACT_SEARCH_QUERIES)
     : queryPlan.exactTrackQueries;
-  const exactPlanQueries = filterExactSongSearchQueries([
-    ...queryPlan.planQueries,
+  const exactTrendQueries = filterExactSongSearchQueries([
     ...queryPlan.trendQueries
   ]).queries;
   return uniqueStrings([
     ...(context.actionQueries ?? []),
     ...exactTrackQueries,
-    ...exactPlanQueries
+    ...exactTrendQueries
   ]).slice(0, 8);
 }
 
@@ -64,7 +63,6 @@ export function autoFillPlaylistQueries(context: MusicAgentContextSummary, query
     context.currentUserText,
     ...(context.actionQueries ?? []),
     context.activeDirective,
-    context.currentPlanSegment ?? '',
     context.currentMoment.dailyTheme ?? '',
     context.tasteSummary,
     context.recentPreferenceSummary,

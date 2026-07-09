@@ -6,7 +6,6 @@ import { AUTO_FILL_BATCH_SIZE_MAX } from '../../shared/dj.js';
 export const candidateSourceSchema = z.enum([
   'liked',
   'playlist',
-  'plan',
   'search',
   'style_expansion',
   'trend'
@@ -17,7 +16,6 @@ export type CandidateSource = z.infer<typeof candidateSourceSchema>;
 export const candidateProvenanceKindSchema = z.enum([
   'liked',
   'playlist',
-  'plan',
   'exact_recall',
   'semantic_discovery',
   'web_hint_recall',
@@ -43,7 +41,6 @@ export const musicAgentToolNameSchema = z.enum([
   'expand_queries',
   'recall_from_liked',
   'recall_from_playlists',
-  'recall_from_plan_segment',
   'recall_from_ncm_search',
   'recall_from_entities',
   'recall_from_trending',
@@ -61,7 +58,7 @@ export const musicCandidateScoresSchema = z.object({
   intentMatch: z.number().min(0).max(1),
   tasteMatch: z.number().min(0).max(1),
   timeFit: z.number().min(0).max(1),
-  planFit: z.number().min(0).max(1),
+  contextFit: z.number().min(0).max(1),
   novelty: z.number().min(0).max(1),
   recentPenalty: z.number().min(0),
   skipPenalty: z.number().min(0),
@@ -98,7 +95,6 @@ export const queryPlanSchema = z.object({
   playlistQueries: z.array(z.string()).default([]),
   intentQueries: z.array(z.string()).default([]),
   tasteAnchorQueries: z.array(z.string()).default([]),
-  planQueries: z.array(z.string()).default([]),
   trendQueries: z.array(z.string()).default([]),
   explorationQueries: z.array(z.string()).default([]),
   styleHints: z.array(z.string()).default([]),
@@ -276,7 +272,6 @@ export const musicAgentContextSummarySchema = z.object({
     dailyTheme: z.string().optional()
   }),
   activeDirective: z.string().default(''),
-  currentPlanSegment: z.string().nullable(),
   tasteSummary: z.string().default(''),
   recentPreferenceSummary: z.string().default(''),
   recentPlaySignals: z.string().default(''),

@@ -18,7 +18,6 @@ function context(overrides: Partial<MusicAgentContextSummary> = {}): MusicAgentC
       dailyTheme: null
     },
     activeDirective: '',
-    currentPlanSegment: null,
     tasteSummary: '',
     recentPreferenceSummary: '',
     recentPlaySignals: '',
@@ -36,7 +35,6 @@ function queryPlan(overrides: Partial<QueryPlan> = {}): QueryPlan {
     playlistQueries: [],
     intentQueries: ['intent'],
     tasteAnchorQueries: ['taste'],
-    planQueries: ['plan'],
     trendQueries: [],
     explorationQueries: ['explore'],
     styleHints: [],

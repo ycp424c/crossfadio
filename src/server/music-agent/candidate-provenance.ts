@@ -3,7 +3,6 @@ import type { CandidateProvenance, CandidateProvenanceKind, CandidateSource, Mus
 const DEFAULT_PROVENANCE_BY_SOURCE: Record<CandidateSource, CandidateProvenanceKind> = {
   liked: 'liked',
   playlist: 'playlist',
-  plan: 'plan',
   search: 'exact_recall',
   style_expansion: 'style_expansion',
   trend: 'trend_recall'

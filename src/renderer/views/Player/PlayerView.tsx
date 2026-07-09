@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Activity,
   AlertTriangle,
-  CalendarDays,
   Clock,
   CloudSun,
   Compass,
@@ -96,7 +95,7 @@ type NcmSessionState = {
 };
 
 type PlayerViewProps = {
-  onNavigate?: (tab: 'plan' | 'settings') => void;
+  onNavigate?: (tab: 'settings') => void;
 };
 
 const DEFAULT_DUCKING_HINT_SEC = 8;
@@ -1408,14 +1407,6 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
             </div>
           ) : null}
           <div className="flex shrink-0 items-center gap-2">
-            <button
-              className="hidden items-center gap-2 rounded-lg border border-white/10 bg-black/20 px-3 py-2 text-sm text-zinc-300 transition hover:border-white/20 hover:bg-white/5 hover:text-zinc-100 md:inline-flex"
-              onClick={() => onNavigate?.('plan')}
-              type="button"
-            >
-              <CalendarDays className="h-4 w-4" />
-              今日计划
-            </button>
             <button
               className="hidden items-center gap-2 rounded-lg border border-white/10 bg-black/20 px-3 py-2 text-sm text-zinc-300 transition hover:border-white/20 hover:bg-white/5 hover:text-zinc-100 md:inline-flex"
               onClick={() => onNavigate?.('settings')}

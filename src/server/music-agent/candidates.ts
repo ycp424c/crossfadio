@@ -83,7 +83,7 @@ function mergeScores(left: MusicCandidateScores, right: MusicCandidateScores): M
     intentMatch: Math.max(left.intentMatch, right.intentMatch),
     tasteMatch: Math.max(left.tasteMatch, right.tasteMatch),
     timeFit: Math.max(left.timeFit, right.timeFit),
-    planFit: Math.max(left.planFit, right.planFit),
+    contextFit: Math.max(left.contextFit, right.contextFit),
     novelty: Math.max(left.novelty, right.novelty),
     recentPenalty: Math.max(left.recentPenalty, right.recentPenalty),
     skipPenalty: Math.max(left.skipPenalty, right.skipPenalty),

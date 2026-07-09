@@ -1,14 +1,13 @@
 import { useEffect, useState } from 'react';
-import { Radio, Settings2, CalendarDays, MessageCircle } from 'lucide-react';
+import { Radio, Settings2, MessageCircle } from 'lucide-react';
 import { PlayerView } from '@renderer/views/Player/PlayerView';
 import { SettingsView } from '@renderer/views/Settings/SettingsView';
-import { PlanView } from '@renderer/views/Plan/PlanView';
 import { ChatPanel } from '@renderer/components/player/ChatPanel';
 import { RecommendOverlay } from '@renderer/components/player/RecommendOverlay';
 import { getRuntimeInfo, getStoredToken } from '@renderer/api';
 import { initSseEvents } from '@renderer/sse/client';
 
-type Tab = 'player' | 'plan' | 'chat' | 'settings';
+type Tab = 'player' | 'chat' | 'settings';
 type RecommendEvent = { type: string; data: Record<string, unknown> };
 
 export function App(): JSX.Element {
@@ -31,9 +30,6 @@ export function App(): JSX.Element {
         <div style={{ display: tab === 'player' ? 'block' : 'none' }}>
           <PlayerView onNavigate={setTab} />
         </div>
-        <div style={{ display: tab === 'plan' ? 'block' : 'none' }}>
-          <PlanView />
-        </div>
         <div style={{ display: tab === 'chat' ? 'flex' : 'none' }} className="h-full flex-col">
           <ChatPanel onRecommendEvent={setRecommendEvent} />
         </div>
@@ -45,7 +41,6 @@ export function App(): JSX.Element {
       {/* Bottom tab bar */}
       <nav className="flex border-t border-zinc-800 bg-zinc-900 pb-[env(safe-area-inset-bottom)]">
         <TabButton active={tab === 'player'} onClick={() => setTab('player')} icon={<Radio className="h-4 w-4" />} label="播放" />
-        <TabButton active={tab === 'plan'} onClick={() => setTab('plan')} icon={<CalendarDays className="h-4 w-4" />} label="计划" />
         <TabButton active={tab === 'chat'} onClick={() => setTab('chat')} icon={<MessageCircle className="h-4 w-4" />} label="聊天" />
         <TabButton active={tab === 'settings'} onClick={() => setTab('settings')} icon={<Settings2 className="h-4 w-4" />} label="设置" />
       </nav>

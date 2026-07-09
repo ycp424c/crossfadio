@@ -12,7 +12,7 @@ import type { NcmClient } from '../../src/server/ncm/client';
 const mocks = vi.hoisted(() => ({
   computeStream: vi.fn(),
   loadUserCorpus: vi.fn(),
-  loadLikedTracksForPlanning: vi.fn(),
+  loadLikedTracksForAgentContext: vi.fn(),
   fetchWeather: vi.fn(),
   extractChatPreferencesIfDue: vi.fn(),
   recommendFromChat: vi.fn()
@@ -27,7 +27,7 @@ vi.mock('../../src/server/user-corpus/loader', () => ({
 }));
 
 vi.mock('../../src/server/user-corpus/ncm-liked', () => ({
-  loadLikedTracksForPlanning: mocks.loadLikedTracksForPlanning
+  loadLikedTracksForAgentContext: mocks.loadLikedTracksForAgentContext
 }));
 
 vi.mock('../../src/server/weather', () => ({
@@ -78,7 +78,7 @@ beforeEach(() => {
     moodRules: '',
     playlists: []
   });
-  mocks.loadLikedTracksForPlanning.mockResolvedValue([]);
+  mocks.loadLikedTracksForAgentContext.mockResolvedValue([]);
   mocks.fetchWeather.mockResolvedValue(null);
   mocks.extractChatPreferencesIfDue.mockResolvedValue({ extracted: false, messageIds: [], summary: '' });
   mocks.recommendFromChat.mockResolvedValue({

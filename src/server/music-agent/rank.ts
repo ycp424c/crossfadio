@@ -51,7 +51,7 @@ export function scoreCandidate(candidate: MusicCandidate): number {
     scores.intentMatch * 0.3 +
     scores.tasteMatch * 0.2 +
     scores.timeFit * 0.15 +
-    scores.planFit * 0.1 +
+    scores.contextFit * 0.1 +
     scores.sourceConfidence * 0.1 +
     scores.novelty * 0.15 -
     scores.recentPenalty -

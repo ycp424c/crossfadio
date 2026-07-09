@@ -18,27 +18,20 @@ const llmConfig = {
 };
 
 const baseFragments: Fragments = {
-  mode: 'plan',
+  mode: 'chat',
   system: 'You are a DJ.',
   corpus: { taste: 'indie', routines: 'morning', moodRules: 'chill', playlists: [] },
   env: { nowIso: '2026-04-24T09:00:00Z', localTime: '周四 09:00', weather: null, nowPlaying: null },
   memory: { recentPlays: [], recentChat: [] },
-  input: { kind: 'planRequest', date: '2026-04-24' },
-  trace: { triggeredBy: 'scheduler', lastDecision: null }
+  input: { kind: 'chat', text: 'hi' },
+  trace: { triggeredBy: 'user', lastDecision: null }
 };
 
-const validPlanJson = JSON.stringify({
-  mode: 'plan',
-  date: '2026-04-24',
-  segments: [{
-    id: 'morning',
-    label: '早晨',
-    timeRange: '07:00-09:00',
-    mood: '清醒',
-    energyPct: 40,
-    tracks: [{ query: 'Here Comes The Sun — Beatles', reason: '经典清醒曲' }]
-  }],
-  narrative: '今日电台从清晨开始'
+const validChatJson = JSON.stringify({
+  mode: 'chat',
+  intent: 'chitchat',
+  say: '好的',
+  actions: []
 });
 
 function makeLlmResponse(content: string) {
@@ -49,32 +42,32 @@ function makeLlmResponse(content: string) {
 }
 
 describe('computeSync', () => {
-  it('returns validated plan output on success', async () => {
-    mockFetch(async () => makeLlmResponse(validPlanJson));
+  it('returns validated chat output on success', async () => {
+    mockFetch(async () => makeLlmResponse(validChatJson));
 
     const result = await computeSync(baseFragments, { llmConfig });
-    expect(result.mode).toBe('plan');
-    if (result.mode === 'plan') {
-      expect(result.date).toBe('2026-04-24');
-      expect(result.segments).toHaveLength(1);
+    expect(result.mode).toBe('chat');
+    if (result.mode === 'chat') {
+      expect(result.intent).toBe('chitchat');
+      expect(result.say).toBe('好的');
     }
   });
 
   it('strips markdown code fences from LLM output', async () => {
-    mockFetch(async () => makeLlmResponse(`\`\`\`json\n${validPlanJson}\n\`\`\``));
+    mockFetch(async () => makeLlmResponse(`\`\`\`json\n${validChatJson}\n\`\`\``));
     const result = await computeSync(baseFragments, { llmConfig });
-    expect(result.mode).toBe('plan');
+    expect(result.mode).toBe('chat');
   });
 
   it('injects mode field when LLM omits it', async () => {
     const noMode = JSON.stringify({
-      date: '2026-04-24',
-      segments: [],
-      narrative: 'test'
+      intent: 'chitchat',
+      say: 'test',
+      actions: []
     });
     mockFetch(async () => makeLlmResponse(noMode));
     const result = await computeSync(baseFragments, { llmConfig });
-    expect(result.mode).toBe('plan');
+    expect(result.mode).toBe('chat');
   });
 
   it('retries once on schema failure and succeeds on second attempt', async () => {
@@ -84,12 +77,12 @@ describe('computeSync', () => {
       if (callCount === 1) {
         return makeLlmResponse('not-valid-json');
       }
-      return makeLlmResponse(validPlanJson);
+      return makeLlmResponse(validChatJson);
     });
 
     const result = await computeSync(baseFragments, { llmConfig });
     expect(callCount).toBe(2);
-    expect(result.mode).toBe('plan');
+    expect(result.mode).toBe('chat');
   });
 
   it('throws AgentError after two consecutive failures', async () => {

@@ -22,7 +22,6 @@ describe('music-agent schema', () => {
     expect(musicAgentToolNameSchema.parse('expand_queries')).toBe('expand_queries');
     expect(musicAgentToolNameSchema.parse('recall_from_liked')).toBe('recall_from_liked');
     expect(musicAgentToolNameSchema.parse('recall_from_playlists')).toBe('recall_from_playlists');
-    expect(musicAgentToolNameSchema.parse('recall_from_plan_segment')).toBe('recall_from_plan_segment');
     expect(musicAgentToolNameSchema.parse('recall_from_ncm_search')).toBe('recall_from_ncm_search');
     expect(musicAgentToolNameSchema.parse('recall_from_entities')).toBe('recall_from_entities');
     expect(musicAgentToolNameSchema.parse('recall_from_trending')).toBe('recall_from_trending');
@@ -43,6 +42,12 @@ describe('music-agent schema', () => {
     expect(candidateProvenanceKindSchema.parse('web_hint_recall')).toBe('web_hint_recall');
   });
 
+  it('rejects removed plan recall names and sources', () => {
+    expect(() => musicAgentToolNameSchema.parse('recall_from_plan_segment')).toThrow();
+    expect(() => candidateSourceSchema.parse('plan')).toThrow();
+    expect(() => candidateProvenanceKindSchema.parse('plan')).toThrow();
+  });
+
   it('validates a candidate with sources, evidence, and scores', () => {
     const candidate = musicCandidateSchema.parse({
       id: '101',
@@ -58,7 +63,7 @@ describe('music-agent schema', () => {
         intentMatch: 0.8,
         tasteMatch: 0.7,
         timeFit: 0.6,
-        planFit: 0.5,
+        contextFit: 0.5,
         novelty: 0.4,
         recentPenalty: 0,
         skipPenalty: 0,

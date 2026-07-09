@@ -55,7 +55,6 @@ function context(overrides: Partial<MusicAgentContextSummary> = {}): MusicAgentC
       dailyTheme: '轻快'
     },
     activeDirective: '接下来保持轻快女声',
-    currentPlanSegment: null,
     tasteSummary: '偏好华语女声',
     recentPreferenceSummary: '',
     recentPlaySignals: '',
@@ -76,7 +75,7 @@ function candidate(overrides: Partial<MusicCandidate> = {}): MusicCandidate {
       intentMatch: 0.9,
       tasteMatch: 0.8,
       timeFit: 0.7,
-      planFit: 0.4,
+      contextFit: 0.4,
       novelty: 0.5,
       recentPenalty: 0,
       skipPenalty: 0,

@@ -3,23 +3,22 @@ import {
   fragmentsSchema,
   agentOutputSchema,
   actionSchema,
-  planOutputSchema,
   segueOutputSchema,
   chatOutputSchema
 } from '../../src/server/agent/schema';
 
 const baseFragments = {
-  mode: 'plan' as const,
+  mode: 'chat' as const,
   system: 'You are a DJ.',
   corpus: { taste: 'indie', routines: 'morning work', moodRules: 'chill', playlists: [] },
   env: { nowIso: '2026-04-24T09:00:00Z', localTime: '周四 09:00', weather: null, nowPlaying: null },
   memory: { recentPlays: [], recentChat: [] },
-  input: { kind: 'planRequest' as const, date: '2026-04-24' },
-  trace: { triggeredBy: 'scheduler' as const, lastDecision: null }
+  input: { kind: 'chat' as const, text: 'Hello' },
+  trace: { triggeredBy: 'user' as const, lastDecision: null }
 };
 
 describe('fragmentsSchema', () => {
-  it('accepts a valid plan fragments object', () => {
+  it('accepts a valid chat fragments object', () => {
     expect(fragmentsSchema.safeParse(baseFragments).success).toBe(true);
   });
 
@@ -44,36 +43,6 @@ describe('fragmentsSchema', () => {
   it('rejects missing system field', () => {
     const { system: _, ...noSystem } = baseFragments;
     expect(fragmentsSchema.safeParse(noSystem).success).toBe(false);
-  });
-});
-
-describe('planOutputSchema', () => {
-  const validPlan = {
-    mode: 'plan' as const,
-    date: '2026-04-24',
-    segments: [{
-      id: 'morning' as const,
-      label: '早晨',
-      timeRange: '07:00-09:00',
-      mood: '清醒',
-      energyPct: 40,
-      tracks: [{ query: 'Here Comes The Sun — The Beatles', reason: '清新开场' }]
-    }],
-    narrative: '今日电台以清醒开始'
-  };
-
-  it('accepts a valid plan output', () => {
-    expect(planOutputSchema.safeParse(validPlan).success).toBe(true);
-  });
-
-  it('rejects energyPct > 100', () => {
-    const bad = { ...validPlan, segments: [{ ...validPlan.segments[0], energyPct: 150 }] };
-    expect(planOutputSchema.safeParse(bad).success).toBe(false);
-  });
-
-  it('rejects invalid segment id', () => {
-    const bad = { ...validPlan, segments: [{ ...validPlan.segments[0], id: 'afternoon' }] };
-    expect(planOutputSchema.safeParse(bad).success).toBe(false);
   });
 });
 
@@ -144,29 +113,14 @@ describe('actionSchema', () => {
     expect(actionSchema.safeParse({ type: 'ban_artist', artist: 'Bad Artist' }).success).toBe(true);
   });
 
-  it('accepts replan_segment with full hint', () => {
-    const action = {
-      type: 'replan_segment' as const,
-      hint: { mood: 'energetic', bpmMin: 120, durationMin: 30, count: 5 }
-    };
-    expect(actionSchema.safeParse(action).success).toBe(true);
-  });
-
   it('rejects unknown action type', () => {
     expect(actionSchema.safeParse({ type: 'teleport' }).success).toBe(false);
   });
 });
 
 describe('agentOutputSchema (discriminated union)', () => {
-  it('routes plan mode', () => {
-    const plan = {
-      mode: 'plan' as const,
-      date: '2026-04-24',
-      segments: [],
-      narrative: 'test'
-    };
-    const result = agentOutputSchema.safeParse(plan);
-    expect(result.success).toBe(true);
+  it('rejects removed plan mode', () => {
+    expect(agentOutputSchema.safeParse({ mode: 'plan', date: '2026-04-24' }).success).toBe(false);
   });
 
   it('routes segue mode', () => {

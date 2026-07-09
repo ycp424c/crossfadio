@@ -187,7 +187,6 @@ export function createMusicAgentTools(input: CreateMusicAgentToolsInput): MusicA
         stringValue(toolInput.userText),
         input.context.currentUserText,
         input.context.activeDirective,
-        input.context.currentPlanSegment ?? '',
         input.context.tasteSummary,
         input.context.recentPreferenceSummary
       ].filter(Boolean).join(' ');
@@ -311,24 +310,6 @@ export function createMusicAgentTools(input: CreateMusicAgentToolsInput): MusicA
       return observation(input.candidatePool, `playlist recall added ${added} candidates.`, problems);
     },
 
-    recall_from_plan_segment: async (toolInput, signal) => {
-      if (signal?.aborted) return abortedObservation(input.candidatePool);
-      const queries = uniqueStrings([
-        ...stringArrayValue(toolInput.queries),
-        ...extractPlanQueries(input.context.currentPlanSegment)
-      ]).slice(0, 6);
-      return recallFromQueries({
-        queries,
-        source: 'plan',
-        evidencePrefix: '计划段落',
-        scores: sourceScores('plan', input.context),
-        input,
-        state,
-        maxSearches: limits.maxNcmSearches,
-        signal
-      });
-    },
-
     recall_from_ncm_search: async (toolInput, signal) => {
       if (signal?.aborted) return abortedObservation(input.candidatePool);
       const queries = uniqueStrings([
@@ -340,7 +321,6 @@ export function createMusicAgentTools(input: CreateMusicAgentToolsInput): MusicA
               ...state.queryPlan.exactTrackQueries,
               ...state.queryPlan.intentQueries,
               ...state.queryPlan.tasteAnchorQueries,
-              ...state.queryPlan.planQueries,
               ...state.queryPlan.explorationQueries
             ]
           : [])
@@ -946,7 +926,6 @@ function sanitizeQueryPlan(plan: QueryPlan): QueryPlan {
     playlistQueries: uniqueStrings(plan.playlistQueries.map(sanitizeSearchQuery)),
     intentQueries: uniqueStrings(plan.intentQueries.map(sanitizeSearchQuery)),
     tasteAnchorQueries: uniqueStrings(plan.tasteAnchorQueries.map(sanitizeSearchQuery)),
-    planQueries: uniqueStrings(plan.planQueries.map(sanitizeSearchQuery)),
     trendQueries: uniqueStrings(plan.trendQueries.map(sanitizeSearchQuery)),
     explorationQueries: uniqueStrings(plan.explorationQueries.map(sanitizeSearchQuery)),
     styleHints: uniqueStrings(plan.styleHints.map(sanitizeSearchQuery)),
@@ -962,7 +941,6 @@ function hasQueryPlanRecallQueries(plan: QueryPlan): boolean {
     ...plan.playlistQueries,
     ...plan.intentQueries,
     ...plan.tasteAnchorQueries,
-    ...plan.planQueries,
     ...plan.trendQueries,
     ...plan.explorationQueries
   ].some((query) => sanitizeSearchQuery(query).length > 0);
@@ -976,7 +954,6 @@ function mergeQueryPlans(base: QueryPlan, overlay: QueryPlan): QueryPlan {
     playlistQueries: overlay.playlistQueries.length > 0 ? overlay.playlistQueries : base.playlistQueries,
     intentQueries: overlay.intentQueries.length > 0 ? overlay.intentQueries : base.intentQueries,
     tasteAnchorQueries: overlay.tasteAnchorQueries.length > 0 ? overlay.tasteAnchorQueries : base.tasteAnchorQueries,
-    planQueries: overlay.planQueries.length > 0 ? overlay.planQueries : base.planQueries,
     trendQueries: overlay.trendQueries.length > 0 ? overlay.trendQueries : base.trendQueries,
     explorationQueries: overlay.explorationQueries.length > 0 ? overlay.explorationQueries : base.explorationQueries,
     styleHints: uniqueStrings([...base.styleHints, ...overlay.styleHints]),
@@ -1059,7 +1036,6 @@ function summarizeContext(context: MusicAgentContextSummary): string {
     context.currentMoment.weather ? `weather=${context.currentMoment.weather}` : '',
     context.currentMoment.dailyTheme ? `theme=${context.currentMoment.dailyTheme}` : '',
     context.activeDirective ? `directive=${context.activeDirective}` : '',
-    context.currentPlanSegment ? `plan=${context.currentPlanSegment}` : '',
     context.tasteSummary ? `taste=${context.tasteSummary}` : '',
     context.recentPreferenceSummary ? `recentPreference=${context.recentPreferenceSummary}` : '',
     context.recentPlaySignals ? `recentPlays=${context.recentPlaySignals}` : '',
@@ -1099,7 +1075,6 @@ function summarizeQueryPlan(plan: QueryPlan): string {
     plan.playlistQueries.length ? `playlists=${plan.playlistQueries.join('、')}` : '',
     plan.intentQueries.length ? `intent=${plan.intentQueries.join('、')}` : '',
     plan.tasteAnchorQueries.length ? `taste=${plan.tasteAnchorQueries.join('、')}` : '',
-    plan.planQueries.length ? `plan=${plan.planQueries.join('、')}` : '',
     plan.trendQueries.length ? `trend=${plan.trendQueries.join('、')}` : '',
     plan.explorationQueries.length ? `explore=${plan.explorationQueries.join('、')}` : '',
     plan.styleHints.length ? `styleHints=${plan.styleHints.join('、')}` : '',
@@ -1155,10 +1130,8 @@ function defaultQueryPlan(
     stringValue(input.query),
     ...(context.actionQueries ?? [])
   ]);
-  const planQueries = extractPlanQueries(context.currentPlanSegment);
   const exactTrackQueries = filterExactSongSearchQueries([
-    ...explicitQueries,
-    ...planQueries
+    ...explicitQueries
   ]).queries;
 
   return queryPlanSchema.parse({
@@ -1168,7 +1141,6 @@ function defaultQueryPlan(
     playlistQueries: [],
     intentQueries: explicitQueries,
     tasteAnchorQueries: [],
-    planQueries,
     trendQueries: [],
     explorationQueries: [],
     styleHints: uniqueStrings([
@@ -1183,13 +1155,6 @@ function defaultQueryPlan(
     negativeTerms: knowledge.negativeMappings,
     rationale: 'context-derived fallback query plan'
   });
-}
-
-function extractPlanQueries(planSegment: string | null): string[] {
-  if (!planSegment) return [];
-  const tracks = planSegment.match(/tracks=([^；;]+)/)?.[1];
-  if (!tracks) return [];
-  return tracks.split(/[、,，/]+/).map((item) => item.trim()).filter(Boolean);
 }
 
 function consumeNcmSearch(state: ToolState, maxSearches: number): boolean {

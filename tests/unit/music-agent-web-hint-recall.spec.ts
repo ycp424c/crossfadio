@@ -97,7 +97,6 @@ function context(overrides: Partial<MusicAgentContextSummary>): MusicAgentContex
     currentUserText: '',
     currentMoment: { localTime: '周五 15:00', daypart: '下午', weather: null },
     activeDirective: '',
-    currentPlanSegment: null,
     tasteSummary: '',
     recentPreferenceSummary: '',
     recentPlaySignals: '',

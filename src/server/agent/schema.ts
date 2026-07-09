@@ -72,7 +72,7 @@ export type AgentMessage = z.infer<typeof messageSchema>;
 // ─── Fragments (6 slices) ────────────────────────────────────────────────────
 
 export const fragmentsSchema = z.object({
-  mode: z.enum(['plan', 'segue', 'chat']),
+  mode: z.enum(['segue', 'chat']),
 
   // ① system prompt (dj-persona.md + mode-specific constraint appended by modes.ts)
   system: z.string(),
@@ -134,7 +134,6 @@ export const fragmentsSchema = z.object({
         })
         .optional()
     }),
-    z.object({ kind: z.literal('planRequest'), date: z.string() }),
     z.object({ kind: z.literal('toolResult'), tool: z.string(), data: z.unknown() })
   ]),
 
@@ -165,41 +164,12 @@ export const actionSchema = z.discriminatedUnion('type', [
     applyTo: z.enum(['remaining_segment', 'next_n']),
     n: z.number().optional()
   }),
-  z.object({
-    type: z.literal('replan_segment'),
-    hint: z.object({
-      mood: z.string().optional(),
-      genre: z.string().optional(),
-      bpmMin: z.number().optional(),
-      bpmMax: z.number().optional(),
-      durationMin: z.number(),
-      count: z.number().optional()
-    })
-  }),
   z.object({ type: z.literal('set_pref'), key: z.string(), value: z.unknown() })
 ]);
 
 export type Action = z.infer<typeof actionSchema>;
 
 // ─── Output schemas (per mode) ───────────────────────────────────────────────
-
-export const planOutputSchema = z.object({
-  mode: z.literal('plan'),
-  date: z.string(),
-  segments: z.array(
-    z.object({
-      id: z.enum(['morning', 'work', 'evening', 'late-night']),
-      label: z.string(),
-      timeRange: z.string(),
-      mood: z.string(),
-      energyPct: z.number().min(0).max(100),
-      tracks: z.array(z.object({ query: z.string(), reason: z.string() }))
-    })
-  ),
-  narrative: z.string()
-});
-
-export type PlanOutput = z.infer<typeof planOutputSchema>;
 
 export const segueOutputSchema = z.object({
   mode: z.literal('segue'),
@@ -213,7 +183,7 @@ export type SegueOutput = z.infer<typeof segueOutputSchema>;
 
 export const chatOutputSchema = z.object({
   mode: z.literal('chat'),
-  intent: z.enum(['chitchat', 'adjust_queue', 'replan', 'control', 'ask_meta']),
+  intent: z.enum(['chitchat', 'adjust_queue', 'control', 'ask_meta']),
   say: z.string(),
   actions: z.array(actionSchema).default([])
 });
@@ -221,7 +191,6 @@ export const chatOutputSchema = z.object({
 export type ChatOutput = z.infer<typeof chatOutputSchema>;
 
 export const agentOutputSchema = z.discriminatedUnion('mode', [
-  planOutputSchema,
   segueOutputSchema,
   chatOutputSchema
 ]);

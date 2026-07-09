@@ -137,8 +137,7 @@ const RECALL_TOOL_NAMES = new Set<MusicAgentToolName>([
   'recall_from_ncm_search',
   'recall_from_style_expansion',
   'recall_from_trending',
-  'recall_from_playlists',
-  'recall_from_plan_segment'
+  'recall_from_playlists'
 ]);
 const EXTERNAL_RECALL_TOOL_NAMES = new Set<MusicAgentToolName>([
   'recall_auto_fill_mix',
@@ -146,8 +145,7 @@ const EXTERNAL_RECALL_TOOL_NAMES = new Set<MusicAgentToolName>([
   'recall_from_ncm_search',
   'recall_from_style_expansion',
   'recall_from_trending',
-  'recall_from_playlists',
-  'recall_from_plan_segment'
+  'recall_from_playlists'
 ]);
 const NO_PROGRESS_FINAL_TOOL_NAMES = new Set<MusicAgentToolName>([
   ...EXTERNAL_RECALL_TOOL_NAMES,

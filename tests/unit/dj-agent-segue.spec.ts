@@ -24,7 +24,7 @@ vi.mock('../../src/server/agent/compute', () => ({
 }));
 
 vi.mock('../../src/server/user-corpus/ncm-liked', () => ({
-  loadLikedTracksForPlanning: async () => []
+  loadLikedTracksForAgentContext: async () => []
 }));
 
 vi.mock('../../src/server/weather', () => ({

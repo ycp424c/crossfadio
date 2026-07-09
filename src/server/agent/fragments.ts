@@ -115,9 +115,6 @@ function buildInputSlice(f: Fragments): string {
         f
       )}`;
       break;
-    case 'planRequest':
-      inputText = `[计划请求] 日期：${f.input.date}`;
-      break;
     case 'toolResult':
       inputText = `[工具结果] ${f.input.tool}：${JSON.stringify(f.input.data)}`;
       break;

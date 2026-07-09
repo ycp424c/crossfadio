@@ -14,7 +14,7 @@ export function initSseEvents(token: string): void {
   url.searchParams.set('token', token);
   eventsSource = new EventSource(url.toString());
 
-  for (const eventType of ['connected', 'queue-updated', 'queue-appended', 'plan-updated']) {
+  for (const eventType of ['connected', 'queue-updated', 'queue-appended']) {
     eventsSource.addEventListener(eventType, (e) => {
       notifyListeners(eventType, parseSseData((e as MessageEvent).data));
     });

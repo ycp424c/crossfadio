@@ -40,10 +40,10 @@ src/
       users.ts      # User CRUD + blocked login attempts (multi-user)
     user-corpus/    # Template bootstrap
   renderer/
-    App.tsx         # 4-tab layout: Player / Plan / Chat / Settings
+    App.tsx         # 3-tab layout: Player / Chat / Settings
     api.ts          # HTTP client for /api endpoints
     lib-hooks.ts    # useMediaQuery hook (md=768px breakpoint)
-    views/          # Player/, Plan/, Settings/
+    views/          # Player/, Settings/ (chat lives in components/player/ChatPanel)
     components/     # player/ (8 components), ui-button
     audio/          # engine, crossfade, prefetch, timeline, lyrics
     sse/client.ts   # SSE client: EventSource for broadcasts, fetch streams for one-shot jobs
@@ -126,14 +126,6 @@ src/
 | POST | `/api/queue/like` | Toggle like on a track |
 | PUT | `/api/queue/state` | Persist queue state |
 
-### Plan
-| Method | Path | Purpose |
-|--------|------|---------|
-| GET | `/api/plan/today` | Today's plan |
-| POST | `/api/plan/regenerate` | Full replan |
-| POST | `/api/plan/replan-segment` | Replace one segment |
-| POST | `/api/plan/gap-fill` | Fill missing tracks |
-
 ### DJ / Segue / Chat
 | Method | Path | Purpose |
 |--------|------|---------|
@@ -155,7 +147,7 @@ src/
 ### SSE
 | Method | Path | Auth | Purpose |
 |--------|------|------|---------|
-| GET | `/api/sse/events` | JWT | Persistent EventSource stream (queue/plan events) |
+| GET | `/api/sse/events` | JWT | Persistent EventSource stream (queue events) |
 | POST | `/api/sse/chat` | JWT | Chat message + SSE stream response |
 | POST | `/api/sse/chat/cancel` | JWT | Cancel active recommendation |
 | POST | `/api/sse/segue` | JWT | Segue trigger + SSE stream response |
@@ -193,16 +185,16 @@ Production-specific topology and access details belong only in the ignored local
 
 ## Architecture Notes
 
-- **4 tabs**: Player, Plan, Chat, Settings — all mounted, visibility toggled via `display:none`
+- **3 tabs**: Player, Chat, Settings — all mounted, visibility toggled via `display:none`
 - **Player layout**: Header (logo + nav buttons + NCM chip) + full-width discovery mode rail + main player column (cover-backed hero + lyrics + timeline + controls + context panels) + queue/status column
 - **Discovery mode**: User pref `discovery.mode` is `explore` (default) or `comfort`. Explore treats taste as an expansion seed and blends daily theme, time, weather, and DJ persona; comfort treats taste as a stronger anchor.
 - **NCM cover art**: `NcmClient.getSongDetails()` maps `/song/detail` `al.picUrl` to `coverImgUrl`; queue, now/next, and DJ appended tracks carry it to `NowPlayingHero` and `QueuePanel`.
 - **Dual-deck audio**: `AudioContext` with A/B deck rotation, equal-energy crossfade (cos/sin curves), BiquadFilter lowpass sweep
 - **Segue timing**: d-12s trigger → d-10s prefetch → d-8s crossfade start → d-7s TTS ducking
-- **Agent**: Single-agent, 3 modes (plan/segue/chat), 6-fragment prompt assembly, zod output validation with retry
-- **Real-time push**: SSE replaces WebSocket. `GET /api/sse/events` (EventSource) for persistent queue/plan events. `POST /api/sse/{chat,segue,pick-next}` (fetch+ReadableStream) for one-shot streaming tasks with AbortController on client disconnect. The player guards `pick-next` with a local in-flight ref so long-running selection opens only one SSE stream at a time. Renderer retries `/api/sse/segue` up to three attempts on transient `502/503/504`.
+- **Agent**: Single-agent, 2 modes (segue/chat), 6-fragment prompt assembly, zod output validation with retry
+- **Real-time push**: SSE replaces WebSocket. `GET /api/sse/events` (EventSource) for persistent queue events. `POST /api/sse/{chat,segue,pick-next}` (fetch+ReadableStream) for one-shot streaming tasks with AbortController on client disconnect. The player guards `pick-next` with a local in-flight ref so long-running selection opens only one SSE stream at a time. Renderer retries `/api/sse/segue` up to three attempts on transient `502/503/504`.
 - **NCM auth**: QR code login → JWT token (HS256 via `jose`). Cookie encrypted with AES-256-GCM in `users` table. `authMiddleware` + `userScopeMiddleware` on all protected routes. Whitelist management routes additionally require `adminMiddleware` (checks `CROSSFADIO_ADMIN_NCM_ID`).
 - **Whitelist**: `allowlist.json` in app data dir controls which NCM user IDs can log in. Admin can manage via Settings UI. Removal also deletes `users` record to immediately revoke existing sessions. `userScopeMiddleware` double-checks `isAllowed()` on every request.
 - **Per-user isolation**: All DB tables have `user_id` column. Queue/location are per-user `Map`s. User corpus files under `users/<ncmId>/`.
-- **Daily theme**: LLM-generated daily radio theme (holidays, solar terms, artist anniversaries). Per-user toggle in Settings (pref `dailyTheme.enabled`). When disabled, DJ pick-next, plan, and segue skip theme context. Timeout controlled by `CROSSFADIO_DAILY_THEME_TIMEOUT_MS` (default 15s).
+- **Daily theme**: LLM-generated daily radio theme (holidays, solar terms, artist anniversaries). Per-user toggle in Settings (pref `dailyTheme.enabled`). When disabled, DJ pick-next and segue skip theme context. Timeout controlled by `CROSSFADIO_DAILY_THEME_TIMEOUT_MS` (default 15s).
 - **Responsive layout**: `md` = 768px breakpoint, single-column mobile (grid-cols-1), desktop preserves 12-col grid. NCM auth uses full-screen sheet on mobile via `useMediaQuery`. Status panel collapsed to one-line summary on mobile. `viewport-fit=cover` for iPhone safe areas.

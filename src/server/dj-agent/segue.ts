@@ -6,7 +6,7 @@ import type { LlmConfig } from '../llm/client.js';
 import type { NcmClient } from '../ncm/client.js';
 import { getLogger } from '../logger.js';
 import { loadUserCorpus } from '../user-corpus/loader.js';
-import { loadLikedTracksForPlanning } from '../user-corpus/ncm-liked.js';
+import { loadLikedTracksForAgentContext } from '../user-corpus/ncm-liked.js';
 import { getRecentMessages } from '../store/messages.js';
 import { getRecentPlays } from '../store/plays.js';
 import { getRecentSegues, saveSegue } from '../store/segues.js';
@@ -40,7 +40,7 @@ export async function generateSegue(input: GenerateSegueInput): Promise<Generate
   const logger = getLogger();
   const now = input.now ?? new Date();
   const corpus = loadUserCorpus(input.userId);
-  const likedTracks = await loadLikedTracksForPlanning(input.ncmClient);
+  const likedTracks = await loadLikedTracksForAgentContext(input.ncmClient);
   if (input.signal?.aborted) return null;
 
   const [trackContext, weather, djSnapshot] = await Promise.all([

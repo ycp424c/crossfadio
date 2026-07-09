@@ -60,11 +60,10 @@ describe('MusicAgent web discovery hints', () => {
       currentUserText: '想找一些粤语新歌',
       actionQueries: ['卫兰'],
       activeDirective: '不要太吵',
-      currentPlanSegment: '傍晚通勤'
     });
     const globalContext = context({ currentUserText: 'recent indie folk releases' });
 
-    expect(webDiscoveryIntentText(zhContext)).toBe('想找一些粤语新歌 卫兰 不要太吵 傍晚通勤');
+    expect(webDiscoveryIntentText(zhContext)).toBe('想找一些粤语新歌 卫兰 不要太吵');
     expect(defaultWebDiscoveryLocale(zhContext)).toBe('zh-CN');
     expect(defaultWebDiscoveryLocale(globalContext)).toBe('global');
     expect(defaultWebDiscoveryFreshness('recent indie folk releases')).toBe('recent');
@@ -95,7 +94,6 @@ function context(overrides: Partial<MusicAgentContextSummary>): MusicAgentContex
     currentUserText: '',
     currentMoment: { localTime: '周五 15:00', daypart: '下午', weather: null },
     activeDirective: '',
-    currentPlanSegment: null,
     tasteSummary: '',
     recentPreferenceSummary: '',
     recentPlaySignals: '',

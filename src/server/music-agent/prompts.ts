@@ -41,12 +41,12 @@ export function buildLoopMessages(input: BuildLoopMessagesInput): LlmMessage[] {
         '只输出严格 JSON，不要 Markdown、不要解释、不要额外文本。',
         `可调用工具白名单：${TOOL_WHITELIST}。`,
         '输出 tool_call 时格式为 {"type":"tool_call","tool":"工具名","input":{...}}。',
-        '输出 final 时格式为 {"type":"final","say":"...","picks":[{"id":"候选池ID","reason":"...","source":"liked|playlist|plan|search|style_expansion|trend"}],"rejected":[]}。',
+        '输出 final 时格式为 {"type":"final","say":"...","picks":[{"id":"候选池ID","reason":"...","source":"liked|playlist|search|style_expansion|trend"}],"rejected":[]}。',
         'final picks 的 id 必须来自候选池；不能选择候选池外的歌曲。',
         'activeDirective/current chat 必须优先于趋势、榜单、泛化流行度。',
         'recentArtistPenalties 中 penalty 较高的歌手需要先在 expand_queries 阶段放入 avoidArtists，并用相邻风格、不同艺人或具体曲目实体扩展召回。',
         'recentTrackPenalties 是同一首歌的长周期重复惩罚；penalty 高的候选除非明显最贴合，否则应优先让位给相邻风格的新候选。',
-        'NCM song search 只适合精确召回：recall_from_ncm_search 只能使用具体歌名+艺人、计划曲目、榜单曲目或高置信曲目实体；不要把 mood、场景、风格、人声、能量词直接作为 song search query。',
+        'NCM song search 只适合精确召回：recall_from_ncm_search 只能使用具体歌名+艺人、榜单曲目或高置信曲目实体；不要把 mood、场景、风格、人声、能量词直接作为 song search query。',
         'expand_queries 应把具体曲目实体放入 exactTrackQueries，把具体艺人放入 artistAnchors，把具体专辑放入 albumAnchors，把风格/语言/场景适合的歌单搜索入口放入 playlistQueries；不要把这些实体混成一条 song search query。',
         '风格、地区、年代、人声、能量、编曲质感应放入 styleHints/listeningConstraints；这些语义线索用于实体发现和排序，不是直接搜索词。',
         '当你已经有具体 track/artist/album/playlist 实体假设时，调用 recall_from_entities 让服务端先用 NCM 校验再入池；不要把未经校验的实体直接写进 final。',
@@ -98,7 +98,7 @@ export function buildFinalPickMessages(input: BuildLoopMessagesInput): LlmMessag
               '服务端只接受顶层 type 为 final 的对象；不要输出请求下一步动作的字段。'
             ]
           : []),
-        '这次调用只能输出 {"type":"final","say":"...","picks":[{"id":"候选池ID","reason":"...","source":"liked|playlist|plan|search|style_expansion|trend"}],"rejected":[]}。',
+        '这次调用只能输出 {"type":"final","say":"...","picks":[{"id":"候选池ID","reason":"...","source":"liked|playlist|search|style_expansion|trend"}],"rejected":[]}。',
         `picks 必须从候选池里选择 1 到 ${targetPickCount} 首；id 必须完全来自候选池；source 必须是对应候选的来源之一。`,
         `候选池数量达到或超过目标数量时，必须尽量返回 ${targetPickCount} 首。`,
         `如果少于 ${targetPickCount} 首，必须在 rejected 里为每个缺口说明原因；不要为了凑数选择明显不适合当前队列的歌曲。`,

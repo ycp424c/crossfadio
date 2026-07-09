@@ -3,7 +3,7 @@ import type { NcmClient } from '../ncm/client.js';
 
 type LikedCapableNcmClient = Pick<NcmClient, 'getLikedSongIds' | 'getSongDetails'>;
 
-export async function loadLikedTracksForPlanning(
+export async function loadLikedTracksForAgentContext(
   ncmClient: Partial<LikedCapableNcmClient>,
   limit = 50
 ): Promise<Track[]> {

@@ -7,7 +7,7 @@ import { LlmClient } from '../llm/client.js';
 import type { LlmConfig } from '../llm/client.js';
 import type { NcmClient } from '../ncm/client.js';
 import { loadUserCorpus } from '../user-corpus/loader.js';
-import { loadLikedTracksForPlanning } from '../user-corpus/ncm-liked.js';
+import { loadLikedTracksForAgentContext } from '../user-corpus/ncm-liked.js';
 import { getRecentPlays } from '../store/plays.js';
 import { getRecentMessages, saveMessage } from '../store/messages.js';
 import { getPreferenceContext } from '../store/chat-preferences.js';
@@ -63,7 +63,7 @@ export async function handleChatMessage(
     if (signal?.aborted) return;
 
     const corpus = loadUserCorpus(userId);
-    const likedTracks = await loadLikedTracksForPlanning(ncmClient);
+    const likedTracks = await loadLikedTracksForAgentContext(ncmClient);
     if (signal?.aborted) return;
     const weather = await fetchWeather(userId);
     if (signal?.aborted) return;

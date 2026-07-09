@@ -3,7 +3,7 @@ import { assembleMessages } from '../../src/server/agent/fragments';
 import type { Fragments } from '../../src/server/agent/schema';
 
 const base: Fragments = {
-  mode: 'plan',
+  mode: 'chat',
   system: 'You are a DJ.',
   corpus: {
     taste: 'Indie Pop / Dream Pop',
@@ -28,8 +28,8 @@ const base: Fragments = {
     ],
     recentChat: [{ role: 'user', content: '来一首安静的' }]
   },
-  input: { kind: 'planRequest', date: '2026-04-24' },
-  trace: { triggeredBy: 'scheduler', lastDecision: null }
+  input: { kind: 'chat', text: '今天来点清新的' },
+  trace: { triggeredBy: 'user', lastDecision: null }
 };
 
 describe('assembleMessages', () => {
@@ -67,8 +67,8 @@ describe('assembleMessages', () => {
   it('fourth message contains input and trace', () => {
     const msgs = assembleMessages(base);
     expect(msgs[3].role).toBe('user');
-    expect(msgs[3].content).toContain('2026-04-24');
-    expect(msgs[3].content).toContain('triggeredBy=scheduler');
+    expect(msgs[3].content).toContain('今天来点清新的');
+    expect(msgs[3].content).toContain('triggeredBy=user');
   });
 
   it('handles chat input kind', () => {

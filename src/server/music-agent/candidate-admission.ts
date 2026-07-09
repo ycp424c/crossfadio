@@ -216,7 +216,7 @@ export function sourceScores(source: CandidateSource, context: MusicAgentContext
     intentMatch: 0.62,
     tasteMatch: 0.58,
     timeFit: 0.55,
-    planFit: 0.35,
+    contextFit: 0.35,
     novelty: 0.45,
     recentPenalty: 0,
     skipPenalty: 0,
@@ -232,11 +232,6 @@ export function sourceScores(source: CandidateSource, context: MusicAgentContext
     return mode === 'comfort'
       ? { ...base, tasteMatch: 0.8, sourceConfidence: 0.78 }
       : { ...base, tasteMatch: 0.66, sourceConfidence: 0.62, novelty: 0.48 };
-  }
-  if (source === 'plan') {
-    return mode === 'comfort'
-      ? { ...base, intentMatch: 0.76, planFit: 0.86, sourceConfidence: 0.72 }
-      : { ...base, intentMatch: 0.72, planFit: 0.76, sourceConfidence: 0.62, novelty: 0.5 };
   }
   if (source === 'trend') {
     return mode === 'comfort'

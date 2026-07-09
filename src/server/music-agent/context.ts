@@ -7,12 +7,11 @@ import { getRecentPlays } from '../store/plays.js';
 import { getQueue } from '../store/queue.js';
 import { getPref } from '../store/prefs.js';
 import { getActiveTemporaryQueueBans } from '../store/temporary-bans.js';
-import { loadLatestPlan } from '../store/plan.js';
 import {
   getPersonalDjContextSnapshot,
   type PersonalDjContextRecord
 } from '../store/personal-dj-context.js';
-import { formatShanghaiDate, formatShanghaiLocalTime, getDaypart, getShanghaiTimeParts } from '../timezone.js';
+import { formatShanghaiLocalTime, getDaypart, getShanghaiTimeParts } from '../timezone.js';
 import {
   musicAgentContextSummarySchema,
   type MusicAgentContextSummary
@@ -71,7 +70,6 @@ export async function buildMusicAgentContext(input: BuildMusicAgentContextInput)
       ...(theme ? { dailyTheme: `${theme.theme}（${theme.keywords.join('、')}）` } : {})
     },
     activeDirective: getActiveDirective(input.userId, now),
-    currentPlanSegment: buildCurrentPlanSegment(input.userId, now),
     tasteSummary: buildTasteSummary(input.userId),
     recentPreferenceSummary: truncate(getPreferenceContext(input.userId, 3), 600),
     recentPlaySignals: buildRecentPlaySignals(input.userId),
@@ -149,69 +147,6 @@ function getActiveDirective(userId: string, now: Date): string {
   const expiresAt = directive?.expiresAt ? new Date(directive.expiresAt) : null;
   if (!expiresAt || Number.isNaN(expiresAt.getTime()) || expiresAt <= now) return '';
   return truncate(text, 300);
-}
-
-function buildCurrentPlanSegment(userId: string, now: Date): string | null {
-  const timeParts = getShanghaiTimeParts(now);
-  const plan = loadLatestPlan(userId, formatShanghaiDate(now));
-  if (!plan) return null;
-
-  const segment = plan.segments.find((item) => isCurrentTimeInSegmentRange(item.timeRange, timeParts))
-    ?? plan.segments.find((item) => item.id === getPlanSegmentId(timeParts.hour));
-  if (!segment) return null;
-
-  const tracks = segment.tracks
-    .slice(0, 4)
-    .map((track) => track.query)
-    .filter(Boolean)
-    .join('、');
-  const parts = [
-    `${segment.label} ${segment.timeRange}`,
-    `mood=${segment.mood}`,
-    `energy=${segment.energyPct}`,
-    tracks ? `tracks=${tracks}` : ''
-  ].filter(Boolean);
-  return truncate(parts.join('；'), 500);
-}
-
-function isCurrentTimeInSegmentRange(
-  timeRange: string,
-  timeParts: Pick<ReturnType<typeof getShanghaiTimeParts>, 'hour' | 'minute'>
-): boolean {
-  const range = parseSegmentTimeRange(timeRange);
-  if (!range) return false;
-  const currentMinutes = timeParts.hour * 60 + timeParts.minute;
-  if (range.start === range.end) return false;
-  if (range.start < range.end) {
-    return currentMinutes >= range.start && currentMinutes < range.end;
-  }
-  return currentMinutes >= range.start || currentMinutes < range.end;
-}
-
-function parseSegmentTimeRange(timeRange: string): { start: number; end: number } | null {
-  const match = /(\d{1,2})(?::(\d{2}))?\s*(?:[-–—~至到]+)\s*(\d{1,2})(?::(\d{2}))?/.exec(timeRange);
-  if (!match) return null;
-  const [, startHourRaw, startMinuteRaw, endHourRaw, endMinuteRaw] = match;
-  const start = parseTimeOfDay(startHourRaw, startMinuteRaw);
-  const end = parseTimeOfDay(endHourRaw, endMinuteRaw);
-  if (start === null || end === null) return null;
-  return { start, end };
-}
-
-function parseTimeOfDay(hourRaw: string, minuteRaw: string | undefined): number | null {
-  const hour = Number.parseInt(hourRaw, 10);
-  const minute = minuteRaw === undefined ? 0 : Number.parseInt(minuteRaw, 10);
-  if (!Number.isInteger(hour) || !Number.isInteger(minute)) return null;
-  if (hour < 0 || hour > 24 || minute < 0 || minute > 59) return null;
-  if (hour === 24 && minute !== 0) return null;
-  return (hour % 24) * 60 + minute;
-}
-
-function getPlanSegmentId(hour: number): 'morning' | 'work' | 'evening' | 'late-night' {
-  if (hour >= 5 && hour < 9) return 'morning';
-  if (hour >= 9 && hour < 17) return 'work';
-  if (hour >= 17 && hour < 23) return 'evening';
-  return 'late-night';
 }
 
 function buildTasteSummary(userId: string): string {
@@ -373,11 +308,9 @@ function roundPenalty(value: number): number {
 
 function buildBannedSummary(userId: string, now: Date): string {
   const moodOverride = getPref<unknown>(userId, 'queue.moodOverride');
-  const replanHint = getPref<unknown>(userId, 'plan.replanHint');
   const temporaryBans = getActiveTemporaryQueueBans(userId, now);
   const parts = [
     moodOverride ? `queue.moodOverride=${compactValue(moodOverride)}` : '',
-    replanHint ? `plan.replanHint=${compactValue(replanHint)}` : '',
     temporaryBans.length > 0 ? `temporaryQueueBans=${formatTemporaryBans(temporaryBans)}` : ''
   ].filter(Boolean);
   return truncate(parts.join('\n'), 600);

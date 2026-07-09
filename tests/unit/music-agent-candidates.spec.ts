@@ -17,7 +17,7 @@ function candidate(overrides: Partial<MusicCandidate> = {}): MusicCandidate {
       intentMatch: 0.5,
       tasteMatch: 0.5,
       timeFit: 0.5,
-      planFit: 0.5,
+      contextFit: 0.5,
       novelty: 0.5,
       recentPenalty: 0,
       skipPenalty: 0,
@@ -204,7 +204,7 @@ describe('CandidatePool', () => {
       id: 'later-duplicate',
       name: 'Second Song',
       artist: 'Artist',
-      sources: ['plan'],
+      sources: ['style_expansion'],
       evidence: ['later evidence']
     }));
 
@@ -212,7 +212,7 @@ describe('CandidatePool', () => {
     expect(pool.has('canonical')).toBe(true);
     expect(pool.has('duplicate')).toBe(true);
     expect(pool.has('later-duplicate')).toBe(true);
-    expect(pool.get('canonical')?.sources).toEqual(['liked', 'trend', 'search', 'plan']);
+    expect(pool.get('canonical')?.sources).toEqual(['liked', 'trend', 'search', 'style_expansion']);
     expect(pool.get('canonical')?.evidence).toEqual([
       'canonical evidence',
       'duplicate evidence',

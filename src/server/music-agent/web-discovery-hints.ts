@@ -94,8 +94,7 @@ export function webDiscoveryIntentText(context: MusicAgentContextSummary): strin
   return [
     context.currentUserText,
     ...(context.actionQueries ?? []),
-    context.activeDirective,
-    context.currentPlanSegment ?? ''
+    context.activeDirective
   ].filter(Boolean).join(' ');
 }
 

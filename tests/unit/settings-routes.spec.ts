@@ -216,6 +216,9 @@ describe('settings player context route', () => {
   it('skips daily theme generation when preference is disabled', async () => {
     const { setPref } = await import('../../src/server/store/prefs.js');
     setPref('test-user', 'dailyTheme.enabled', false);
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+      current_condition: [{ temp_C: '20', weatherDesc: [{ value: 'Clear' }] }]
+    }), { status: 200 })));
 
     const handler = createGetPlayerContextHandler();
     const res = createJsonResponse();

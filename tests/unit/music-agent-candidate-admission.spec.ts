@@ -242,7 +242,6 @@ describe('MusicAgent candidate admission helpers', () => {
     const exploreExpectations = [
       ['liked', { tasteMatch: 0.72, sourceConfidence: 0.68, novelty: 0.32 }],
       ['playlist', { tasteMatch: 0.66, sourceConfidence: 0.62, novelty: 0.48 }],
-      ['plan', { intentMatch: 0.72, planFit: 0.76, sourceConfidence: 0.62 }],
       ['search', { intentMatch: 0.76, tasteMatch: 0.64, novelty: 0.78, sourceConfidence: 0.72 }],
       ['style_expansion', { intentMatch: 0.78, novelty: 0.8, sourceConfidence: 0.72 }],
       ['trend', { intentMatch: 0.66, tasteMatch: 0.52, novelty: 0.82, sourceConfidence: 0.7 }]
@@ -274,7 +273,7 @@ function baseScores(): MusicCandidateScores {
     intentMatch: 0.5,
     tasteMatch: 0.5,
     timeFit: 0.5,
-    planFit: 0.5,
+    contextFit: 0.5,
     novelty: 0.5,
     recentPenalty: 0,
     skipPenalty: 0,
@@ -300,7 +299,6 @@ function context(overrides: Partial<MusicAgentContextSummary>): MusicAgentContex
     currentUserText: '',
     currentMoment: { localTime: '周五 15:00', daypart: '下午', weather: null },
     activeDirective: '',
-    currentPlanSegment: null,
     tasteSummary: '',
     recentPreferenceSummary: '',
     recentPlaySignals: '',

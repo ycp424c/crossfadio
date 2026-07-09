@@ -373,7 +373,6 @@ function normalizeTrackId(track: NcmTrackLike): string {
 function recallQueryProvenanceKind(source: CandidateSource): CandidateProvenanceKind {
   if (source === 'trend') return 'trend_recall';
   if (source === 'style_expansion') return 'style_expansion';
-  if (source === 'plan') return 'plan';
   if (source === 'playlist') return 'playlist';
   if (source === 'liked') return 'liked';
   return 'exact_recall';

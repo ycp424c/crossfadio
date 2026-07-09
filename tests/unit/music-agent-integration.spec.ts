@@ -45,49 +45,6 @@ afterEach(() => {
 });
 
 describe('MusicAgent facade', () => {
-  it('selects the current plan segment by matching its time range', async () => {
-    const { savePlan } = await import('../../src/server/store/plan.js');
-    const { buildMusicAgentContext } = await import('../../src/server/music-agent/context.js');
-
-    savePlan('time-range-plan-user', {
-      mode: 'plan',
-      date: '2026-06-15',
-      segments: [
-        {
-          id: 'work',
-          label: '专注工作',
-          timeRange: '13:30-18:30',
-          mood: '专注/平静',
-          energyPct: 40,
-          tracks: [
-            { query: '日出时让街灯安睡 — 李幸倪 / 张学友', reason: '平静收束' },
-            { query: '无名的人 — 张韶涵', reason: '保持清醒' }
-          ]
-        },
-        {
-          id: 'late-night',
-          label: '深夜写代码',
-          timeRange: '21:00-01:00',
-          mood: '安静/内省',
-          energyPct: 30,
-          tracks: [{ query: '喜帖街 — 谢安琪', reason: '夜间氛围' }]
-        }
-      ],
-      narrative: 'test plan'
-    });
-
-    const context = await buildMusicAgentContext({
-      userId: 'time-range-plan-user',
-      request: 'auto-fill',
-      includeDailyTheme: false,
-      now: new Date('2026-06-15T10:08:30.000Z')
-    });
-
-    expect(context.currentPlanSegment).not.toBeNull();
-    expect(context.currentPlanSegment ?? '').toContain('专注工作 13:30-18:30');
-    expect(context.currentPlanSegment ?? '').toContain('tracks=日出时让街灯安睡 — 李幸倪 / 张学友、无名的人 — 张韶涵');
-  });
-
   it('keeps the base LLM budget for small auto-fill batches and raises it for large batches', () => {
     const source = fs.readFileSync(path.join(process.cwd(), 'src/server/music-agent/index.ts'), 'utf8');
     const pickNextBudget = source.slice(source.indexOf('function pickNextBudget'), source.indexOf('function chatRecommendBudget'));
@@ -526,7 +483,6 @@ describe('createMusicAgentTools', () => {
         currentUserText: '',
         currentMoment: { localTime: '周四 15:00', daypart: '下午', weather: null },
         activeDirective: '',
-        currentPlanSegment: null,
         tasteSummary: '偏好 city pop 女声',
         recentPreferenceSummary: '',
         recentPlaySignals: '',
@@ -575,7 +531,6 @@ describe('createMusicAgentTools', () => {
         currentUserText: '',
         currentMoment: { localTime: '周四 15:00', daypart: '下午', weather: null },
         activeDirective: '',
-        currentPlanSegment: null,
         tasteSummary: '偏好 city pop 女声',
         recentPreferenceSummary: '',
         recentPlaySignals: '',
@@ -640,7 +595,6 @@ describe('createMusicAgentTools', () => {
         currentUserText: '',
         currentMoment: { localTime: '周四 15:00', daypart: '下午', weather: null },
         activeDirective: '',
-        currentPlanSegment: null,
         tasteSummary: '',
         recentPreferenceSummary: '',
         recentPlaySignals: '',
@@ -692,7 +646,6 @@ describe('createMusicAgentTools', () => {
         currentUserText: '',
         currentMoment: { localTime: '周四 15:00', daypart: '下午', weather: null },
         activeDirective: '',
-        currentPlanSegment: null,
         tasteSummary: '',
         recentPreferenceSummary: '',
         recentPlaySignals: '',
@@ -737,7 +690,6 @@ describe('createMusicAgentTools', () => {
         currentUserText: '',
         currentMoment: { localTime: '周一 18:08', daypart: '傍晚', weather: null },
         activeDirective: '',
-        currentPlanSegment: null,
         tasteSummary: '',
         recentPreferenceSummary: '',
         recentPlaySignals: '',
@@ -790,7 +742,6 @@ describe('createMusicAgentTools', () => {
         currentUserText: '',
         currentMoment: { localTime: '周四 15:00', daypart: '下午', weather: null },
         activeDirective: '',
-        currentPlanSegment: null,
         tasteSummary: '',
         recentPreferenceSummary: '',
         recentPlaySignals: '',
@@ -854,7 +805,6 @@ describe('createMusicAgentTools', () => {
         discoveryMode: 'explore',
         currentMoment: { localTime: '周五 16:25', daypart: '下午', weather: null },
         activeDirective: '',
-        currentPlanSegment: null,
         tasteSummary: '',
         recentPreferenceSummary: '',
         recentPlaySignals: '',
@@ -913,7 +863,6 @@ describe('createMusicAgentTools', () => {
         discoveryMode: 'explore',
         currentMoment: { localTime: '周五 16:25', daypart: '下午', weather: null },
         activeDirective: '',
-        currentPlanSegment: null,
         tasteSummary: '',
         recentPreferenceSummary: '',
         recentPlaySignals: '',
@@ -965,7 +914,6 @@ describe('createMusicAgentTools', () => {
         currentUserText: '',
         currentMoment: { localTime: '周四 15:00', daypart: '下午', weather: null },
         activeDirective: '',
-        currentPlanSegment: null,
         tasteSummary: '',
         recentPreferenceSummary: '',
         recentPlaySignals: '',
@@ -1019,7 +967,6 @@ describe('createMusicAgentTools', () => {
         currentUserText: '下午 city pop 女声',
         currentMoment: { localTime: '周四 15:00', daypart: '下午', weather: null },
         activeDirective: '',
-        currentPlanSegment: null,
         tasteSummary: '',
         recentPreferenceSummary: '',
         recentPlaySignals: '',
@@ -1076,7 +1023,6 @@ describe('createMusicAgentTools', () => {
         currentUserText: '下午 city pop 女声',
         currentMoment: { localTime: '周四 15:00', daypart: '下午', weather: null },
         activeDirective: '',
-        currentPlanSegment: null,
         tasteSummary: '',
         recentPreferenceSummary: '',
         recentPlaySignals: '',
@@ -1134,7 +1080,6 @@ describe('createMusicAgentTools', () => {
         currentUserText: '下午 pop',
         currentMoment: { localTime: '周四 15:00', daypart: '下午', weather: null },
         activeDirective: '',
-        currentPlanSegment: null,
         tasteSummary: '',
         recentPreferenceSummary: '',
         recentPlaySignals: '',
@@ -1223,7 +1168,6 @@ describe('createMusicAgentTools', () => {
         currentUserText: '探索几首类似 Ben Howard 的民谣新歌',
         currentMoment: { localTime: '周一 16:00', daypart: '下午', weather: null },
         activeDirective: '',
-        currentPlanSegment: null,
         tasteSummary: '',
         recentPreferenceSummary: '',
         recentPlaySignals: '',
@@ -1290,7 +1234,7 @@ describe('createMusicAgentTools', () => {
       intentMatch: 0.6,
       tasteMatch: 0.6,
       timeFit: 0.6,
-      planFit: 0.6,
+      contextFit: 0.6,
       novelty: 0.6,
       recentPenalty: 0,
       skipPenalty: 0,
@@ -1320,7 +1264,6 @@ describe('createMusicAgentTools', () => {
         currentUserText: '傍晚放松一点',
         currentMoment: { localTime: '周一 17:10', daypart: '傍晚', weather: null },
         activeDirective: '',
-        currentPlanSegment: null,
         tasteSummary: '',
         recentPreferenceSummary: '',
         recentPlaySignals: '',
@@ -1380,7 +1323,6 @@ describe('createMusicAgentTools', () => {
         currentUserText: '探索几首类似 Ben Howard 的民谣新歌',
         currentMoment: { localTime: '周一 16:00', daypart: '下午', weather: null },
         activeDirective: '',
-        currentPlanSegment: null,
         tasteSummary: '',
         recentPreferenceSummary: '',
         recentPlaySignals: '',
@@ -1474,7 +1416,6 @@ describe('createMusicAgentTools', () => {
         currentUserText: '放几首熟悉的',
         currentMoment: { localTime: '周一 16:00', daypart: '下午', weather: null },
         activeDirective: '',
-        currentPlanSegment: null,
         tasteSummary: '',
         recentPreferenceSummary: '',
         recentPlaySignals: '',
@@ -1529,7 +1470,6 @@ describe('createMusicAgentTools', () => {
         currentUserText: '探索一些新的 indie folk',
         currentMoment: { localTime: '周一 16:00', daypart: '下午', weather: null },
         activeDirective: '',
-        currentPlanSegment: null,
         tasteSummary: '',
         recentPreferenceSummary: '',
         recentPlaySignals: '',
@@ -1585,7 +1525,6 @@ describe('createMusicAgentTools', () => {
       currentUserText: '探索一些新的 indie folk',
       currentMoment: { localTime: '周一 16:00', daypart: '下午', weather: null },
       activeDirective: '',
-      currentPlanSegment: null,
       tasteSummary: '',
       recentPreferenceSummary: '',
       recentPlaySignals: '',
@@ -1680,7 +1619,6 @@ describe('createMusicAgentTools', () => {
         currentUserText: '探索一些适合现在的粤语/港乐',
         currentMoment: { localTime: '周一 16:00', daypart: '下午', weather: null },
         activeDirective: '',
-        currentPlanSegment: '下午工作；mood=珍惜与守护；tracks=给自己的信 — 钟舒漫、Mr. Curiosity — Jason Mraz',
         tasteSummary: '长期画像很长：最近很多 Slipknot、metal、indie folk、近年的新歌都听过，也喜欢英文歌。',
         recentPreferenceSummary: '近期偏好 近年的新歌、独立民谣、Slipknot、高能量 metal。',
         recentPlaySignals: '',
@@ -1766,7 +1704,6 @@ describe('createMusicAgentTools', () => {
         currentUserText: '下午想听港乐男声，不要太吵',
         currentMoment: { localTime: '周一 16:00', daypart: '下午', weather: null },
         activeDirective: '',
-        currentPlanSegment: null,
         tasteSummary: '长期偏好粤语、叙事感、低人声。',
         recentPreferenceSummary: '近期偏好港乐男声和温暖旋律。',
         recentPlaySignals: '',
@@ -1837,7 +1774,6 @@ describe('createMusicAgentTools', () => {
         currentUserText: '午后专注，来几首有新鲜感的',
         currentMoment: { localTime: '周二 16:00', daypart: '下午', weather: null },
         activeDirective: '',
-        currentPlanSegment: null,
         tasteSummary: '',
         recentPreferenceSummary: '',
         recentPlaySignals: '',
@@ -1909,7 +1845,6 @@ describe('createMusicAgentTools', () => {
         currentUserText: '下午 city pop',
         currentMoment: { localTime: '周四 15:00', daypart: '下午', weather: null },
         activeDirective: '',
-        currentPlanSegment: null,
         tasteSummary: '',
         recentPreferenceSummary: '',
         recentPlaySignals: '',
@@ -1967,7 +1902,6 @@ describe('createMusicAgentTools', () => {
         currentUserText: '下午 city pop 女声',
         currentMoment: { localTime: '周四 15:00', daypart: '下午', weather: null },
         activeDirective: '',
-        currentPlanSegment: null,
         tasteSummary: '',
         recentPreferenceSummary: '',
         recentPlaySignals: '',
@@ -2033,7 +1967,6 @@ describe('createMusicAgentTools', () => {
         currentUserText: '下午 city pop 女声',
         currentMoment: { localTime: '周四 15:00', daypart: '下午', weather: null },
         activeDirective: '',
-        currentPlanSegment: null,
         tasteSummary: '',
         recentPreferenceSummary: '',
         recentPlaySignals: '',
@@ -2100,7 +2033,6 @@ describe('createMusicAgentTools', () => {
         currentUserText: '',
         currentMoment: { localTime: '周四 15:00', daypart: '下午', weather: null },
         activeDirective: '',
-        currentPlanSegment: null,
         tasteSummary: '偏好轻松女声',
         recentPreferenceSummary: '',
         recentPlaySignals: '',
@@ -2162,7 +2094,6 @@ describe('createMusicAgentTools', () => {
         currentUserText: '想听不重复的搜索结果',
         currentMoment: { localTime: '周四 15:00', daypart: '下午', weather: null },
         activeDirective: '',
-        currentPlanSegment: null,
         tasteSummary: '',
         recentPreferenceSummary: '',
         recentPlaySignals: '',
@@ -2221,7 +2152,6 @@ describe('createMusicAgentTools', () => {
         currentUserText: '想听不重复的搜索结果',
         currentMoment: { localTime: '周四 15:00', daypart: '下午', weather: null },
         activeDirective: '',
-        currentPlanSegment: null,
         tasteSummary: '',
         recentPreferenceSummary: '',
         recentPlaySignals: '',
@@ -2283,7 +2213,6 @@ describe('createMusicAgentTools', () => {
         currentUserText: '下午专注，粤语女声，有故事感',
         currentMoment: { localTime: '周四 15:00', daypart: '下午', weather: null },
         activeDirective: '',
-        currentPlanSegment: null,
         tasteSummary: '',
         recentPreferenceSummary: '',
         recentPlaySignals: '',
@@ -2346,7 +2275,6 @@ describe('createMusicAgentTools', () => {
         currentUserText: '想听轻快女声',
         currentMoment: { localTime: '周四 15:00', daypart: '下午', weather: null },
         activeDirective: '',
-        currentPlanSegment: null,
         tasteSummary: '偏好轻松女声',
         recentPreferenceSummary: '',
         recentPlaySignals: '',
@@ -2374,7 +2302,6 @@ describe('createMusicAgentTools', () => {
         currentUserText: '想听轻快女声',
         currentMoment: { localTime: '周四 15:00', daypart: '下午', weather: null },
         activeDirective: '',
-        currentPlanSegment: null,
         tasteSummary: '偏好轻松女声',
         recentPreferenceSummary: '',
         recentPlaySignals: '',
@@ -2432,7 +2359,6 @@ describe('createMusicAgentTools', () => {
         currentUserText: '想听摇滚 乐队 guitar',
         currentMoment: { localTime: '周四 15:00', daypart: '下午', weather: null },
         activeDirective: '',
-        currentPlanSegment: null,
         tasteSummary: '',
         recentPreferenceSummary: '',
         recentPlaySignals: '',
@@ -2515,7 +2441,6 @@ describe('createMusicAgentTools', () => {
         currentUserText: '下午 city pop 女声',
         currentMoment: { localTime: '周四 15:00', daypart: '下午', weather: null },
         activeDirective: '',
-        currentPlanSegment: null,
         tasteSummary: '',
         recentPreferenceSummary: '',
         recentPlaySignals: '',
@@ -2552,7 +2477,7 @@ describe('createMusicAgentTools', () => {
     });
   });
 
-  it('falls back to context-derived queries when expand_queries receives an empty object', async () => {
+  it('falls back to action-derived exact queries when expand_queries receives an empty object', async () => {
     const ncmClient = {
       getLikedSongIds: vi.fn(async () => []),
       getSongDetails: vi.fn(async () => []),
@@ -2569,10 +2494,14 @@ describe('createMusicAgentTools', () => {
       context: {
         request: 'auto-fill',
         currentUserText: '',
+        actionQueries: [
+          'Spain — Chick Corea',
+          "Armando's Rhumba — Chick Corea",
+          'Daylight — Taylor Swift'
+        ],
         discoveryMode: 'explore',
         currentMoment: { localTime: '周五 16:25', daypart: '下午', weather: '9°C，Mist' },
         activeDirective: '',
-        currentPlanSegment: "上午工作 09:00-12:00；mood=清醒专注；energy=60；tracks=Spain — Chick Corea、Armando's Rhumba — Chick Corea、Daylight — Taylor Swift",
         tasteSummary: '偏好电子、抒情摇滚、华语/英语/日语/韩语、高强度专注、提神。',
         recentPreferenceSummary: '近期偏好 J-Pop、英文歌，上班时间要提神、有节奏感、明亮不催眠，有人声/独立/有棱角。',
         recentPlaySignals: '',
@@ -2631,7 +2560,6 @@ describe('createMusicAgentTools', () => {
         discoveryMode: 'explore',
         currentMoment: { localTime: '周五 16:25', daypart: '下午', weather: null },
         activeDirective: '',
-        currentPlanSegment: null,
         tasteSummary: '长期偏好包含电子、抒情摇滚、华语、提神、工作专注、低人声。',
         recentPreferenceSummary: '近期偏好包含 J-Pop、英文歌、乐队、synth、律动、不要太吵。',
         recentPlaySignals: '',
@@ -2709,7 +2637,6 @@ describe('createMusicAgentTools', () => {
         currentUserText: '',
         currentMoment: { localTime: '周五 16:25', daypart: '下午', weather: null },
         activeDirective: '',
-        currentPlanSegment: null,
         tasteSummary: '',
         recentPreferenceSummary: '',
         recentPlaySignals: '',
@@ -2789,7 +2716,6 @@ describe('createMusicAgentTools', () => {
         currentUserText: '',
         currentMoment: { localTime: '周一 23:30', daypart: '深夜', weather: null },
         activeDirective: '',
-        currentPlanSegment: null,
         tasteSummary: '偏好安静女声和 dream pop',
         recentPreferenceSummary: '',
         recentPlaySignals: '',
@@ -2827,7 +2753,7 @@ describe('createMusicAgentTools', () => {
       intentMatch: 0.5,
       tasteMatch: 0.5,
       timeFit: 0.5,
-      planFit: 0.5,
+      contextFit: 0.5,
       novelty: 0.5,
       recentPenalty: 0,
       skipPenalty: 0,
@@ -2843,7 +2769,7 @@ describe('createMusicAgentTools', () => {
         sources: ['search'],
         evidence: ['large pool'],
         scores: index === 85
-          ? { ...baseScores, intentMatch: 1, tasteMatch: 1, timeFit: 1, planFit: 1, novelty: 1, sourceConfidence: 1 }
+          ? { ...baseScores, intentMatch: 1, tasteMatch: 1, timeFit: 1, contextFit: 1, novelty: 1, sourceConfidence: 1 }
           : baseScores
       });
     }
@@ -2868,7 +2794,6 @@ describe('createMusicAgentTools', () => {
         currentUserText: '',
         currentMoment: { localTime: '周一 23:30', daypart: '深夜', weather: null },
         activeDirective: '',
-        currentPlanSegment: null,
         tasteSummary: '偏好安静女声和 dream pop',
         recentPreferenceSummary: '',
         recentPlaySignals: '',
@@ -2917,7 +2842,7 @@ describe('createMusicAgentTools', () => {
         intentMatch: 1,
         tasteMatch: 1,
         timeFit: 1,
-        planFit: 1,
+        contextFit: 1,
         novelty: 1,
         recentPenalty: 0,
         skipPenalty: 0,
@@ -2947,7 +2872,6 @@ describe('createMusicAgentTools', () => {
         currentUserText: '',
         currentMoment: { localTime: '周一 23:30', daypart: '深夜', weather: null },
         activeDirective: '',
-        currentPlanSegment: null,
         tasteSummary: '',
         recentPreferenceSummary: '',
         recentPlaySignals: '',
@@ -3000,7 +2924,6 @@ describe('createMusicAgentTools', () => {
         currentUserText: '',
         currentMoment: { localTime: '周一 13:30', daypart: '下午', weather: null },
         activeDirective: '',
-        currentPlanSegment: null,
         tasteSummary: '偏好华语抒情与欧美流行女声',
         recentPreferenceSummary: '',
         recentPlaySignals: '',
@@ -3051,7 +2974,6 @@ describe('createMusicAgentTools', () => {
         currentUserText: '',
         currentMoment: { localTime: '周一 13:30', daypart: '下午', weather: null },
         activeDirective: '',
-        currentPlanSegment: null,
         tasteSummary: '偏好华语抒情与欧美流行女声',
         recentPreferenceSummary: '',
         recentPlaySignals: '',
@@ -3108,7 +3030,6 @@ describe('createMusicAgentTools', () => {
         currentUserText: '',
         currentMoment: { localTime: '周一 13:30', daypart: '下午', weather: null },
         activeDirective: '',
-        currentPlanSegment: null,
         tasteSummary: '偏好华语抒情与欧美流行女声',
         recentPreferenceSummary: '',
         recentPlaySignals: '',
@@ -3159,7 +3080,6 @@ describe('createMusicAgentTools', () => {
         currentUserText: '',
         currentMoment: { localTime: '周一 13:30', daypart: '下午', weather: null },
         activeDirective: '下午 city pop',
-        currentPlanSegment: null,
         tasteSummary: '偏好 city pop',
         recentPreferenceSummary: '',
         recentPlaySignals: '',
@@ -3221,7 +3141,6 @@ describe('createMusicAgentTools', () => {
         currentUserText: '',
         currentMoment: { localTime: '周一 13:30', daypart: '下午', weather: null },
         activeDirective: '',
-        currentPlanSegment: null,
         tasteSummary: '',
         recentPreferenceSummary: '',
         recentPlaySignals: '',
@@ -3288,7 +3207,6 @@ describe('createMusicAgentTools', () => {
         currentUserText: '',
         currentMoment: { localTime: '周一 13:30', daypart: '下午', weather: null },
         activeDirective: '',
-        currentPlanSegment: null,
         tasteSummary: '偏好华语抒情与欧美流行女声',
         recentPreferenceSummary: '',
         recentPlaySignals: '',
@@ -3354,7 +3272,6 @@ describe('createMusicAgentTools', () => {
         discoveryMode: 'explore',
         currentMoment: { localTime: '周一 16:35', daypart: '下午', weather: null },
         activeDirective: '',
-        currentPlanSegment: null,
         tasteSummary: '',
         recentPreferenceSummary: '',
         recentPlaySignals: '',
@@ -3406,7 +3323,6 @@ describe('createMusicAgentTools', () => {
           discoveryMode,
           currentMoment: { localTime: '周五 15:00', daypart: '下午', weather: null },
           activeDirective: '',
-          currentPlanSegment: null,
           tasteSummary: '偏好熟悉女声，但探索模式要扩展',
           recentPreferenceSummary: '',
           recentPlaySignals: '',
@@ -3430,7 +3346,7 @@ describe('createMusicAgentTools', () => {
       return candidatePool.topBy((candidate) => candidate.scores.intentMatch * 0.3
         + candidate.scores.tasteMatch * 0.2
         + candidate.scores.timeFit * 0.15
-        + candidate.scores.planFit * 0.1
+        + candidate.scores.contextFit * 0.1
         + candidate.scores.sourceConfidence * 0.1
         + candidate.scores.novelty * 0.15
         - candidate.scores.recentPenalty
@@ -3483,7 +3399,6 @@ describe('createMusicAgentTools', () => {
         currentUserText: '',
         currentMoment: { localTime: '周四 15:00', daypart: '下午', weather: null },
         activeDirective: '',
-        currentPlanSegment: null,
         tasteSummary: '',
         recentPreferenceSummary: '',
         recentPlaySignals: '',
@@ -3564,7 +3479,6 @@ describe('createMusicAgentTools', () => {
         currentUserText: '',
         currentMoment: { localTime: '周四 15:00', daypart: '下午', weather: null },
         activeDirective: '',
-        currentPlanSegment: null,
         tasteSummary: '',
         recentPreferenceSummary: '',
         recentPlaySignals: '',

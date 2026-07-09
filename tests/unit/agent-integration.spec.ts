@@ -9,7 +9,7 @@ import { FakeTtsClient } from '../support/fake-tts';
 import type { Fragments } from '../../src/server/agent/schema';
 
 const baseFragments: Fragments = {
-  mode: 'plan',
+  mode: 'chat',
   system: 'You are a DJ.',
   corpus: {
     taste: 'Indie Pop',
@@ -24,23 +24,9 @@ const baseFragments: Fragments = {
     nowPlaying: null
   },
   memory: { recentPlays: [], recentChat: [] },
-  input: { kind: 'planRequest', date: '2026-04-24' },
-  trace: { triggeredBy: 'scheduler', lastDecision: null }
+  input: { kind: 'chat', text: '今天来点清新的' },
+  trace: { triggeredBy: 'user', lastDecision: null }
 };
-
-const validPlan = JSON.stringify({
-  mode: 'plan',
-  date: '2026-04-24',
-  segments: [{
-    id: 'morning',
-    label: '早晨',
-    timeRange: '07:00-09:00',
-    mood: '清醒',
-    energyPct: 40,
-    tracks: [{ query: 'Here Comes The Sun — Beatles', reason: '清新开场' }]
-  }],
-  narrative: '今日电台从清晨开始'
-});
 
 const validChat = JSON.stringify({
   mode: 'chat',
@@ -97,6 +83,16 @@ describe('chat mode — minimum chain (computeSync + FakeLlmClient)', () => {
     expect(lastMsg.content).toContain('换首 Rap');
   });
 
+  it('corpus content reaches the LLM messages', async () => {
+    const fake = new FakeLlmClient().queueResponse(validChat);
+    await computeSync(baseFragments, { llmClient: fake });
+
+    const corpusMsg = fake.completeCalls[0].messages[1];
+    expect(corpusMsg.content).toContain('Indie Pop');
+    expect(corpusMsg.content).toContain('晨间');
+    expect(corpusMsg.content).toContain('18°C');
+  });
+
   it('retries once on invalid output and succeeds on second call', async () => {
     const fake = new FakeLlmClient()
       .queueResponse('not-json')
@@ -140,31 +136,6 @@ describe('chat mode — minimum chain (computeSync + FakeLlmClient)', () => {
       expect(result.actions).toHaveLength(1);
       expect(result.actions[0].type).toBe('swap_next');
     }
-  });
-});
-
-describe('plan mode — minimum chain (computeSync + FakeLlmClient)', () => {
-  it('returns PlanOutput for a plan request', async () => {
-    const fake = new FakeLlmClient().queueResponse(validPlan);
-
-    const result = await computeSync(baseFragments, { llmClient: fake });
-
-    expect(result.mode).toBe('plan');
-    if (result.mode === 'plan') {
-      expect(result.date).toBe('2026-04-24');
-      expect(result.segments).toHaveLength(1);
-      expect(result.segments[0].tracks).toHaveLength(1);
-    }
-  });
-
-  it('corpus content reaches the LLM messages', async () => {
-    const fake = new FakeLlmClient().queueResponse(validPlan);
-    await computeSync(baseFragments, { llmClient: fake });
-
-    const corpusMsg = fake.completeCalls[0].messages[1];
-    expect(corpusMsg.content).toContain('Indie Pop');
-    expect(corpusMsg.content).toContain('晨间');
-    expect(corpusMsg.content).toContain('18°C');
   });
 });
 
