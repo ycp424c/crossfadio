@@ -45,6 +45,10 @@ export type LlmCompleteOptions = {
 };
 
 const ERROR_BODY_MAX_CHARS = 2_000;
+const RATE_LIMIT_STATUS = 429;
+const RATE_LIMIT_MAX_RETRIES = 2;
+const RATE_LIMIT_BASE_DELAY_MS = 750;
+const RATE_LIMIT_MAX_DELAY_MS = 5_000;
 
 export class LlmClient {
   constructor(private readonly config: LlmConfig) {}
@@ -58,12 +62,7 @@ export class LlmClient {
       thinking: opts.thinking
     });
 
-    const resp = await fetch(`${this.config.baseUrl}/chat/completions`, {
-      method: 'POST',
-      headers: buildHeaders(this.config.apiKey),
-      body: JSON.stringify(body),
-      signal: opts.signal
-    });
+    const resp = await fetchChatCompletions(this.config, body, opts.signal);
 
     if (!resp.ok) {
       await throwLlmHttpError('LLM request failed', resp);
@@ -89,12 +88,7 @@ export class LlmClient {
       stream: true
     });
 
-    const resp = await fetch(`${this.config.baseUrl}/chat/completions`, {
-      method: 'POST',
-      headers: buildHeaders(this.config.apiKey),
-      body: JSON.stringify(body),
-      signal: opts.signal
-    });
+    const resp = await fetchChatCompletions(this.config, body, opts.signal);
 
     if (!resp.ok) {
       await throwLlmHttpError('LLM stream request failed', resp);
@@ -174,6 +168,97 @@ function supportsThinkingControl(model: string, baseUrl: string): boolean {
   const normalizedModel = model.toLowerCase();
   const normalizedBaseUrl = baseUrl.toLowerCase();
   return normalizedModel.startsWith('deepseek-v4') || normalizedBaseUrl.includes('api.deepseek.com');
+}
+
+async function fetchChatCompletions(
+  config: LlmConfig,
+  body: ReturnType<typeof buildRequestBody>,
+  signal?: AbortSignal
+): Promise<Response> {
+  for (let retry = 0; ; retry += 1) {
+    const response = await fetch(`${config.baseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: buildHeaders(config.apiKey),
+      body: JSON.stringify(body),
+      signal
+    });
+
+    if (response.status !== RATE_LIMIT_STATUS || retry >= RATE_LIMIT_MAX_RETRIES) {
+      return response;
+    }
+
+    const delayMs = getRateLimitRetryDelayMs(response, retry);
+    await discardResponseBody(response);
+    await waitForRetryDelay(delayMs, signal);
+  }
+}
+
+function getRateLimitRetryDelayMs(response: Response, retry: number): number {
+  const retryAfterMs = parseRetryAfterMs(response.headers.get('retry-after'));
+  const delayMs = retryAfterMs ?? RATE_LIMIT_BASE_DELAY_MS * (2 ** retry);
+  return Math.min(delayMs, RATE_LIMIT_MAX_DELAY_MS);
+}
+
+function parseRetryAfterMs(value: string | null): number | undefined {
+  if (!value) return undefined;
+
+  const trimmed = value.trim();
+  const seconds = Number(trimmed);
+  if (Number.isFinite(seconds) && seconds >= 0) {
+    return Math.round(seconds * 1_000);
+  }
+
+  const timestamp = Date.parse(trimmed);
+  if (Number.isFinite(timestamp)) {
+    return Math.max(0, timestamp - Date.now());
+  }
+
+  return undefined;
+}
+
+async function discardResponseBody(response: Response): Promise<void> {
+  try {
+    await response.body?.cancel();
+  } catch {
+    // Ignore retry-body cleanup failures; the next attempt is more useful than surfacing them.
+  }
+}
+
+function waitForRetryDelay(ms: number, signal?: AbortSignal): Promise<void> {
+  if (ms <= 0) return Promise.resolve();
+
+  return new Promise((resolve, reject) => {
+    if (!signal) {
+      setTimeout(resolve, ms);
+      return;
+    }
+
+    if (signal.aborted) {
+      reject(getAbortReason(signal));
+      return;
+    }
+
+    const timeout = setTimeout(() => {
+      cleanup();
+      resolve();
+    }, ms);
+
+    const onAbort = (): void => {
+      clearTimeout(timeout);
+      cleanup();
+      reject(getAbortReason(signal));
+    };
+
+    const cleanup = (): void => {
+      signal.removeEventListener('abort', onAbort);
+    };
+
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
+function getAbortReason(signal: AbortSignal): unknown {
+  return signal.reason ?? new DOMException('The operation was aborted.', 'AbortError');
 }
 
 export class LlmError extends Error {

@@ -36,20 +36,20 @@ afterEach(() => {
 
 describe('personal DJ context store', () => {
   it('keeps latest as current and recent prior records as trend signals', () => {
-    const now = new Date('2026-07-08T12:00:00.000Z');
+    const now = new Date();
     const old = savePersonalDjContext({
       userId: 'user-1',
-      uploadedAt: '2026-07-06T10:00:00.000Z',
+      uploadedAt: hoursBefore(now, 26),
       payload: createPayload('old bundle')
     });
     const trend = savePersonalDjContext({
       userId: 'user-1',
-      uploadedAt: '2026-07-08T08:00:00.000Z',
+      uploadedAt: hoursBefore(now, 4),
       payload: createPayload('morning bundle')
     });
     const current = savePersonalDjContext({
       userId: 'user-1',
-      uploadedAt: '2026-07-08T11:00:00.000Z',
+      uploadedAt: hoursBefore(now, 1),
       payload: createPayload('current bundle')
     });
 
@@ -147,4 +147,8 @@ function createPayload(bundleId: string) {
       ]
     }
   };
+}
+
+function hoursBefore(now: Date, hours: number): string {
+  return new Date(now.getTime() - hours * 60 * 60 * 1000).toISOString();
 }

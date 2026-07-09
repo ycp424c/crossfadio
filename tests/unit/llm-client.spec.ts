@@ -152,6 +152,52 @@ describe('LlmClient.complete', () => {
     });
   });
 
+  it('retries 429 responses before returning a completion', async () => {
+    let calls = 0;
+    mockFetch(async () => {
+      calls += 1;
+      if (calls === 1) {
+        return new Response('rate limited', {
+          status: 429,
+          statusText: 'Too Many Requests',
+          headers: { 'Retry-After': '0' }
+        });
+      }
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: 'retry ok' } }],
+        model: 'gpt-4o'
+      }), { status: 200 });
+    });
+
+    const client = new LlmClient(config);
+    const result = await client.complete([{ role: 'user', content: 'hi' }]);
+
+    expect(result.content).toBe('retry ok');
+    expect(calls).toBe(2);
+  });
+
+  it('throws the final 429 response after exhausting completion retries', async () => {
+    let calls = 0;
+    mockFetch(async () => {
+      calls += 1;
+      return new Response(`rate limited ${calls}`, {
+        status: 429,
+        statusText: 'Too Many Requests',
+        headers: { 'Retry-After': '0' }
+      });
+    });
+
+    const client = new LlmClient(config);
+
+    await expect(client.complete([{ role: 'user', content: 'hi' }])).rejects.toMatchObject({
+      name: 'LlmError',
+      status: 429,
+      responseBody: 'rate limited 3',
+      message: 'LLM request failed: 429 Too Many Requests; response body: rate limited 3'
+    });
+    expect(calls).toBe(3);
+  });
+
   it('propagates AbortSignal', async () => {
     mockFetch(async (_url, init) => new Promise<Response>((_resolve, reject) => {
       init?.signal?.addEventListener('abort', () =>
@@ -220,6 +266,37 @@ describe('LlmClient.stream', () => {
     // consume the stream
     for await (const _ of client.stream([{ role: 'user', content: 'hi' }])) { /* noop */ }
     expect(capturedBody?.stream).toBe(true);
+  });
+
+  it('retries 429 responses before yielding a stream', async () => {
+    let calls = 0;
+    mockFetch(async () => {
+      calls += 1;
+      if (calls === 1) {
+        return new Response('rate limited', {
+          status: 429,
+          statusText: 'Too Many Requests',
+          headers: { 'Retry-After': '0' }
+        });
+      }
+      return new Response(makeSSEStream([
+        'data: {"choices":[{"delta":{"content":"retry"}}]}\n\n',
+        'data: {"choices":[{"delta":{"content":" ok"}}]}\n\n',
+        'data: [DONE]\n\n'
+      ]), {
+        status: 200,
+        headers: { 'Content-Type': 'text/event-stream' }
+      });
+    });
+
+    const client = new LlmClient(config);
+    const deltas: string[] = [];
+    for await (const delta of client.stream([{ role: 'user', content: 'hi' }])) {
+      deltas.push(delta);
+    }
+
+    expect(deltas.join('')).toBe('retry ok');
+    expect(calls).toBe(2);
   });
 
   it('throws LlmError on non-2xx response', async () => {

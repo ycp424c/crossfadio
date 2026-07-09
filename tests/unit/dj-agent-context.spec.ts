@@ -24,15 +24,15 @@ afterEach(() => {
 
 describe('DJAgent context snapshot', () => {
   it('nests MusicAgent context and exposes only safe Personal DJ Context fields', async () => {
-    const now = new Date('2026-07-08T12:00:00.000Z');
+    const now = new Date();
     savePersonalDjContext({
       userId: 'user-1',
-      uploadedAt: '2026-07-08T08:00:00.000Z',
+      uploadedAt: hoursBefore(now, 4),
       payload: createPayload('trend-secret-bundle', '早上偏低能量，适合慢一点。')
     });
     savePersonalDjContext({
       userId: 'user-1',
-      uploadedAt: '2026-07-08T11:00:00.000Z',
+      uploadedAt: hoursBefore(now, 1),
       payload: createPayload('current-secret-bundle', '正在写代码，适合稳定、低干扰的音乐。')
     });
     appendDjEvent({
@@ -108,4 +108,8 @@ function createPayload(bundleId: string, summary: string) {
       ]
     }
   };
+}
+
+function hoursBefore(now: Date, hours: number): string {
+  return new Date(now.getTime() - hours * 60 * 60 * 1000).toISOString();
 }
