@@ -559,11 +559,24 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
     [disposeAllSegueAudio]
   );
 
+  function resetNcmAuthState(): void {
+    setSession({ hasCookie: false, profile: null });
+    setQrPayload(null);
+    setShowNcmDropdown(false);
+    setShowNcmSheet(false);
+  }
+
   async function refreshSession(): Promise<void> {
+    if (!getStoredToken()) {
+      resetNcmAuthState();
+      return;
+    }
+
     try {
       const payload = await getNcmSession();
       setSession({ hasCookie: payload.hasCookie, profile: payload.profile });
     } catch (err) {
+      setSession({ hasCookie: false, profile: null });
       setError(err instanceof Error ? err.message : 'session 请求失败');
     }
   }
@@ -629,8 +642,8 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
     try {
       await logoutNcm();
       setSseToken(null);
-      setQrPayload(null);
-      await refreshSession();
+      resetNcmAuthState();
+      setError('');
       setTrackStatusText('已登出 NCM');
     } catch (err) {
       setError(err instanceof Error ? err.message : '登出失败');

@@ -488,6 +488,28 @@ describe('player layout', () => {
     expect(source).toContain('setShowNcmDropdown');
   });
 
+  it('PlayerView resets NCM session state locally after logout succeeds', () => {
+    const source = fs.readFileSync(
+      path.join(root, 'src/renderer/views/Player/PlayerView.tsx'),
+      'utf-8'
+    );
+    const refreshStart = source.indexOf('async function refreshSession');
+    const refreshEnd = source.indexOf('async function startNcmQrLogin', refreshStart);
+    const refreshBody = source.slice(refreshStart, refreshEnd);
+    const logoutStart = source.indexOf('async function handleNcmLogout');
+    const logoutEnd = source.indexOf('useEffect(() => {', logoutStart);
+    const logoutBody = source.slice(logoutStart, logoutEnd);
+
+    expect(source).toContain('function resetNcmAuthState(): void');
+    expect(refreshBody).toContain('if (!getStoredToken())');
+    expect(refreshBody).toContain('resetNcmAuthState();');
+    expect(logoutBody).toContain('await logoutNcm();');
+    expect(logoutBody).toContain('setSseToken(null);');
+    expect(logoutBody).toContain('resetNcmAuthState();');
+    expect(logoutBody).toContain("setTrackStatusText('已登出 NCM');");
+    expect(logoutBody).not.toContain('await refreshSession();');
+  });
+
   it('PlayerView polls NCM QR login status automatically while preserving manual checks', () => {
     const source = fs.readFileSync(
       path.join(root, 'src/renderer/views/Player/PlayerView.tsx'),
