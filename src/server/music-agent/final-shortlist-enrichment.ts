@@ -468,10 +468,15 @@ function isFreshTimestamp(timestamp: string | null, nowMs: number, ttlMs: number
 }
 
 function extractionSummary(evidence: PreparedLyricEvidence): Record<string, unknown> {
+  const creditRoleCounts = Object.fromEntries(
+    Object.entries(evidence.credits)
+      .filter(([, names]) => names.length > 0)
+      .map(([role, names]) => [role, names.length])
+  );
   return {
     lyricStatus: evidence.lyricStatus,
     sampleMode: evidence.sampleMode,
-    credits: evidence.credits,
+    creditRoleCounts,
     lineCount: evidence.lineCount,
     hasTranslation: evidence.hasTranslation,
     repeatedHookCount: evidence.repeatedHookCount,

@@ -164,6 +164,52 @@ function finalOutput(picks: string[], assessments: TrackAssessment[]) {
 }
 
 describe('lyrics-aware music agent loop', () => {
+  it('keeps shadow authoritative picks identical to off even when fused picks differ', async () => {
+    const one = candidate('one'); const two = candidate('two');
+    const offPool = new CandidatePool(); offPool.upsert(one); offPool.upsert(two);
+    const shadowPool = new CandidatePool(); shadowPool.upsert(one); shadowPool.upsert(two);
+    const legacyFinal = { ...finalOutput(['one'], []), say: 'legacy authoritative' };
+    const off = await runMusicAgentLoop({
+      llmClient: llm([legacyFinal]), context: context(), candidatePool: offPool,
+      tools: {}, budget: budget(), lyricsSelectionMode: 'off'
+    });
+    const shadowClient = llm([
+      legacyFinal,
+      { ...finalOutput(['two'], [assessment('one'), assessment('two')]), say: 'fused different' }
+    ]);
+    const shadow = await runMusicAgentLoop({
+      llmClient: shadowClient, context: context(), candidatePool: shadowPool,
+      tools: {}, budget: budget(), lyricsSelectionMode: 'shadow',
+      finalShortlistEnricher: enricherFor([one, two])
+    });
+
+    expect(shadowClient.calls).toBe(2);
+    expect(shadow.picks).toEqual(off.picks);
+    expect(shadow.say).toBe(off.say);
+    expect(shadow.lyricsAwareDiagnostics?.assessmentCoverageValid).toBe(true);
+  });
+
+  it('keeps extra-final shadow picks legacy-authoritative while using a separate fused assessment call', async () => {
+    const items = ['one', 'two', 'three'].map((id) => candidate(id));
+    const pool = new CandidatePool(); items.forEach((item) => pool.upsert(item));
+    const client = llm([
+      { type: 'tool_call', tool: 'finalize_pick', input: {} },
+      { ...finalOutput(['one'], []), say: 'legacy extra final' },
+      { ...finalOutput(['two'], items.map((item) => assessment(item.id))), say: 'fused different' }
+    ]);
+    const result = await runMusicAgentLoop({
+      llmClient: client, context: context(), candidatePool: pool,
+      tools: { finalize_pick: async () => ({ summary: 'ready', candidateCount: 3 }) },
+      budget: budget(), lyricsSelectionMode: 'shadow',
+      finalShortlistEnricher: enricherFor(items)
+    });
+
+    expect(client.calls).toBe(3);
+    expect(result.picks.map((pick) => pick.id)).toEqual(['one']);
+    expect(result.say).toBe('legacy extra final');
+    expect(result.lyricsAwareDiagnostics?.assessmentCoverageValid).toBe(true);
+  });
+
   it('ignores tool-loop self-assessments and only trusts assessments from the fused evidence attempt', async () => {
     const one = candidate('one'); const two = candidate('two');
     const pool = new CandidatePool(); pool.upsert(one); pool.upsert(two);
@@ -174,7 +220,7 @@ describe('lyrics-aware music agent loop', () => {
 
     const result = await runMusicAgentLoop({
       llmClient: client, context: context(), candidatePool: pool, tools: {}, budget: budget(),
-      lyricsSelectionMode: 'shadow', finalShortlistEnricher: enricherFor([one, two])
+      lyricsSelectionMode: 'enforce_fit', finalShortlistEnricher: enricherFor([one, two])
     });
 
     expect(client.calls).toBe(2);
@@ -373,6 +419,29 @@ describe('lyrics-aware music agent loop', () => {
     expect(result.finalPickDiagnostics).toMatchObject({ semanticConflictDroppedCount: 0 });
   });
 
+  it('keeps a cached profile authoritative when the fused LLM falsely rewrites it', async () => {
+    const death = candidate('death'); const pool = new CandidatePool(); pool.upsert(death);
+    const cachedDeath = assessment(
+      'death', { genres: ['death metal'], energy: 'high', aggression: 'high' }, 'genre=death metal'
+    );
+    const result = await runMusicAgentLoop({
+      llmClient: llm([
+        finalOutput(['death'], []),
+        finalOutput(['death'], [assessment('death')])
+      ]),
+      context: context(), candidatePool: pool,
+      tools: { getQueryPlan: () => queryPlan(['calm']) }, budget: budget(),
+      lyricsSelectionMode: 'enforce_fit',
+      finalShortlistEnricher: enricherFor([death], [profilePacket(death, cachedDeath)])
+    });
+
+    expect(result.status).toBe('empty_pool');
+    expect(result.picks).toEqual([]);
+    expect(result.lyricsAwareDiagnostics?.decisions[0]).toMatchObject({
+      id: 'death', compatibility: 'conflict', eligible: false
+    });
+  });
+
   it('does not let ranked fallback reselect a cached aggressive assessment', async () => {
     const death = candidate('death'); const pool = new CandidatePool(); pool.upsert(death);
     const fallbackLogger = vi.fn();
@@ -393,7 +462,7 @@ describe('lyrics-aware music agent loop', () => {
     expect(result.lyricsAwareDiagnostics).toMatchObject({ fallbackSuppressed: true });
     expect(fallbackLogger).toHaveBeenCalledWith(expect.objectContaining({
       lyricsAwareDiagnostics: expect.objectContaining({
-        mode: 'enforce_fit', assessmentCoverageValid: false, fallbackSuppressed: true
+        mode: 'enforce_fit', assessmentCoverageValid: true, fallbackSuppressed: true
       })
     }));
   });

@@ -89,6 +89,10 @@ const CREDIT_ALIASES: Array<{ role: LyricCreditRole; aliases: string[] }> = [
   { role: 'vocalists', aliases: ['Vocalists', 'Vocalist', 'Vocals', 'Singer', '演唱者', '演唱', '主唱'] }
 ];
 const EMPTY_CREDIT_VALUES = new Set(['无', 'n/a', 'na', 'none', 'null', '-', '--']);
+const MAX_CREDIT_NAMES_PER_ROLE = 8;
+const MAX_CREDIT_NAME_CHARS = 64;
+const MAX_CREDIT_TOTAL_CHARS = 512;
+const MAX_CREDIT_LINE_PARSE_CHARS = 4_096;
 const WINDOW_COUNT = 6;
 const MAX_LINES_PER_WINDOW = 2;
 const EXTRA_INFORMATION_LINES = 6;
@@ -230,6 +234,7 @@ function timestampToMs(match: RegExpMatchArray): number {
 
 function parseCredits(raw: string): Partial<Record<LyricCreditRole, string[]>> {
   const credits: Partial<Record<LyricCreditRole, string[]>> = {};
+  let totalChars = 0;
 
   for (const line of parseLyricLines(raw)) {
     const parsed = parseCreditLine(line.text);
@@ -238,10 +243,15 @@ function parseCredits(raw: string): Partial<Record<LyricCreditRole, string[]>> {
     const existing = credits[parsed.role] ?? [];
     const seen = new Set(existing.map((name) => name.toLocaleLowerCase()));
     for (const name of parsed.names) {
-      const key = name.toLocaleLowerCase();
+      if (existing.length >= MAX_CREDIT_NAMES_PER_ROLE || totalChars >= MAX_CREDIT_TOTAL_CHARS) break;
+      const remainingChars = MAX_CREDIT_TOTAL_CHARS - totalChars;
+      const boundedName = name.slice(0, Math.min(MAX_CREDIT_NAME_CHARS, remainingChars)).trim();
+      if (!boundedName) continue;
+      const key = boundedName.toLocaleLowerCase();
       if (seen.has(key)) continue;
       seen.add(key);
-      existing.push(name);
+      existing.push(boundedName);
+      totalChars += boundedName.length;
     }
     if (existing.length > 0) {
       credits[parsed.role] = existing;
@@ -486,10 +496,12 @@ function parseCreditLine(text: string): { role: LyricCreditRole; names: string[]
       if (!match) continue;
 
       const names = (match[1] ?? '')
+        .slice(0, MAX_CREDIT_LINE_PARSE_CHARS)
         .replace(/\bN\s*\/\s*A\b/giu, '无')
         .split(/\s*(?:\/|、|,|，|;|；|&|\band\b)\s*/iu)
         .map((name) => name.trim())
-        .filter((name) => name.length > 0 && !EMPTY_CREDIT_VALUES.has(name.toLocaleLowerCase()));
+        .filter((name) => name.length > 0 && !EMPTY_CREDIT_VALUES.has(name.toLocaleLowerCase()))
+        .slice(0, MAX_CREDIT_NAMES_PER_ROLE * 4);
       return { role: candidate.role, names };
     }
   }

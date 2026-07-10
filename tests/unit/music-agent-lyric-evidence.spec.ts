@@ -40,6 +40,27 @@ describe('prepareLyricEvidence', () => {
     expect(result.sampledLines.map((line) => line.text)).toEqual(['雨落在窗边', '灯光慢慢熄灭']);
   });
 
+  it('bounds pathological credit roles, names, item length, and total characters', () => {
+    const hugeNames = Array.from(
+      { length: 40 },
+      (_, index) => `${index}-${'VeryLongCreditName'.repeat(20)}`
+    ).join(' / ');
+    const result = prepareLyricEvidence({
+      id: 'huge-credits',
+      lyric: `[00:00]作词：${hugeNames}\n[00:01]Composer: ${hugeNames}\n[00:10]正文歌词`,
+      translation: null
+    }, { charBudget: 20 });
+
+    const roles = Object.entries(result.credits);
+    expect(roles.length).toBeLessThanOrEqual(8);
+    expect(roles.every(([, names]) => names.length <= 8)).toBe(true);
+    expect(roles.flatMap(([, names]) => names).every((name) => name.length <= 64)).toBe(true);
+    expect(roles.flatMap(([, names]) => names).reduce((sum, name) => sum + name.length, 0))
+      .toBeLessThanOrEqual(512);
+    expect(result.sampledCharCount).toBeLessThanOrEqual(20);
+    expect(result.sampledLines.map((line) => line.text)).toEqual(['正文歌词']);
+  });
+
   it('samples a long timestamped lyric across the song and collapses a repeated hook', () => {
     const lines = Array.from({ length: 36 }, (_, index) => {
       const elapsedSeconds = index * 5;

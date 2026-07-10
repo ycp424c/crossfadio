@@ -211,6 +211,24 @@ describe('final shortlist enrichment', () => {
     });
   });
 
+  it('stores only bounded credit role counts in the lyric extraction summary', async () => {
+    const names = Array.from({ length: 50 }, (_, index) => `Writer-${index}-${'x'.repeat(100)}`).join(' / ');
+    const ncmClient = createNcmClient({
+      getLyric: async (id) => ({
+        id, lyric: `[00:00]作词：${names}\n[00:01]Composer: ${names}\n[00:10]正文`, translation: null
+      })
+    });
+    const enrich = await createEnricher(ncmClient);
+
+    await enrich(candidates(1));
+
+    const { getMusicTrackAnalysisCache } = await import('../../src/server/store/music-track-analysis-cache.js');
+    const summary = getMusicTrackAnalysisCache('ncm', 'track-0')?.extractionSummary;
+    expect(summary).toMatchObject({ creditRoleCounts: { lyricists: 8 } });
+    expect(summary).not.toHaveProperty('credits');
+    expect(JSON.stringify(summary).length).toBeLessThanOrEqual(512);
+  });
+
   it('retains successful wiki evidence when the lyric request fails', async () => {
     const ncmClient = createNcmClient({
       getLyric: async () => { throw new Error('lyric unavailable'); },

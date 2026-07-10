@@ -285,7 +285,16 @@ async function runMusicAgentLoopInternal(input: RunMusicAgentLoopInput): Promise
 
     if (output.type === 'final') {
       if (isLyricsAwareEnabled(input)) {
-        return askExtraFinalPick(input, observations, trace, startedAt, step, llmCalls, toolCalls);
+        return askExtraFinalPick(
+          input,
+          observations,
+          trace,
+          startedAt,
+          step,
+          llmCalls,
+          toolCalls,
+          input.lyricsSelectionMode === 'shadow' ? output : undefined
+        );
       }
       try {
         const picks = validateEligibleFinalPicks(output.picks, input);
@@ -497,7 +506,8 @@ async function askExtraFinalPick(
   startedAt: number,
   step: number,
   llmCalls: number,
-  toolCalls: number
+  toolCalls: number,
+  shadowAuthoritativeOutput?: MusicAgentFinalPickOutput
 ): Promise<MusicAgentRunOutput> {
   await prepareForRanking(input);
   if (input.signal?.aborted) {
@@ -511,16 +521,20 @@ async function askExtraFinalPick(
   };
   const finalPickObservations = [...observations, finalObservation];
   const enrichment = await prepareLyricsAwareShortlist(input);
+  const isShadowAssessmentCall = input.lyricsSelectionMode === 'shadow'
+    && shadowAuthoritativeOutput !== undefined;
   const promptPayload = buildFinalPickPromptPayload({
     context: input.context,
     observations: finalPickObservations,
     candidateSummary: summarizeCandidatePool(input.candidatePool, input.context),
     targetPickCount: targetPickCount(input),
-    ...(enrichment ? { promptPackets: enrichment.promptPackets } : {})
+    ...(enrichment && (input.lyricsSelectionMode !== 'shadow' || isShadowAssessmentCall)
+      ? { promptPackets: enrichment.promptPackets }
+      : {})
   });
   const messages = promptPayload.messages;
   const lyricsState = lyricsAwareRunStates.get(input);
-  if (lyricsState) lyricsState.promptChars = promptPayload.promptChars;
+  if (lyricsState && isShadowAssessmentCall) lyricsState.promptChars = promptPayload.promptChars;
 
   const nextLlmCalls = llmCalls + 1;
   const nextStep = step + 1;
@@ -537,6 +551,11 @@ async function askExtraFinalPick(
   } catch {
     if (input.signal?.aborted) {
       return abortedOutput(resolveMode(input), trace);
+    }
+    if (shadowAuthoritativeOutput) {
+      return acceptExtraFinalPick(
+        null, input, trace, startedAt, nextStep, nextLlmCalls, toolCalls, shadowAuthoritativeOutput
+      );
     }
     return rankedConvergenceAfterExtraFinalProblem(
       'extra final request failed',
@@ -557,6 +576,11 @@ async function askExtraFinalPick(
   }
 
   if (Date.now() - startedAt >= input.budget.maxMs) {
+    if (shadowAuthoritativeOutput) {
+      return acceptExtraFinalPick(
+        null, input, trace, startedAt, nextStep, nextLlmCalls, toolCalls, shadowAuthoritativeOutput
+      );
+    }
     return rankedConvergenceAfterExtraFinalProblem(
       'extra final response exceeded loop budget',
       'extra final exceeded loop budget',
@@ -585,7 +609,21 @@ async function askExtraFinalPick(
           input.candidatePool.count()
         ))
       }));
-      return retryHardFinalOnlyPick(input, finalPickObservations, trace, startedAt, nextStep, nextLlmCalls, toolCalls);
+      return retryHardFinalOnlyPick(
+        input,
+        finalPickObservations,
+        trace,
+        startedAt,
+        nextStep,
+        nextLlmCalls,
+        toolCalls,
+        shadowAuthoritativeOutput
+      );
+    }
+    if (shadowAuthoritativeOutput) {
+      return acceptExtraFinalPick(
+        null, input, trace, startedAt, nextStep, nextLlmCalls, toolCalls, shadowAuthoritativeOutput
+      );
     }
     return rankedConvergenceAfterExtraFinalProblem(
       `extra final returned ${responseType}`,
@@ -601,7 +639,28 @@ async function askExtraFinalPick(
     );
   }
 
-  return acceptExtraFinalPick(output, input, trace, startedAt, nextStep, nextLlmCalls, toolCalls);
+  if (input.lyricsSelectionMode === 'shadow' && !shadowAuthoritativeOutput) {
+    return askExtraFinalPick(
+      input,
+      finalPickObservations,
+      trace,
+      startedAt,
+      nextStep,
+      nextLlmCalls,
+      toolCalls,
+      output
+    );
+  }
+  return acceptExtraFinalPick(
+    output,
+    input,
+    trace,
+    startedAt,
+    nextStep,
+    nextLlmCalls,
+    toolCalls,
+    shadowAuthoritativeOutput
+  );
 }
 
 async function retryHardFinalOnlyPick(
@@ -611,7 +670,8 @@ async function retryHardFinalOnlyPick(
   startedAt: number,
   step: number,
   llmCalls: number,
-  toolCalls: number
+  toolCalls: number,
+  shadowAuthoritativeOutput?: MusicAgentFinalPickOutput
 ): Promise<MusicAgentRunOutput> {
   const retryObservation: LoopObservation = {
     tool: DEFAULT_TOOL_NAME,
@@ -620,17 +680,21 @@ async function retryHardFinalOnlyPick(
     problems: ['extra final returned non-final output']
   };
   const enrichment = await prepareLyricsAwareShortlist(input);
+  const isShadowAssessmentCall = input.lyricsSelectionMode === 'shadow'
+    && shadowAuthoritativeOutput !== undefined;
   const promptPayload = buildFinalPickPromptPayload({
     context: input.context,
     observations: [...observations, retryObservation],
     candidateSummary: summarizeCandidatePool(input.candidatePool, input.context),
     targetPickCount: targetPickCount(input),
     hardFinalOnlyRetry: true,
-    ...(enrichment ? { promptPackets: enrichment.promptPackets } : {})
+    ...(enrichment && (input.lyricsSelectionMode !== 'shadow' || isShadowAssessmentCall)
+      ? { promptPackets: enrichment.promptPackets }
+      : {})
   });
   const messages = promptPayload.messages;
   const lyricsState = lyricsAwareRunStates.get(input);
-  if (lyricsState) lyricsState.promptChars = promptPayload.promptChars;
+  if (lyricsState && isShadowAssessmentCall) lyricsState.promptChars = promptPayload.promptChars;
   const nextLlmCalls = llmCalls + 1;
   const nextStep = step + 1;
   let responseContent = '';
@@ -646,6 +710,11 @@ async function retryHardFinalOnlyPick(
   } catch {
     if (input.signal?.aborted) {
       return abortedOutput(resolveMode(input), trace);
+    }
+    if (shadowAuthoritativeOutput) {
+      return acceptExtraFinalPick(
+        null, input, trace, startedAt, nextStep, nextLlmCalls, toolCalls, shadowAuthoritativeOutput
+      );
     }
     return rankedConvergenceAfterExtraFinalProblem(
       'hard final-only retry request failed',
@@ -666,6 +735,11 @@ async function retryHardFinalOnlyPick(
   }
 
   if (Date.now() - startedAt >= input.budget.maxMs) {
+    if (shadowAuthoritativeOutput) {
+      return acceptExtraFinalPick(
+        null, input, trace, startedAt, nextStep, nextLlmCalls, toolCalls, shadowAuthoritativeOutput
+      );
+    }
     return rankedConvergenceAfterExtraFinalProblem(
       'hard final-only retry exceeded loop budget',
       'hard final-only retry exceeded loop budget',
@@ -683,6 +757,11 @@ async function retryHardFinalOnlyPick(
   const output = parseFinalPickOutput(responseContent);
   if (!output) {
     const responseType = parseOutputType(responseContent) ?? 'invalid_json';
+    if (shadowAuthoritativeOutput) {
+      return acceptExtraFinalPick(
+        null, input, trace, startedAt, nextStep, nextLlmCalls, toolCalls, shadowAuthoritativeOutput
+      );
+    }
     return rankedConvergenceAfterExtraFinalProblem(
       `hard final-only retry returned ${responseType}`,
       'hard final-only retry did not return final output',
@@ -697,20 +776,46 @@ async function retryHardFinalOnlyPick(
     );
   }
 
-  return acceptExtraFinalPick(output, input, trace, startedAt, nextStep, nextLlmCalls, toolCalls);
+  if (input.lyricsSelectionMode === 'shadow' && !shadowAuthoritativeOutput) {
+    return askExtraFinalPick(
+      input,
+      observations,
+      trace,
+      startedAt,
+      nextStep,
+      nextLlmCalls,
+      toolCalls,
+      output
+    );
+  }
+  return acceptExtraFinalPick(
+    output,
+    input,
+    trace,
+    startedAt,
+    nextStep,
+    nextLlmCalls,
+    toolCalls,
+    shadowAuthoritativeOutput
+  );
 }
 
 async function acceptExtraFinalPick(
-  output: Extract<ParsedLoopOutput, { type: 'final' }>,
+  assessmentOutput: MusicAgentFinalPickOutput | null,
   input: RunMusicAgentLoopInput,
   trace: AgentTraceStep[],
   startedAt: number,
   step: number,
   llmCalls: number,
-  toolCalls: number
+  toolCalls: number,
+  authoritativeOutput?: MusicAgentFinalPickOutput
 ): Promise<MusicAgentRunOutput> {
+  const output = authoritativeOutput ?? assessmentOutput;
+  if (!output) {
+    return rankedFallback('extra_final_rejected', input, trace, startedAt, step, llmCalls, toolCalls);
+  }
   try {
-    await applyFusedLyricsAwareAssessments(output, input);
+    if (assessmentOutput) await applyFusedLyricsAwareAssessments(assessmentOutput, input);
     const picks = validateEligibleFinalPicks(output.picks, input);
     await prepareForRanking(input);
     const completed = completeFinalPicks(picks, input, output.picks.length, output.rejected?.length ?? 0);
@@ -1582,6 +1687,8 @@ async function prepareLyricsAwareShortlist(
         for (const packet of enrichment.promptPackets) {
           if (packet.kind === 'profile') state.assessments.set(packet.id, packet.assessment);
         }
+        state.coverageValid = enrichment.shortlist.length > 0
+          && enrichment.shortlist.every((candidate) => state.assessments.has(candidate.id));
         rebuildLyricsAwareDecisions(input);
         return enrichment;
       });
@@ -1626,12 +1733,19 @@ async function applyFusedLyricsAwareAssessments(
   ];
 
   state.validationProblems = problems.slice(0, 24);
-  state.coverageValid = problems.length === 0;
-  if (!state.coverageValid) {
+  if (problems.length > 0) {
+    state.coverageValid = enrichment.shortlist.length > 0
+      && enrichment.shortlist.every((candidate) => state.assessments.has(candidate.id));
     return;
   }
 
-  state.assessments = new Map(output.assessments.map((assessment) => [assessment.id, assessment]));
+  const returnedById = new Map(output.assessments.map((assessment) => [assessment.id, assessment]));
+  state.assessments = new Map(enrichment.promptPackets.map((packet) => [
+    packet.id,
+    packet.kind === 'profile' ? packet.assessment : returnedById.get(packet.id)!
+  ]));
+  state.coverageValid = enrichment.shortlist.length > 0
+    && enrichment.shortlist.every((candidate) => state.assessments.has(candidate.id));
   rebuildLyricsAwareDecisions(input);
   if (!state.persistenceAttempted && input.persistTrackAssessments) {
     state.persistenceAttempted = true;

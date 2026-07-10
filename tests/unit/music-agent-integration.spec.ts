@@ -222,7 +222,7 @@ describe('MusicAgent facade', () => {
     const result = await agent.pickNext({ userId: 'lyrics-aware', ncmClient: ncmClient as any });
 
     expect(result.status).toBe('ok');
-    expect(result.say).toBe('fused');
+    expect(result.say).toBe('first');
     expect(enrich).toHaveBeenCalledTimes(1);
     expect(persist).toHaveBeenCalledTimes(1);
   });

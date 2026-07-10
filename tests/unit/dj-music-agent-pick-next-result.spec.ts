@@ -196,6 +196,78 @@ describe('MusicAgent pick-next result handling', () => {
     );
   });
 
+  it('accepts a real ranked recovery when the entire shortlist is covered by trusted cache profiles', async () => {
+    const { CandidatePool } = await import('../../src/server/music-agent/candidates');
+    const { runMusicAgentLoop } = await import('../../src/server/music-agent/loop');
+    const pool = new CandidatePool();
+    pool.upsert({
+      id: 'cached-safe', name: 'Cached Safe', artist: 'Known Artist', sources: ['search'], evidence: [],
+      scores: {
+        intentMatch: 0.9, tasteMatch: 0.8, timeFit: 0.8, contextFit: 0.8,
+        novelty: 0.5, recentPenalty: 0, skipPenalty: 0, sourceConfidence: 0.8
+      }
+    });
+    const cachedAssessment = {
+      id: 'cached-safe',
+      profile: {
+        genres: ['ambient'], moods: ['calm'], energy: 'low' as const,
+        aggression: 'low' as const, vocalIntensity: 'low' as const,
+        lyricThemes: [], language: 'unknown'
+      },
+      confidence: {
+        genres: 0.9, moods: 0.9, energy: 0.9, aggression: 0.9,
+        vocalIntensity: 0.9, lyricThemes: 0.2, language: 0.2
+      },
+      evidence: [{ claim: 'mood=calm', source: 'lyric_analysis' as const }]
+    };
+    const output = await runMusicAgentLoop({
+      llmClient: { async complete() { throw new Error('LLM must not run'); } },
+      context: {
+        request: 'auto-fill', currentUserText: '安静舒缓', activeDirective: '',
+        currentMoment: { localTime: 'now', daypart: 'evening', weather: null },
+        tasteSummary: '', recentPreferenceSummary: '', recentPlaySignals: '',
+        queueStateSummary: '', bannedSummary: ''
+      },
+      candidatePool: pool,
+      tools: {},
+      budget: {
+        maxMs: 10_000, maxSteps: 0, maxLlmCalls: 1, maxToolCalls: 0,
+        maxNcmSearches: 0, maxPlaylistFetches: 0, maxTrendFetchMs: 0, maxCandidates: 20
+      },
+      lyricsSelectionMode: 'enforce_fit',
+      finalShortlistEnricher: async () => ({
+        shortlist: pool.list(),
+        expectedLyricVersions: [],
+        promptPackets: [{
+          id: 'cached-safe', name: 'Cached Safe', artist: 'Known Artist', sources: ['search'],
+          kind: 'profile', assessment: cachedAssessment
+        }],
+        diagnostics: {
+          shortlistCount: 1, cacheHits: 1, cacheMisses: 0,
+          lyricAttempted: 0, lyricSuccess: 0, lyricMissing: 0, lyricFail: 0,
+          lyricTimeout: 0, lyricCancelled: 0, wikiAttempted: 0, wikiSuccess: 0,
+          wikiFail: 0, wikiTimeout: 0, wikiCancelled: 0, cacheWriteFailed: 0,
+          sampledChars: 0, elapsedMs: 0, deadlineReached: false
+        }
+      })
+    });
+
+    expect(output.lyricsAwareDiagnostics).toMatchObject({
+      assessmentCoverageValid: true, allReturnedPicksAssessed: true
+    });
+    const result = handleMusicAgentPickNextOutput({
+      userId: 'music-agent-result-user', output,
+      excludeState: { ids: new Set(), dedupeKeys: new Set() },
+      initialQueueLength: 0, targetPickCount: 1, startedAt: Date.now(), discoveryMode: 'explore',
+      emit: vi.fn(), broadcastAppended: vi.fn(), logger: { warn: vi.fn() },
+      setPickReason: vi.fn(),
+      fallbackStatsSnapshot: () => ({ totalRuns: 0, fallbackRuns: 0, fallbackRate: 0, fallbackPaths: {} })
+    });
+
+    expect(result.status).toBe('handled');
+    expect(getQueue('music-agent-result-user')).toMatchObject([{ ncmId: 'cached-safe' }]);
+  });
+
   it('does not trust ranked convergence picks when enforcement diagnostics are incomplete', () => {
     const output = makeOutput([
       { id: '112', name: 'Unchecked Convergence', artist: 'Unknown', reason: 'ranked convergence', source: 'search' }
