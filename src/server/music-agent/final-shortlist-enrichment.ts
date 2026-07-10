@@ -25,6 +25,7 @@ const MAX_SHORTLIST_SIZE = 12;
 const MAX_CANDIDATE_CONCURRENCY = 6;
 const MAX_PER_MISS_LYRIC_CHARS = 3_000;
 const MISSING_LYRIC_CACHE_TTL_MS = 24 * 60 * 60 * 1_000;
+const PROFILE_CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1_000;
 
 export type FinalShortlistEnrichmentResult = {
   shortlist: MusicCandidate[];
@@ -73,6 +74,7 @@ export function createFinalShortlistEnricher({
   const boundedDeadlineMs = Math.max(0, finiteNumber(deadlineMs, 2_500));
   const boundedEvidenceChars = Math.max(0, Math.floor(finiteNumber(maxLyricEvidenceChars, 36_000)));
   const requestSemaphore = new RequestSemaphore(boundedConcurrency);
+  const singleFlight = new SingleFlightRequestCoordinator(requestSemaphore);
 
   return async (candidates, options = {}) => {
     const startedAt = now();
@@ -90,7 +92,7 @@ export function createFinalShortlistEnricher({
 
     shortlist.forEach((candidate, packetIndex) => {
       const cached = cachedById.get(candidate.id) ?? null;
-      const assessment = cachedAssessment(candidate.id, cached, analyzerVersion);
+      const assessment = cachedAssessment(candidate.id, cached, analyzerVersion, now());
       if (assessment) {
         diagnostics.cacheHits += 1;
         promptPackets[packetIndex] = {
@@ -144,24 +146,24 @@ export function createFinalShortlistEnricher({
 
           let lyric: NcmLyric | null;
           try {
-            lyric = await requestSemaphore.run(
+            lyric = await singleFlight.run(
+              `lyric:ncm:${item.candidate.id}`,
               candidateAbort.signal,
-              () => {
-                diagnostics.lyricAttempted += 1;
-                return abortable(
-                  ncmClient.getLyric(
-                    item.candidate.id,
-                    requestOptions(candidateAbort.signal, boundedDeadlineMs)
-                  ),
-                  candidateAbort.signal
-                );
-              }
+              () => { diagnostics.lyricAttempted += 1; },
+              (sharedSignal) => ncmClient.getLyric(
+                item.candidate.id,
+                requestOptions(sharedSignal, boundedDeadlineMs)
+              )
             );
           } catch (error) {
             if (error instanceof NcmRequestNotStartedError) {
               return { evidence: createUnknownLyricEvidence(), settled: false };
             }
-            if (deadlineReached) diagnostics.lyricTimeout += 1;
+            if (error instanceof CallerWaitCancelledError && deadlineReached) {
+              diagnostics.lyricTimeout += 1;
+            } else if (error instanceof CallerWaitCancelledError && options.signal?.aborted) {
+              diagnostics.lyricCancelled += 1;
+            } else if (deadlineReached) diagnostics.lyricTimeout += 1;
             else diagnostics.lyricFail += 1;
             return { evidence: createUnknownLyricEvidence(), settled: false };
           }
@@ -187,18 +189,14 @@ export function createFinalShortlistEnricher({
 
         const loadWikiTags = async (): Promise<{ tags: string[]; settled: boolean }> => {
           try {
-            const wikiSummary = await requestSemaphore.run(
+            const wikiSummary = await singleFlight.run(
+              `wiki:ncm:${item.candidate.id}`,
               candidateAbort.signal,
-              () => {
-                diagnostics.wikiAttempted += 1;
-                return abortable(
-                  ncmClient.getSongWikiSummary(
-                    item.candidate.id,
-                    requestOptions(candidateAbort.signal, boundedDeadlineMs)
-                  ),
-                  candidateAbort.signal
-                );
-              }
+              () => { diagnostics.wikiAttempted += 1; },
+              (sharedSignal) => ncmClient.getSongWikiSummary(
+                item.candidate.id,
+                requestOptions(sharedSignal, boundedDeadlineMs)
+              )
             );
             diagnostics.wikiSuccess += 1;
             return { tags: extractTagsFromWikiSummary(wikiSummary), settled: true };
@@ -206,7 +204,11 @@ export function createFinalShortlistEnricher({
             if (error instanceof NcmRequestNotStartedError) {
               return { tags: [], settled: false };
             }
-            if (deadlineReached) diagnostics.wikiTimeout += 1;
+            if (error instanceof CallerWaitCancelledError && deadlineReached) {
+              diagnostics.wikiTimeout += 1;
+            } else if (error instanceof CallerWaitCancelledError && options.signal?.aborted) {
+              diagnostics.wikiCancelled += 1;
+            } else if (deadlineReached) diagnostics.wikiTimeout += 1;
             else diagnostics.wikiFail += 1;
             return { tags: [], settled: false };
           }
@@ -268,13 +270,15 @@ function basePacket(candidate: MusicCandidate): ShortlistBasePromptPacket {
 function cachedAssessment(
   id: string,
   cached: MusicTrackAnalysisCacheRecord | null,
-  analyzerVersion: string
+  analyzerVersion: string,
+  nowMs: number
 ): TrackAssessment | null {
   if (
     !cached ||
     cached.analyzerVersion !== analyzerVersion ||
     cached.profile === null ||
-    cached.confidence === null
+    cached.confidence === null ||
+    !isFreshTimestamp(cached.lastLyricRefreshAt, nowMs, PROFILE_CACHE_TTL_MS)
   ) {
     return null;
   }
@@ -289,8 +293,14 @@ function cachedAssessment(
 
 function isFreshMissingCache(cached: MusicTrackAnalysisCacheRecord | null, nowMs: number): boolean {
   if (cached?.lyricStatus !== 'missing' || !cached.lastLyricRefreshAt) return false;
-  const refreshedAt = Date.parse(cached.lastLyricRefreshAt);
-  return Number.isFinite(refreshedAt) && nowMs - refreshedAt < MISSING_LYRIC_CACHE_TTL_MS;
+  return isFreshTimestamp(cached.lastLyricRefreshAt, nowMs, MISSING_LYRIC_CACHE_TTL_MS);
+}
+
+function isFreshTimestamp(timestamp: string | null, nowMs: number, ttlMs: number): boolean {
+  if (!timestamp) return false;
+  const timestampMs = Date.parse(timestamp);
+  const ageMs = nowMs - timestampMs;
+  return Number.isFinite(timestampMs) && ageMs >= 0 && ageMs < ttlMs;
 }
 
 function extractionSummary(evidence: PreparedLyricEvidence): Record<string, unknown> {
@@ -312,10 +322,10 @@ function requestOptions(signal: AbortSignal, deadlineMs: number): NcmRequestOpti
   };
 }
 
-function abortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
-  if (signal.aborted) return Promise.reject(signal.reason ?? new Error('aborted'));
+function waitForCaller<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) return Promise.reject(new CallerWaitCancelledError());
   return new Promise<T>((resolve, reject) => {
-    const onAbort = () => reject(signal.reason ?? new Error('aborted'));
+    const onAbort = () => reject(new CallerWaitCancelledError());
     signal.addEventListener('abort', onAbort, { once: true });
     promise.then(
       (value) => {
@@ -354,10 +364,12 @@ function emptyDiagnostics(shortlistCount: number): FinalShortlistEnrichmentDiagn
     lyricMissing: 0,
     lyricFail: 0,
     lyricTimeout: 0,
+    lyricCancelled: 0,
     wikiAttempted: 0,
     wikiSuccess: 0,
     wikiFail: 0,
     wikiTimeout: 0,
+    wikiCancelled: 0,
     cacheWriteFailed: 0,
     sampledChars: 0,
     elapsedMs: 0,
@@ -381,6 +393,13 @@ class NcmRequestNotStartedError extends Error {
   constructor() {
     super('NCM request was aborted before acquiring a concurrency slot');
     this.name = 'NcmRequestNotStartedError';
+  }
+}
+
+class CallerWaitCancelledError extends Error {
+  constructor() {
+    super('Final shortlist enrichment caller stopped waiting');
+    this.name = 'CallerWaitCancelledError';
   }
 }
 
@@ -442,5 +461,73 @@ class RequestSemaphore {
       waiter.resolve();
       return;
     }
+  }
+}
+
+type SingleFlightWaiter = {
+  onStarted: () => void;
+};
+
+type SingleFlightEntry<T> = {
+  controller: AbortController;
+  promise: Promise<T>;
+  settled: boolean;
+  waiters: Set<SingleFlightWaiter>;
+};
+
+class SingleFlightRequestCoordinator {
+  private readonly inFlight = new Map<string, SingleFlightEntry<unknown>>();
+
+  constructor(private readonly semaphore: RequestSemaphore) {}
+
+  run<T>(
+    key: string,
+    callerSignal: AbortSignal,
+    onStarted: () => void,
+    request: (sharedSignal: AbortSignal) => Promise<T>
+  ): Promise<T> {
+    let entry = this.inFlight.get(key) as SingleFlightEntry<T> | undefined;
+    if (!entry) {
+      entry = this.createEntry(key, request);
+    }
+
+    const waiter: SingleFlightWaiter = { onStarted };
+    entry.waiters.add(waiter);
+    return waitForCaller(entry.promise, callerSignal).finally(() => {
+      entry!.waiters.delete(waiter);
+      if (entry!.waiters.size === 0 && !entry!.settled) {
+        entry!.controller.abort(new CallerWaitCancelledError());
+      }
+    });
+  }
+
+  private createEntry<T>(
+    key: string,
+    request: (sharedSignal: AbortSignal) => Promise<T>
+  ): SingleFlightEntry<T> {
+    const controller = new AbortController();
+    const entry: SingleFlightEntry<T> = {
+      controller,
+      promise: Promise.resolve(undefined as T) as Promise<T>,
+      settled: false,
+      waiters: new Set<SingleFlightWaiter>()
+    };
+
+    entry.promise = this.semaphore.run(controller.signal, () => {
+      const diagnosticsOwner = entry.waiters.values().next().value;
+      diagnosticsOwner?.onStarted();
+      return request(controller.signal);
+    });
+    this.inFlight.set(key, entry as SingleFlightEntry<unknown>);
+    void entry.promise.then(
+      () => this.settleEntry(key, entry),
+      () => this.settleEntry(key, entry)
+    );
+    return entry;
+  }
+
+  private settleEntry<T>(key: string, entry: SingleFlightEntry<T>): void {
+    entry.settled = true;
+    if (this.inFlight.get(key) === entry) this.inFlight.delete(key);
   }
 }

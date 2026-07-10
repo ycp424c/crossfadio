@@ -88,7 +88,9 @@ describe('final shortlist enrichment', () => {
       lyricRefreshedAt: '2026-07-10T00:00:00.000Z'
     });
     const ncmClient = createNcmClient();
-    const enrich = await createEnricher(ncmClient);
+    const enrich = await createEnricher(ncmClient, {
+      now: () => Date.parse('2026-07-10T12:00:00.000Z')
+    });
 
     const result = await enrich(candidates(1));
 
@@ -110,6 +112,34 @@ describe('final shortlist enrichment', () => {
       lyricAttempted: 0,
       wikiAttempted: 0
     });
+  });
+
+  it.each([
+    ['30-day-old', '2026-06-10T12:00:00.000Z'],
+    ['future-dated', '2026-07-11T12:00:00.000Z']
+  ])('refreshes a %s positive profile instead of treating it as a cache hit', async (_label, refreshedAt) => {
+    const { recordMusicTrackLyricRefresh, saveMusicTrackSemanticProfile } =
+      await import('../../src/server/store/music-track-analysis-cache.js');
+    recordMusicTrackLyricRefresh({
+      provider: 'ncm', trackId: 'track-0', lyricStatus: 'available', lyricHash: 'cached-hash',
+      extractionSummary: {}, refreshedAt
+    });
+    saveMusicTrackSemanticProfile({
+      provider: 'ncm', trackId: 'track-0', analyzerVersion: 'lyrics-v1', lyricHash: 'cached-hash',
+      profile, confidence, evidence: [{ claim: 'energy=low', source: 'lyric_analysis' }],
+      extractionSummary: {}, analysisModel: 'analysis-model', lyricRefreshedAt: refreshedAt
+    });
+    const ncmClient = createNcmClient();
+    const enrich = await createEnricher(ncmClient, {
+      now: () => Date.parse('2026-07-10T12:00:00.000Z')
+    });
+
+    const result = await enrich(candidates(1));
+
+    expect(ncmClient.getLyric).toHaveBeenCalledTimes(1);
+    expect(ncmClient.getSongWikiSummary).toHaveBeenCalledTimes(1);
+    expect(result.promptPackets[0]?.kind).toBe('evidence');
+    expect(result.diagnostics).toMatchObject({ cacheHits: 0, cacheMisses: 1 });
   });
 
   it('builds bounded deterministic lyric evidence and wiki tags on a cache miss', async () => {
@@ -193,8 +223,10 @@ describe('final shortlist enrichment', () => {
     expect(result.diagnostics).toMatchObject({
       lyricAttempted: 1,
       lyricTimeout: 1,
+      lyricCancelled: 0,
       wikiAttempted: 1,
       wikiSuccess: 1,
+      wikiCancelled: 0,
       deadlineReached: true
     });
   });
@@ -262,6 +294,89 @@ describe('final shortlist enrichment', () => {
     await Promise.all([enrich(candidates(6)), enrich(candidates(6))]);
 
     expect(maxActive).toBeLessThanOrEqual(6);
+  });
+
+  it('keeps a semaphore slot until an abort-ignoring underlying NCM promise settles', async () => {
+    let active = 0;
+    let underlyingMax = 0;
+    const trackRequest = async <T>(value: T): Promise<T> => {
+      active += 1;
+      underlyingMax = Math.max(underlyingMax, active);
+      await delay(30);
+      active -= 1;
+      return value;
+    };
+    const ncmClient = createNcmClient({
+      getLyric: async (id) => trackRequest(lyric(id)),
+      getSongWikiSummary: async () => trackRequest<Record<string, unknown> | null>(null)
+    });
+    const enrich = await createEnricher(ncmClient, { maxConcurrency: 1, deadlineMs: 20 });
+
+    await enrich([candidate(0)]);
+    await enrich([candidate(1)]);
+    await delay(60);
+
+    expect(underlyingMax).toBe(1);
+    expect(ncmClient.getLyric).toHaveBeenCalledTimes(2);
+  });
+
+  it('single-flights lyric and wiki requests for the same track across concurrent calls', async () => {
+    const ncmClient = createNcmClient({
+      getLyric: async (id) => {
+        await delay(20);
+        return lyric(id);
+      },
+      getSongWikiSummary: async () => {
+        await delay(20);
+        return { tags: ['ambient'] };
+      }
+    });
+    const enrich = await createEnricher(ncmClient, { deadlineMs: 200 });
+
+    const [first, second] = await Promise.all([
+      enrich(candidates(1)),
+      enrich(candidates(1))
+    ]);
+
+    expect(ncmClient.getLyric).toHaveBeenCalledTimes(1);
+    expect(ncmClient.getSongWikiSummary).toHaveBeenCalledTimes(1);
+    expect(first.promptPackets[0]?.kind).toBe('evidence');
+    expect(second.promptPackets[0]?.kind).toBe('evidence');
+  });
+
+  it('keeps shared requests alive when one same-track caller is parent-aborted', async () => {
+    const ncmClient = createNcmClient({
+      getLyric: async (id) => {
+        await delay(30);
+        return lyric(id);
+      },
+      getSongWikiSummary: async () => {
+        await delay(30);
+        return { tags: ['ambient'] };
+      }
+    });
+    const enrich = await createEnricher(ncmClient, { deadlineMs: 200 });
+    const controller = new AbortController();
+    const cancelled = enrich(candidates(1), { signal: controller.signal });
+    const surviving = enrich(candidates(1));
+    await delay(5);
+    controller.abort();
+
+    const [cancelledResult, survivingResult] = await Promise.all([cancelled, surviving]);
+
+    expect(ncmClient.getLyric).toHaveBeenCalledTimes(1);
+    expect(ncmClient.getSongWikiSummary).toHaveBeenCalledTimes(1);
+    expect(cancelledResult.diagnostics).toMatchObject({
+      lyricCancelled: 1,
+      wikiCancelled: 1,
+      lyricFail: 0,
+      wikiFail: 0
+    });
+    expect(survivingResult.promptPackets[0]).toMatchObject({
+      kind: 'evidence',
+      lyricEvidence: { lyricStatus: 'available' },
+      wikiTags: ['ambient']
+    });
   });
 
   it('keeps successful lyric evidence when the cache write fails', async () => {
@@ -336,6 +451,11 @@ describe('final shortlist enrichment', () => {
       packet.kind === 'evidence' && packet.wikiTags.includes('settled-before-abort')
     )).toBe(true);
     expect(result.diagnostics.deadlineReached).toBe(false);
+    expect(result.diagnostics).toMatchObject({
+      lyricFail: 0,
+      lyricTimeout: 0
+    });
+    expect(result.diagnostics.lyricCancelled).toBeGreaterThan(0);
   });
 
   it('splits the lyric character budget equally across misses and respects the total cap', async () => {
@@ -388,6 +508,21 @@ describe('final shortlist enrichment', () => {
     });
   });
 
+  it('does not trust a future-dated missing lyric cache entry', async () => {
+    const now = Date.parse('2026-07-10T12:00:00.000Z');
+    const { recordMusicTrackLyricRefresh } = await import('../../src/server/store/music-track-analysis-cache.js');
+    recordMusicTrackLyricRefresh({
+      provider: 'ncm', trackId: 'track-0', lyricStatus: 'missing', lyricHash: null,
+      extractionSummary: {}, refreshedAt: new Date(now + 60_000).toISOString()
+    });
+    const ncmClient = createNcmClient();
+    const enrich = await createEnricher(ncmClient, { now: () => now });
+
+    await enrich(candidates(1));
+
+    expect(ncmClient.getLyric).toHaveBeenCalledTimes(1);
+  });
+
   it('does no NCM work or cache mutation when mode is off', async () => {
     const ncmClient = createNcmClient();
     const enrich = await createEnricher(ncmClient, { mode: 'off' });
@@ -405,6 +540,8 @@ describe('final shortlist enrichment', () => {
       lyricMissing: 0,
       wikiAttempted: 0,
       wikiSuccess: 0,
+      lyricCancelled: 0,
+      wikiCancelled: 0,
       cacheWriteFailed: 0,
       sampledChars: 0,
       deadlineReached: false
