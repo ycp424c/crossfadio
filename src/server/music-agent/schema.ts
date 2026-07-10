@@ -335,7 +335,7 @@ export const finalPickDiagnosticsSchema = z.object({
 
 export type FinalPickDiagnostics = z.infer<typeof finalPickDiagnosticsSchema>;
 
-const lyricsAwareDiagnosticsSchema = z.object({
+export const lyricsAwareDiagnosticsSchema = z.object({
   mode: z.enum(['off', 'shadow', 'enforce_fit', 'enforce_all']),
   enrichment: z.object({
     shortlistCount: z.number().int().nonnegative(), cacheHits: z.number().int().nonnegative(),

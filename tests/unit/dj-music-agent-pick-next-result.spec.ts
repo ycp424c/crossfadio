@@ -1,5 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { handleMusicAgentPickNextOutput } from '../../src/server/dj/musicAgentPickNextResult';
+import {
+  handleMusicAgentPickNextOutput,
+  isLyricsAwareSafetyBlock
+} from '../../src/server/dj/musicAgentPickNextResult';
 import { getQueue, setQueueState } from '../../src/server/store/queue';
 import type { MusicAgentRunOutput } from '../../src/server/music-agent/schema';
 
@@ -380,6 +383,40 @@ describe('MusicAgent pick-next result handling', () => {
       expect(result.status).toBe('legacy-fallback');
     }
   );
+
+  it('rejects forged safety diagnostics with an incomplete enrichment payload and keeps Legacy', () => {
+    const output = {
+      ...makeOutput([], makeLyricsAwareDiagnostics({ fallbackSuppressed: true })),
+      status: 'empty_pool' as const,
+      lyricsAwareDiagnostics: {
+        ...makeLyricsAwareDiagnostics({ fallbackSuppressed: true }),
+        enrichment: {}
+      }
+    } as unknown as MusicAgentRunOutput;
+    const emit = vi.fn();
+
+    expect(isLyricsAwareSafetyBlock(output)).toBe(false);
+    const result = handleMusicAgentPickNextOutput({
+      userId: 'music-agent-result-user',
+      output,
+      excludeState: { ids: new Set(), dedupeKeys: new Set() },
+      initialQueueLength: 0,
+      targetPickCount: 1,
+      startedAt: Date.now(),
+      discoveryMode: 'explore',
+      emit,
+      broadcastAppended: vi.fn(),
+      logger: { warn: vi.fn() },
+      setPickReason: vi.fn(),
+      fallbackStatsSnapshot: () => ({ totalRuns: 0, fallbackRuns: 0, fallbackRate: 0, fallbackPaths: {} })
+    });
+
+    expect(result.status).toBe('legacy-fallback');
+    expect(emit).not.toHaveBeenCalledWith(expect.objectContaining({
+      type: 'dj.pick-next.done',
+      reason: 'lyrics-safety-block'
+    }));
+  });
 
   it('keeps legacy fallback for an ordinary MusicAgent error', () => {
     const output = {

@@ -1,4 +1,7 @@
-import type { MusicAgentRunOutput } from '../music-agent/schema.js';
+import {
+  lyricsAwareDiagnosticsSchema,
+  type MusicAgentRunOutput
+} from '../music-agent/schema.js';
 import { buildMusicTrackDedupeKey, isMusicTrackDedupeKeyExcluded } from '../music-agent/dedupe.js';
 import type { DiscoveryMode } from '../../shared/dj.js';
 import { defaultDJAgentQueuePort, type DJAgentQueuePort } from '../dj-agent/ports.js';
@@ -388,10 +391,11 @@ function shouldRouteRankedRecoveryToLegacy(output: MusicAgentRunOutput): boolean
 
 function hasSafeAssessedRankedPicks(output: MusicAgentRunOutput): boolean {
   if (!hasRankedRecoveryPicks(output)) return false;
-  const diagnostics = output.lyricsAwareDiagnostics;
+  const parsedDiagnostics = lyricsAwareDiagnosticsSchema.safeParse(output.lyricsAwareDiagnostics);
+  if (!parsedDiagnostics.success) return false;
+  const diagnostics = parsedDiagnostics.data;
   if (
-    !diagnostics
-    || !isLyricsEnforcementMode(diagnostics.mode)
+    !isLyricsEnforcementMode(diagnostics.mode)
     || diagnostics.enforcementApplied !== true
     || diagnostics.assessmentCoverageValid !== true
     || diagnostics.allReturnedPicksAssessed !== true
@@ -412,17 +416,14 @@ function hasSafeAssessedRankedPicks(output: MusicAgentRunOutput): boolean {
 }
 
 export function isLyricsAwareSafetyBlock(output: MusicAgentRunOutput): boolean {
-  const diagnostics = output.lyricsAwareDiagnostics;
+  const parsedDiagnostics = lyricsAwareDiagnosticsSchema.safeParse(output.lyricsAwareDiagnostics);
+  if (!parsedDiagnostics.success) return false;
+  const diagnostics = parsedDiagnostics.data;
   return output.picks.length === 0
-    && diagnostics !== undefined
     && isLyricsEnforcementMode(diagnostics.mode)
     && diagnostics.enforcementApplied === true
     && diagnostics.fallbackSuppressed === true
-    && diagnostics.allReturnedPicksAssessed === true
-    && Array.isArray(diagnostics.assessmentValidationProblems)
-    && Array.isArray(diagnostics.decisions)
-    && typeof diagnostics.promptChars === 'number'
-    && diagnostics.enrichment !== undefined;
+    && diagnostics.allReturnedPicksAssessed === true;
 }
 
 function isLyricsEnforcementMode(mode: string): mode is 'enforce_fit' | 'enforce_all' {
