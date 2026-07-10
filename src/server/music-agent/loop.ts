@@ -532,6 +532,12 @@ async function askExtraFinalPick(
   const enrichment = input.lyricsSelectionMode === 'shadow' && !isShadowAssessmentCall
     ? null
     : await prepareLyricsAwareShortlist(input);
+  if (isShadowAssessmentCall && !hasShadowAssessmentBudget(input, startedAt, step, llmCalls)) {
+    recordAssessmentValidationProblem(input, 'assessment_budget_skipped');
+    return acceptExtraFinalPick(
+      null, input, trace, startedAt, step, llmCalls, toolCalls, shadowAuthoritativeOutput
+    );
+  }
   const promptPayload = buildFinalPickPromptPayload({
     context: input.context,
     observations: finalPickObservations,
@@ -712,6 +718,12 @@ async function retryHardFinalOnlyPick(
   const enrichment = input.lyricsSelectionMode === 'shadow' && !isShadowAssessmentCall
     ? null
     : await prepareLyricsAwareShortlist(input);
+  if (isShadowAssessmentCall && !hasShadowAssessmentBudget(input, startedAt, step, llmCalls)) {
+    recordAssessmentValidationProblem(input, 'assessment_budget_skipped');
+    return acceptExtraFinalPick(
+      null, input, trace, startedAt, step, llmCalls, toolCalls, shadowAuthoritativeOutput
+    );
+  }
   const promptPayload = buildFinalPickPromptPayload({
     context: input.context,
     observations: [...observations, retryObservation],
@@ -1764,7 +1776,10 @@ function prepareSkippedLyricsAwareShortlist(input: RunMusicAgentLoopInput): void
       ...(candidate.qualitySignals ? { qualitySignals: candidate.qualitySignals } : {}),
       kind: 'base' as const
     })),
-    diagnostics: emptyLyricsAwareEnrichmentDiagnostics(shortlist.length)
+    diagnostics: {
+      ...emptyLyricsAwareEnrichmentDiagnostics(shortlist.length),
+      cacheMisses: 0
+    }
   };
   state.coverageValid = false;
 }

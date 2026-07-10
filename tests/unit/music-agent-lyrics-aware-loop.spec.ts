@@ -241,7 +241,45 @@ describe('lyrics-aware music agent loop', () => {
     expect(result.picks.map((pick) => pick.id)).toEqual(['one']);
     expect(result.lyricsAwareDiagnostics?.assessmentValidationProblems)
       .toContain('assessment_budget_skipped');
+    expect(result.lyricsAwareDiagnostics?.enrichment).toMatchObject({
+      cacheHits: 0, cacheMisses: 0, lyricAttempted: 0, wikiAttempted: 0
+    });
     expect(result.finalPickDiagnostics?.assessmentValidationFailureCount).toBe(1);
+  });
+
+  it('rechecks the wall-clock budget after slow enrichment before calling the shadow assessment LLM', async () => {
+    vi.useFakeTimers();
+    try {
+      const one = candidate('one'); const pool = new CandidatePool(); pool.upsert(one);
+      const baseEnricher = enricherFor([one]);
+      const slowEnricher: FinalShortlistEnricher = vi.fn(async (...args) => {
+        vi.advanceTimersByTime(75);
+        return baseEnricher(...args);
+      });
+      let calls = 0;
+      const client: MusicAgentLlmClient = {
+        async complete() {
+          calls += 1;
+          vi.advanceTimersByTime(10);
+          return { content: JSON.stringify(finalOutput(['one'], [])), model: 'fake' };
+        }
+      };
+
+      const result = await runMusicAgentLoop({
+        llmClient: client, context: context(), candidatePool: pool, tools: {},
+        budget: budget({ maxMs: 100, maxLlmCalls: 3 }), lyricsSelectionMode: 'shadow',
+        finalShortlistEnricher: slowEnricher
+      });
+
+      expect(slowEnricher).toHaveBeenCalledTimes(1);
+      expect(calls).toBe(1);
+      expect(result.picks.map((pick) => pick.id)).toEqual(['one']);
+      expect(result.lyricsAwareDiagnostics?.assessmentValidationProblems)
+        .toContain('assessment_budget_skipped');
+      expect(result.finalPickDiagnostics?.assessmentValidationFailureCount).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('skips shadow assessment when the remaining wall-clock budget is too small', async () => {
