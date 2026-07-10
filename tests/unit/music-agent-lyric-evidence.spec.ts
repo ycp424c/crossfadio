@@ -90,6 +90,24 @@ describe('prepareLyricEvidence', () => {
     expect(first.sampledCharCount).toBeLessThanOrEqual(320);
   });
 
+  it('does not let an already-selected repeated hook consume later window slots', () => {
+    const hook = '让同一段副歌再次回到这里';
+    const lyric = Array.from({ length: 36 }, (_, index) => {
+      if ([0, 12, 13, 24, 25].includes(index)) return hook;
+      if (index === 14) return '中段独特歌词必须保留';
+      if (index === 26) return '后段独特歌词必须保留';
+      const detail = index >= 1 && index <= 6 ? '包含大量独特高信息词汇'.repeat(4) : '普通场景描述'.repeat(4);
+      return `第${index}行${detail}`;
+    }).join('\n');
+
+    const result = prepareLyricEvidence({ id: 'window-hook', lyric, translation: null }, { charBudget: 900 });
+
+    expect(result.sampleMode).toBe('stratified');
+    expect(result.sampledLines.map((line) => line.text)).toEqual(
+      expect.arrayContaining(['中段独特歌词必须保留', '后段独特歌词必须保留'])
+    );
+  });
+
   it('aligns translated lines by timestamp', () => {
     const result = prepareLyricEvidence(
       {
@@ -104,6 +122,40 @@ describe('prepareLyricEvidence', () => {
     expect(result.sampledLines).toEqual([
       expect.objectContaining({ text: '雨落在窗边', translation: 'Rain falls by the window' }),
       expect.objectContaining({ text: '灯光慢慢熄灭', translation: 'The light slowly fades' })
+    ]);
+  });
+
+  it('falls back to line-index alignment for timestamped lyrics with plain translations', () => {
+    const result = prepareLyricEvidence(
+      {
+        id: 'timestamped-source',
+        lyric: '[00:05]第一句原文\n[00:10]第二句原文',
+        translation: 'First translated line\nSecond translated line'
+      },
+      { charBudget: 2_000 }
+    );
+
+    expect(result.hasTranslation).toBe(true);
+    expect(result.sampledLines).toEqual([
+      expect.objectContaining({ text: '第一句原文', translation: 'First translated line' }),
+      expect.objectContaining({ text: '第二句原文', translation: 'Second translated line' })
+    ]);
+  });
+
+  it('falls back to line-index alignment for plain lyrics with timestamped translations', () => {
+    const result = prepareLyricEvidence(
+      {
+        id: 'plain-source',
+        lyric: '第一句原文\n第二句原文',
+        translation: '[00:05]First translated line\n[00:10]Second translated line'
+      },
+      { charBudget: 2_000 }
+    );
+
+    expect(result.hasTranslation).toBe(true);
+    expect(result.sampledLines).toEqual([
+      expect.objectContaining({ text: '第一句原文', translation: 'First translated line' }),
+      expect.objectContaining({ text: '第二句原文', translation: 'Second translated line' })
     ]);
   });
 
@@ -133,6 +185,21 @@ describe('prepareLyricEvidence', () => {
     expect(result.sampleMode).toBe('stratified');
     expect(result.sampledLines.length).toBeLessThan(120);
     expect(result.sampledCharCount).toBeLessThanOrEqual(5_000);
+  });
+
+  it.each([
+    { label: 'NaN', charBudget: Number.NaN },
+    { label: 'Infinity', charBudget: Number.POSITIVE_INFINITY }
+  ])('normalizes a non-finite $label character budget to zero', ({ charBudget }) => {
+    const result = prepareLyricEvidence(
+      { id: 'invalid-budget', lyric: '第一句正文\n第二句正文', translation: null },
+      { charBudget }
+    );
+
+    expect(result.lyricStatus).toBe('available');
+    expect(result.sampleMode).toBe('none');
+    expect(result.sampledCharCount).toBe(0);
+    expect(result.sampledLines).toEqual([]);
   });
 
   it('returns none for a missing lyric and exposes the shared cleaner', () => {

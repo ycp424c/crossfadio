@@ -122,7 +122,7 @@ export function prepareLyricEvidence(
     };
   }
 
-  const charBudget = Math.max(0, Math.floor(options.charBudget));
+  const charBudget = Number.isFinite(options.charBudget) ? Math.max(0, Math.floor(options.charBudget)) : 0;
   if (charBudget === 0) {
     return {
       lyricHash,
@@ -235,17 +235,15 @@ function isMeaningfulLyricLine(line: ParsedLyricLine): boolean {
 
 function alignTranslations(source: ParsedLyricLine[], translations: ParsedLyricLine[]): EvidenceLine[] {
   const timestampedTranslations = new Map<number, string>();
-  const untimestampedTranslations: string[] = [];
 
   for (const line of translations) {
-    if (line.timestampMs === null) {
-      untimestampedTranslations.push(line.text);
-    } else if (!timestampedTranslations.has(line.timestampMs)) {
+    if (line.timestampMs !== null && !timestampedTranslations.has(line.timestampMs)) {
       timestampedTranslations.set(line.timestampMs, line.text);
     }
   }
 
   const timestampValues = [...timestampedTranslations.entries()].sort((a, b) => a[0] - b[0]);
+  const translationsByIndex = translations.map((line) => line.text);
   const ratios = calculatePositionRatios(source);
 
   return source.map((line, index) => {
@@ -260,8 +258,9 @@ function alignTranslations(source: ParsedLyricLine[], translations: ParsedLyricL
           translation = closest.text;
         }
       }
+      translation ??= translationsByIndex[index];
     } else {
-      translation = untimestampedTranslations[index];
+      translation = translationsByIndex[index];
     }
 
     const ratio = ratios[index] ?? 0;
@@ -348,9 +347,8 @@ function sampleStratifiedLines(
     for (const line of windowLines) {
       const before = candidates.size;
       addCandidate(line, 'window', repeatedHooks.get(line.normalizedText)?.count);
-      if (candidates.size > before || candidates.get(line.normalizedText)?.reasons.has('window')) {
-        added += 1;
-      }
+      if (candidates.size === before) continue;
+      added += 1;
       if (added >= MAX_LINES_PER_WINDOW) break;
     }
   }
