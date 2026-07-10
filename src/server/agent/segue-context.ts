@@ -166,7 +166,7 @@ function extractLyricExcerpt(lyric: NcmLyric | null | undefined): string {
     return '';
   }
 
-  const lines = cleanLyricLines(lyric.lyric, { preserveFiller: true });
+  const lines = cleanLyricLines(lyric.lyric, { mode: 'legacy-segue' });
   if (lines.length === 0) {
     return '';
   }
@@ -180,7 +180,7 @@ function extractLyricKeywords(lyric: NcmLyric | null | undefined): string[] {
     return [];
   }
 
-  const lines = cleanLyricLines(lyric.lyric, { preserveFiller: true }).slice(0, 10).join(' ');
+  const lines = cleanLyricLines(lyric.lyric, { mode: 'legacy-segue' }).slice(0, 10).join(' ');
   if (!lines) {
     return [];
   }

@@ -61,6 +61,32 @@ describe('buildSegueTrackContext', () => {
     expect(context.lyricKeywords).toEqual(['纯音乐', '正文']);
   });
 
+  it('preserves LRC metadata that the legacy segue cleaner treated as lyric text', () => {
+    const context = buildSegueTrackContext({
+      track: { id: 'legacy-lrc-metadata', name: 'Song', artist: 'Artist' },
+      lyric: {
+        id: 'legacy-lrc-metadata',
+        lyric: '[ar:Artist]\n[00:01]正文',
+        translation: null
+      }
+    });
+
+    expect(context.lyricExcerpt).toBe('[ar:Artist] / 正文');
+  });
+
+  it('preserves credit aliases outside the legacy segue metadata list', () => {
+    const context = buildSegueTrackContext({
+      track: { id: 'legacy-vocals', name: 'Song', artist: 'Artist' },
+      lyric: {
+        id: 'legacy-vocals',
+        lyric: 'Vocals: Alice\n[00:01]正文',
+        translation: null
+      }
+    });
+
+    expect(context.lyricExcerpt).toBe('Vocals: Alice / 正文');
+  });
+
   it('falls back gracefully when external metadata is missing', () => {
     const context = buildSegueTrackContext({
       track: { id: '2', name: 'Song B', artist: 'Artist B' },

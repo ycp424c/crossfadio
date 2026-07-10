@@ -80,15 +80,19 @@ const WINDOW_POSITIONS: Array<Exclude<SampledLyricLine['position'], 'hook'>> = [
 ];
 const FILLER_RE = /^(?:[.·…~\-—_]+|[[(（【]?\s*(?:纯音乐|间奏|前奏|尾奏|伴奏|music|instrumental|interlude|intro|outro)\s*[\])）】]?)$/iu;
 const LRC_METADATA_RE = /^\[(?:ar|ti|al|by|offset|re|ve):.*\]$/iu;
+const LEGACY_SEGUE_METADATA_RE =
+  /^(作词|作曲|编曲|制作人|混音|录音|母带|演唱|词|曲|Composer|Arranger|Producer|Lyricist)\s*[:：]/i;
 
-export function cleanLyricLines(raw: string, options: { preserveFiller?: boolean } = {}): string[] {
+export function cleanLyricLines(raw: string, options: { mode?: 'evidence' | 'legacy-segue' } = {}): string[] {
+  if (options.mode === 'legacy-segue') {
+    return raw
+      .split('\n')
+      .map((line) => line.replace(/\[[\d:.]+\]/g, '').replace(/\s+/g, ' ').trim())
+      .filter((line) => line.length > 0 && !LEGACY_SEGUE_METADATA_RE.test(line));
+  }
+
   return parseLyricLines(raw)
-    .filter(
-      (line) =>
-        !parseCreditLine(line.text) &&
-        !LRC_METADATA_RE.test(line.text) &&
-        (options.preserveFiller === true || !FILLER_RE.test(line.text))
-    )
+    .filter(isMeaningfulLyricLine)
     .map((line) => line.text);
 }
 
