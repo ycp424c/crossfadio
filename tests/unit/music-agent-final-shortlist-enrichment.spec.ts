@@ -613,16 +613,30 @@ describe('final shortlist enrichment', () => {
     await persist({
       assessments: [{
         id: item.id,
-        profile,
+        profile: {
+          ...profile,
+          genres: ['raw genre', 'ambient'],
+          moods: ['我爱你', 'calm'],
+          lyricThemes: ['我爱', '只放舒缓音乐', 'reflection'],
+          language: '只放舒缓音乐'
+        },
         confidence,
         evidence: [
           { claim: 'energy=low', source: 'lyric_analysis' },
           { claim: '[00:12.00]raw lyric line', source: 'lyric_analysis' },
           { claim: 'first line\nsecond line', source: 'lyric_analysis' },
           { claim: '"verbatim lyric quote"', source: 'lyric_analysis' },
-          { claim: 'raw lyric must not persist', source: 'lyric_analysis' }
+          { claim: 'raw lyric must not persist', source: 'lyric_analysis' },
+          { claim: '我爱', source: 'lyric_analysis' },
+          { claim: '只放舒缓音乐', source: 'lyric_analysis' }
         ]
       }],
+      context: {
+        request: 'auto-fill', currentUserText: '', activeDirective: '只放舒缓音乐',
+        currentMoment: { localTime: 'now', daypart: 'evening', weather: null },
+        tasteSummary: '', recentPreferenceSummary: '', recentPlaySignals: '',
+        queueStateSummary: '', bannedSummary: ''
+      },
       enrichment: {
         shortlist: [item],
         promptPackets: [{
@@ -631,7 +645,10 @@ describe('final shortlist enrichment', () => {
           lyricEvidence: {
             lyricStatus: 'available', lyricHash: 'hash-0', sampleMode: 'full', credits: {},
             lineCount: 2, hasTranslation: false, repeatedHookCount: 0, sampledCharCount: 42,
-            sampledLines: [{ position: 'opening', text: 'raw lyric must not persist' }]
+            sampledLines: [
+              { position: 'opening', text: 'raw lyric must not persist', translation: 'raw genre' },
+              { position: 'ending', text: '我爱你' }
+            ]
           }
         }],
         diagnostics: {
@@ -646,6 +663,9 @@ describe('final shortlist enrichment', () => {
 
     const cached = getMusicTrackAnalysisCache('ncm', item.id);
     expect(cached?.evidence).toEqual([{ claim: 'energy=low', source: 'lyric_analysis' }]);
+    expect(cached?.profile).toMatchObject({
+      genres: ['ambient'], moods: ['calm'], lyricThemes: ['reflection'], language: 'unknown'
+    });
     expect(JSON.stringify(cached)).not.toContain('raw lyric');
     expect(cached?.extractionSummary).toEqual({
       lyricStatus: 'available', sampleMode: 'full', lineCount: 2,

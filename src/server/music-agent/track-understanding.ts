@@ -126,7 +126,10 @@ export const lyricsAwareDecisionSummarySchema = z.object({
   id: z.string().min(1),
   compatibility: z.enum(['compatible', 'uncertain', 'conflict']),
   compatibilityConfidence: z.enum(['low', 'medium', 'high']),
+  compatibilityReasons: z.array(z.string().max(160)).max(6),
   quality: z.enum(['trusted', 'acceptable', 'suspicious']),
+  qualityNegativeSignals: z.array(z.string().max(80)).max(8),
+  qualityPositiveSignals: z.array(z.string().max(80)).max(8),
   eligible: z.boolean()
 }).strict();
 

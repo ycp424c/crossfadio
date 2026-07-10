@@ -12,7 +12,7 @@ import {
   prepareLyricEvidence,
   type PreparedLyricEvidence
 } from './lyric-evidence.js';
-import type { MusicCandidate } from './schema.js';
+import type { MusicAgentContextSummary, MusicCandidate } from './schema.js';
 import {
   trackAssessmentSchema,
   type FinalShortlistEnrichmentDiagnostics,
@@ -42,6 +42,7 @@ export type FinalShortlistEnricher = (
 export type PersistTrackAssessmentsInput = {
   assessments: TrackAssessment[];
   enrichment: FinalShortlistEnrichmentResult;
+  context?: MusicAgentContextSummary;
 };
 
 export type TrackAssessmentPersister = (
@@ -75,7 +76,7 @@ export function createFinalShortlistAssessmentPersister({
   analyzerVersion: string;
   analysisModel: string;
 }): TrackAssessmentPersister {
-  return ({ assessments, enrichment }) => {
+  return ({ assessments, enrichment, context }) => {
     const packetsById = new Map(enrichment.promptPackets.map((packet) => [packet.id, packet]));
     const caches = getMusicTrackAnalysisCaches('ncm', assessments.map((assessment) => assessment.id));
     for (const assessment of assessments) {
@@ -83,6 +84,7 @@ export function createFinalShortlistAssessmentPersister({
       if (packet?.kind !== 'evidence') continue;
       const cached = caches.get(assessment.id) ?? null;
       if (!cached) continue;
+      const sanitized = sanitizeAssessment(assessment, packet, context);
       saveMusicTrackSemanticProfile({
         provider: 'ncm',
         trackId: assessment.id,
@@ -90,36 +92,66 @@ export function createFinalShortlistAssessmentPersister({
         analysisModel,
         lyricHash: cached.lyricHash,
         lyricRefreshedAt: cached.lastLyricRefreshAt,
-        profile: assessment.profile,
+        profile: sanitized.profile,
         confidence: assessment.confidence,
-        evidence: sanitizeAssessmentEvidence(assessment.evidence, packet),
+        evidence: sanitized.evidence,
         extractionSummary: stableExtractionSummary(packet)
       });
     }
   };
 }
 
-function sanitizeAssessmentEvidence(
-  evidence: TrackAssessment['evidence'],
-  packet: Extract<ShortlistPromptPacket, { kind: 'evidence' }>
-): TrackAssessment['evidence'] {
-  const rawSamples = packet.lyricEvidence.sampledLines.flatMap((line) =>
-    [line.text, line.translation].filter((value): value is string => Boolean(value)).map(normalizedText)
+function sanitizeAssessment(
+  assessment: TrackAssessment,
+  packet: Extract<ShortlistPromptPacket, { kind: 'evidence' }>,
+  context: MusicAgentContextSummary | undefined
+): TrackAssessment {
+  const rawText = packet.lyricEvidence.sampledLines
+    .flatMap((line) => [line.text, line.translation])
+    .filter((value): value is string => Boolean(value))
+    .map(normalizedText)
+    .filter(Boolean);
+  const contextText = collectContextStrings(context).map(normalizedText).filter(Boolean);
+  const safe = (value: string): boolean => isSafeStableText(value, rawText, contextText);
+  return {
+    ...assessment,
+    profile: {
+      ...assessment.profile,
+      genres: assessment.profile.genres.filter(safe),
+      moods: assessment.profile.moods.filter(safe),
+      lyricThemes: assessment.profile.lyricThemes.filter(safe),
+      language: safe(assessment.profile.language) ? assessment.profile.language : 'unknown'
+    },
+    evidence: assessment.evidence.filter(({ claim }) => safe(claim))
+  };
+}
+
+function isSafeStableText(value: string, rawText: string[], contextText: string[]): boolean {
+  const trimmed = value.trim();
+  const normalized = normalizedText(trimmed);
+  if (!trimmed
+    || /[\r\n]/.test(trimmed)
+    || /\[\d{1,3}:\d{2}(?:[.:]\d{1,3})?\]/.test(trimmed)
+    || /[“”"「」『』]/.test(trimmed)) return false;
+  const overlapsRaw = rawText.some((source) =>
+    normalized === source
+    || (normalized.length >= 2 && source.length >= 2
+      && (source.includes(normalized) || normalized.includes(source)))
   );
-  return evidence.filter(({ claim }) => {
-    const value = claim.trim();
-    const normalizedClaim = normalizedText(value);
-    return value.length > 0
-      && value.length <= 160
-      && !/[\r\n]/.test(value)
-      && !/\[\d{1,3}:\d{2}(?:[.:]\d{1,3})?\]/.test(value)
-      && !/[“”"「」『』]/.test(value)
-      && !rawSamples.some((sample) =>
-        sample.length >= 12
-        && normalizedClaim.length >= 12
-        && (sample.includes(normalizedClaim) || normalizedClaim.includes(sample))
-      );
+  if (overlapsRaw) return false;
+  return !contextText.some((source) => {
+    if (normalized === source) return true;
+    return normalized.length >= 8
+      && source.length >= 8
+      && (source.includes(normalized) || normalized.includes(source));
   });
+}
+
+function collectContextStrings(value: unknown): string[] {
+  if (typeof value === 'string') return value.trim() ? [value] : [];
+  if (Array.isArray(value)) return value.flatMap(collectContextStrings);
+  if (!value || typeof value !== 'object') return [];
+  return Object.values(value as Record<string, unknown>).flatMap(collectContextStrings);
 }
 
 function normalizedText(value: string): string {

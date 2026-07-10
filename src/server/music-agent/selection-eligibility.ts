@@ -55,14 +55,15 @@ const SUSPICIOUS_TITLE_PATTERN = /(?:抖音热歌|网络热歌|车载(?:dj|音�
 export function evaluateTrackCompatibility({
   context,
   assessment,
-  listeningConstraints = []
+  listeningConstraints
 }: {
   context: MusicAgentContextSummary;
   assessment: TrackAssessment;
   listeningConstraints?: string[];
 }): TrackCompatibilityDecision {
-  const explicitConstraints = listeningConstraints.filter((constraint) => clean(constraint).length > 0);
-  const usesExplicitConstraints = explicitConstraints.length > 0;
+  const explicitConstraints = (listeningConstraints ?? [])
+    .filter((constraint) => clean(constraint).length > 0);
+  const usesExplicitConstraints = listeningConstraints !== undefined;
   const constraints = usesExplicitConstraints
     ? explicitConstraints.join(' ')
     : collectFallbackConstraintText(context);

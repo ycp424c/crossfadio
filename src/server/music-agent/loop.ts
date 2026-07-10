@@ -100,6 +100,7 @@ export type MusicAgentFallbackLogEvent = {
   candidateScoreTablePreview?: MusicAgentRunOutput['candidateScoreTable'];
   candidateScoreTableCount?: number;
   webDiscoveryDiagnostics?: WebDiscoveryLogDiagnostics;
+  lyricsAwareDiagnostics?: LyricsAwareDiagnostics;
 };
 
 export type MusicAgentFallbackLogger = (event: MusicAgentFallbackLogEvent) => void;
@@ -276,11 +277,10 @@ async function runMusicAgentLoopInternal(input: RunMusicAgentLoopInput): Promise
     step += 1;
 
     if (output.type === 'final') {
-      if (isLyricsAwareEnabled(input) && output.assessments.length === 0) {
+      if (isLyricsAwareEnabled(input)) {
         return askExtraFinalPick(input, observations, trace, startedAt, step, llmCalls, toolCalls);
       }
       try {
-        await applyLyricsAwareAssessments(output, input);
         const picks = validateEligibleFinalPicks(output.picks, input);
         await prepareForRanking(input);
         const completed = completeFinalPicks(picks, input, output.picks.length, output.rejected?.length ?? 0);
@@ -703,7 +703,7 @@ async function acceptExtraFinalPick(
   toolCalls: number
 ): Promise<MusicAgentRunOutput> {
   try {
-    await applyLyricsAwareAssessments(output, input);
+    await applyFusedLyricsAwareAssessments(output, input);
     const picks = validateEligibleFinalPicks(output.picks, input);
     await prepareForRanking(input);
     const completed = completeFinalPicks(picks, input, output.picks.length, output.rejected?.length ?? 0);
@@ -1150,6 +1150,7 @@ async function rankedFallback(
     lastTraceStep: trace.at(-1),
     traceLastSteps: trace.slice(-3),
     finalPickDiagnostics,
+    lyricsAwareDiagnostics: output.lyricsAwareDiagnostics,
     queryFunnel,
     candidateScoreTablePreview: output.candidateScoreTable.slice(0, 20),
     candidateScoreTableCount: output.candidateScoreTable.length,
@@ -1223,6 +1224,7 @@ function recordRankedConvergence(
     lastTraceStep: trace.at(-1),
     traceLastSteps: trace.slice(-3),
     finalPickDiagnostics: output.finalPickDiagnostics,
+    lyricsAwareDiagnostics: output.lyricsAwareDiagnostics,
     queryFunnel: output.queryFunnel,
     candidateScoreTablePreview: output.candidateScoreTable.slice(0, 20),
     candidateScoreTableCount: output.candidateScoreTable.length,
@@ -1334,7 +1336,7 @@ function withLyricsAwareFinalPickDiagnostics(
     finalPickDiagnostics: {
       ...completed.finalPickDiagnostics,
       semanticConflictDroppedCount: decisions.filter((decision) =>
-        decision.compatibility.status === 'conflict'
+        decision.compatibility.status === 'conflict' && !decision.eligible
       ).length,
       qualityDroppedCount: decisions.filter((decision) =>
         decision.quality.tier === 'suspicious' && !decision.eligible
@@ -1577,7 +1579,7 @@ function emptyLyricsAwareEnrichmentDiagnostics(shortlistCount: number) {
   };
 }
 
-async function applyLyricsAwareAssessments(
+async function applyFusedLyricsAwareAssessments(
   output: Extract<ParsedLoopOutput, { type: 'final' }>,
   input: RunMusicAgentLoopInput
 ): Promise<void> {
@@ -1617,7 +1619,11 @@ async function applyLyricsAwareAssessments(
   if (!state.persistenceAttempted && input.persistTrackAssessments) {
     state.persistenceAttempted = true;
     try {
-      await input.persistTrackAssessments({ assessments: output.assessments, enrichment });
+      await input.persistTrackAssessments({
+        assessments: output.assessments,
+        enrichment,
+        context: input.context
+      });
     } catch {
       enrichment.diagnostics.cacheWriteFailed += 1;
     }
@@ -1631,10 +1637,11 @@ function rebuildLyricsAwareDecisions(input: RunMusicAgentLoopInput): void {
   const preliminary = state.enrichment.shortlist.flatMap((candidate) => {
     const assessment = state.assessments.get(candidate.id);
     if (!assessment) return [];
+    const queryPlan = input.tools.getQueryPlan?.() ?? null;
     const compatibility = evaluateTrackCompatibility({
       context: input.context,
       assessment,
-      listeningConstraints: input.tools.getQueryPlan?.()?.listeningConstraints ?? []
+      ...(queryPlan ? { listeningConstraints: queryPlan.listeningConstraints } : {})
     });
     const quality = evaluateCandidateQuality(candidate, qualityFacts(packetById.get(candidate.id)));
     return [{ candidate, assessment, compatibility, quality }];
@@ -1686,7 +1693,13 @@ function lyricsAwareOutputFields(
       id: candidate.id,
       compatibility: decision.compatibility.status,
       compatibilityConfidence: decision.compatibility.confidence,
+      compatibilityReasons: decision.compatibility.reasons.slice(0, 6),
       quality: decision.quality.tier,
+      qualityNegativeSignals: [
+        ...decision.quality.strongNegativeSignals,
+        ...decision.quality.supportingNegativeSignals
+      ].slice(0, 8),
+      qualityPositiveSignals: decision.quality.positiveSignals.slice(0, 8),
       eligible: decision.eligible
     }] : [];
   });

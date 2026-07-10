@@ -93,6 +93,22 @@ describe('track compatibility eligibility', () => {
     });
   });
 
+  it('does not fall back to context when an explicit query plan has no listening constraints', () => {
+    const decision = evaluateTrackCompatibility({
+      context: context({ currentUserText: '来点安静舒缓的歌' }),
+      listeningConstraints: [],
+      assessment: assessment({
+        genres: ['death metal'], energy: 'high', aggression: 'high',
+        confidence: { genres: 0.95, energy: 0.95, aggression: 0.95 },
+        evidence: [{ claim: 'genre=death metal', source: 'wiki_tag' }]
+      })
+    });
+
+    expect(decision).toEqual({
+      status: 'compatible', confidence: 'high', reasons: ['no_restrictive_listening_constraint']
+    });
+  });
+
   it('does not treat avoided calm textures as a desired calm constraint', () => {
     const decision = evaluateTrackCompatibility({
       context: context({

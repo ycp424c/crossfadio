@@ -163,6 +163,24 @@ function finalOutput(picks: string[], assessments: TrackAssessment[]) {
 }
 
 describe('lyrics-aware music agent loop', () => {
+  it('ignores tool-loop self-assessments and only trusts assessments from the fused evidence attempt', async () => {
+    const one = candidate('one'); const two = candidate('two');
+    const pool = new CandidatePool(); pool.upsert(one); pool.upsert(two);
+    const client = llm([
+      finalOutput(['one'], [assessment('one'), assessment('two')]),
+      finalOutput(['two'], [assessment('one'), assessment('two')])
+    ]);
+
+    const result = await runMusicAgentLoop({
+      llmClient: client, context: context(), candidatePool: pool, tools: {}, budget: budget(),
+      lyricsSelectionMode: 'shadow', finalShortlistEnricher: enricherFor([one, two])
+    });
+
+    expect(client.calls).toBe(2);
+    expect(result.picks.map((pick) => pick.id)).toEqual(['two']);
+    expect(result.say).toBe('done');
+  });
+
   it('routes an unassessed direct final through one fused call and applies query-plan fit constraints', async () => {
     const death = candidate('death');
     const calm = candidate('calm');
@@ -261,6 +279,33 @@ describe('lyrics-aware music agent loop', () => {
     expect(result.lyricsAwareDiagnostics?.assessmentCoverageValid).toBe(false);
   });
 
+  it('reports conflicts in shadow mode without counting them as dropped', async () => {
+    const death = candidate('death'); const calm = candidate('calm');
+    const pool = new CandidatePool(); pool.upsert(death); pool.upsert(calm);
+    const result = await runMusicAgentLoop({
+      llmClient: llm([
+        finalOutput(['death'], []),
+        finalOutput(['death'], [
+          assessment('death', { genres: ['death metal'], energy: 'high', aggression: 'high' }, 'genre=death metal'),
+          assessment('calm')
+        ])
+      ]),
+      context: context(), candidatePool: pool,
+      tools: { getQueryPlan: () => queryPlan(['calm']) }, budget: budget(),
+      lyricsSelectionMode: 'shadow', finalShortlistEnricher: enricherFor([death, calm])
+    });
+
+    expect(result.picks.map((pick) => pick.id)).toEqual(['death']);
+    expect(result.finalPickDiagnostics?.semanticConflictDroppedCount).toBe(0);
+    expect(result.lyricsAwareDiagnostics?.decisions[0]).toMatchObject({
+      compatibility: 'conflict',
+      compatibilityReasons: expect.arrayContaining([
+        'calm_constraint_conflicts_with_aggressive_genre:death metal'
+      ]),
+      eligible: true
+    });
+  });
+
   it('backfills only assessed compatible shortlist tracks without another LLM call', async () => {
     const one = candidate('one'); const death = candidate('death'); const two = candidate('two');
     const pool = new CandidatePool(); pool.upsert(one); pool.upsert(death); pool.upsert(two);
@@ -285,6 +330,7 @@ describe('lyrics-aware music agent loop', () => {
 
   it('does not let ranked fallback reselect a cached aggressive assessment', async () => {
     const death = candidate('death'); const pool = new CandidatePool(); pool.upsert(death);
+    const fallbackLogger = vi.fn();
     const deathAssessment = assessment(
       'death', { genres: ['death metal'], energy: 'high', aggression: 'high' }, 'genre=death metal'
     );
@@ -292,13 +338,19 @@ describe('lyrics-aware music agent loop', () => {
       llmClient: llm([]), context: context(), candidatePool: pool,
       tools: { getQueryPlan: () => queryPlan(['calm']) }, budget: budget({ maxSteps: 0 }),
       lyricsSelectionMode: 'enforce_fit',
-      finalShortlistEnricher: enricherFor([death], [profilePacket(death, deathAssessment)])
+      finalShortlistEnricher: enricherFor([death], [profilePacket(death, deathAssessment)]),
+      fallbackLogger
     });
 
     expect(result.status).toBe('empty_pool');
     expect(result.picks).toEqual([]);
     expect(result.finalPickDiagnostics).toMatchObject({ semanticConflictDroppedCount: 1 });
     expect(result.lyricsAwareDiagnostics).toMatchObject({ fallbackSuppressed: true });
+    expect(fallbackLogger).toHaveBeenCalledWith(expect.objectContaining({
+      lyricsAwareDiagnostics: expect.objectContaining({
+        mode: 'enforce_fit', assessmentCoverageValid: false, fallbackSuppressed: true
+      })
+    }));
   });
 
   it('returns a safety-blocked empty result when ranked convergence has no eligible assessed track', async () => {
@@ -359,6 +411,10 @@ describe('lyrics-aware music agent loop', () => {
 
     expect(result.picks.map((pick) => pick.id)).toEqual(['good']);
     expect(result.finalPickDiagnostics).toMatchObject({ qualityDroppedCount: 1 });
+    expect(result.lyricsAwareDiagnostics?.decisions.find((item) => item.id === 'spam')).toMatchObject({
+      quality: 'suspicious',
+      qualityNegativeSignals: expect.arrayContaining(['placeholder_or_collection_artist'])
+    });
   });
 
   it('keeps the exact legacy behavior when lyrics selection is off', async () => {
