@@ -98,6 +98,26 @@ export function handleMusicAgentPickNextOutput(input: {
     fallbackStatsSnapshot
   } = input;
 
+  if (isLyricsAwareSafetyBlock(output)) {
+    const lyricsAwareDiagnostics = compactLyricsAwareDiagnostics(output);
+    logger.warn(
+      {
+        routeOutcome: 'lyrics_safety_block',
+        legacyFallbackSuppressed: true,
+        lyricsAwareDiagnostics,
+        fallbackStats: fallbackStatsSnapshot()
+      },
+      'DJ pick-next: lyrics-aware safety block suppressed legacy fallback'
+    );
+    emit({
+      ...buildMusicAgentDebugPayload({ output, appendedPicks: [], excludeState }),
+      routeOutcome: 'lyrics_safety_block',
+      legacyFallbackSuppressed: true,
+      lyricsAwareDiagnostics
+    });
+    return { status: 'handled', debugBroadcastSent: true };
+  }
+
   if (output.status !== 'ok') {
     return {
       status: 'legacy-fallback',
@@ -106,7 +126,7 @@ export function handleMusicAgentPickNextOutput(input: {
     };
   }
 
-  if (hasRankedFallbackPicks(output)) {
+  if (shouldRouteRankedRecoveryToLegacy(output)) {
     const legacyFallbackPath = 'music_agent_legacy_fallback';
     logger.warn(
       {
@@ -120,6 +140,17 @@ export function handleMusicAgentPickNextOutput(input: {
       'DJ pick-next: MusicAgent returned ranked fallback picks, using legacy fallback'
     );
     return { status: 'legacy-fallback', legacyFallbackPath, debugBroadcastSent: false };
+  }
+
+  if (hasSafeAssessedRankedPicks(output)) {
+    logger.warn(
+      {
+        routeOutcome: 'accepted_assessed_ranked',
+        rankedPicks: createMusicAgentSelectedTrackDebug(output.picks),
+        lyricsAwareDiagnostics: compactLyricsAwareDiagnostics(output)
+      },
+      'DJ pick-next: accepting assessed and eligible MusicAgent ranked picks'
+    );
   }
 
   const pathQueueLength = queuePort.getQueue(userId).length;
@@ -292,6 +323,9 @@ function buildMusicAgentDebugPayload(input: {
     ...candidateSourceDiagnostics,
     candidateScoreTable: output.candidateScoreTable,
     selectedSay: output.say,
+    ...(output.lyricsAwareDiagnostics
+      ? { lyricsAwareDiagnostics: compactLyricsAwareDiagnostics(output) }
+      : {}),
     ...(input.partial !== undefined ? { partial: input.partial } : {}),
     ...(input.targetCount !== undefined ? { targetCount: input.targetCount } : {}),
     ...(input.appendedCount !== undefined ? { appendedCount: input.appendedCount } : {}),
@@ -330,13 +364,98 @@ function getMusicAgentShortfallDiagnostics(
 }
 
 function getMusicAgentRoutePath(output: MusicAgentRunOutput): DjPickNextFallbackPath {
-  return hasRankedFallbackPicks(output)
+  return output.picks.some((pick) => pick.reason === 'ranked fallback')
+    || hasSafeAssessedRankedPicks(output)
     ? 'music_agent_ranked_fallback'
     : 'music_agent_success';
 }
 
-function hasRankedFallbackPicks(output: MusicAgentRunOutput): boolean {
-  return output.picks.some((pick) => pick.reason === 'ranked fallback');
+function hasRankedRecoveryPicks(output: MusicAgentRunOutput): boolean {
+  return output.picks.some(
+    (pick) => pick.reason === 'ranked fallback' || pick.reason === 'ranked convergence'
+  );
+}
+
+function shouldRouteRankedRecoveryToLegacy(output: MusicAgentRunOutput): boolean {
+  if (output.picks.some((pick) => pick.reason === 'ranked fallback')) {
+    return !hasSafeAssessedRankedPicks(output);
+  }
+  if (!output.picks.some((pick) => pick.reason === 'ranked convergence')) return false;
+
+  const diagnostics = output.lyricsAwareDiagnostics;
+  return diagnostics !== undefined
+    && isLyricsEnforcementMode(diagnostics.mode)
+    && diagnostics.enforcementApplied === true
+    && !hasSafeAssessedRankedPicks(output);
+}
+
+function hasSafeAssessedRankedPicks(output: MusicAgentRunOutput): boolean {
+  if (!hasRankedRecoveryPicks(output)) return false;
+  const diagnostics = output.lyricsAwareDiagnostics;
+  if (
+    !diagnostics
+    || !isLyricsEnforcementMode(diagnostics.mode)
+    || diagnostics.enforcementApplied !== true
+    || diagnostics.assessmentCoverageValid !== true
+    || diagnostics.allReturnedPicksAssessed !== true
+  ) {
+    return false;
+  }
+
+  const decisionsById = new Map<string, typeof diagnostics.decisions>();
+  for (const decision of diagnostics.decisions) {
+    const existing = decisionsById.get(decision.id) ?? [];
+    existing.push(decision);
+    decisionsById.set(decision.id, existing);
+  }
+  return output.picks.every((pick) => {
+    const decisions = decisionsById.get(pick.id);
+    return decisions?.length === 1 && decisions[0]?.eligible === true;
+  });
+}
+
+export function isLyricsAwareSafetyBlock(output: MusicAgentRunOutput): boolean {
+  const diagnostics = output.lyricsAwareDiagnostics;
+  return output.picks.length === 0
+    && diagnostics !== undefined
+    && isLyricsEnforcementMode(diagnostics.mode)
+    && diagnostics.enforcementApplied === true
+    && diagnostics.fallbackSuppressed === true
+    && diagnostics.allReturnedPicksAssessed === true
+    && Array.isArray(diagnostics.assessmentValidationProblems)
+    && Array.isArray(diagnostics.decisions)
+    && typeof diagnostics.promptChars === 'number'
+    && diagnostics.enrichment !== undefined;
+}
+
+function isLyricsEnforcementMode(mode: string): mode is 'enforce_fit' | 'enforce_all' {
+  return mode === 'enforce_fit' || mode === 'enforce_all';
+}
+
+function compactLyricsAwareDiagnostics(output: MusicAgentRunOutput): Record<string, unknown> | undefined {
+  const diagnostics = output.lyricsAwareDiagnostics;
+  if (!diagnostics) return undefined;
+  return {
+    mode: diagnostics.mode,
+    assessmentCoverageValid: diagnostics.assessmentCoverageValid,
+    assessmentValidationProblemCount: diagnostics.assessmentValidationProblems.length,
+    allReturnedPicksAssessed: diagnostics.allReturnedPicksAssessed,
+    enforcementApplied: diagnostics.enforcementApplied,
+    fallbackSuppressed: diagnostics.fallbackSuppressed,
+    eligibleDecisionCount: diagnostics.decisions.filter((decision) => decision.eligible).length,
+    decisionCount: diagnostics.decisions.length,
+    promptChars: diagnostics.promptChars,
+    enrichment: {
+      shortlistCount: diagnostics.enrichment.shortlistCount,
+      cacheHits: diagnostics.enrichment.cacheHits,
+      lyricSuccess: diagnostics.enrichment.lyricSuccess,
+      lyricMissing: diagnostics.enrichment.lyricMissing,
+      lyricFail: diagnostics.enrichment.lyricFail,
+      lyricTimeout: diagnostics.enrichment.lyricTimeout,
+      elapsedMs: diagnostics.enrichment.elapsedMs,
+      deadlineReached: diagnostics.enrichment.deadlineReached
+    }
+  };
 }
 
 function musicAgentRunMetrics(

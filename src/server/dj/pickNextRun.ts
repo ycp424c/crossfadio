@@ -32,6 +32,8 @@ import { createDjPickNextTelemetry } from './pickNextTelemetry.js';
 import {
   buildTrackDedupeKey,
   getMusicAgentCandidateSourceDiagnostics,
+  handleMusicAgentPickNextOutput,
+  isLyricsAwareSafetyBlock,
   isTrackDedupeKeyExcluded
 } from './musicAgentPickNextResult.js';
 import type {
@@ -422,6 +424,23 @@ export async function runDjPickNext(
         selectionStartedEventId: result.selectionStartedEventId
       };
       if (signal?.aborted) return;
+      if (isLyricsAwareSafetyBlock(output)) {
+        handleMusicAgentPickNextOutput({
+          userId,
+          output,
+          excludeState,
+          initialQueueLength,
+          targetPickCount,
+          startedAt,
+          discoveryMode,
+          emit,
+          broadcastAppended,
+          logger,
+          setPickReason: (trackId, reason) => djPickReasonCache.set(trackId, reason),
+          fallbackStatsSnapshot: () => djPickNextFallbackStats.snapshot()
+        });
+        return;
+      }
       if (output.status === 'aborted') {
         if (!agentAbort.timedOut()) return;
         legacyFallbackPath = 'music_agent_legacy_fallback';

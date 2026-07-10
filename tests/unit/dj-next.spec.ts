@@ -112,12 +112,12 @@ describe('DJ pick-next diagnostics', () => {
     expect(musicAgentSelectedTrackHelper).toContain('source: pick.source');
   });
 
-  it('routes MusicAgent ranked fallback picks through legacy LLM instead of appending them', () => {
+  it('only routes unassessed MusicAgent ranked picks through legacy LLM', () => {
     const source = readSource('src/server/dj/musicAgentPickNextResult.ts');
     const handler = extractBetween(source, 'export function handleMusicAgentPickNextOutput', 'function getMusicAgentDebugCandidateCount');
     const rankedFallbackBlock = extractBetween(
       handler,
-      'if (hasRankedFallbackPicks(output)) {',
+      'if (shouldRouteRankedRecoveryToLegacy(output)) {',
       'const pathQueueLength = queuePort.getQueue(userId).length;'
     );
 
@@ -126,10 +126,12 @@ describe('DJ pick-next diagnostics', () => {
     expect(rankedFallbackBlock).toContain('MusicAgent returned ranked fallback picks, using legacy fallback');
     expectBefore(
       handler,
-      'if (hasRankedFallbackPicks(output))',
+      'if (shouldRouteRankedRecoveryToLegacy(output))',
       'const pathQueueLength = queuePort.getQueue(userId).length'
     );
-    expect(source).toContain('function hasRankedFallbackPicks(output: MusicAgentRunOutput): boolean');
+    expect(source).toContain('function hasRankedRecoveryPicks(output: MusicAgentRunOutput): boolean');
+    expect(source).toContain('function shouldRouteRankedRecoveryToLegacy(output: MusicAgentRunOutput): boolean');
+    expect(source).toContain('function hasSafeAssessedRankedPicks(output: MusicAgentRunOutput): boolean');
   });
 
   it('emits MusicAgent debug details before broadcasting partial append success', () => {
@@ -264,6 +266,9 @@ describe('DJ pick-next diagnostics', () => {
     expect(runDjPickNext).toContain('const output = result.output');
     expect(runDjPickNext).toContain("result.status === 'handled'");
     expect(runDjPickNext).toContain("result.status === 'legacy-fallback'");
+    expect(runDjPickNext).toContain('handleMusicAgentPickNextOutput({');
+    expect(runDjPickNext).toContain('isLyricsAwareSafetyBlock(output)');
+    expect(runDjPickNext).toContain('return;');
     expect(djAgentSource).toContain("output.status !== 'ok'");
     expect(runDjPickNext).toContain('const targetPickCount = getAutoFillBatchSize(userId)');
     expect(runDjPickNext).toContain('createAbortTimeoutSignal(signal, getDjAgentTimeoutMs(targetPickCount))');
