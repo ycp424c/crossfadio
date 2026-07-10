@@ -47,6 +47,20 @@ describe('buildSegueTrackContext', () => {
     expect(context.tags).toContain('流行');
   });
 
+  it('preserves filler lines in the legacy segue excerpt and keyword source', () => {
+    const context = buildSegueTrackContext({
+      track: { id: 'legacy-filler', name: 'Song', artist: 'Artist' },
+      lyric: {
+        id: 'legacy-filler',
+        lyric: '[00:00]...\n[00:01]（纯音乐）\n[00:02]正文',
+        translation: null
+      }
+    });
+
+    expect(context.lyricExcerpt).toBe('... / （纯音乐）');
+    expect(context.lyricKeywords).toEqual(['纯音乐', '正文']);
+  });
+
   it('falls back gracefully when external metadata is missing', () => {
     const context = buildSegueTrackContext({
       track: { id: '2', name: 'Song B', artist: 'Artist B' },

@@ -81,9 +81,14 @@ const WINDOW_POSITIONS: Array<Exclude<SampledLyricLine['position'], 'hook'>> = [
 const FILLER_RE = /^(?:[.·…~\-—_]+|[[(（【]?\s*(?:纯音乐|间奏|前奏|尾奏|伴奏|music|instrumental|interlude|intro|outro)\s*[\])）】]?)$/iu;
 const LRC_METADATA_RE = /^\[(?:ar|ti|al|by|offset|re|ve):.*\]$/iu;
 
-export function cleanLyricLines(raw: string): string[] {
+export function cleanLyricLines(raw: string, options: { preserveFiller?: boolean } = {}): string[] {
   return parseLyricLines(raw)
-    .filter(isMeaningfulLyricLine)
+    .filter(
+      (line) =>
+        !parseCreditLine(line.text) &&
+        !LRC_METADATA_RE.test(line.text) &&
+        (options.preserveFiller === true || !FILLER_RE.test(line.text))
+    )
     .map((line) => line.text);
 }
 
