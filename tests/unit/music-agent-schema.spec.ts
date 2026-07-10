@@ -8,6 +8,7 @@ import {
   musicEntityHintSchema,
   musicCandidateSchema,
   musicAgentFinalOutputSchema,
+  musicAgentFinalPickOutputSchema,
   musicAgentRunOutputSchema,
   queryPlanSchema,
   queryFunnelEntrySchema,
@@ -125,6 +126,61 @@ describe('music-agent schema', () => {
     });
 
     expect(diagnostics.droppedPickCount).toBe(2);
+    expect(diagnostics).toMatchObject({
+      semanticConflictDroppedCount: 0,
+      qualityDroppedCount: 0,
+      unassessedDroppedCount: 0,
+      assessmentValidationFailureCount: 0
+    });
+  });
+
+  it('accepts strict track assessments on final picks and defaults them to empty', () => {
+    const withoutAssessments = musicAgentFinalPickOutputSchema.parse({
+      type: 'final',
+      say: '更适合现在的状态。',
+      picks: [{ id: '101', reason: '轻柔', source: 'liked' }]
+    });
+    const withAssessments = musicAgentFinalPickOutputSchema.parse({
+      type: 'final',
+      say: '更适合现在的状态。',
+      picks: [{ id: '101', reason: '轻柔', source: 'liked' }],
+      assessments: [{
+        id: '101',
+        profile: {
+          genres: ['ambient'], moods: ['calm'], energy: 'low', aggression: 'low',
+          vocalIntensity: 'low', lyricThemes: [], language: 'instrumental'
+        },
+        confidence: {
+          genres: 0.9, moods: 0.9, energy: 0.9, aggression: 0.9,
+          vocalIntensity: 0.9, lyricThemes: 0, language: 0.8
+        },
+        evidence: [{ claim: 'genre=ambient', source: 'wiki_tag' }]
+      }]
+    });
+
+    expect(withoutAssessments.assessments).toEqual([]);
+    expect(withAssessments.assessments[0].profile.genres).toEqual(['ambient']);
+  });
+
+  it('rejects invalid or non-strict final-pick assessments', () => {
+    expect(() => musicAgentFinalPickOutputSchema.parse({
+      type: 'final',
+      say: '更适合现在的状态。',
+      picks: [{ id: '101', reason: '轻柔', source: 'liked' }],
+      assessments: [{
+        id: '101',
+        profile: {
+          genres: [], moods: [], energy: 'extreme', aggression: 'low',
+          vocalIntensity: 'low', lyricThemes: [], language: 'unknown'
+        },
+        confidence: {
+          genres: 0, moods: 0, energy: 1.1, aggression: 0,
+          vocalIntensity: 0, lyricThemes: 0, language: 0
+        },
+        evidence: [],
+        unexpected: true
+      }]
+    })).toThrow();
   });
 
   it('validates query funnel entries for search diagnostics', () => {

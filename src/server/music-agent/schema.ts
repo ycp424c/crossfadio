@@ -318,6 +318,9 @@ export const finalPickSchema = z.object({
 
 export type FinalPick = z.infer<typeof finalPickSchema>;
 
+const defaultedDiagnosticCountSchema: z.ZodType<number | undefined> =
+  z.number().int().nonnegative().default(0);
+
 export const finalPickDiagnosticsSchema = z.object({
   targetPickCount: z.number().int().nonnegative(),
   rawPickCount: z.number().int().nonnegative(),
@@ -326,7 +329,11 @@ export const finalPickDiagnosticsSchema = z.object({
   droppedPickCount: z.number().int().nonnegative(),
   titleMotifDroppedCount: z.number().int().nonnegative(),
   rankedBackfillCount: z.number().int().nonnegative(),
-  rejectedPickCount: z.number().int().nonnegative()
+  rejectedPickCount: z.number().int().nonnegative(),
+  semanticConflictDroppedCount: defaultedDiagnosticCountSchema,
+  qualityDroppedCount: defaultedDiagnosticCountSchema,
+  unassessedDroppedCount: defaultedDiagnosticCountSchema,
+  assessmentValidationFailureCount: defaultedDiagnosticCountSchema
 });
 
 export type FinalPickDiagnostics = z.infer<typeof finalPickDiagnosticsSchema>;
@@ -372,11 +379,49 @@ export const rejectedPickSchema = z.object({
 
 export type RejectedPick = z.infer<typeof rejectedPickSchema>;
 
+// Kept local to avoid a runtime cycle: track-understanding imports candidate schemas
+// from this module. This boundary deliberately mirrors its strict assessment schema.
+const finalPickTrackAssessmentSchema = z.object({
+  id: z.string().min(1),
+  profile: z.object({
+    genres: z.array(z.string().max(48)).max(8),
+    moods: z.array(z.string().max(48)).max(8),
+    energy: z.enum(['low', 'medium', 'high', 'unknown']),
+    aggression: z.enum(['low', 'medium', 'high', 'unknown']),
+    vocalIntensity: z.enum(['low', 'medium', 'high', 'unknown']),
+    lyricThemes: z.array(z.string().max(80)).max(8),
+    language: z.string().max(24)
+  }).strict(),
+  confidence: z.object({
+    genres: z.number().min(0).max(1),
+    moods: z.number().min(0).max(1),
+    energy: z.number().min(0).max(1),
+    aggression: z.number().min(0).max(1),
+    vocalIntensity: z.number().min(0).max(1),
+    lyricThemes: z.number().min(0).max(1),
+    language: z.number().min(0).max(1)
+  }).strict(),
+  evidence: z.array(z.object({
+    claim: z.string().max(160),
+    source: z.enum([
+      'wiki_tag',
+      'lyric_analysis',
+      'lyric_and_genre_analysis',
+      'platform_metadata'
+    ])
+  }).strict()).max(12)
+}).strict();
+
+const defaultedFinalPickAssessmentsSchema: z.ZodType<
+  Array<z.infer<typeof finalPickTrackAssessmentSchema>> | undefined
+> = z.array(finalPickTrackAssessmentSchema).default([]);
+
 export const musicAgentFinalPickOutputSchema = z.object({
   type: z.literal('final'),
   say: z.string().min(1),
   picks: z.array(finalPickSchema).max(AUTO_FILL_BATCH_SIZE_MAX),
-  rejected: z.array(rejectedPickSchema).default([])
+  rejected: z.array(rejectedPickSchema).default([]),
+  assessments: defaultedFinalPickAssessmentsSchema
 });
 
 export type MusicAgentFinalPickOutput = z.infer<typeof musicAgentFinalPickOutputSchema>;
