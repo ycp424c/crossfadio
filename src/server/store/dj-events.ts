@@ -50,6 +50,38 @@ const trackSelectedPayloadSchema = z.object({
   pickOrder: z.number().int().positive().optional()
 }).strict();
 
+const finalPickDiagnosticsPayloadSchema = z.object({
+  targetPickCount: z.number().int().nonnegative(),
+  rawPickCount: z.number().int().nonnegative(),
+  eligiblePickCount: z.number().int().nonnegative(),
+  acceptedPickCount: z.number().int().nonnegative(),
+  droppedPickCount: z.number().int().nonnegative(),
+  titleMotifDroppedCount: z.number().int().nonnegative(),
+  rankedBackfillCount: z.number().int().nonnegative(),
+  rejectedPickCount: z.number().int().nonnegative(),
+  semanticConflictDroppedCount: z.number().int().nonnegative().default(0),
+  qualityDroppedCount: z.number().int().nonnegative().default(0),
+  unassessedDroppedCount: z.number().int().nonnegative().default(0),
+  assessmentValidationFailureCount: z.number().int().nonnegative().default(0)
+}).strict();
+
+const selectionCompletedPayloadSchema = z.object({
+  finalTrackIds: z.array(z.string().min(1).max(200)).min(1).max(20),
+  finalRationale: z.string().min(1).max(1000),
+  proposedRationale: z.string().min(1).max(1000).optional(),
+  targetCount: z.number().int().positive().optional(),
+  requestedPickCount: z.number().int().nonnegative().optional(),
+  appendedCount: z.number().int().positive(),
+  finalPickDiagnostics: finalPickDiagnosticsPayloadSchema.optional(),
+  skippedPicks: z.array(z.object({
+    id: z.string().min(1).max(200).optional(),
+    name: z.string().min(1).max(300).optional(),
+    artist: z.string().min(1).max(300).optional(),
+    dedupeKey: z.string().min(1).max(1000).optional(),
+    reason: z.enum(['id_excluded', 'dedupe_excluded', 'no_remaining_slots'])
+  }).strict()).max(20)
+}).strict();
+
 const queueChangedPayloadSchema = z.object({
   action: z.enum(['append', 'swap_next', 'skip', 'ban_track', 'ban_artist']),
   trackIds: z.array(z.string().min(1)).max(20),
@@ -75,6 +107,7 @@ export const djEventTypeSchema = z.enum([
   'personal_context_uploaded',
   'selection_started',
   'track_selected',
+  'selection_completed',
   'queue_changed',
   'segue_generated'
 ]);
@@ -87,6 +120,7 @@ const payloadSchemas = {
   personal_context_uploaded: personalContextUploadedPayloadSchema,
   selection_started: selectionStartedPayloadSchema,
   track_selected: trackSelectedPayloadSchema,
+  selection_completed: selectionCompletedPayloadSchema,
   queue_changed: queueChangedPayloadSchema,
   segue_generated: segueGeneratedPayloadSchema
 } satisfies Record<DjEventType, z.ZodTypeAny>;
@@ -158,12 +192,16 @@ export function appendDjEvent(input: AppendDjEventInput): DjEventRecord {
   };
 }
 
+export function withDjEventTransaction<T>(operation: () => T): T {
+  return getDb().transaction(operation)();
+}
+
 export function getRecentDjEvents(userId: string, limit = 50): DjEventRecord[] {
   const rows = getDb()
     .prepare<[string, number], DjEventRow>(
       `SELECT * FROM dj_events
        WHERE user_id = ?
-       ORDER BY created_at DESC, id DESC
+       ORDER BY created_at DESC, rowid DESC
        LIMIT ?`
     )
     .all(userId, limit);

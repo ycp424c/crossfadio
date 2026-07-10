@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { MusicAgent } from '../music-agent/index.js';
+import type { FinalSelectionResult } from '../dj/finalSelectionResult.js';
 import { handleMusicAgentPickNextOutput } from '../dj/musicAgentPickNextResult.js';
 import { buildDjContextSnapshot } from './context.js';
 import {
@@ -16,13 +17,19 @@ import { generateSegue, type GenerateSegueInput, type GenerateSegueResult } from
 
 export type DJAgentOptions = {
   musicAgentFactory?: DJAgentMusicAgentFactory;
+  selectionStartedEventRecorder?: typeof appendSelectionStartedEvent;
+  selectionEventRecorder?: typeof appendMusicAgentSelectionEvents;
 };
 
 export class DJAgent {
   private readonly musicAgentFactory: DJAgentMusicAgentFactory;
+  private readonly selectionStartedEventRecorder: typeof appendSelectionStartedEvent;
+  private readonly selectionEventRecorder: typeof appendMusicAgentSelectionEvents;
 
   constructor(options: DJAgentOptions = {}) {
     this.musicAgentFactory = options.musicAgentFactory ?? ((llmConfig) => new MusicAgent({ llmConfig }));
+    this.selectionStartedEventRecorder = options.selectionStartedEventRecorder ?? appendSelectionStartedEvent;
+    this.selectionEventRecorder = options.selectionEventRecorder ?? appendMusicAgentSelectionEvents;
   }
 
   async pickNext(input: DJAgentPickNextInput): Promise<DJAgentPickNextResult> {
@@ -34,12 +41,22 @@ export class DJAgent {
       includeDailyTheme: input.includeDailyTheme,
       now: input.now
     });
-    const selectionStartedEvent = appendSelectionStartedEvent({
-      userId: input.userId,
-      runId,
-      targetPickCount: input.targetPickCount,
-      snapshot
-    });
+    // dj_events has no foreign key on causation_event_id. If persisting the start event
+    // fails, the run id is a stable sentinel used only to preserve correlation downstream.
+    let selectionStartedEventId: string = runId;
+    try {
+      selectionStartedEventId = this.selectionStartedEventRecorder({
+        userId: input.userId,
+        runId,
+        targetPickCount: input.targetPickCount,
+        snapshot
+      }).id;
+    } catch (err) {
+      input.logger.warn(
+        { err, runId },
+        'DJ pick-next: selection started event persistence failed'
+      );
+    }
 
     const output = await this.musicAgentFactory(input.llmConfig).pickNext({
       userId: input.userId,
@@ -58,11 +75,11 @@ export class DJAgent {
         debugBroadcastSent: false,
         output,
         runId,
-        selectionStartedEventId: selectionStartedEvent.id
+        selectionStartedEventId
       };
     }
 
-    const queueBeforeLength = queuePort.getQueue(input.userId).length;
+    let finalSelection: FinalSelectionResult | undefined;
     const handled = handleMusicAgentPickNextOutput({
       userId: input.userId,
       output,
@@ -76,24 +93,35 @@ export class DJAgent {
       logger: input.logger,
       queuePort,
       setPickReason: input.setPickReason,
+      onFinalSelection: (result) => {
+        finalSelection = result;
+      },
       recordRouteOutcome: input.recordRouteOutcome,
       fallbackStatsSnapshot: input.fallbackStatsSnapshot
     });
 
-    appendMusicAgentSelectionEvents({
-      userId: input.userId,
-      runId,
-      output,
-      queueBeforeLength,
-      selectionStartedEventId: selectionStartedEvent.id,
-      queuePort
-    });
+    if (finalSelection) {
+      try {
+        this.selectionEventRecorder({
+          userId: input.userId,
+          runId,
+          finalSelection,
+          selectionStartedEventId,
+          queuePort
+        });
+      } catch (err) {
+        input.logger.warn(
+          { err, runId },
+          'DJ pick-next: selection event persistence failed'
+        );
+      }
+    }
 
     return {
       ...handled,
       output,
       runId,
-      selectionStartedEventId: selectionStartedEvent.id
+      selectionStartedEventId
     };
   }
 

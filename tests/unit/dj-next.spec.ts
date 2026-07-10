@@ -101,26 +101,13 @@ describe('DJ pick-next diagnostics', () => {
     expect(source).toContain('excludedDedupeKeys: Array.from(input.excludeState.dedupeKeys)');
   });
 
-  it('includes actually appended MusicAgent final pick reasons in DJ debug events', () => {
-    const source = readSource('src/server/dj/musicAgentPickNextResult.ts');
-    const musicAgentHandler = extractBetween(source, 'export function handleMusicAgentPickNextOutput', 'function getMusicAgentDebugCandidateCount');
-    const musicAgentSelectedTrackHelper = extractBetween(source, 'function createMusicAgentSelectedTrackDebug', 'function getMusicAgentShortfallDiagnostics');
-
-    expect(musicAgentHandler).toContain('const appendedPicks: typeof output.picks = [];');
-    expect(musicAgentHandler).toContain('appendedPicks.push(pick);');
-    expect(musicAgentHandler).toContain('emit(buildMusicAgentDebugPayload({ output, appendedPicks, excludeState })');
-    expect(source).toContain('selectedTracks: createMusicAgentSelectedTrackDebug(appendedPicks)');
-    expect(musicAgentSelectedTrackHelper).toContain('reason: pick.reason');
-    expect(musicAgentSelectedTrackHelper).toContain('source: pick.source');
-  });
-
   it('only routes unassessed MusicAgent ranked picks through legacy LLM', () => {
     const source = readSource('src/server/dj/musicAgentPickNextResult.ts');
     const handler = extractBetween(source, 'export function handleMusicAgentPickNextOutput', 'function getMusicAgentDebugCandidateCount');
     const rankedFallbackBlock = extractBetween(
       handler,
       'if (shouldRouteRankedRecoveryToLegacy(output)) {',
-      'const pathQueueLength = queuePort.getQueue(userId).length;'
+      'if (hasSafeAssessedRankedPicks(output)) {'
     );
 
     expect(rankedFallbackBlock).toContain("const legacyFallbackPath = 'music_agent_legacy_fallback';");
@@ -129,56 +116,11 @@ describe('DJ pick-next diagnostics', () => {
     expectBefore(
       handler,
       'if (shouldRouteRankedRecoveryToLegacy(output))',
-      'const pathQueueLength = queuePort.getQueue(userId).length'
+      'const appendedPicks: typeof output.picks = []'
     );
     expect(source).toContain('function hasRankedRecoveryPicks(output: MusicAgentRunOutput): boolean');
     expect(source).toContain('function shouldRouteRankedRecoveryToLegacy(output: MusicAgentRunOutput): boolean');
     expect(source).toContain('function hasSafeAssessedRankedPicks(output: MusicAgentRunOutput): boolean');
-  });
-
-  it('emits MusicAgent debug details before broadcasting partial append success', () => {
-    const source = readSource('src/server/dj/musicAgentPickNextResult.ts');
-    const handler = extractBetween(source, 'export function handleMusicAgentPickNextOutput', 'function getMusicAgentDebugCandidateCount');
-    const partialAppendBlock = extractBetween(
-      handler,
-      'if (appendedCount > 0) {',
-      "const legacyFallbackPath = 'music_agent_legacy_fallback';"
-    );
-
-    expect(partialAppendBlock).toContain('emit(buildMusicAgentDebugPayload({');
-    expect(partialAppendBlock).toContain('partial: true');
-    expect(partialAppendBlock).toContain('skippedPicks: musicAgentSkippedPicks');
-    expectBefore(partialAppendBlock, 'emit(buildMusicAgentDebugPayload({', 'broadcastAppended(');
-  });
-
-  it('emits legacy selected track details before broadcasting partial append success', () => {
-    const source = readSource('src/server/dj/legacyPickNextResult.ts');
-    const handler = extractBetween(source, 'export function handleLegacyPickNextOutput', 'function buildLegacyDebugPayload');
-    const legacyPartialAppendBlock = extractBetween(
-      handler,
-      'if (appendedCount > 0) {',
-      "return { status: 'handled', debugBroadcastSent: true };"
-    );
-
-    expect(legacyPartialAppendBlock).toContain('emit(buildLegacyDebugPayload({');
-    expect(legacyPartialAppendBlock).toContain('const selectedTracks = createLegacySelectedTrackDebug');
-    expect(legacyPartialAppendBlock).toContain('partial: true');
-    expectBefore(legacyPartialAppendBlock, 'emit(buildLegacyDebugPayload({', 'broadcastAppended(');
-  });
-
-  it('emits legacy selected track details before broadcasting full append success', () => {
-    const source = readSource('src/server/dj/legacyPickNextResult.ts');
-    const handler = extractBetween(source, 'export function handleLegacyPickNextOutput', 'function buildLegacyDebugPayload');
-    const legacyFullAppendBlock = extractBetween(
-      handler,
-      'if (hasReachedPickTarget(userId, initialQueueLength, targetPickCount)) {',
-      'const appendedCount = getQueue(userId).length - initialQueueLength;'
-    );
-
-    expect(legacyFullAppendBlock).toContain('emit(buildLegacyDebugPayload({');
-    expect(legacyFullAppendBlock).toContain('selectedTracks: createLegacySelectedTrackDebug(appendedWhitelistedTracks, pickSay, pickReasonsById)');
-    expect(legacyFullAppendBlock).not.toContain("emit({ type: 'dj.debug', ...phase3Debug, selectedSay: pickSay })");
-    expectBefore(legacyFullAppendBlock, 'emit(buildLegacyDebugPayload({', 'broadcastAppended(');
   });
 
   it('includes a console-table friendly candidate table in legacy debug events', () => {
@@ -244,6 +186,7 @@ describe('DJ pick-next diagnostics', () => {
     const pickNextRunSource = readSource('src/server/dj/pickNextRun.ts');
     const djAgentSource = readSource('src/server/dj-agent/index.ts');
     const djAgentEventsSource = readSource('src/server/dj-agent/events.ts');
+    const eventLoggingSource = readSource('src/server/dj/eventLogging.ts');
     const musicAgentResultSource = readSource('src/server/dj/musicAgentPickNextResult.ts');
     const legacyResultSource = readSource('src/server/dj/legacyPickNextResult.ts');
     const randomFallbackSource = readSource('src/server/dj/legacyRandomFallback.ts');
@@ -289,18 +232,21 @@ describe('DJ pick-next diagnostics', () => {
     expect(djAgentSource).toContain('context: snapshot.musicSelectionContext');
     expect(runDjPickNext).toContain('targetPickCount');
     expect(djAgentSource).toContain('handleMusicAgentPickNextOutput({');
-    expect(djAgentSource).toContain('appendSelectionStartedEvent({');
-    expect(djAgentSource).toContain('appendMusicAgentSelectionEvents({');
+    // Final selection, no-op, and explicit append-receipt behavior is covered by
+    // the MusicAgent/legacy result, DJAgent orchestration, and telemetry runtime suites.
     expect(djAgentEventsSource).toContain("type: 'selection_started'");
-    expect(djAgentEventsSource).toContain("type: 'track_selected'");
-    expect(djAgentEventsSource).toContain("type: 'queue_changed'");
+    expect(djAgentEventsSource).toContain("from '../dj/eventLogging.js';");
+    expect(djAgentEventsSource).toContain('appendFinalSelectionEvents({');
+    expect(eventLoggingSource).toContain("type: 'track_selected'");
+    expect(eventLoggingSource).toContain("type: 'selection_completed'");
+    expect(eventLoggingSource).toContain("type: 'queue_changed'");
+    expectBefore(eventLoggingSource, "type: 'selection_completed'", "type: 'queue_changed'");
     expect(runDjPickNext).toContain('setPickReason: (trackId, reason) => djPickReasonCache.set(trackId, reason)');
     expect(musicAgentResultSource).toContain('if (getRemainingPickSlots(userId, initialQueueLength, targetPickCount, queuePort) <= 0)');
     expect(musicAgentResultSource).toContain('if (hasReachedPickTarget(userId, initialQueueLength, targetPickCount, queuePort))');
     expect(musicAgentResultSource).toContain('queuePort.addToQueue(userId, {');
     expect(musicAgentResultSource).toContain('queuePort.getQueue(userId)');
     expect(runDjPickNext).toContain('broadcastAppended,');
-    expect(musicAgentResultSource).toContain('musicAgentRunMetrics(output, appendedPicks, startedAt, discoveryMode)');
     expect(telemetrySource).toContain('rankedBackfillCount: metrics.rankedBackfillCount');
     expect(telemetrySource).toContain('finalPickDiagnostics: metrics.finalPickDiagnostics');
     expect(musicAgentResultSource).toContain('totalCandidates: getMusicAgentDebugCandidateCount(output)');

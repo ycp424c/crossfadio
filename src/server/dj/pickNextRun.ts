@@ -808,6 +808,7 @@ export async function runDjPickNext(
     emit,
     broadcastAppended,
     logger,
+    setPickReason: (trackId, reason) => djPickReasonCache.set(trackId, reason),
     recordFallbackStats: djPickNextTelemetry.recordFallbackStats,
     sampleIds: sampleN,
     fetchSongDetails: (ids) => withTimeout(

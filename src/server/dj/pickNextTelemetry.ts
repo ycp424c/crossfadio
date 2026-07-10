@@ -52,7 +52,7 @@ export function createDjPickNextTelemetry(input: { logger?: Logger } = {}): DjPi
     metrics: DjPickNextRunMetrics = {}
   ): void {
     const q = getQueue(userId);
-    const newTracks = q.slice(prevQueueLength);
+    const newTracks = metrics.appendedTracks ?? q.slice(prevQueueLength);
     for (const track of newTracks) {
       emit({ type: 'queue-appended', track });
     }

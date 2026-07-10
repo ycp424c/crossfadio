@@ -101,4 +101,68 @@ describe('DJ pick-next telemetry', () => {
       'DJ pick-next: broadcast appended tracks'
     );
   });
+
+  it('uses an explicit path receipt instead of concurrent queue additions', () => {
+    const logger = { info: vi.fn() };
+    const telemetry = createDjPickNextTelemetry({ logger });
+    const emit = vi.fn();
+    const pathTrack = { ncmId: 'path', name: 'Path Track', artists: ['Path Artist'] };
+    setQueueState('telemetry-user', [
+      { ncmId: 'old', name: 'Existing Track' },
+      pathTrack,
+      { ncmId: 'concurrent', name: 'Concurrent Track', artists: ['Other Path'] }
+    ], 0);
+
+    telemetry.broadcastAppended('telemetry-user', 1, 1, emit, 'music_agent_success', {
+      appendedTracks: [pathTrack]
+    });
+
+    expect(emit).toHaveBeenNthCalledWith(1, { type: 'queue-appended', track: pathTrack });
+    expect(emit).toHaveBeenNthCalledWith(2, {
+      type: 'dj.pick-next.done',
+      added: true,
+      addedCount: 1,
+      targetCount: 1,
+      trackIds: ['path'],
+      trackNames: ['Path Track'],
+      trackName: 'Path Track'
+    });
+    expect(emit).toHaveBeenCalledTimes(2);
+    expect(logger.info).toHaveBeenCalledWith(
+      expect.objectContaining({
+        appendedCount: 1,
+        trackIds: ['path'],
+        trackNames: ['Path Track']
+      }),
+      'DJ pick-next: broadcast appended tracks'
+    );
+  });
+
+  it('treats an explicit empty path receipt as no additions', () => {
+    const logger = { info: vi.fn() };
+    const telemetry = createDjPickNextTelemetry({ logger });
+    const emit = vi.fn();
+    setQueueState('telemetry-user', [
+      { ncmId: 'concurrent', name: 'Concurrent Track', artists: ['Other Path'] }
+    ], 0);
+
+    telemetry.broadcastAppended('telemetry-user', 0, 1, emit, undefined, {
+      appendedTracks: []
+    });
+
+    expect(emit).toHaveBeenCalledOnce();
+    expect(emit).toHaveBeenCalledWith({
+      type: 'dj.pick-next.done',
+      added: false,
+      addedCount: 0,
+      targetCount: 1,
+      trackIds: [],
+      trackNames: [],
+      trackName: undefined
+    });
+    expect(logger.info).toHaveBeenCalledWith(
+      expect.objectContaining({ appendedCount: 0, trackIds: [], trackNames: [] }),
+      'DJ pick-next: broadcast appended tracks'
+    );
+  });
 });

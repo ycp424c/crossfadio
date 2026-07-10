@@ -619,6 +619,7 @@ describe('MusicAgent pick-next result handling', () => {
     const emit = vi.fn();
     const setPickReason = vi.fn();
     const broadcastAppended = vi.fn();
+    const onFinalSelection = vi.fn();
 
     const result = handleMusicAgentPickNextOutput({
       userId: 'music-agent-result-user',
@@ -635,6 +636,7 @@ describe('MusicAgent pick-next result handling', () => {
       broadcastAppended,
       logger: { warn: vi.fn() },
       setPickReason,
+      onFinalSelection,
       fallbackStatsSnapshot: () => ({ totalRuns: 0, fallbackRuns: 0, fallbackRate: 0, fallbackPaths: {} })
     });
 
@@ -645,14 +647,35 @@ describe('MusicAgent pick-next result handling', () => {
     ]);
     expect(emit).toHaveBeenCalledWith(expect.objectContaining({
       type: 'dj.debug',
-      selectedSay: '顺着今天的氛围往前推一首。',
+      selectedSay: '本次实际补充 2 首：First Artist《First Song》、Second Artist《Second Song》。',
       selectedTracks: [
         expect.objectContaining({ id: '201', reason: 'fits', source: 'search' }),
         expect.objectContaining({ id: '202', reason: 'continues', source: 'liked' })
       ]
     }));
-    expect(setPickReason).toHaveBeenCalledWith('201', '顺着今天的氛围往前推一首。');
-    expect(setPickReason).toHaveBeenCalledWith('202', '顺着今天的氛围往前推一首。');
+    expect(setPickReason).toHaveBeenCalledWith(
+      '201',
+      'fits'
+    );
+    expect(setPickReason).toHaveBeenCalledWith(
+      '202',
+      'continues'
+    );
+    expect(onFinalSelection).toHaveBeenCalledOnce();
+    expect(onFinalSelection).toHaveBeenCalledWith(expect.objectContaining({
+      tracks: expect.arrayContaining([
+        expect.objectContaining({ id: '201' }),
+        expect.objectContaining({ id: '202' })
+      ]),
+      rationale: '本次实际补充 2 首：First Artist《First Song》、Second Artist《Second Song》。',
+      proposedRationale: '顺着今天的氛围往前推一首。',
+      diagnostics: expect.objectContaining({
+        targetCount: 2,
+        requestedPickCount: 2,
+        appendedCount: 2,
+        skippedPicks: []
+      })
+    }));
     expect(broadcastAppended).toHaveBeenCalledWith(
       'music-agent-result-user',
       0,
@@ -663,7 +686,11 @@ describe('MusicAgent pick-next result handling', () => {
         agentPickCount: 2,
         rankedBackfillCount: 0,
         candidateCount: 2,
-        discoveryMode: 'comfort'
+        discoveryMode: 'comfort',
+        appendedTracks: [
+          expect.objectContaining({ ncmId: '201', name: 'First Song', artists: ['First Artist'] }),
+          expect.objectContaining({ ncmId: '202', name: 'Second Song', artists: ['Second Artist'] })
+        ]
       })
     );
   });
@@ -705,19 +732,211 @@ describe('MusicAgent pick-next result handling', () => {
     expect(getQueue('music-agent-result-user')).toEqual([]);
   });
 
+  it('does not finalize a stale pick that appeared in the injected queue before mutation', () => {
+    const staleTrack = { ncmId: 'stale-id', name: 'Already Added', artists: ['Other Path'] };
+    let reads = 0;
+    const queuePort = {
+      getQueue: vi.fn(() => reads++ === 0 ? [] : [staleTrack]),
+      addToQueue: vi.fn()
+    };
+    const onFinalSelection = vi.fn();
+
+    const result = handleMusicAgentPickNextOutput({
+      userId: 'music-agent-result-user',
+      output: makeOutput([
+        { id: 'stale-id', name: 'Already Added', artist: 'Other Path', reason: 'fits', source: 'search' }
+      ]),
+      excludeState: { ids: new Set(), dedupeKeys: new Set() },
+      initialQueueLength: 0,
+      targetPickCount: 1,
+      startedAt: Date.now(),
+      discoveryMode: 'explore',
+      emit: vi.fn(),
+      broadcastAppended: vi.fn(),
+      logger: { warn: vi.fn() },
+      queuePort,
+      setPickReason: vi.fn(),
+      onFinalSelection,
+      fallbackStatsSnapshot: () => ({ totalRuns: 0, fallbackRuns: 0, fallbackRate: 0, fallbackPaths: {} })
+    });
+
+    expect(result).toEqual({ status: 'handled', debugBroadcastSent: false });
+    expect(queuePort.addToQueue).not.toHaveBeenCalled();
+    expect(onFinalSelection).not.toHaveBeenCalled();
+  });
+
+  it('accounts for every requested pick after remaining slots are exhausted', () => {
+    const onFinalSelection = vi.fn();
+    const picks = Array.from({ length: 5 }, (_, index) => ({
+      id: `close-${index + 1}`,
+      name: `Close ${index + 1}`,
+      artist: `Artist ${index + 1}`,
+      reason: 'fits',
+      source: 'search'
+    }));
+
+    handleMusicAgentPickNextOutput({
+      userId: 'music-agent-result-user',
+      output: makeOutput(picks),
+      excludeState: { ids: new Set(), dedupeKeys: new Set() },
+      initialQueueLength: 0,
+      targetPickCount: 3,
+      startedAt: Date.now(),
+      discoveryMode: 'explore',
+      emit: vi.fn(),
+      broadcastAppended: vi.fn(),
+      logger: { warn: vi.fn() },
+      setPickReason: vi.fn(),
+      onFinalSelection,
+      fallbackStatsSnapshot: () => ({ totalRuns: 0, fallbackRuns: 0, fallbackRate: 0, fallbackPaths: {} })
+    });
+
+    expect(onFinalSelection).toHaveBeenCalledWith(expect.objectContaining({
+      diagnostics: expect.objectContaining({
+        requestedPickCount: 5,
+        appendedCount: 3,
+        skippedPicks: [
+          expect.objectContaining({ id: 'close-4', reason: 'no_remaining_slots' }),
+          expect.objectContaining({ id: 'close-5', reason: 'no_remaining_slots' })
+        ]
+      })
+    }));
+  });
+
+  it('returns a handled no-op when a stale initial length already leaves no remaining slots', () => {
+    const queue = [{ ncmId: 'already-added', name: 'Already Added', artists: ['Other Path'] }];
+    const queuePort = {
+      getQueue: vi.fn(() => [...queue]),
+      addToQueue: vi.fn()
+    };
+    const emit = vi.fn();
+    const broadcastAppended = vi.fn();
+    const setPickReason = vi.fn();
+    const onFinalSelection = vi.fn();
+
+    const result = handleMusicAgentPickNextOutput({
+      userId: 'music-agent-result-user',
+      output: makeOutput([
+        { id: 'stale-pick', name: 'Must Not Append', artist: 'Fresh Artist', reason: 'fits', source: 'search' }
+      ]),
+      excludeState: { ids: new Set(), dedupeKeys: new Set() },
+      initialQueueLength: 0,
+      targetPickCount: 1,
+      startedAt: Date.now(),
+      discoveryMode: 'explore',
+      emit,
+      broadcastAppended,
+      logger: { warn: vi.fn() },
+      queuePort,
+      setPickReason,
+      onFinalSelection,
+      fallbackStatsSnapshot: () => ({ totalRuns: 0, fallbackRuns: 0, fallbackRate: 0, fallbackPaths: {} })
+    });
+
+    expect(result).toEqual({ status: 'handled', debugBroadcastSent: false });
+    expect(queuePort.addToQueue).not.toHaveBeenCalled();
+    expect(setPickReason).not.toHaveBeenCalled();
+    expect(onFinalSelection).not.toHaveBeenCalled();
+    expect(emit).not.toHaveBeenCalled();
+    expect(broadcastAppended).not.toHaveBeenCalled();
+  });
+
+  it('sets reasons only for tracks contained in the final selection', () => {
+    const queue: ReturnType<typeof getQueue> = [];
+    const queuePort = {
+      getQueue: vi.fn(() => [...queue]),
+      addToQueue: vi.fn((_userId: string, track: typeof queue[number]) => {
+        queue.push(track);
+        queue.push({ ncmId: 'concurrent-track', name: 'Concurrent Track', artists: ['Other Path'] });
+      })
+    };
+    const setPickReason = vi.fn();
+
+    const result = handleMusicAgentPickNextOutput({
+      userId: 'music-agent-result-user',
+      output: makeOutput([
+        { id: 'selected-track', name: 'Selected Track', artist: 'Selected Artist', reason: 'fits', source: 'search' }
+      ]),
+      excludeState: { ids: new Set(), dedupeKeys: new Set() },
+      initialQueueLength: 0,
+      targetPickCount: 1,
+      startedAt: Date.now(),
+      discoveryMode: 'explore',
+      emit: vi.fn(),
+      broadcastAppended: vi.fn(),
+      logger: { warn: vi.fn() },
+      queuePort,
+      setPickReason,
+      fallbackStatsSnapshot: () => ({ totalRuns: 0, fallbackRuns: 0, fallbackRate: 0, fallbackPaths: {} })
+    });
+
+    expect(result).toEqual({ status: 'handled', debugBroadcastSent: true });
+    expect(setPickReason).toHaveBeenCalledOnce();
+    expect(setPickReason).toHaveBeenCalledWith(
+      'selected-track',
+      'fits'
+    );
+  });
+
+  it('isolates final selection callback failures after queue mutation', () => {
+    const emit = vi.fn();
+    const broadcastAppended = vi.fn();
+    const logger = { warn: vi.fn() };
+    const callbackError = new Error('persistence unavailable');
+    const onFinalSelection = vi.fn(() => {
+      throw callbackError;
+    });
+
+    const result = handleMusicAgentPickNextOutput({
+      userId: 'music-agent-result-user',
+      output: makeOutput([
+        { id: 'callback-safe', name: 'Callback Safe', artist: 'Safe Artist', reason: 'fits', source: 'search' }
+      ]),
+      excludeState: { ids: new Set(), dedupeKeys: new Set() },
+      initialQueueLength: 0,
+      targetPickCount: 1,
+      startedAt: Date.now(),
+      discoveryMode: 'explore',
+      emit,
+      broadcastAppended,
+      logger,
+      setPickReason: vi.fn(),
+      onFinalSelection,
+      fallbackStatsSnapshot: () => ({ totalRuns: 0, fallbackRuns: 0, fallbackRate: 0, fallbackPaths: {} })
+    });
+
+    expect(result).toEqual({ status: 'handled', debugBroadcastSent: true });
+    expect(getQueue('music-agent-result-user')).toMatchObject([{ ncmId: 'callback-safe' }]);
+    expect(onFinalSelection).toHaveBeenCalledOnce();
+    expect(logger.warn).toHaveBeenCalledWith(
+      { err: callbackError },
+      'DJ pick-next: final selection callback failed'
+    );
+    expect(emit).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'dj.debug',
+      selectedTracks: onFinalSelection.mock.calls[0]?.[0].tracks
+    }));
+    expect(broadcastAppended).toHaveBeenCalledOnce();
+  });
+
   it('broadcasts partial success when only part of the target can be appended', () => {
     const emit = vi.fn();
     const setPickReason = vi.fn();
     const broadcastAppended = vi.fn();
     const logger = { warn: vi.fn() };
+    const onFinalSelection = vi.fn();
     const fallbackStatsSnapshot = vi.fn(() => ({ totalRuns: 3, fallbackRuns: 1, fallbackRate: 0.333, fallbackPaths: {} }));
+    const output = {
+      ...makeOutput([
+        { id: '301', name: 'Fresh Song', artist: 'Fresh Artist', reason: 'fits', source: 'search' },
+        { id: '302', name: '被排除的歌', artist: '卫兰', reason: 'also fits', source: 'search' }
+      ]),
+      say: '先用 Fresh Song 铺垫，再接卫兰《被排除的歌》。'
+    } satisfies MusicAgentRunOutput;
 
     const result = handleMusicAgentPickNextOutput({
       userId: 'music-agent-result-user',
-      output: makeOutput([
-        { id: '301', name: 'Fresh Song', artist: 'Fresh Artist', reason: 'fits', source: 'search' },
-        { id: '302', name: 'Already Played', artist: 'Played Artist', reason: 'also fits', source: 'search' }
-      ]),
+      output,
       excludeState: { ids: new Set(['302']), dedupeKeys: new Set() },
       initialQueueLength: 0,
       targetPickCount: 2,
@@ -727,6 +946,7 @@ describe('MusicAgent pick-next result handling', () => {
       broadcastAppended,
       logger,
       setPickReason,
+      onFinalSelection,
       fallbackStatsSnapshot
     });
 
@@ -735,15 +955,39 @@ describe('MusicAgent pick-next result handling', () => {
       { ncmId: '301', name: 'Fresh Song', artists: ['Fresh Artist'] }
     ]);
     expect(setPickReason).toHaveBeenCalledTimes(1);
-    expect(setPickReason).toHaveBeenCalledWith('301', '顺着今天的氛围往前推一首。');
+    expect(setPickReason).toHaveBeenCalledWith('301', 'fits');
     expect(emit).toHaveBeenCalledWith(expect.objectContaining({
       type: 'dj.debug',
+      selectedSay: '本次实际补充 1 首：Fresh Artist《Fresh Song》。',
+      selectedTracks: [expect.objectContaining({ id: '301', name: 'Fresh Song', artist: 'Fresh Artist' })],
       partial: true,
       targetCount: 2,
       appendedCount: 1,
       requestedPickCount: 2,
       skippedPicks: [expect.objectContaining({ id: '302', reason: 'id_excluded' })]
     }));
+    const debugPayload = emit.mock.calls.find(([payload]) => payload.type === 'dj.debug')?.[0];
+    expect(debugPayload.selectedSay).not.toContain('卫兰');
+    expect(onFinalSelection).toHaveBeenCalledOnce();
+    expect(onFinalSelection).toHaveBeenCalledWith({
+      tracks: [{ id: '301', name: 'Fresh Song', artist: 'Fresh Artist', reason: 'fits', source: 'search' }],
+      rationale: '本次实际补充 1 首：Fresh Artist《Fresh Song》。',
+      proposedRationale: '先用 Fresh Song 铺垫，再接卫兰《被排除的歌》。',
+      diagnostics: {
+        targetCount: 2,
+        requestedPickCount: 2,
+        appendedCount: 1,
+        finalPickDiagnostics: output.finalPickDiagnostics,
+        skippedPicks: [{
+          id: '302',
+          name: '被排除的歌',
+          artist: '卫兰',
+          reason: 'id_excluded',
+          dedupeKey: '被排除的歌::卫兰'
+        }]
+      }
+    });
+    expect(debugPayload.selectedTracks).toBe(onFinalSelection.mock.calls[0]?.[0].tracks);
     expect(logger.warn).toHaveBeenCalledWith(
       expect.objectContaining({
         appendedCount: 1,
@@ -764,7 +1008,10 @@ describe('MusicAgent pick-next result handling', () => {
         agentPickCount: 1,
         rankedBackfillCount: 0,
         candidateCount: 2,
-        discoveryMode: 'explore'
+        discoveryMode: 'explore',
+        appendedTracks: [
+          expect.objectContaining({ ncmId: '301', name: 'Fresh Song', artists: ['Fresh Artist'] })
+        ]
       })
     );
   });
@@ -774,6 +1021,7 @@ describe('MusicAgent pick-next result handling', () => {
     const setPickReason = vi.fn();
     const broadcastAppended = vi.fn();
     const logger = { warn: vi.fn() };
+    const onFinalSelection = vi.fn();
     const fallbackStatsSnapshot = vi.fn(() => ({ totalRuns: 4, fallbackRuns: 2, fallbackRate: 0.5, fallbackPaths: {} }));
 
     const result = handleMusicAgentPickNextOutput({
@@ -790,6 +1038,7 @@ describe('MusicAgent pick-next result handling', () => {
       broadcastAppended,
       logger,
       setPickReason,
+      onFinalSelection,
       fallbackStatsSnapshot
     });
 
@@ -800,6 +1049,7 @@ describe('MusicAgent pick-next result handling', () => {
     });
     expect(getQueue('music-agent-result-user')).toEqual([]);
     expect(setPickReason).not.toHaveBeenCalled();
+    expect(onFinalSelection).not.toHaveBeenCalled();
     expect(emit).not.toHaveBeenCalled();
     expect(broadcastAppended).not.toHaveBeenCalled();
     expect(logger.warn).toHaveBeenCalledWith(

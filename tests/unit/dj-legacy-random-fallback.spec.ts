@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { handleLegacyRandomFallback } from '../../src/server/dj/legacyRandomFallback';
+import { createDjPickNextTelemetry } from '../../src/server/dj/pickNextTelemetry';
 import { initDb, _resetDbForTest } from '../../src/server/store/db';
 import { getRecentDjEvents } from '../../src/server/store/dj-events';
 import { getQueue, setQueueState } from '../../src/server/store/queue';
@@ -27,7 +28,9 @@ describe('Legacy DJ random fallback handling', () => {
 
   it('emits done and records no-candidates when every liked song is excluded', async () => {
     const emit = vi.fn();
-    const broadcastAppended = vi.fn();
+    const broadcastAppended = vi.fn(
+      createDjPickNextTelemetry({ logger: { info: vi.fn() } }).broadcastAppended
+    );
     const fetchSongDetails = vi.fn();
     const recordFallbackStats = vi.fn(() => ({ totalRuns: 1, fallbackRuns: 1, fallbackRate: 1, fallbackPaths: { no_candidates: 1 } }));
     const logger = { warn: vi.fn(), info: vi.fn() };
@@ -44,6 +47,7 @@ describe('Legacy DJ random fallback handling', () => {
       emit,
       broadcastAppended,
       logger,
+      setPickReason: vi.fn(),
       recordFallbackStats,
       sampleIds: vi.fn(),
       fetchSongDetails,
@@ -51,6 +55,7 @@ describe('Legacy DJ random fallback handling', () => {
     });
 
     expect(recordFallbackStats).toHaveBeenCalledWith('no_candidates');
+    expect(recordFallbackStats).toHaveBeenCalledTimes(1);
     expect(logger.warn).toHaveBeenCalledWith(
       expect.objectContaining({
         targetCount: 1,
@@ -59,9 +64,21 @@ describe('Legacy DJ random fallback handling', () => {
       }),
       'DJ pick-next fallback: no candidates'
     );
-    expect(emit).toHaveBeenCalledWith({ type: 'dj.pick-next.done', added: false, reason: 'no-candidates' });
+    expect(emit).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'dj.pick-next.done',
+      added: false,
+      addedCount: 0,
+      trackIds: []
+    }));
     expect(fetchSongDetails).not.toHaveBeenCalled();
-    expect(broadcastAppended).not.toHaveBeenCalled();
+    expect(broadcastAppended).toHaveBeenCalledWith(
+      'legacy-random-user',
+      0,
+      1,
+      emit,
+      undefined,
+      expect.objectContaining({ appendedTracks: [], fallbackPath: 'no_candidates' })
+    );
   });
 
   it('samples available liked ids, appends fetched details, and broadcasts random fallback', async () => {
@@ -79,6 +96,7 @@ describe('Legacy DJ random fallback handling', () => {
       fallbackPaths: { legacy_random_fallback: 1 }
     }));
     const logger = { warn: vi.fn(), info: vi.fn() };
+    const setPickReason = vi.fn();
 
     await handleLegacyRandomFallback({
       userId: 'legacy-random-user',
@@ -92,6 +110,7 @@ describe('Legacy DJ random fallback handling', () => {
       emit,
       broadcastAppended,
       logger,
+      setPickReason,
       recordFallbackStats,
       sampleIds,
       fetchSongDetails,
@@ -108,7 +127,11 @@ describe('Legacy DJ random fallback handling', () => {
       type: 'dj.debug',
       excludedIds: ['excluded'],
       totalCandidates: 3,
-      selectedSay: '随机 fallback（LLM 未配置或选歌失败）'
+      selectedSay: '本次实际补充 2 首：Artist One《Fallback One》、Artist Two《Fallback Two》。',
+      selectedTracks: [
+        expect.objectContaining({ id: '201', name: 'Fallback One', artist: 'Artist One' }),
+        expect.objectContaining({ id: '202', name: 'Fallback Two', artist: 'Artist Two' })
+      ]
     }));
     expect(logger.info).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -121,12 +144,21 @@ describe('Legacy DJ random fallback handling', () => {
       'DJ pick-next fallback: appended tracks'
     );
     expect(recordFallbackStats).toHaveBeenCalledWith('legacy_random_fallback');
+    expect(setPickReason).toHaveBeenCalledTimes(2);
+    expect(setPickReason).toHaveBeenCalledWith(
+      '201',
+      'Selected by legacy random fallback from liked tracks.'
+    );
+    expect(setPickReason).toHaveBeenCalledWith(
+      '202',
+      'Selected by legacy random fallback from liked tracks.'
+    );
     const events = getRecentDjEvents('legacy-random-user', 10);
     expect(events.find((event) => event.type === 'selection_started')?.payload).toMatchObject({
       trigger: 'auto_fill',
-      targetCount: 2,
-      batchRationale: '随机 fallback（LLM 未配置或选歌失败）'
+      targetCount: 2
     });
+    expect(events.find((event) => event.type === 'selection_started')?.payload).not.toHaveProperty('batchRationale');
     const selectedEvents = events.filter((event) => event.type === 'track_selected');
     expect(selectedEvents).toHaveLength(2);
     expect(selectedEvents.map((event) => event.trackId).sort()).toEqual(['201', '202']);
@@ -148,11 +180,24 @@ describe('Legacy DJ random fallback handling', () => {
         pickOrder: 2
       })
     ]));
-    expect(events.find((event) => event.type === 'queue_changed')?.payload).toMatchObject({
+    const completion = events.find((event) => event.type === 'selection_completed');
+    expect(completion?.payload).toEqual({
+      finalTrackIds: ['201', '202'],
+      finalRationale: '本次实际补充 2 首：Artist One《Fallback One》、Artist Two《Fallback Two》。',
+      proposedRationale: '随机 fallback（LLM 未配置或选歌失败）',
+      targetCount: 2,
+      requestedPickCount: 2,
+      appendedCount: 2,
+      skippedPicks: []
+    });
+    const queueChanged = events.find((event) => event.type === 'queue_changed');
+    expect(queueChanged?.payload).toMatchObject({
       action: 'append',
       trackIds: ['201', '202'],
       position: 'end'
     });
+    expect(completion?.causationEventId).toBe(selectedEvents.find((event) => event.trackId === '202')?.id);
+    expect(queueChanged?.causationEventId).toBe(completion?.id);
     expect(broadcastAppended).toHaveBeenCalledWith(
       'legacy-random-user',
       0,
@@ -164,13 +209,22 @@ describe('Legacy DJ random fallback handling', () => {
         rankedBackfillCount: 0,
         candidateCount: 3,
         fallbackPath: 'legacy_random_fallback',
-        discoveryMode: 'explore'
+        discoveryMode: 'explore',
+        appendedTracks: [
+          expect.objectContaining({ ncmId: '201', coverImgUrl: 'cover-201' }),
+          expect.objectContaining({ ncmId: '202', coverImgUrl: null })
+        ]
       })
     );
   });
 
-  it('does not emit fallback debug again when upstream debug was already sent', async () => {
+  it('emits final fallback debug after an upstream generic debug', async () => {
     const emit = vi.fn();
+    emit({
+      type: 'dj.debug',
+      selectedSay: 'generic proposal',
+      selectedTracks: [{ id: 'proposal', name: 'Generic Proposal' }]
+    });
 
     await handleLegacyRandomFallback({
       userId: 'legacy-random-user',
@@ -184,6 +238,7 @@ describe('Legacy DJ random fallback handling', () => {
       emit,
       broadcastAppended: vi.fn(),
       logger: { warn: vi.fn(), info: vi.fn() },
+      setPickReason: vi.fn(),
       recordFallbackStats: vi.fn(() => ({ totalRuns: 1, fallbackRuns: 1, fallbackRate: 1, fallbackPaths: {} })),
       sampleIds: vi.fn((ids: string[]) => ids),
       fetchSongDetails: vi.fn(async () => [
@@ -192,7 +247,152 @@ describe('Legacy DJ random fallback handling', () => {
       signal: undefined
     });
 
-    expect(emit).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'dj.debug' }));
+    const debugPayloads = emit.mock.calls
+      .map(([payload]) => payload)
+      .filter((payload) => payload.type === 'dj.debug');
+    expect(debugPayloads).toHaveLength(2);
+    expect(debugPayloads.at(-1)).toMatchObject({
+      type: 'dj.debug',
+      selectedSay: '本次实际补充 1 首：Artist One《Fallback One》。',
+      selectedTracks: [{
+        id: '201',
+        name: 'Fallback One',
+        artist: 'Artist One',
+        reason: 'Selected by legacy random fallback from liked tracks.',
+        source: 'legacy_random_fallback'
+      }]
+    });
+    expect(JSON.stringify(debugPayloads.at(-1))).not.toContain('generic proposal');
+    expect(JSON.stringify(debugPayloads.at(-1))).not.toContain('Generic Proposal');
+  });
+
+  it('does not finalize a fallback track added by another path while details were fetched', async () => {
+    const emit = vi.fn();
+    const excludeState = { ids: new Set<string>(), dedupeKeys: new Set<string>() };
+    const telemetryLogger = { info: vi.fn() };
+    const telemetry = createDjPickNextTelemetry({ logger: telemetryLogger });
+    const broadcastAppended = vi.fn(telemetry.broadcastAppended);
+
+    await handleLegacyRandomFallback({
+      userId: 'legacy-random-user',
+      allLikedIds: ['concurrent'],
+      excludeState,
+      initialQueueLength: 0,
+      targetPickCount: 2,
+      startedAt: Date.now(),
+      discoveryMode: 'comfort',
+      debugBroadcastSent: false,
+      emit,
+      broadcastAppended,
+      logger: { warn: vi.fn(), info: vi.fn() },
+      setPickReason: vi.fn(),
+      recordFallbackStats: vi.fn(() => ({})),
+      sampleIds: vi.fn((ids: string[]) => ids),
+      fetchSongDetails: vi.fn(async () => {
+        setQueueState('legacy-random-user', [
+          { ncmId: 'concurrent', name: 'Concurrent Fill', artists: ['Other Path'] }
+        ], 0);
+        return [{ id: 'concurrent', name: 'Concurrent Fill', artists: ['Other Path'], coverImgUrl: null }];
+      })
+    });
+
+    expect(getQueue('legacy-random-user')).toHaveLength(1);
+    expect(excludeState.ids).toEqual(new Set());
+    expect(excludeState.dedupeKeys).toEqual(new Set());
+    expect(getRecentDjEvents('legacy-random-user')).toEqual([]);
+    expect(broadcastAppended).toHaveBeenCalledWith(
+      'legacy-random-user',
+      0,
+      2,
+      emit,
+      undefined,
+      expect.objectContaining({
+        appendedTracks: [],
+        fallbackPath: 'legacy_random_fallback'
+      })
+    );
+    expect(emit).toHaveBeenCalledWith({
+      type: 'dj.pick-next.done',
+      added: false,
+      addedCount: 0,
+      targetCount: 2,
+      trackIds: [],
+      trackNames: [],
+      trackName: undefined
+    });
+    expect(emit).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'queue-appended' }));
+    expect(JSON.stringify(emit.mock.calls)).not.toContain('concurrent');
+    expect(emit).not.toHaveBeenCalledWith(expect.objectContaining({
+      type: 'dj.debug',
+      selectedTracks: expect.anything()
+    }));
+  });
+
+  it('accounts for every fetched fallback detail after remaining slots are exhausted', async () => {
+    await handleLegacyRandomFallback({
+      userId: 'legacy-random-user',
+      allLikedIds: ['close-1', 'close-2', 'close-3'],
+      excludeState: { ids: new Set(), dedupeKeys: new Set() },
+      initialQueueLength: 0,
+      targetPickCount: 1,
+      startedAt: Date.now(),
+      discoveryMode: 'comfort',
+      debugBroadcastSent: true,
+      emit: vi.fn(),
+      broadcastAppended: vi.fn(),
+      logger: { warn: vi.fn(), info: vi.fn() },
+      setPickReason: vi.fn(),
+      recordFallbackStats: vi.fn(() => ({})),
+      sampleIds: vi.fn((ids: string[]) => ids),
+      fetchSongDetails: vi.fn(async () => [
+        { id: 'close-1', name: 'Close One', artists: ['Artist One'] },
+        { id: 'close-2', name: 'Close Two', artists: ['Artist Two'] },
+        { id: 'close-3', name: 'Close Three', artists: ['Artist Three'] }
+      ])
+    });
+
+    expect(getRecentDjEvents('legacy-random-user').find((event) =>
+      event.type === 'selection_completed'
+    )?.payload).toMatchObject({
+      requestedPickCount: 3,
+      appendedCount: 1,
+      skippedPicks: [
+        expect.objectContaining({ id: 'close-2', reason: 'no_remaining_slots' }),
+        expect.objectContaining({ id: 'close-3', reason: 'no_remaining_slots' })
+      ]
+    });
+  });
+
+  it('emits a non-success debug when fallback details are empty', async () => {
+    const emit = vi.fn();
+
+    await handleLegacyRandomFallback({
+      userId: 'legacy-random-user',
+      allLikedIds: ['missing'],
+      excludeState: { ids: new Set(['excluded']), dedupeKeys: new Set(['existing::artist']) },
+      initialQueueLength: 0,
+      targetPickCount: 1,
+      startedAt: Date.now(),
+      discoveryMode: 'comfort',
+      debugBroadcastSent: false,
+      emit,
+      broadcastAppended: vi.fn(),
+      logger: { warn: vi.fn(), info: vi.fn() },
+      setPickReason: vi.fn(),
+      recordFallbackStats: vi.fn(() => ({})),
+      sampleIds: vi.fn((ids: string[]) => ids),
+      fetchSongDetails: vi.fn(async () => [])
+    });
+
+    expect(emit).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'dj.debug',
+      selectedTracks: [],
+      selectedSay: '随机 fallback 未找到可追加歌曲。',
+      totalCandidates: 1,
+      excludedIds: ['excluded'],
+      excludedDedupeKeys: ['existing::artist']
+    }));
+    expect(getRecentDjEvents('legacy-random-user')).toEqual([]);
   });
 
   it('returns without broadcasting when aborted after fetching fallback details', async () => {
@@ -213,6 +413,7 @@ describe('Legacy DJ random fallback handling', () => {
       emit,
       broadcastAppended,
       logger,
+      setPickReason: vi.fn(),
       recordFallbackStats: vi.fn(),
       sampleIds: vi.fn((ids: string[]) => ids),
       fetchSongDetails: vi.fn(async () => {
@@ -228,12 +429,14 @@ describe('Legacy DJ random fallback handling', () => {
     expect(broadcastAppended).not.toHaveBeenCalled();
   });
 
-  it('broadcasts prior appended tracks when no fallback candidates remain', async () => {
+  it('does not attribute concurrently appended tracks when no fallback candidates remain', async () => {
     setQueueState('legacy-random-user', [
       { ncmId: 'queued', name: 'Queued Track', artists: ['Queued Artist'] }
     ], 0);
     const emit = vi.fn();
-    const broadcastAppended = vi.fn();
+    const broadcastAppended = vi.fn(
+      createDjPickNextTelemetry({ logger: { info: vi.fn() } }).broadcastAppended
+    );
 
     await handleLegacyRandomFallback({
       userId: 'legacy-random-user',
@@ -247,13 +450,13 @@ describe('Legacy DJ random fallback handling', () => {
       emit,
       broadcastAppended,
       logger: { warn: vi.fn(), info: vi.fn() },
+      setPickReason: vi.fn(),
       recordFallbackStats: vi.fn(() => ({ totalRuns: 1, fallbackRuns: 1, fallbackRate: 1, fallbackPaths: { no_candidates: 1 } })),
       sampleIds: vi.fn(),
       fetchSongDetails: vi.fn(),
       signal: undefined
     });
 
-    expect(emit).not.toHaveBeenCalledWith({ type: 'dj.pick-next.done', added: false, reason: 'no-candidates' });
     expect(broadcastAppended).toHaveBeenCalledWith(
       'legacy-random-user',
       0,
@@ -261,6 +464,7 @@ describe('Legacy DJ random fallback handling', () => {
       emit,
       undefined,
       expect.objectContaining({
+        appendedTracks: [],
         agentPickCount: 0,
         rankedBackfillCount: 0,
         candidateCount: 0,
@@ -268,5 +472,64 @@ describe('Legacy DJ random fallback handling', () => {
         discoveryMode: 'explore'
       })
     );
+    expect(emit).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'dj.pick-next.done',
+      added: false,
+      addedCount: 0,
+      trackIds: []
+    }));
+    expect(emit).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'queue-appended' }));
+    expect(JSON.stringify(emit.mock.calls)).not.toContain('queued');
+  });
+
+  it('does not attribute concurrently appended tracks when fallback details are empty', async () => {
+    const emit = vi.fn();
+    const broadcastAppended = vi.fn(createDjPickNextTelemetry({ logger: { info: vi.fn() } }).broadcastAppended);
+    const recordFallbackStats = vi.fn(() => ({}));
+
+    await handleLegacyRandomFallback({
+      userId: 'legacy-random-user',
+      allLikedIds: ['missing'],
+      excludeState: { ids: new Set(), dedupeKeys: new Set() },
+      initialQueueLength: 0,
+      targetPickCount: 1,
+      startedAt: Date.now(),
+      discoveryMode: 'comfort',
+      debugBroadcastSent: false,
+      emit,
+      broadcastAppended,
+      logger: { warn: vi.fn(), info: vi.fn() },
+      setPickReason: vi.fn(),
+      recordFallbackStats,
+      sampleIds: vi.fn((ids: string[]) => ids),
+      fetchSongDetails: vi.fn(async () => {
+        setQueueState('legacy-random-user', [
+          { ncmId: 'concurrent-empty', name: 'Concurrent Empty', artists: ['Other Path'] }
+        ], 0);
+        return [];
+      })
+    });
+
+    expect(broadcastAppended).toHaveBeenCalledWith(
+      'legacy-random-user',
+      0,
+      1,
+      emit,
+      undefined,
+      expect.objectContaining({
+        appendedTracks: [],
+        fallbackPath: 'legacy_random_fallback'
+      })
+    );
+    expect(emit).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'dj.pick-next.done',
+      added: false,
+      addedCount: 0,
+      trackIds: []
+    }));
+    expect(emit).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'queue-appended' }));
+    expect(JSON.stringify(emit.mock.calls)).not.toContain('concurrent-empty');
+    expect(recordFallbackStats).toHaveBeenCalledTimes(1);
+    expect(recordFallbackStats).toHaveBeenCalledWith('legacy_random_fallback');
   });
 });

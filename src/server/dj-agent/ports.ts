@@ -61,7 +61,7 @@ export type DJAgentPickNextInput = {
 
 export type DJAgentPickNextHandledResult = {
   status: 'handled';
-  debugBroadcastSent: true;
+  debugBroadcastSent: boolean;
   output: MusicAgentRunOutput;
   runId: string;
   selectionStartedEventId: string;
