@@ -142,6 +142,35 @@ describe('final shortlist enrichment', () => {
     expect(result.diagnostics).toMatchObject({ cacheHits: 0, cacheMisses: 1 });
   });
 
+  it.each([
+    ['23-hour-old', 23 * 60 * 60 * 1_000, 1, 0],
+    ['2-day-old', 2 * 24 * 60 * 60 * 1_000, 0, 1]
+  ])(
+    'uses the one-day lyric TTL for a %s missing profile',
+    async (_label, ageMs, expectedHits, expectedLyricCalls) => {
+      const now = Date.parse('2026-07-10T12:00:00.000Z');
+      const refreshedAt = new Date(now - ageMs).toISOString();
+      const { recordMusicTrackLyricRefresh, saveMusicTrackSemanticProfile } =
+        await import('../../src/server/store/music-track-analysis-cache.js');
+      recordMusicTrackLyricRefresh({
+        provider: 'ncm', trackId: 'track-0', lyricStatus: 'missing', lyricHash: null,
+        extractionSummary: {}, refreshedAt
+      });
+      saveMusicTrackSemanticProfile({
+        provider: 'ncm', trackId: 'track-0', analyzerVersion: 'lyrics-v1', lyricHash: null,
+        profile, confidence, evidence: [{ claim: 'energy=low', source: 'lyric_analysis' }],
+        extractionSummary: {}, analysisModel: 'analysis-model', lyricRefreshedAt: refreshedAt
+      });
+      const ncmClient = createNcmClient();
+      const enrich = await createEnricher(ncmClient, { now: () => now });
+
+      const result = await enrich(candidates(1));
+
+      expect(result.diagnostics.cacheHits).toBe(expectedHits);
+      expect(ncmClient.getLyric).toHaveBeenCalledTimes(expectedLyricCalls);
+    }
+  );
+
   it('builds bounded deterministic lyric evidence and wiki tags on a cache miss', async () => {
     const ncmClient = createNcmClient({
       getLyric: async (id) => lyric(id),

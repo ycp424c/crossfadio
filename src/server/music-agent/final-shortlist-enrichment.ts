@@ -273,12 +273,18 @@ function cachedAssessment(
   analyzerVersion: string,
   nowMs: number
 ): TrackAssessment | null {
+  const profileTtlMs = cached?.lyricStatus === 'available'
+    ? PROFILE_CACHE_TTL_MS
+    : cached?.lyricStatus === 'missing'
+      ? MISSING_LYRIC_CACHE_TTL_MS
+      : 0;
   if (
     !cached ||
     cached.analyzerVersion !== analyzerVersion ||
     cached.profile === null ||
     cached.confidence === null ||
-    !isFreshTimestamp(cached.lastLyricRefreshAt, nowMs, PROFILE_CACHE_TTL_MS)
+    profileTtlMs === 0 ||
+    !isFreshTimestamp(cached.lastLyricRefreshAt, nowMs, profileTtlMs)
   ) {
     return null;
   }
