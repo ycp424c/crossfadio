@@ -262,6 +262,7 @@ CREATE TABLE IF NOT EXISTS music_track_analysis_cache (
   lyric_status            TEXT NOT NULL DEFAULT 'unknown',
   lyric_hash              TEXT,
   profile_json            TEXT,
+  confidence_json         TEXT,
   evidence_json           TEXT,
   extraction_summary_json TEXT NOT NULL DEFAULT '{}',
   analysis_model          TEXT,

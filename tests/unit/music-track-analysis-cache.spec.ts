@@ -16,18 +16,20 @@ const calmProfile = {
   language: 'en'
 } as const;
 
+const calmConfidence = {
+  genres: 0.9,
+  moods: 0.8,
+  energy: 0.95,
+  aggression: 0.9,
+  vocalIntensity: 0.7,
+  lyricThemes: 0.6,
+  language: 0.99
+} as const;
+
 const calmAssessment = {
   id: '42',
   profile: calmProfile,
-  confidence: {
-    genres: 0.9,
-    moods: 0.8,
-    energy: 0.95,
-    aggression: 0.9,
-    vocalIntensity: 0.7,
-    lyricThemes: 0.6,
-    language: 0.99
-  },
+  confidence: calmConfidence,
   evidence: [{ claim: 'energy=low', source: 'lyric_analysis' }]
 } as const;
 
@@ -87,6 +89,7 @@ describe('music track analysis cache', () => {
       analyzerVersion: 'lyrics-v1',
       lyricHash: 'hash-a',
       profile: calmProfile,
+      confidence: calmConfidence,
       evidence: [{ claim: 'energy=low', source: 'lyric_analysis' }],
       extractionSummary: { lineCount: 20 },
       analysisModel: 'test-model',
@@ -100,6 +103,7 @@ describe('music track analysis cache', () => {
       lyricStatus: 'available',
       lyricHash: 'hash-a',
       profile: calmProfile,
+      confidence: calmConfidence,
       evidence: [{ claim: 'energy=low', source: 'lyric_analysis' }],
       extractionSummary: { lineCount: 20 },
       analysisModel: 'test-model',
@@ -163,7 +167,8 @@ describe('music track analysis cache', () => {
     } = await import('../../src/server/store/music-track-analysis-cache.js');
     saveMusicTrackSemanticProfile({
       provider: 'ncm', trackId: '42', analyzerVersion: 'lyrics-v1', lyricHash: 'hash-a',
-      profile: calmProfile, evidence: calmAssessment.evidence, extractionSummary: { lineCount: 20 },
+      profile: calmProfile, confidence: calmConfidence,
+      evidence: calmAssessment.evidence, extractionSummary: { lineCount: 20 },
       analysisModel: 'test-model', lyricRefreshedAt: '2026-07-10T10:00:00.000Z'
     });
 
@@ -174,6 +179,7 @@ describe('music track analysis cache', () => {
 
     expect(getMusicTrackAnalysisCache('ncm', '42')).toMatchObject({
       profile: calmProfile,
+      confidence: calmConfidence,
       analyzerVersion: 'lyrics-v1',
       analysisModel: 'test-model',
       extractionSummary: { lineCount: 22 }
@@ -188,7 +194,8 @@ describe('music track analysis cache', () => {
     } = await import('../../src/server/store/music-track-analysis-cache.js');
     saveMusicTrackSemanticProfile({
       provider: 'ncm', trackId: '42', analyzerVersion: 'lyrics-v1', lyricHash: 'hash-a',
-      profile: calmProfile, evidence: calmAssessment.evidence, extractionSummary: {},
+      profile: calmProfile, confidence: calmConfidence,
+      evidence: calmAssessment.evidence, extractionSummary: {},
       analysisModel: 'test-model', lyricRefreshedAt: '2026-07-10T10:00:00.000Z'
     });
 
@@ -200,6 +207,7 @@ describe('music track analysis cache', () => {
     expect(getMusicTrackAnalysisCache('ncm', '42')).toMatchObject({
       lyricHash: 'hash-b',
       profile: null,
+      confidence: null,
       evidence: [],
       analyzerVersion: null,
       analysisModel: null
@@ -214,7 +222,8 @@ describe('music track analysis cache', () => {
     } = await import('../../src/server/store/music-track-analysis-cache.js');
     saveMusicTrackSemanticProfile({
       provider: 'ncm', trackId: '42', analyzerVersion: 'lyrics-v1', lyricHash: 'hash-a',
-      profile: calmProfile, evidence: calmAssessment.evidence, extractionSummary: {},
+      profile: calmProfile, confidence: calmConfidence,
+      evidence: calmAssessment.evidence, extractionSummary: {},
       analysisModel: 'test-model', lyricRefreshedAt: '2026-07-10T10:00:00.000Z'
     });
 
@@ -226,6 +235,7 @@ describe('music track analysis cache', () => {
     expect(getMusicTrackAnalysisCache('ncm', '42')).toMatchObject({
       lyricHash: null,
       profile: null,
+      confidence: null,
       evidence: [],
       analyzerVersion: null,
       analysisModel: null
@@ -240,7 +250,8 @@ describe('music track analysis cache', () => {
     } = await import('../../src/server/store/music-track-analysis-cache.js');
     saveMusicTrackSemanticProfile({
       provider: 'ncm', trackId: '42', analyzerVersion: 'lyrics-v1', lyricHash: null,
-      profile: calmProfile, evidence: calmAssessment.evidence, extractionSummary: {},
+      profile: calmProfile, confidence: calmConfidence,
+      evidence: calmAssessment.evidence, extractionSummary: {},
       analysisModel: 'test-model', lyricRefreshedAt: '2026-07-10T10:00:00.000Z'
     });
 
@@ -252,6 +263,7 @@ describe('music track analysis cache', () => {
     expect(getMusicTrackAnalysisCache('ncm', '42')).toMatchObject({
       lyricHash: 'hash-b',
       profile: null,
+      confidence: null,
       evidence: [],
       analyzerVersion: null,
       analysisModel: null
@@ -275,7 +287,8 @@ describe('music track analysis cache', () => {
 
     const saved = saveMusicTrackSemanticProfile({
       provider: 'ncm', trackId: '42', analyzerVersion: 'lyrics-v1', lyricHash: 'hash-a',
-      profile: calmProfile, evidence: calmAssessment.evidence, extractionSummary: { lineCount: 20 },
+      profile: calmProfile, confidence: calmConfidence,
+      evidence: calmAssessment.evidence, extractionSummary: { lineCount: 20 },
       analysisModel: 'test-model', lyricRefreshedAt: '2026-07-10T10:00:00.000Z'
     });
 
@@ -283,6 +296,7 @@ describe('music track analysis cache', () => {
     expect(getMusicTrackAnalysisCache('ncm', '42')).toMatchObject({
       lyricHash: 'hash-b',
       profile: null,
+      confidence: null,
       evidence: [],
       analyzerVersion: null,
       analysisModel: null,
@@ -303,6 +317,7 @@ describe('music track analysis cache', () => {
 
     expect(getMusicTrackAnalysisCache('ncm', 'missing')).toMatchObject({
       lyricStatus: 'missing', lyricHash: null, profile: null, evidence: [],
+      confidence: null,
       extractionSummary: { reason: 'not_found' }
     });
   });
@@ -322,7 +337,8 @@ describe('music track analysis cache', () => {
 
     expect(saveMusicTrackSemanticProfile({
       provider: 'ncm', trackId: '42', analyzerVersion: 'lyrics-v1', lyricHash: 'hash-a',
-      profile: calmProfile, evidence: calmAssessment.evidence, extractionSummary: {},
+      profile: calmProfile, confidence: calmConfidence,
+      evidence: calmAssessment.evidence, extractionSummary: {},
       analysisModel: 'test-model', lyricRefreshedAt: '2026-07-10T19:00:00+08:00'
     })).toBe(true);
     expect(getMusicTrackAnalysisCache('ncm', '42')?.lastLyricRefreshAt)
@@ -341,7 +357,8 @@ describe('music track analysis cache', () => {
     })).toThrowError('Invalid refreshedAt: expected a valid date');
     expect(() => saveMusicTrackSemanticProfile({
       provider: 'ncm', trackId: 'bad-analysis', analyzerVersion: 'lyrics-v1', lyricHash: null,
-      profile: calmProfile, evidence: calmAssessment.evidence, extractionSummary: {},
+      profile: calmProfile, confidence: calmConfidence,
+      evidence: calmAssessment.evidence, extractionSummary: {},
       analysisModel: 'test-model', lyricRefreshedAt: 'still-not-a-date'
     })).toThrowError('Invalid lyricRefreshedAt: expected a valid date');
   });
@@ -358,13 +375,21 @@ describe('music track analysis cache', () => {
     });
     getDb().prepare(
       `UPDATE music_track_analysis_cache
-       SET profile_json = ?, evidence_json = ?, extraction_summary_json = ?
+       SET profile_json = ?, confidence_json = ?, evidence_json = ?, extraction_summary_json = ?
        WHERE provider = ? AND track_id = ?`
-    ).run('{bad json', '[{"claim":"x","source":"bad"}]', '[]', 'ncm', 'corrupt');
+    ).run(
+      '{bad json',
+      '{"genres":2}',
+      '[{"claim":"x","source":"bad"}]',
+      '[]',
+      'ncm',
+      'corrupt'
+    );
 
     expect(() => getMusicTrackAnalysisCache('ncm', 'corrupt')).not.toThrow();
     expect(getMusicTrackAnalysisCache('ncm', 'corrupt')).toMatchObject({
       profile: null,
+      confidence: null,
       evidence: [],
       extractionSummary: {}
     });

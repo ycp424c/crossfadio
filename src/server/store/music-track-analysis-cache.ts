@@ -1,7 +1,9 @@
 import { z } from 'zod';
 import {
+  trackAssessmentConfidenceSchema,
   trackAssessmentEvidenceSchema,
   trackSemanticProfileSchema,
+  type TrackAssessmentConfidence,
   type TrackAssessmentEvidence,
   type TrackSemanticProfile
 } from '../music-agent/track-understanding.js';
@@ -20,6 +22,7 @@ export type MusicTrackAnalysisCacheRecord = {
   lyricStatus: MusicTrackLyricStatus;
   lyricHash: string | null;
   profile: TrackSemanticProfile | null;
+  confidence: TrackAssessmentConfidence | null;
   evidence: TrackAssessmentEvidence[];
   extractionSummary: Record<string, unknown>;
   analysisModel: string | null;
@@ -43,6 +46,7 @@ export type SaveMusicTrackSemanticProfileInput = {
   analyzerVersion: string;
   lyricHash: string | null;
   profile: TrackSemanticProfile;
+  confidence: TrackAssessmentConfidence;
   evidence: TrackAssessmentEvidence[];
   extractionSummary: Record<string, unknown>;
   analysisModel: string;
@@ -56,6 +60,7 @@ type MusicTrackAnalysisCacheRow = {
   lyric_status: string;
   lyric_hash: string | null;
   profile_json: string | null;
+  confidence_json: string | null;
   evidence_json: string | null;
   extraction_summary_json: string;
   analysis_model: string | null;
@@ -129,6 +134,9 @@ export function recordMusicTrackLyricRefresh(input: RecordMusicTrackLyricRefresh
        profile_json = CASE
          WHEN music_track_analysis_cache.lyric_hash IS NOT excluded.lyric_hash
          THEN NULL ELSE music_track_analysis_cache.profile_json END,
+       confidence_json = CASE
+         WHEN music_track_analysis_cache.lyric_hash IS NOT excluded.lyric_hash
+         THEN NULL ELSE music_track_analysis_cache.confidence_json END,
        evidence_json = CASE
          WHEN music_track_analysis_cache.lyric_hash IS NOT excluded.lyric_hash
          THEN NULL ELSE music_track_analysis_cache.evidence_json END,
@@ -154,6 +162,7 @@ export function saveMusicTrackSemanticProfile(input: SaveMusicTrackSemanticProfi
   if (!provider || !trackId) return false;
 
   const profile = trackSemanticProfileSchema.parse(input.profile);
+  const confidence = trackAssessmentConfidenceSchema.parse(input.confidence);
   const evidence = evidenceListSchema.parse(input.evidence);
   const extractionSummary = extractionSummarySchema.parse(input.extractionSummary);
   const lyricRefreshedAt = input.lyricRefreshedAt === null
@@ -163,14 +172,15 @@ export function saveMusicTrackSemanticProfile(input: SaveMusicTrackSemanticProfi
   const result = getDb().prepare(
     `INSERT INTO music_track_analysis_cache (
        provider, track_id, analyzer_version, lyric_hash, profile_json,
-       evidence_json, extraction_summary_json, analysis_model,
+       confidence_json, evidence_json, extraction_summary_json, analysis_model,
        last_lyric_refresh_at, updated_at
      )
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
      ON CONFLICT(provider, track_id) DO UPDATE SET
        analyzer_version = excluded.analyzer_version,
        lyric_hash = excluded.lyric_hash,
        profile_json = excluded.profile_json,
+       confidence_json = excluded.confidence_json,
        evidence_json = excluded.evidence_json,
        extraction_summary_json = excluded.extraction_summary_json,
        analysis_model = excluded.analysis_model,
@@ -183,6 +193,7 @@ export function saveMusicTrackSemanticProfile(input: SaveMusicTrackSemanticProfi
     input.analyzerVersion.trim(),
     nullableTrimmedString(input.lyricHash),
     JSON.stringify(profile),
+    JSON.stringify(confidence),
     JSON.stringify(evidence),
     JSON.stringify(extractionSummary),
     input.analysisModel.trim(),
@@ -199,6 +210,7 @@ function recordFromRow(row: MusicTrackAnalysisCacheRow): MusicTrackAnalysisCache
     lyricStatus: parseLyricStatus(row.lyric_status),
     lyricHash: row.lyric_hash,
     profile: parseJson(row.profile_json, trackSemanticProfileSchema, null),
+    confidence: parseJson(row.confidence_json, trackAssessmentConfidenceSchema, null),
     evidence: parseJson(row.evidence_json, evidenceListSchema, []),
     extractionSummary: parseJson(row.extraction_summary_json, extractionSummarySchema, {}),
     analysisModel: row.analysis_model,

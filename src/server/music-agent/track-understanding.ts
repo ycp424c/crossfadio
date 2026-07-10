@@ -22,22 +22,25 @@ export const trackAssessmentEvidenceSchema = z.object({
   ])
 }).strict();
 
+export const trackAssessmentConfidenceSchema = z.object({
+  genres: z.number().min(0).max(1),
+  moods: z.number().min(0).max(1),
+  energy: z.number().min(0).max(1),
+  aggression: z.number().min(0).max(1),
+  vocalIntensity: z.number().min(0).max(1),
+  lyricThemes: z.number().min(0).max(1),
+  language: z.number().min(0).max(1)
+}).strict();
+
 export const trackAssessmentSchema = z.object({
   id: z.string().min(1),
   profile: trackSemanticProfileSchema,
-  confidence: z.object({
-    genres: z.number().min(0).max(1),
-    moods: z.number().min(0).max(1),
-    energy: z.number().min(0).max(1),
-    aggression: z.number().min(0).max(1),
-    vocalIntensity: z.number().min(0).max(1),
-    lyricThemes: z.number().min(0).max(1),
-    language: z.number().min(0).max(1)
-  }).strict(),
+  confidence: trackAssessmentConfidenceSchema,
   evidence: z.array(trackAssessmentEvidenceSchema).max(12)
 }).strict();
 
 export type SemanticLevel = z.infer<typeof semanticLevelSchema>;
 export type TrackSemanticProfile = z.infer<typeof trackSemanticProfileSchema>;
 export type TrackAssessmentEvidence = z.infer<typeof trackAssessmentEvidenceSchema>;
+export type TrackAssessmentConfidence = z.infer<typeof trackAssessmentConfidenceSchema>;
 export type TrackAssessment = z.infer<typeof trackAssessmentSchema>;
