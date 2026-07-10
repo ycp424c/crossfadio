@@ -65,6 +65,7 @@ export type RunMusicAgentLoopInput = {
   finalShortlistEnricher?: FinalShortlistEnricher;
   lyricsSelectionMode?: LyricsSelectionMode;
   persistTrackAssessments?: TrackAssessmentPersister;
+  lyricsRequestScope?: string;
 };
 
 export type MusicAgentFallbackReason =
@@ -1555,7 +1556,10 @@ async function prepareLyricsAwareShortlist(
       input.candidatePool.count(),
       rankOptions(input.context)
     );
-    state.preparation = input.finalShortlistEnricher(ranked, { signal: input.signal })
+    state.preparation = input.finalShortlistEnricher(ranked, {
+      signal: input.signal,
+      requestScope: input.lyricsRequestScope
+    })
       .catch(() => {
         state.validationProblems = ['enrichment_failed'];
         const shortlist = ranked.slice(0, 12);

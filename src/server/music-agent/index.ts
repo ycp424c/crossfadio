@@ -176,6 +176,7 @@ export class MusicAgent {
       lyricsSelectionMode: this.lyricsSelectionMode,
       finalShortlistEnricher,
       persistTrackAssessments,
+      lyricsRequestScope: `ncm-user:${input.userId.trim()}`,
       fallbackLogger: this.withUserIdFallbackLogger(input.userId)
     });
   }

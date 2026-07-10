@@ -373,6 +373,38 @@ describe('final shortlist enrichment', () => {
     expect(second.promptPackets[0]?.kind).toBe('evidence');
   });
 
+  it('keeps single-flight response data isolated between different user scopes', async () => {
+    const firstClient = createNcmClient({
+      getLyric: async (id) => ({ id, lyric: '[00:00.00]first user lyric', translation: null }),
+      getSongWikiSummary: async () => ({ tags: ['first-user-tag'] })
+    });
+    const secondClient = createNcmClient({
+      getLyric: async (id) => ({ id, lyric: '[00:00.00]second user lyric', translation: null }),
+      getSongWikiSummary: async () => ({ tags: ['second-user-tag'] })
+    });
+    const firstEnricher = await createEnricher(firstClient);
+    const secondEnricher = await createEnricher(secondClient);
+
+    const [first, second] = await Promise.all([
+      firstEnricher(candidates(1), { requestScope: 'ncm-user:first' }),
+      secondEnricher(candidates(1), { requestScope: 'ncm-user:second' })
+    ]);
+
+    expect(firstClient.getLyric).toHaveBeenCalledTimes(1);
+    expect(secondClient.getLyric).toHaveBeenCalledTimes(1);
+    expect(firstClient.getSongWikiSummary).toHaveBeenCalledTimes(1);
+    expect(secondClient.getSongWikiSummary).toHaveBeenCalledTimes(1);
+    expect(first.promptPackets[0]).toMatchObject({ kind: 'evidence', wikiTags: ['first-user-tag'] });
+    expect(second.promptPackets[0]).toMatchObject({ kind: 'evidence', wikiTags: ['second-user-tag'] });
+    const firstHash = first.promptPackets[0]?.kind === 'evidence'
+      ? first.promptPackets[0].lyricEvidence.lyricHash
+      : null;
+    const secondHash = second.promptPackets[0]?.kind === 'evidence'
+      ? second.promptPackets[0].lyricEvidence.lyricHash
+      : null;
+    expect(firstHash).not.toBe(secondHash);
+  });
+
   it('keeps shared requests alive when one same-track caller is parent-aborted', async () => {
     const ncmClient = createNcmClient({
       getLyric: async (id) => {

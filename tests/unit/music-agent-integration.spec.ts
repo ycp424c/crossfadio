@@ -238,7 +238,9 @@ describe('MusicAgent facade', () => {
       activeNcm -= 1;
       return value;
     };
-    const ncmClient = {
+    const lyricRequests = [vi.fn(), vi.fn()];
+    const wikiRequests = [vi.fn(), vi.fn()];
+    const createNcmClient = (clientIndex: number) => ({
       getLikedSongIds: vi.fn(async () => ids),
       getSongDetails: vi.fn(async (requested: string[]) => requested.map((id) => ({
         id, name: `Song ${id}`, artists: [`Artist ${id}`], durationMs: 200_000,
@@ -247,11 +249,17 @@ describe('MusicAgent facade', () => {
       searchSongs: vi.fn(async () => []), getPlaylistDetail: vi.fn(async () => null),
       getSearchHotDetail: vi.fn(async () => []), getTopSongHints: vi.fn(async () => []),
       getArtistToplist: vi.fn(async () => []),
-      getLyric: vi.fn(async (id: string) => sharedRequest({
-        id, lyric: '[00:00.00]quiet line', translation: null
-      })),
-      getSongWikiSummary: vi.fn(async () => sharedRequest({ tags: ['calm'] }))
-    };
+      getLyric: vi.fn(async (id: string) => {
+        lyricRequests[clientIndex]?.(id);
+        return sharedRequest({ id, lyric: '[00:00.00]quiet line', translation: null });
+      }),
+      getSongWikiSummary: vi.fn(async (id: string) => {
+        wikiRequests[clientIndex]?.(id);
+        return sharedRequest({ tags: ['calm'] });
+      })
+    });
+    const firstNcmClient = createNcmClient(0);
+    const secondNcmClient = createNcmClient(1);
     const assessments = ids.map((id) => ({
       id,
       profile: { genres: [], moods: ['calm'], energy: 'low', aggression: 'low', vocalIntensity: 'low', lyricThemes: [], language: 'unknown' },
@@ -296,14 +304,14 @@ describe('MusicAgent facade', () => {
     };
 
     const results = await Promise.all([
-      firstAgent.pickNext({ userId: 'concurrent-a', ncmClient: ncmClient as any, context: sharedContext }),
-      secondAgent.pickNext({ userId: 'concurrent-b', ncmClient: ncmClient as any, context: sharedContext })
+      firstAgent.pickNext({ userId: 'same-user', ncmClient: firstNcmClient as any, context: sharedContext }),
+      secondAgent.pickNext({ userId: 'same-user', ncmClient: secondNcmClient as any, context: sharedContext })
     ]);
 
     expect(results.every((result) => result.status === 'ok')).toBe(true);
     for (const id of ids) {
-      expect(ncmClient.getLyric.mock.calls.filter((call) => call[0] === id)).toHaveLength(1);
-      expect(ncmClient.getSongWikiSummary.mock.calls.filter((call) => call[0] === id)).toHaveLength(1);
+      expect(lyricRequests.flatMap((request) => request.mock.calls).filter((call) => call[0] === id)).toHaveLength(1);
+      expect(wikiRequests.flatMap((request) => request.mock.calls).filter((call) => call[0] === id)).toHaveLength(1);
     }
     expect(maxActiveNcm).toBeLessThanOrEqual(6);
   });

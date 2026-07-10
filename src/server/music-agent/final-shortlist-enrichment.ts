@@ -43,7 +43,7 @@ export type ExpectedLyricVersion = {
 
 export type FinalShortlistEnricher = (
   candidates: MusicCandidate[],
-  options?: { signal?: AbortSignal }
+  options?: { signal?: AbortSignal; requestScope?: string }
 ) => Promise<FinalShortlistEnrichmentResult>;
 
 export type PersistTrackAssessmentsInput = {
@@ -198,9 +198,10 @@ export function createFinalShortlistEnricher({
   const boundedDeadlineMs = Math.max(0, finiteNumber(deadlineMs, 2_500));
   const boundedEvidenceChars = Math.max(0, Math.floor(finiteNumber(maxLyricEvidenceChars, 36_000)));
   const requestSemaphore = new RequestSemaphore(boundedConcurrency);
-  const singleFlight = new SingleFlightRequestCoordinator(requestSemaphore);
+  const defaultRequestScope = `enricher-instance:${nextEnricherScope += 1}`;
 
   return async (candidates, options = {}) => {
+    const requestScope = options.requestScope?.trim() || defaultRequestScope;
     const startedAt = now();
     const shortlist = candidates.slice(0, boundedShortlistSize);
     const diagnostics = emptyDiagnostics(shortlist.length);
@@ -285,13 +286,19 @@ export function createFinalShortlistEnricher({
 
           let lyric: NcmLyric | null;
           try {
-            lyric = await singleFlight.run(
-              `lyric:ncm:${item.candidate.id}`,
+            lyric = await sharedFinalShortlistSingleFlight.run(
+              `${requestScope}:lyric:ncm:${item.candidate.id}`,
               candidateAbort.signal,
               () => { diagnostics.lyricAttempted += 1; },
-              (sharedSignal) => ncmClient.getLyric(
-                item.candidate.id,
-                requestOptions(sharedSignal, boundedDeadlineMs)
+              (sharedSignal) => requestSemaphore.run(
+                sharedSignal,
+                () => globalFinalShortlistRequestSemaphore.run(
+                  sharedSignal,
+                  () => ncmClient.getLyric(
+                    item.candidate.id,
+                    requestOptions(sharedSignal, boundedDeadlineMs)
+                  )
+                )
               )
             );
           } catch (error) {
@@ -334,13 +341,19 @@ export function createFinalShortlistEnricher({
 
         const loadWikiTags = async (): Promise<{ tags: string[]; settled: boolean }> => {
           try {
-            const wikiSummary = await singleFlight.run(
-              `wiki:ncm:${item.candidate.id}`,
+            const wikiSummary = await sharedFinalShortlistSingleFlight.run(
+              `${requestScope}:wiki:ncm:${item.candidate.id}`,
               candidateAbort.signal,
               () => { diagnostics.wikiAttempted += 1; },
-              (sharedSignal) => ncmClient.getSongWikiSummary(
-                item.candidate.id,
-                requestOptions(sharedSignal, boundedDeadlineMs)
+              (sharedSignal) => requestSemaphore.run(
+                sharedSignal,
+                () => globalFinalShortlistRequestSemaphore.run(
+                  sharedSignal,
+                  () => ncmClient.getSongWikiSummary(
+                    item.candidate.id,
+                    requestOptions(sharedSignal, boundedDeadlineMs)
+                  )
+                )
               )
             );
             diagnostics.wikiSuccess += 1;
@@ -629,8 +642,6 @@ type SingleFlightEntry<T> = {
 class SingleFlightRequestCoordinator {
   private readonly inFlight = new Map<string, SingleFlightEntry<unknown>>();
 
-  constructor(private readonly semaphore: RequestSemaphore) {}
-
   run<T>(
     key: string,
     callerSignal: AbortSignal,
@@ -664,7 +675,7 @@ class SingleFlightRequestCoordinator {
       waiters: new Set<SingleFlightWaiter>()
     };
 
-    entry.promise = this.semaphore.run(controller.signal, () => {
+    entry.promise = Promise.resolve().then(() => {
       const diagnosticsOwner = entry.waiters.values().next().value;
       diagnosticsOwner?.onStarted();
       return request(controller.signal);
@@ -682,3 +693,7 @@ class SingleFlightRequestCoordinator {
     if (this.inFlight.get(key) === entry) this.inFlight.delete(key);
   }
 }
+
+let nextEnricherScope = 0;
+const globalFinalShortlistRequestSemaphore = new RequestSemaphore(MAX_CANDIDATE_CONCURRENCY);
+const sharedFinalShortlistSingleFlight = new SingleFlightRequestCoordinator();
