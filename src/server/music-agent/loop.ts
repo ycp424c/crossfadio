@@ -520,15 +520,18 @@ async function askExtraFinalPick(
     candidateCount: input.candidatePool.count()
   };
   const finalPickObservations = [...observations, finalObservation];
-  const enrichment = await prepareLyricsAwareShortlist(input);
   const isShadowAssessmentCall = input.lyricsSelectionMode === 'shadow'
     && shadowAuthoritativeOutput !== undefined;
   if (isShadowAssessmentCall && !hasShadowAssessmentBudget(input, startedAt, step, llmCalls)) {
+    prepareSkippedLyricsAwareShortlist(input);
     recordAssessmentValidationProblem(input, 'assessment_budget_skipped');
     return acceptExtraFinalPick(
       null, input, trace, startedAt, step, llmCalls, toolCalls, shadowAuthoritativeOutput
     );
   }
+  const enrichment = input.lyricsSelectionMode === 'shadow' && !isShadowAssessmentCall
+    ? null
+    : await prepareLyricsAwareShortlist(input);
   const promptPayload = buildFinalPickPromptPayload({
     context: input.context,
     observations: finalPickObservations,
@@ -637,12 +640,8 @@ async function askExtraFinalPick(
       );
     }
     if (shadowAuthoritativeOutput) {
-      recordAssessmentValidationProblem(
-        input,
-        hasShadowAssessmentBudget(input, startedAt, nextStep, nextLlmCalls)
-          ? 'assessment_invalid_output'
-          : 'assessment_budget_skipped'
-      );
+      recordAssessmentValidationProblem(input, 'assessment_invalid_output');
+      recordAssessmentValidationProblem(input, 'assessment_retry_budget_skipped');
       return acceptExtraFinalPick(
         null, input, trace, startedAt, nextStep, nextLlmCalls, toolCalls, shadowAuthoritativeOutput
       );
@@ -701,15 +700,18 @@ async function retryHardFinalOnlyPick(
     candidateCount: input.candidatePool.count(),
     problems: ['extra final returned non-final output']
   };
-  const enrichment = await prepareLyricsAwareShortlist(input);
   const isShadowAssessmentCall = input.lyricsSelectionMode === 'shadow'
     && shadowAuthoritativeOutput !== undefined;
   if (isShadowAssessmentCall && !hasShadowAssessmentBudget(input, startedAt, step, llmCalls)) {
+    prepareSkippedLyricsAwareShortlist(input);
     recordAssessmentValidationProblem(input, 'assessment_budget_skipped');
     return acceptExtraFinalPick(
       null, input, trace, startedAt, step, llmCalls, toolCalls, shadowAuthoritativeOutput
     );
   }
+  const enrichment = input.lyricsSelectionMode === 'shadow' && !isShadowAssessmentCall
+    ? null
+    : await prepareLyricsAwareShortlist(input);
   const promptPayload = buildFinalPickPromptPayload({
     context: input.context,
     observations: [...observations, retryObservation],
@@ -1743,6 +1745,30 @@ function emptyLyricsAwareEnrichmentDiagnostics(shortlistCount: number) {
   };
 }
 
+function prepareSkippedLyricsAwareShortlist(input: RunMusicAgentLoopInput): void {
+  const state = lyricsAwareRunStates.get(input);
+  if (!state || state.enrichment) return;
+  const shortlist = rankCandidates(
+    input.candidatePool.list(),
+    input.candidatePool.count(),
+    rankOptions(input.context)
+  ).slice(0, 12);
+  state.enrichment = {
+    shortlist,
+    expectedLyricVersions: [],
+    promptPackets: shortlist.map((candidate) => ({
+      id: candidate.id,
+      name: candidate.name,
+      artist: candidate.artist,
+      sources: candidate.sources,
+      ...(candidate.qualitySignals ? { qualitySignals: candidate.qualitySignals } : {}),
+      kind: 'base' as const
+    })),
+    diagnostics: emptyLyricsAwareEnrichmentDiagnostics(shortlist.length)
+  };
+  state.coverageValid = false;
+}
+
 async function applyFusedLyricsAwareAssessments(
   output: Extract<ParsedLoopOutput, { type: 'final' }>,
   input: RunMusicAgentLoopInput
@@ -2201,7 +2227,12 @@ function hasShadowAssessmentBudget(
 
 function recordAssessmentValidationProblem(
   input: RunMusicAgentLoopInput,
-  problem: 'assessment_budget_skipped' | 'assessment_request_failed' | 'assessment_timeout' | 'assessment_invalid_output'
+  problem:
+    | 'assessment_budget_skipped'
+    | 'assessment_request_failed'
+    | 'assessment_timeout'
+    | 'assessment_invalid_output'
+    | 'assessment_retry_budget_skipped'
 ): void {
   const state = lyricsAwareRunStates.get(input);
   if (!state) return;

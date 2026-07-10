@@ -248,6 +248,12 @@ describe('lyrics-aware music agent loop', () => {
     vi.useFakeTimers();
     try {
       const one = candidate('one'); const pool = new CandidatePool(); pool.upsert(one);
+      const baseEnricher = enricherFor([one]);
+      const slowEnricher: FinalShortlistEnricher = vi.fn(async (...args) => {
+        vi.advanceTimersByTime(1_000);
+        return baseEnricher(...args);
+      });
+      const startedAt = Date.now();
       let calls = 0;
       const client: MusicAgentLlmClient = {
         async complete() {
@@ -259,13 +265,18 @@ describe('lyrics-aware music agent loop', () => {
       const result = await runMusicAgentLoop({
         llmClient: client, context: context(), candidatePool: pool, tools: {},
         budget: budget({ maxMs: 100, maxLlmCalls: 3 }), lyricsSelectionMode: 'shadow',
-        finalShortlistEnricher: enricherFor([one])
+        finalShortlistEnricher: slowEnricher
       });
 
       expect(calls).toBe(1);
+      expect(slowEnricher).not.toHaveBeenCalled();
+      expect(Date.now() - startedAt).toBe(85);
       expect(result.picks.map((pick) => pick.id)).toEqual(['one']);
       expect(result.lyricsAwareDiagnostics?.assessmentValidationProblems)
         .toContain('assessment_budget_skipped');
+      expect(result.lyricsAwareDiagnostics?.enrichment).toMatchObject({
+        shortlistCount: 1, lyricAttempted: 0, wikiAttempted: 0
+      });
     } finally {
       vi.useRealTimers();
     }
@@ -343,7 +354,12 @@ describe('lyrics-aware music agent loop', () => {
     expect(client.calls).toBe(2);
     expect(result.picks.map((pick) => pick.id)).toEqual(['one']);
     expect(result.lyricsAwareDiagnostics?.assessmentValidationProblems)
-      .toContain('assessment_budget_skipped');
+      .toEqual(expect.arrayContaining([
+        'assessment_invalid_output',
+        'assessment_retry_budget_skipped'
+      ]));
+    expect(result.lyricsAwareDiagnostics?.assessmentValidationProblems)
+      .not.toContain('assessment_budget_skipped');
   });
 
   it('ignores tool-loop self-assessments and only trusts assessments from the fused evidence attempt', async () => {
