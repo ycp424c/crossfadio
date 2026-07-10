@@ -930,7 +930,8 @@ function parseFinalPickOutput(raw: string): MusicAgentFinalPickOutput | undefine
     type: 'final',
     say: parsed.say,
     picks,
-    rejected
+    rejected,
+    assessments: []
   };
 }
 
@@ -1288,10 +1289,24 @@ function minFinalPicksBeforeBackfill(target: number): number {
   return Math.ceil(target * 0.5);
 }
 
-function buildFinalPickDiagnostics(input: Omit<FinalPickDiagnostics, 'droppedPickCount'>): FinalPickDiagnostics {
+type DefaultedFinalPickDiagnosticKey =
+  | 'semanticConflictDroppedCount'
+  | 'qualityDroppedCount'
+  | 'unassessedDroppedCount'
+  | 'assessmentValidationFailureCount';
+
+type FinalPickDiagnosticsInput =
+  Omit<FinalPickDiagnostics, 'droppedPickCount' | DefaultedFinalPickDiagnosticKey>
+  & Partial<Pick<FinalPickDiagnostics, DefaultedFinalPickDiagnosticKey>>;
+
+function buildFinalPickDiagnostics(input: FinalPickDiagnosticsInput): FinalPickDiagnostics {
   return {
     ...input,
-    droppedPickCount: Math.max(0, input.rawPickCount - input.acceptedPickCount)
+    droppedPickCount: Math.max(0, input.rawPickCount - input.acceptedPickCount),
+    semanticConflictDroppedCount: input.semanticConflictDroppedCount ?? 0,
+    qualityDroppedCount: input.qualityDroppedCount ?? 0,
+    unassessedDroppedCount: input.unassessedDroppedCount ?? 0,
+    assessmentValidationFailureCount: input.assessmentValidationFailureCount ?? 0
   };
 }
 

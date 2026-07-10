@@ -124,6 +124,12 @@ describe('runMusicAgentLoop', () => {
       artist: 'Singer',
       source: 'liked'
     });
+    expect(result.finalPickDiagnostics).toMatchObject({
+      semanticConflictDroppedCount: 0,
+      qualityDroppedCount: 0,
+      unassessedDroppedCount: 0,
+      assessmentValidationFailureCount: 0
+    });
     expect(result.trace.some((step) => step.tool === 'recall_from_liked')).toBe(true);
     expect(llmClient.calls[0].opts).toMatchObject({
       temperature: 0.2,
@@ -311,7 +317,11 @@ describe('runMusicAgentLoop', () => {
       droppedPickCount: 0,
       titleMotifDroppedCount: 0,
       rankedBackfillCount: 0,
-      rejectedPickCount: 0
+      rejectedPickCount: 0,
+      semanticConflictDroppedCount: 0,
+      qualityDroppedCount: 0,
+      unassessedDroppedCount: 0,
+      assessmentValidationFailureCount: 0
     });
   });
 
@@ -356,7 +366,11 @@ describe('runMusicAgentLoop', () => {
       droppedPickCount: 0,
       titleMotifDroppedCount: 0,
       rankedBackfillCount: 3,
-      rejectedPickCount: 0
+      rejectedPickCount: 0,
+      semanticConflictDroppedCount: 0,
+      qualityDroppedCount: 0,
+      unassessedDroppedCount: 0,
+      assessmentValidationFailureCount: 0
     });
   });
 
@@ -398,7 +412,11 @@ describe('runMusicAgentLoop', () => {
       droppedPickCount: 0,
       titleMotifDroppedCount: 0,
       rankedBackfillCount: 3,
-      rejectedPickCount: 0
+      rejectedPickCount: 0,
+      semanticConflictDroppedCount: 0,
+      qualityDroppedCount: 0,
+      unassessedDroppedCount: 0,
+      assessmentValidationFailureCount: 0
     });
   });
 
@@ -492,7 +510,11 @@ describe('runMusicAgentLoop', () => {
       droppedPickCount: 1,
       titleMotifDroppedCount: 1,
       rankedBackfillCount: 0,
-      rejectedPickCount: 0
+      rejectedPickCount: 0,
+      semanticConflictDroppedCount: 0,
+      qualityDroppedCount: 0,
+      unassessedDroppedCount: 0,
+      assessmentValidationFailureCount: 0
     });
   });
 

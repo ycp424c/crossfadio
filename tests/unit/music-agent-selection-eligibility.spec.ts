@@ -108,6 +108,39 @@ describe('track compatibility eligibility', () => {
     expect(decision.status).not.toBe('conflict');
   });
 
+  it.each([
+    '不要安静舒缓的，来点躁的',
+    'not calm or soothing, give me something aggressive'
+  ])('does not activate calm from a negated clause: %s', (constraint) => {
+    const decision = evaluateTrackCompatibility({
+      context: context(),
+      listeningConstraints: [constraint],
+      assessment: assessment({
+        energy: 'high',
+        aggression: 'high',
+        confidence: { energy: 0.95, aggression: 0.95 }
+      })
+    });
+
+    expect(decision.status).not.toBe('conflict');
+  });
+
+  it.each([
+    '不要纯音乐，要有人声',
+    'not instrumental; vocals please'
+  ])('does not activate instrumental from a negated clause: %s', (constraint) => {
+    const decision = evaluateTrackCompatibility({
+      context: context(),
+      listeningConstraints: [constraint],
+      assessment: assessment({
+        vocalIntensity: 'high',
+        confidence: { vocalIntensity: 0.95 }
+      })
+    });
+
+    expect(decision.status).not.toBe('conflict');
+  });
+
   it('rejects high vocal intensity for instrumental listening unless evidence names an instrumental version', () => {
     const vocal = evaluateTrackCompatibility({
       context: context({
@@ -136,6 +169,103 @@ describe('track compatibility eligibility', () => {
     });
     expect(instrumentalVersion.status).not.toBe('conflict');
     expect(instrumentalVersion.reasons).toContain('instrumental_version_evidence_overrides_vocal_conflict');
+  });
+
+  it('does not accept negated or low-confidence instrumental-version evidence', () => {
+    const negatedEvidence = evaluateTrackCompatibility({
+      context: context(),
+      listeningConstraints: ['instrumental only'],
+      assessment: assessment({
+        genres: ['ambient'],
+        vocalIntensity: 'high',
+        confidence: { genres: 0.95, vocalIntensity: 0.95 },
+        evidence: [{ claim: 'not an instrumental version', source: 'platform_metadata' }]
+      })
+    });
+    const lowConfidenceEvidence = evaluateTrackCompatibility({
+      context: context(),
+      listeningConstraints: ['instrumental only'],
+      assessment: assessment({
+        genres: ['instrumental'],
+        vocalIntensity: 'high',
+        confidence: { genres: 0.6, vocalIntensity: 0.95 },
+        evidence: [{ claim: 'instrumental version', source: 'platform_metadata' }]
+      })
+    });
+
+    expect(negatedEvidence).toEqual({
+      status: 'conflict',
+      confidence: 'high',
+      reasons: ['instrumental_constraint_conflicts_with_high_vocal_intensity']
+    });
+    expect(lowConfidenceEvidence.status).toBe('conflict');
+  });
+
+  it('requires high-confidence support for every active constraint', () => {
+    const decision = evaluateTrackCompatibility({
+      context: context(),
+      listeningConstraints: ['calm', 'instrumental'],
+      assessment: assessment({
+        energy: 'low',
+        aggression: 'low',
+        vocalIntensity: 'unknown',
+        confidence: { energy: 0.95, aggression: 0.95, vocalIntensity: 0 }
+      })
+    });
+
+    expect(decision).toEqual({
+      status: 'uncertain',
+      confidence: 'low',
+      reasons: ['insufficient_relevant_semantic_evidence']
+    });
+  });
+
+  it.each([
+    ['死亡金属', 'death metal'],
+    ['デスメタル', 'death metal'],
+    ['硬核', 'hardcore'],
+    ['ハードコア', 'hardcore'],
+    ['碾核', 'grindcore'],
+    ['グラインドコア', 'grindcore']
+  ])('canonicalizes authoritative aggressive genre %s', (genre, canonicalGenre) => {
+    const decision = evaluateTrackCompatibility({
+      context: context(),
+      listeningConstraints: ['安静舒缓'],
+      assessment: assessment({
+        genres: [genre],
+        confidence: { genres: 0.9 },
+        evidence: [{ claim: `genre=${genre}`, source: 'wiki_tag' }]
+      })
+    });
+
+    expect(decision).toEqual({
+      status: 'conflict',
+      confidence: 'high',
+      reasons: [`calm_constraint_conflicts_with_aggressive_genre:${canonicalGenre}`]
+    });
+  });
+
+  it('deduplicates and sorts canonical aggressive genre reasons', () => {
+    const decision = evaluateTrackCompatibility({
+      context: context(),
+      listeningConstraints: ['calm'],
+      assessment: assessment({
+        genres: ['硬核', 'デスメタル', '死亡金属', '碾核'],
+        confidence: { genres: 0.92 },
+        evidence: [
+          { claim: 'genre=硬核', source: 'wiki_tag' },
+          { claim: 'genre=デスメタル', source: 'wiki_tag' },
+          { claim: 'genre=死亡金属', source: 'wiki_tag' },
+          { claim: 'genre=碾核', source: 'wiki_tag' }
+        ]
+      })
+    });
+
+    expect(decision.reasons).toEqual([
+      'calm_constraint_conflicts_with_aggressive_genre:death metal',
+      'calm_constraint_conflicts_with_aggressive_genre:grindcore',
+      'calm_constraint_conflicts_with_aggressive_genre:hardcore'
+    ]);
   });
 });
 

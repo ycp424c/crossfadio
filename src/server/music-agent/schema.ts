@@ -318,9 +318,6 @@ export const finalPickSchema = z.object({
 
 export type FinalPick = z.infer<typeof finalPickSchema>;
 
-const defaultedDiagnosticCountSchema: z.ZodType<number | undefined> =
-  z.number().int().nonnegative().default(0);
-
 export const finalPickDiagnosticsSchema = z.object({
   targetPickCount: z.number().int().nonnegative(),
   rawPickCount: z.number().int().nonnegative(),
@@ -330,10 +327,10 @@ export const finalPickDiagnosticsSchema = z.object({
   titleMotifDroppedCount: z.number().int().nonnegative(),
   rankedBackfillCount: z.number().int().nonnegative(),
   rejectedPickCount: z.number().int().nonnegative(),
-  semanticConflictDroppedCount: defaultedDiagnosticCountSchema,
-  qualityDroppedCount: defaultedDiagnosticCountSchema,
-  unassessedDroppedCount: defaultedDiagnosticCountSchema,
-  assessmentValidationFailureCount: defaultedDiagnosticCountSchema
+  semanticConflictDroppedCount: z.number().int().nonnegative().default(0),
+  qualityDroppedCount: z.number().int().nonnegative().default(0),
+  unassessedDroppedCount: z.number().int().nonnegative().default(0),
+  assessmentValidationFailureCount: z.number().int().nonnegative().default(0)
 });
 
 export type FinalPickDiagnostics = z.infer<typeof finalPickDiagnosticsSchema>;
@@ -412,16 +409,12 @@ const finalPickTrackAssessmentSchema = z.object({
   }).strict()).max(12)
 }).strict();
 
-const defaultedFinalPickAssessmentsSchema: z.ZodType<
-  Array<z.infer<typeof finalPickTrackAssessmentSchema>> | undefined
-> = z.array(finalPickTrackAssessmentSchema).default([]);
-
 export const musicAgentFinalPickOutputSchema = z.object({
   type: z.literal('final'),
   say: z.string().min(1),
   picks: z.array(finalPickSchema).max(AUTO_FILL_BATCH_SIZE_MAX),
   rejected: z.array(rejectedPickSchema).default([]),
-  assessments: defaultedFinalPickAssessmentsSchema
+  assessments: z.array(finalPickTrackAssessmentSchema).default([])
 });
 
 export type MusicAgentFinalPickOutput = z.infer<typeof musicAgentFinalPickOutputSchema>;

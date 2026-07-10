@@ -22,10 +22,32 @@ export type CandidateQualityDecision = {
   positiveSignals: string[];
 };
 
-const AGGRESSIVE_GENRE_PATTERN = /\b(?:death metal|hardcore|grindcore|metalcore|deathcore)\b/i;
-const CALM_CONSTRAINT_PATTERN = /(?:\bcalm\b|\bquiet\b|\bsoothing\b|\bgentle\b|\bsoft\b|\blow[- ]energy\b|安静|舒缓|轻柔|平静|放松|助眠|低能量|不吵|不要太吵)/i;
-const INSTRUMENTAL_CONSTRAINT_PATTERN = /(?:\binstrumental\b|\bno vocals?\b|\bwithout vocals?\b|纯音乐|无人声|不要人声|无歌词)/i;
+const AGGRESSIVE_GENRE_ALIASES = [
+  { canonical: 'death metal', pattern: /(?:\bdeath\s*metal\b|死亡金属|デスメタル)/i },
+  { canonical: 'deathcore', pattern: /\bdeathcore\b/i },
+  { canonical: 'grindcore', pattern: /(?:\bgrindcore\b|碾核|グラインドコア)/i },
+  { canonical: 'hardcore', pattern: /(?:\bhardcore\b|硬核|ハードコア)/i },
+  { canonical: 'metalcore', pattern: /\bmetalcore\b/i }
+] as const;
+const CALM_CONSTRAINT_PATTERNS = [
+  /\bcalm\b/i,
+  /\bquiet\b/i,
+  /\bsoothing\b/i,
+  /\bgentle\b/i,
+  /\bsoft\b/i,
+  /\blow[- ]energy\b/i,
+  /不要太吵|不吵/i,
+  /安静|舒缓|轻柔|平静|放松|助眠|低能量/i
+];
+const INSTRUMENTAL_CONSTRAINT_PATTERNS = [
+  /\bno vocals?\b/i,
+  /\bwithout vocals?\b/i,
+  /不要人声|无人声|无歌词/i,
+  /\binstrumental\b/i,
+  /纯音乐/i
+];
 const INSTRUMENTAL_EVIDENCE_PATTERN = /(?:\binstrumental(?: version)?\b|\bno vocals?\b|纯音乐|无人声|伴奏版)/i;
+const CANONICAL_INSTRUMENTAL_EVIDENCE_PATTERN = /^(?:(?:genre|version|type)\s*[:=]\s*)?(?:instrumental(?: version)?|纯音乐|无人声|伴奏版|インストゥルメンタル)$/i;
 const PLACEHOLDER_ARTIST_PATTERN = /^(?:unknown artist|unknown|various artists?|网络歌手|未知艺人|佚名|群星|群星合辑|v\.?\s*a\.?)$/i;
 const GENERIC_IDENTITY_PATTERN = /^(?:unknown|untitled|track\s*\d*|song\s*\d*|音频\s*\d*|歌曲\s*\d*)$/i;
 const SUSPICIOUS_TITLE_PATTERN = /(?:抖音热歌|网络热歌|车载(?:dj|音乐)?|(?:dj|舞曲)串烧|热歌合集|无损合集|karaoke|tribute|sped\s*up|slowed(?:\s*&\s*reverb)?)/i;
@@ -44,10 +66,10 @@ export function evaluateTrackCompatibility({
   const constraints = usesExplicitConstraints
     ? explicitConstraints.join(' ')
     : collectFallbackConstraintText(context);
-  const wantsCalm = CALM_CONSTRAINT_PATTERN.test(constraints);
+  const wantsCalm = hasPositiveConstraint(constraints, CALM_CONSTRAINT_PATTERNS);
   const wantsInstrumental = (!usesExplicitConstraints
     && context.personalDjContext?.musicGuidance.vocalPreference === 'instrumental')
-    || INSTRUMENTAL_CONSTRAINT_PATTERN.test(constraints);
+    || hasPositiveConstraint(constraints, INSTRUMENTAL_CONSTRAINT_PATTERNS);
 
   if (!wantsCalm && !wantsInstrumental) {
     return {
@@ -57,31 +79,33 @@ export function evaluateTrackCompatibility({
     };
   }
 
-  const authoritativeGenre = assessment.profile.genres.find((genre) =>
-    AGGRESSIVE_GENRE_PATTERN.test(genre)
-    && assessment.confidence.genres >= 0.85
-    && assessment.evidence.some((evidence) =>
-      evidence.source === 'wiki_tag'
-      && (evidence.claim.toLocaleLowerCase().includes(genre.toLocaleLowerCase())
-        || AGGRESSIVE_GENRE_PATTERN.test(evidence.claim))
-    )
-  );
-  if (wantsCalm && authoritativeGenre) {
+  const aggressiveGenres = canonicalAggressiveGenres(assessment.profile.genres);
+  const authoritativeGenres = assessment.confidence.genres >= 0.85
+    ? intersectSortedGenres(
+        aggressiveGenres,
+        canonicalAggressiveGenres(assessment.evidence
+          .filter((evidence) => evidence.source === 'wiki_tag')
+          .map((evidence) => evidence.claim))
+      )
+    : [];
+  if (wantsCalm && authoritativeGenres.length > 0) {
     return {
       status: 'conflict',
       confidence: 'high',
-      reasons: [`calm_constraint_conflicts_with_aggressive_genre:${authoritativeGenre.toLocaleLowerCase()}`]
+      reasons: authoritativeGenres.map((genre) =>
+        `calm_constraint_conflicts_with_aggressive_genre:${genre}`
+      )
     };
   }
 
   const conflictSignals: Array<{ reason: string; confidence: number }> = [];
-  const positiveSignals: Array<{ reason: string; confidence: number }> = [];
+  const calmPositiveSignals: Array<{ reason: string; confidence: number }> = [];
+  const instrumentalPositiveSignals: Array<{ reason: string; confidence: number }> = [];
 
   if (wantsCalm) {
-    const aggressiveGenre = assessment.profile.genres.find((genre) => AGGRESSIVE_GENRE_PATTERN.test(genre));
-    if (aggressiveGenre && assessment.confidence.genres >= 0.8) {
+    if (aggressiveGenres.length > 0 && assessment.confidence.genres >= 0.8) {
       conflictSignals.push({
-        reason: `calm_constraint_conflicts_with_aggressive_genre:${aggressiveGenre.toLocaleLowerCase()}`,
+        reason: `calm_constraint_conflicts_with_aggressive_genre:${aggressiveGenres[0]}`,
         confidence: assessment.confidence.genres
       });
     }
@@ -91,7 +115,7 @@ export function evaluateTrackCompatibility({
       'calm_constraint_conflicts_with_high_energy',
       'calm_constraint_supported_by_low_energy',
       conflictSignals,
-      positiveSignals
+      calmPositiveSignals
     );
     addLevelSignal(
       assessment.profile.aggression,
@@ -99,16 +123,16 @@ export function evaluateTrackCompatibility({
       'calm_constraint_conflicts_with_high_aggression',
       'calm_constraint_supported_by_low_aggression',
       conflictSignals,
-      positiveSignals
+      calmPositiveSignals
     );
   }
 
   if (wantsInstrumental) {
-    const instrumentalEvidence = hasInstrumentalEvidence(assessment);
-    if (instrumentalEvidence) {
-      positiveSignals.push({
+    const instrumentalEvidenceConfidence = getInstrumentalEvidenceConfidence(assessment);
+    if (instrumentalEvidenceConfidence !== null) {
+      instrumentalPositiveSignals.push({
         reason: 'instrumental_version_evidence_overrides_vocal_conflict',
-        confidence: Math.max(assessment.confidence.genres, assessment.confidence.vocalIntensity, 0.8)
+        confidence: instrumentalEvidenceConfidence
       });
     } else if (
       assessment.profile.vocalIntensity === 'high'
@@ -122,7 +146,7 @@ export function evaluateTrackCompatibility({
       assessment.profile.vocalIntensity === 'low'
       && assessment.confidence.vocalIntensity >= 0.8
     ) {
-      positiveSignals.push({
+      instrumentalPositiveSignals.push({
         reason: 'instrumental_constraint_supported_by_low_vocal_intensity',
         confidence: assessment.confidence.vocalIntensity
       });
@@ -149,8 +173,10 @@ export function evaluateTrackCompatibility({
     };
   }
 
-  const requiredPositiveCount = Number(wantsCalm) + Number(wantsInstrumental);
-  if (positiveSignals.length >= requiredPositiveCount) {
+  const calmSupported = !wantsCalm || calmPositiveSignals.length > 0;
+  const instrumentalSupported = !wantsInstrumental || instrumentalPositiveSignals.length > 0;
+  if (calmSupported && instrumentalSupported) {
+    const positiveSignals = [...calmPositiveSignals, ...instrumentalPositiveSignals];
     return {
       status: 'compatible',
       confidence: decisionConfidence(Math.min(...positiveSignals.map((signal) => signal.confidence))),
@@ -276,6 +302,40 @@ function collectFallbackConstraintText(context: MusicAgentContextSummary): strin
   ].filter((value): value is string => typeof value === 'string' && value.length > 0).join(' ');
 }
 
+function hasPositiveConstraint(text: string, patterns: RegExp[]): boolean {
+  const clauses = text.split(/[,，;；.!！？]|\b(?:but|instead|rather)\b|(?:但是|而是)/iu);
+  return clauses.some((clause) => patterns.some((pattern) =>
+    constraintMatches(clause, pattern).some((match) => !hasPrecedingNegation(clause, match.index))
+  ));
+}
+
+function constraintMatches(text: string, pattern: RegExp): Array<{ index: number }> {
+  const flags = Array.from(new Set(`${pattern.flags}g`.split(''))).join('');
+  const matcher = new RegExp(pattern.source, flags);
+  return Array.from(text.matchAll(matcher), (match) => ({ index: match.index }));
+}
+
+function hasPrecedingNegation(clause: string, matchIndex: number): boolean {
+  const prefix = clause.slice(Math.max(0, matchIndex - 48), matchIndex);
+  return /(?:不要|别|避免|排除)[^,，;；.!！？]{0,24}$/u.test(prefix)
+    || /\b(?:not|no|without|avoid|exclude)\b[^,;.!?]{0,40}$/iu.test(prefix);
+}
+
+function canonicalAggressiveGenres(values: string[]): string[] {
+  const genres = new Set<string>();
+  for (const value of values) {
+    for (const alias of AGGRESSIVE_GENRE_ALIASES) {
+      if (alias.pattern.test(clean(value))) genres.add(alias.canonical);
+    }
+  }
+  return [...genres].sort((left, right) => left.localeCompare(right, 'en'));
+}
+
+function intersectSortedGenres(left: string[], right: string[]): string[] {
+  const rightGenres = new Set(right);
+  return left.filter((genre) => rightGenres.has(genre));
+}
+
 function addLevelSignal(
   level: TrackAssessment['profile']['energy'],
   confidence: number,
@@ -289,9 +349,15 @@ function addLevelSignal(
   if (level === 'low') positiveSignals.push({ reason: positiveReason, confidence });
 }
 
-function hasInstrumentalEvidence(assessment: TrackAssessment): boolean {
-  return assessment.profile.genres.some((genre) => INSTRUMENTAL_EVIDENCE_PATTERN.test(genre))
-    || assessment.evidence.some((evidence) => INSTRUMENTAL_EVIDENCE_PATTERN.test(evidence.claim));
+function getInstrumentalEvidenceConfidence(assessment: TrackAssessment): number | null {
+  if (assessment.confidence.genres < 0.8) return null;
+  const hasCanonicalGenre = assessment.profile.genres.some((genre) =>
+    CANONICAL_INSTRUMENTAL_EVIDENCE_PATTERN.test(clean(genre))
+  );
+  const hasCanonicalEvidence = assessment.evidence.some((evidence) =>
+    CANONICAL_INSTRUMENTAL_EVIDENCE_PATTERN.test(clean(evidence.claim))
+  );
+  return hasCanonicalGenre || hasCanonicalEvidence ? assessment.confidence.genres : null;
 }
 
 function hasInstrumentalQualityEvidence(
