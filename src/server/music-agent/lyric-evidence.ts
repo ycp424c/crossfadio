@@ -18,9 +18,7 @@ export type SampledLyricLine = {
   repeatCount?: number;
 };
 
-export type PreparedLyricEvidence = {
-  lyricHash: string;
-  lyricStatus: 'available' | 'missing';
+type PreparedLyricEvidenceBase = {
   sampleMode: 'full' | 'stratified' | 'none';
   credits: Partial<Record<LyricCreditRole, string[]>>;
   lineCount: number;
@@ -29,6 +27,30 @@ export type PreparedLyricEvidence = {
   sampledCharCount: number;
   sampledLines: SampledLyricLine[];
 };
+
+export type PreparedResolvedLyricEvidence = PreparedLyricEvidenceBase & {
+  lyricHash: string;
+  lyricStatus: 'available' | 'missing';
+};
+
+export type PreparedLyricEvidence = PreparedResolvedLyricEvidence | (PreparedLyricEvidenceBase & {
+  lyricHash: null;
+  lyricStatus: 'unknown';
+});
+
+export function createUnknownLyricEvidence(): PreparedLyricEvidence {
+  return {
+    lyricHash: null,
+    lyricStatus: 'unknown',
+    sampleMode: 'none',
+    credits: {},
+    lineCount: 0,
+    hasTranslation: false,
+    repeatedHookCount: 0,
+    sampledCharCount: 0,
+    sampledLines: []
+  };
+}
 
 type ParsedLyricLine = {
   index: number;
@@ -99,7 +121,7 @@ export function cleanLyricLines(raw: string, options: { mode?: 'evidence' | 'leg
 export function prepareLyricEvidence(
   lyric: NcmLyric | null,
   options: { charBudget: number }
-): PreparedLyricEvidence {
+): PreparedResolvedLyricEvidence {
   const rawLyric = lyric?.lyric ?? '';
   const rawTranslation = lyric?.translation ?? '';
   const lyricHash = hashNormalizedLyrics(rawLyric, rawTranslation);

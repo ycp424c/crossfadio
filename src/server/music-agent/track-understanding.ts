@@ -42,9 +42,7 @@ export const trackAssessmentSchema = z.object({
   evidence: z.array(trackAssessmentEvidenceSchema).max(12)
 }).strict();
 
-export const preparedLyricEvidenceSchema = z.object({
-  lyricHash: z.string(),
-  lyricStatus: z.enum(['available', 'missing']),
+const preparedLyricEvidenceBaseSchema = z.object({
   sampleMode: z.enum(['full', 'stratified', 'none']),
   credits: z.record(z.array(z.string())),
   lineCount: z.number().int().nonnegative(),
@@ -58,6 +56,21 @@ export const preparedLyricEvidenceSchema = z.object({
     repeatCount: z.number().int().positive().optional()
   }).strict())
 }).strict();
+
+export const preparedLyricEvidenceSchema = z.discriminatedUnion('lyricStatus', [
+  preparedLyricEvidenceBaseSchema.extend({
+    lyricHash: z.string(),
+    lyricStatus: z.literal('available')
+  }).strict(),
+  preparedLyricEvidenceBaseSchema.extend({
+    lyricHash: z.string(),
+    lyricStatus: z.literal('missing')
+  }).strict(),
+  preparedLyricEvidenceBaseSchema.extend({
+    lyricHash: z.null(),
+    lyricStatus: z.literal('unknown')
+  }).strict()
+]);
 
 export const shortlistPromptPacketBaseSchema = z.object({
   id: z.string().min(1),
@@ -101,6 +114,7 @@ export const finalShortlistEnrichmentDiagnosticsSchema = z.object({
   wikiSuccess: z.number().int().nonnegative(),
   wikiFail: z.number().int().nonnegative(),
   wikiTimeout: z.number().int().nonnegative(),
+  cacheWriteFailed: z.number().int().nonnegative(),
   sampledChars: z.number().int().nonnegative(),
   elapsedMs: z.number().nonnegative(),
   deadlineReached: z.boolean()

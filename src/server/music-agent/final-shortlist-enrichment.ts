@@ -6,7 +6,11 @@ import {
   recordMusicTrackLyricRefresh,
   type MusicTrackAnalysisCacheRecord
 } from '../store/music-track-analysis-cache.js';
-import { prepareLyricEvidence, type PreparedLyricEvidence } from './lyric-evidence.js';
+import {
+  createUnknownLyricEvidence,
+  prepareLyricEvidence,
+  type PreparedLyricEvidence
+} from './lyric-evidence.js';
 import type { MusicCandidate } from './schema.js';
 import {
   trackAssessmentSchema,
@@ -68,6 +72,7 @@ export function createFinalShortlistEnricher({
   const boundedConcurrency = clampInteger(maxConcurrency, 1, MAX_CANDIDATE_CONCURRENCY);
   const boundedDeadlineMs = Math.max(0, finiteNumber(deadlineMs, 2_500));
   const boundedEvidenceChars = Math.max(0, Math.floor(finiteNumber(maxLyricEvidenceChars, 36_000)));
+  const requestSemaphore = new RequestSemaphore(boundedConcurrency);
 
   return async (candidates, options = {}) => {
     const startedAt = now();
@@ -137,19 +142,35 @@ export function createFinalShortlistEnricher({
             };
           }
 
-          diagnostics.lyricAttempted += 1;
+          let lyric: NcmLyric | null;
           try {
-            const lyric = await abortable(
-              ncmClient.getLyric(
-                item.candidate.id,
-                requestOptions(candidateAbort.signal, boundedDeadlineMs)
-              ),
-              candidateAbort.signal
+            lyric = await requestSemaphore.run(
+              candidateAbort.signal,
+              () => {
+                diagnostics.lyricAttempted += 1;
+                return abortable(
+                  ncmClient.getLyric(
+                    item.candidate.id,
+                    requestOptions(candidateAbort.signal, boundedDeadlineMs)
+                  ),
+                  candidateAbort.signal
+                );
+              }
             );
-            const lyricEvidence = prepareLyricEvidence(lyric, { charBudget: lyricCharBudget });
-            if (lyricEvidence.lyricStatus === 'available') diagnostics.lyricSuccess += 1;
-            else diagnostics.lyricMissing += 1;
-            diagnostics.sampledChars += lyricEvidence.sampledCharCount;
+          } catch (error) {
+            if (error instanceof NcmRequestNotStartedError) {
+              return { evidence: createUnknownLyricEvidence(), settled: false };
+            }
+            if (deadlineReached) diagnostics.lyricTimeout += 1;
+            else diagnostics.lyricFail += 1;
+            return { evidence: createUnknownLyricEvidence(), settled: false };
+          }
+
+          const lyricEvidence = prepareLyricEvidence(lyric, { charBudget: lyricCharBudget });
+          if (lyricEvidence.lyricStatus === 'available') diagnostics.lyricSuccess += 1;
+          else diagnostics.lyricMissing += 1;
+          diagnostics.sampledChars += lyricEvidence.sampledCharCount;
+          try {
             recordMusicTrackLyricRefresh({
               provider: 'ncm',
               trackId: item.candidate.id,
@@ -158,30 +179,33 @@ export function createFinalShortlistEnricher({
               extractionSummary: extractionSummary(lyricEvidence),
               refreshedAt: new Date(now()).toISOString()
             });
-            return { evidence: lyricEvidence, settled: true };
           } catch {
-            if (deadlineReached) diagnostics.lyricTimeout += 1;
-            else diagnostics.lyricFail += 1;
-            return {
-              evidence: prepareLyricEvidence(null, { charBudget: lyricCharBudget }),
-              settled: false
-            };
+            diagnostics.cacheWriteFailed += 1;
           }
+          return { evidence: lyricEvidence, settled: true };
         };
 
         const loadWikiTags = async (): Promise<{ tags: string[]; settled: boolean }> => {
-          diagnostics.wikiAttempted += 1;
           try {
-            const wikiSummary = await abortable(
-              ncmClient.getSongWikiSummary(
-                item.candidate.id,
-                requestOptions(candidateAbort.signal, boundedDeadlineMs)
-              ),
-              candidateAbort.signal
+            const wikiSummary = await requestSemaphore.run(
+              candidateAbort.signal,
+              () => {
+                diagnostics.wikiAttempted += 1;
+                return abortable(
+                  ncmClient.getSongWikiSummary(
+                    item.candidate.id,
+                    requestOptions(candidateAbort.signal, boundedDeadlineMs)
+                  ),
+                  candidateAbort.signal
+                );
+              }
             );
             diagnostics.wikiSuccess += 1;
             return { tags: extractTagsFromWikiSummary(wikiSummary), settled: true };
-          } catch {
+          } catch (error) {
+            if (error instanceof NcmRequestNotStartedError) {
+              return { tags: [], settled: false };
+            }
             if (deadlineReached) diagnostics.wikiTimeout += 1;
             else diagnostics.wikiFail += 1;
             return { tags: [], settled: false };
@@ -334,6 +358,7 @@ function emptyDiagnostics(shortlistCount: number): FinalShortlistEnrichmentDiagn
     wikiSuccess: 0,
     wikiFail: 0,
     wikiTimeout: 0,
+    cacheWriteFailed: 0,
     sampledChars: 0,
     elapsedMs: 0,
     deadlineReached: false
@@ -350,4 +375,72 @@ function finiteNumber(value: number, fallback: number): number {
 
 function elapsedMs(startedAt: number, finishedAt: number): number {
   return Math.max(0, finishedAt - startedAt);
+}
+
+class NcmRequestNotStartedError extends Error {
+  constructor() {
+    super('NCM request was aborted before acquiring a concurrency slot');
+    this.name = 'NcmRequestNotStartedError';
+  }
+}
+
+type SemaphoreWaiter = {
+  signal: AbortSignal;
+  resolve: () => void;
+  reject: (error: NcmRequestNotStartedError) => void;
+  onAbort: () => void;
+};
+
+class RequestSemaphore {
+  private active = 0;
+  private readonly waiters: SemaphoreWaiter[] = [];
+
+  constructor(private readonly limit: number) {}
+
+  async run<T>(signal: AbortSignal, task: () => Promise<T>): Promise<T> {
+    await this.acquire(signal);
+    try {
+      return await task();
+    } finally {
+      this.release();
+    }
+  }
+
+  private acquire(signal: AbortSignal): Promise<void> {
+    if (signal.aborted) return Promise.reject(new NcmRequestNotStartedError());
+    if (this.active < this.limit) {
+      this.active += 1;
+      return Promise.resolve();
+    }
+
+    return new Promise<void>((resolve, reject) => {
+      const waiter: SemaphoreWaiter = {
+        signal,
+        resolve,
+        reject,
+        onAbort: () => {
+          const index = this.waiters.indexOf(waiter);
+          if (index >= 0) this.waiters.splice(index, 1);
+          reject(new NcmRequestNotStartedError());
+        }
+      };
+      signal.addEventListener('abort', waiter.onAbort, { once: true });
+      this.waiters.push(waiter);
+    });
+  }
+
+  private release(): void {
+    this.active -= 1;
+    while (this.waiters.length > 0) {
+      const waiter = this.waiters.shift()!;
+      waiter.signal.removeEventListener('abort', waiter.onAbort);
+      if (waiter.signal.aborted) {
+        waiter.reject(new NcmRequestNotStartedError());
+        continue;
+      }
+      this.active += 1;
+      waiter.resolve();
+      return;
+    }
+  }
 }

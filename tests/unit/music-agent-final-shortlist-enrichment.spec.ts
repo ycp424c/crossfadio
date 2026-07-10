@@ -164,7 +164,7 @@ describe('final shortlist enrichment', () => {
     expect(result.promptPackets[0]).toMatchObject({
       kind: 'evidence',
       id: 'track-0',
-      lyricEvidence: { lyricStatus: 'missing', sampledCharCount: 0 },
+      lyricEvidence: { lyricStatus: 'unknown', sampledCharCount: 0 },
       wikiTags: ['ambient']
     });
     expect(result.diagnostics).toMatchObject({
@@ -187,7 +187,7 @@ describe('final shortlist enrichment', () => {
 
     expect(result.promptPackets[0]).toMatchObject({
       kind: 'evidence',
-      lyricEvidence: { lyricStatus: 'missing' },
+      lyricEvidence: { lyricStatus: 'unknown' },
       wikiTags: ['dream pop']
     });
     expect(result.diagnostics).toMatchObject({
@@ -221,17 +221,19 @@ describe('final shortlist enrichment', () => {
     });
   });
 
-  it('limits candidate workers to the configured concurrency', async () => {
+  it('limits total concurrent lyric and wiki NCM requests to the configured concurrency', async () => {
     let active = 0;
     let maxActive = 0;
+    const trackRequest = async <T>(value: T): Promise<T> => {
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      await delay(15);
+      active -= 1;
+      return value;
+    };
     const ncmClient = createNcmClient({
-      getLyric: async (id) => {
-        active += 1;
-        maxActive = Math.max(maxActive, active);
-        await delay(15);
-        active -= 1;
-        return lyric(id);
-      }
+      getLyric: async (id) => trackRequest(lyric(id)),
+      getSongWikiSummary: async () => trackRequest<Record<string, unknown> | null>(null)
     });
     const enrich = await createEnricher(ncmClient, { maxConcurrency: 6 });
 
@@ -239,6 +241,53 @@ describe('final shortlist enrichment', () => {
 
     expect(maxActive).toBeLessThanOrEqual(6);
     expect(maxActive).toBe(6);
+  });
+
+  it('shares the request concurrency limit across simultaneous enricher calls', async () => {
+    let active = 0;
+    let maxActive = 0;
+    const trackRequest = async <T>(value: T): Promise<T> => {
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      await delay(15);
+      active -= 1;
+      return value;
+    };
+    const ncmClient = createNcmClient({
+      getLyric: async (id) => trackRequest(lyric(id)),
+      getSongWikiSummary: async () => trackRequest<Record<string, unknown> | null>(null)
+    });
+    const enrich = await createEnricher(ncmClient, { maxConcurrency: 6 });
+
+    await Promise.all([enrich(candidates(6)), enrich(candidates(6))]);
+
+    expect(maxActive).toBeLessThanOrEqual(6);
+  });
+
+  it('keeps successful lyric evidence when the cache write fails', async () => {
+    const cacheStore = await import('../../src/server/store/music-track-analysis-cache.js');
+    vi.spyOn(cacheStore, 'recordMusicTrackLyricRefresh').mockImplementationOnce(() => {
+      throw new Error('disk full');
+    });
+    const ncmClient = createNcmClient({
+      getLyric: async (id) => lyric(id),
+      getSongWikiSummary: async () => ({ tags: ['ambient'] })
+    });
+    const enrich = await createEnricher(ncmClient);
+
+    const result = await enrich(candidates(1));
+
+    expect(result.promptPackets[0]).toMatchObject({
+      kind: 'evidence',
+      lyricEvidence: { lyricStatus: 'available' },
+      wikiTags: ['ambient']
+    });
+    expect(result.diagnostics).toMatchObject({
+      lyricAttempted: 1,
+      lyricSuccess: 1,
+      lyricFail: 0,
+      cacheWriteFailed: 1
+    });
   });
 
   it('returns partial results at the shared deadline and retains every shortlist id', async () => {
@@ -356,6 +405,7 @@ describe('final shortlist enrichment', () => {
       lyricMissing: 0,
       wikiAttempted: 0,
       wikiSuccess: 0,
+      cacheWriteFailed: 0,
       sampledChars: 0,
       deadlineReached: false
     });
