@@ -1,4 +1,5 @@
 import type { NcmLyric } from '../../shared/schema.js';
+import { cleanLyricLines } from '../music-agent/lyric-evidence.js';
 import type { SegueTrackContext, Track } from './schema.js';
 
 type SongDetailLike = {
@@ -15,8 +16,6 @@ type BuildSegueTrackContextInput = {
 };
 
 const TAG_HINT_RE = /(tag|style|genre|label|标签|曲风|风格|流派|分类)/i;
-const METADATA_LYRIC_RE =
-  /^(作词|作曲|编曲|制作人|混音|录音|母带|演唱|词|曲|Composer|Arranger|Producer|Lyricist)\s*[:：]/i;
 const TAG_PATTERN_MAP: Array<{ tag: string; patterns: RegExp[] }> = [
   { tag: '说唱', patterns: [/\bhip[\s-]?hop\b/i, /\brap\b/i, /说唱|嘻哈/u] },
   { tag: '摇滚', patterns: [/\brock\b/i, /\bmetal\b/i, /摇滚|朋克/u] },
@@ -167,7 +166,7 @@ function extractLyricExcerpt(lyric: NcmLyric | null | undefined): string {
     return '';
   }
 
-  const lines = splitUsefulLyricLines(lyric.lyric);
+  const lines = cleanLyricLines(lyric.lyric);
   if (lines.length === 0) {
     return '';
   }
@@ -181,7 +180,7 @@ function extractLyricKeywords(lyric: NcmLyric | null | undefined): string[] {
     return [];
   }
 
-  const lines = splitUsefulLyricLines(lyric.lyric).slice(0, 10).join(' ');
+  const lines = cleanLyricLines(lyric.lyric).slice(0, 10).join(' ');
   if (!lines) {
     return [];
   }
@@ -203,18 +202,6 @@ function extractLyricKeywords(lyric: NcmLyric | null | undefined): string[] {
     .sort((a, b) => b[1] - a[1] || b[0].length - a[0].length)
     .map(([word]) => word)
     .slice(0, 6);
-}
-
-function splitUsefulLyricLines(lyric: string): string[] {
-  return lyric
-    .split('\n')
-    .map((line) =>
-      line
-        .replace(/\[[\d:.]+\]/g, '')
-        .replace(/\s+/g, ' ')
-        .trim()
-    )
-    .filter((line) => line.length > 0 && !METADATA_LYRIC_RE.test(line));
 }
 
 function normalizeLyric(text: string): string {
