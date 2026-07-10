@@ -210,6 +210,142 @@ describe('lyrics-aware music agent loop', () => {
     expect(result.lyricsAwareDiagnostics?.assessmentCoverageValid).toBe(true);
   });
 
+  it.each([
+    {
+      label: 'direct final consumes the last LLM call',
+      responses: [finalOutput(['one'], [])],
+      budget: { maxLlmCalls: 1 },
+      expectedCalls: 1
+    },
+    {
+      label: 'tool loop and legacy extra-final consume all LLM calls',
+      responses: [
+        { type: 'tool_call', tool: 'finalize_pick', input: {} },
+        finalOutput(['one'], [])
+      ],
+      budget: { maxLlmCalls: 2 },
+      expectedCalls: 2
+    }
+  ])('skips shadow assessment when $label', async ({ responses, budget: budgetOverride, expectedCalls }) => {
+    const items = ['one', 'two', 'three'].map((id) => candidate(id));
+    const pool = new CandidatePool(); items.forEach((item) => pool.upsert(item));
+    const client = llm([...responses, finalOutput(['two'], items.map((item) => assessment(item.id)))]);
+    const result = await runMusicAgentLoop({
+      llmClient: client, context: context(), candidatePool: pool,
+      tools: { finalize_pick: async () => ({ summary: 'ready', candidateCount: 3 }) },
+      budget: budget(budgetOverride), lyricsSelectionMode: 'shadow',
+      finalShortlistEnricher: enricherFor(items)
+    });
+
+    expect(client.calls).toBe(expectedCalls);
+    expect(result.picks.map((pick) => pick.id)).toEqual(['one']);
+    expect(result.lyricsAwareDiagnostics?.assessmentValidationProblems)
+      .toContain('assessment_budget_skipped');
+    expect(result.finalPickDiagnostics?.assessmentValidationFailureCount).toBe(1);
+  });
+
+  it('skips shadow assessment when the remaining wall-clock budget is too small', async () => {
+    vi.useFakeTimers();
+    try {
+      const one = candidate('one'); const pool = new CandidatePool(); pool.upsert(one);
+      let calls = 0;
+      const client: MusicAgentLlmClient = {
+        async complete() {
+          calls += 1;
+          vi.advanceTimersByTime(85);
+          return { content: JSON.stringify(finalOutput(['one'], [])), model: 'fake' };
+        }
+      };
+      const result = await runMusicAgentLoop({
+        llmClient: client, context: context(), candidatePool: pool, tools: {},
+        budget: budget({ maxMs: 100, maxLlmCalls: 3 }), lyricsSelectionMode: 'shadow',
+        finalShortlistEnricher: enricherFor([one])
+      });
+
+      expect(calls).toBe(1);
+      expect(result.picks.map((pick) => pick.id)).toEqual(['one']);
+      expect(result.lyricsAwareDiagnostics?.assessmentValidationProblems)
+        .toContain('assessment_budget_skipped');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('preserves shadow picks and reports a fused assessment request failure', async () => {
+    const one = candidate('one'); const pool = new CandidatePool(); pool.upsert(one);
+    let calls = 0;
+    const client: MusicAgentLlmClient = {
+      async complete() {
+        calls += 1;
+        if (calls === 2) throw new Error('assessment unavailable');
+        return { content: JSON.stringify(finalOutput(['one'], [])), model: 'fake' };
+      }
+    };
+    const result = await runMusicAgentLoop({
+      llmClient: client, context: context(), candidatePool: pool, tools: {},
+      budget: budget(), lyricsSelectionMode: 'shadow', finalShortlistEnricher: enricherFor([one])
+    });
+
+    expect(calls).toBe(2);
+    expect(result.picks.map((pick) => pick.id)).toEqual(['one']);
+    expect(result.lyricsAwareDiagnostics?.assessmentValidationProblems)
+      .toContain('assessment_request_failed');
+    expect(result.finalPickDiagnostics?.assessmentValidationFailureCount).toBe(1);
+  });
+
+  it('preserves shadow picks and reports when the fused assessment exceeds the wall-clock budget', async () => {
+    vi.useFakeTimers();
+    try {
+      const one = candidate('one'); const pool = new CandidatePool(); pool.upsert(one);
+      let calls = 0;
+      const client: MusicAgentLlmClient = {
+        async complete() {
+          calls += 1;
+          vi.advanceTimersByTime(calls === 1 ? 10 : 95);
+          return {
+            content: JSON.stringify(calls === 1
+              ? finalOutput(['one'], [])
+              : finalOutput(['one'], [assessment('one')])),
+            model: 'fake'
+          };
+        }
+      };
+      const result = await runMusicAgentLoop({
+        llmClient: client, context: context(), candidatePool: pool, tools: {},
+        budget: budget({ maxMs: 100, maxLlmCalls: 3 }), lyricsSelectionMode: 'shadow',
+        finalShortlistEnricher: enricherFor([one])
+      });
+
+      expect(calls).toBe(2);
+      expect(result.picks.map((pick) => pick.id)).toEqual(['one']);
+      expect(result.lyricsAwareDiagnostics?.assessmentValidationProblems)
+        .toContain('assessment_timeout');
+      expect(result.finalPickDiagnostics?.assessmentValidationFailureCount).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not exceed the LLM budget when a shadow assessment would need a hard retry', async () => {
+    const items = ['one', 'two', 'three'].map((id) => candidate(id));
+    const pool = new CandidatePool(); items.forEach((item) => pool.upsert(item));
+    const client = llm([
+      finalOutput(['one'], []),
+      { type: 'tool_call', tool: 'rank_candidates', input: {} },
+      finalOutput(['two'], items.map((item) => assessment(item.id)))
+    ]);
+    const result = await runMusicAgentLoop({
+      llmClient: client, context: context(), candidatePool: pool, tools: {},
+      budget: budget({ maxLlmCalls: 2 }), lyricsSelectionMode: 'shadow',
+      finalShortlistEnricher: enricherFor(items)
+    });
+
+    expect(client.calls).toBe(2);
+    expect(result.picks.map((pick) => pick.id)).toEqual(['one']);
+    expect(result.lyricsAwareDiagnostics?.assessmentValidationProblems)
+      .toContain('assessment_budget_skipped');
+  });
+
   it('ignores tool-loop self-assessments and only trusts assessments from the fused evidence attempt', async () => {
     const one = candidate('one'); const two = candidate('two');
     const pool = new CandidatePool(); pool.upsert(one); pool.upsert(two);

@@ -523,6 +523,12 @@ async function askExtraFinalPick(
   const enrichment = await prepareLyricsAwareShortlist(input);
   const isShadowAssessmentCall = input.lyricsSelectionMode === 'shadow'
     && shadowAuthoritativeOutput !== undefined;
+  if (isShadowAssessmentCall && !hasShadowAssessmentBudget(input, startedAt, step, llmCalls)) {
+    recordAssessmentValidationProblem(input, 'assessment_budget_skipped');
+    return acceptExtraFinalPick(
+      null, input, trace, startedAt, step, llmCalls, toolCalls, shadowAuthoritativeOutput
+    );
+  }
   const promptPayload = buildFinalPickPromptPayload({
     context: input.context,
     observations: finalPickObservations,
@@ -553,6 +559,12 @@ async function askExtraFinalPick(
       return abortedOutput(resolveMode(input), trace);
     }
     if (shadowAuthoritativeOutput) {
+      recordAssessmentValidationProblem(
+        input,
+        Date.now() - startedAt >= input.budget.maxMs
+          ? 'assessment_timeout'
+          : 'assessment_request_failed'
+      );
       return acceptExtraFinalPick(
         null, input, trace, startedAt, nextStep, nextLlmCalls, toolCalls, shadowAuthoritativeOutput
       );
@@ -577,6 +589,7 @@ async function askExtraFinalPick(
 
   if (Date.now() - startedAt >= input.budget.maxMs) {
     if (shadowAuthoritativeOutput) {
+      recordAssessmentValidationProblem(input, 'assessment_timeout');
       return acceptExtraFinalPick(
         null, input, trace, startedAt, nextStep, nextLlmCalls, toolCalls, shadowAuthoritativeOutput
       );
@@ -598,7 +611,10 @@ async function askExtraFinalPick(
   const output = parseFinalPickOutput(responseContent);
   if (!output) {
     const responseType = parseOutputType(responseContent) ?? 'invalid_json';
-    if (hasExtraFinalPickBudget(input, startedAt, nextStep, nextLlmCalls)) {
+    const canRetry = shadowAuthoritativeOutput
+      ? hasShadowAssessmentBudget(input, startedAt, nextStep, nextLlmCalls)
+      : hasExtraFinalPickBudget(input, startedAt, nextStep, nextLlmCalls);
+    if (canRetry) {
       const retryThought = responseType === 'tool_call'
         ? 'extra final returned tool_call; retrying final-only output'
         : 'extra final did not return final JSON; retrying final-only output';
@@ -621,6 +637,12 @@ async function askExtraFinalPick(
       );
     }
     if (shadowAuthoritativeOutput) {
+      recordAssessmentValidationProblem(
+        input,
+        hasShadowAssessmentBudget(input, startedAt, nextStep, nextLlmCalls)
+          ? 'assessment_invalid_output'
+          : 'assessment_budget_skipped'
+      );
       return acceptExtraFinalPick(
         null, input, trace, startedAt, nextStep, nextLlmCalls, toolCalls, shadowAuthoritativeOutput
       );
@@ -682,6 +704,12 @@ async function retryHardFinalOnlyPick(
   const enrichment = await prepareLyricsAwareShortlist(input);
   const isShadowAssessmentCall = input.lyricsSelectionMode === 'shadow'
     && shadowAuthoritativeOutput !== undefined;
+  if (isShadowAssessmentCall && !hasShadowAssessmentBudget(input, startedAt, step, llmCalls)) {
+    recordAssessmentValidationProblem(input, 'assessment_budget_skipped');
+    return acceptExtraFinalPick(
+      null, input, trace, startedAt, step, llmCalls, toolCalls, shadowAuthoritativeOutput
+    );
+  }
   const promptPayload = buildFinalPickPromptPayload({
     context: input.context,
     observations: [...observations, retryObservation],
@@ -712,6 +740,12 @@ async function retryHardFinalOnlyPick(
       return abortedOutput(resolveMode(input), trace);
     }
     if (shadowAuthoritativeOutput) {
+      recordAssessmentValidationProblem(
+        input,
+        Date.now() - startedAt >= input.budget.maxMs
+          ? 'assessment_timeout'
+          : 'assessment_request_failed'
+      );
       return acceptExtraFinalPick(
         null, input, trace, startedAt, nextStep, nextLlmCalls, toolCalls, shadowAuthoritativeOutput
       );
@@ -736,6 +770,7 @@ async function retryHardFinalOnlyPick(
 
   if (Date.now() - startedAt >= input.budget.maxMs) {
     if (shadowAuthoritativeOutput) {
+      recordAssessmentValidationProblem(input, 'assessment_timeout');
       return acceptExtraFinalPick(
         null, input, trace, startedAt, nextStep, nextLlmCalls, toolCalls, shadowAuthoritativeOutput
       );
@@ -758,6 +793,7 @@ async function retryHardFinalOnlyPick(
   if (!output) {
     const responseType = parseOutputType(responseContent) ?? 'invalid_json';
     if (shadowAuthoritativeOutput) {
+      recordAssessmentValidationProblem(input, 'assessment_invalid_output');
       return acceptExtraFinalPick(
         null, input, trace, startedAt, nextStep, nextLlmCalls, toolCalls, shadowAuthoritativeOutput
       );
@@ -2149,6 +2185,27 @@ function hasExtraFinalPickBudget(
     llmCalls < input.budget.maxLlmCalls &&
     remainingMs >= extraFinalPickRemainingMs(input.budget.maxMs)
   );
+}
+
+function hasShadowAssessmentBudget(
+  input: RunMusicAgentLoopInput,
+  startedAt: number,
+  step: number,
+  llmCalls: number
+): boolean {
+  const remainingMs = input.budget.maxMs - (Date.now() - startedAt);
+  return step < input.budget.maxSteps
+    && llmCalls < input.budget.maxLlmCalls
+    && remainingMs >= extraFinalPickRemainingMs(input.budget.maxMs);
+}
+
+function recordAssessmentValidationProblem(
+  input: RunMusicAgentLoopInput,
+  problem: 'assessment_budget_skipped' | 'assessment_request_failed' | 'assessment_timeout' | 'assessment_invalid_output'
+): void {
+  const state = lyricsAwareRunStates.get(input);
+  if (!state) return;
+  state.validationProblems = [...new Set([...state.validationProblems, problem])].slice(0, 24);
 }
 
 function extraFinalPickRemainingMs(maxMs: number): number {
