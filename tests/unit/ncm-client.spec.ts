@@ -101,6 +101,104 @@ describe('NcmClient error classification', () => {
   });
 });
 
+describe('NcmClient cancellable enrichment requests', () => {
+  it('rejects getLyric with the original parent abort reason', async () => {
+    const parent = new AbortController();
+    let fetchSignal: AbortSignal | undefined;
+    mockFetch(async (_url, init) => {
+      fetchSignal = init?.signal ?? undefined;
+      return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(init.signal?.reason));
+      });
+    });
+    const client = new NcmClient('http://127.0.0.1:3000');
+    const reason = new Error('dj run cancelled');
+
+    const request = client.getLyric('42', { signal: parent.signal, timeoutMs: 1_000 });
+    parent.abort(reason);
+
+    await expect(request).rejects.toBe(reason);
+    expect(fetchSignal?.aborted).toBe(true);
+  });
+
+  it('rejects getSongWikiSummary with the original parent abort reason', async () => {
+    const parent = new AbortController();
+    let fetchSignal: AbortSignal | undefined;
+    mockFetch(async (_url, init) => {
+      fetchSignal = init?.signal ?? undefined;
+      return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(init.signal?.reason));
+      });
+    });
+    const client = new NcmClient('http://127.0.0.1:3000');
+    const reason = new Error('dj run cancelled');
+
+    const request = client.getSongWikiSummary('42', { signal: parent.signal });
+    parent.abort(reason);
+
+    await expect(request).rejects.toBe(reason);
+    expect(fetchSignal?.aborted).toBe(true);
+  });
+
+  it('uses the per-request timeout and classifies it as TIMEOUT', async () => {
+    vi.useFakeTimers();
+    mockFetch(async (_url, init) => {
+      return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => {
+          const error = new Error('The operation was aborted.');
+          error.name = 'AbortError';
+          reject(error);
+        });
+      });
+    });
+    const client = new NcmClient('http://127.0.0.1:3000', { fetchTimeoutMs: 60_000 });
+
+    const request = client.getLyric('42', { timeoutMs: 25 });
+    const assertion = expect(request).rejects.toMatchObject({ code: NCM_ERROR_CODE.TIMEOUT });
+    await vi.advanceTimersByTimeAsync(25);
+
+    await assertion;
+  });
+
+  it('rejects an already-aborted parent signal without fetching', async () => {
+    const parent = new AbortController();
+    const reason = new Error('dj run cancelled');
+    parent.abort(reason);
+    const fetchSpy = vi.fn();
+    vi.stubGlobal('fetch', fetchSpy);
+    const client = new NcmClient('http://127.0.0.1:3000');
+
+    await expect(client.getLyric('42', { signal: parent.signal })).rejects.toBe(reason);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('cleans up the parent listener and timeout after cancellation', async () => {
+    vi.useFakeTimers();
+    const parent = new AbortController();
+    const removeListenerSpy = vi.spyOn(parent.signal, 'removeEventListener');
+    const fetchAbortSpy = vi.fn();
+    mockFetch(async (_url, init) => {
+      return new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => {
+          fetchAbortSpy();
+          reject(init.signal?.reason);
+        });
+      });
+    });
+    const client = new NcmClient('http://127.0.0.1:3000');
+    const reason = new Error('dj run cancelled');
+
+    const request = client.getLyric('42', { signal: parent.signal, timeoutMs: 100 });
+    parent.abort(reason);
+    await expect(request).rejects.toBe(reason);
+    await vi.advanceTimersByTimeAsync(100);
+
+    expect(fetchAbortSpy).toHaveBeenCalledTimes(1);
+    expect(removeListenerSpy).toHaveBeenCalledWith('abort', expect.any(Function));
+    expect(vi.getTimerCount()).toBe(0);
+  });
+});
+
 describe('NcmClient qr check', () => {
   it('returns raw code/message/cookie for valid response', async () => {
     mockFetch(async () =>

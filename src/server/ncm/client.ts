@@ -31,6 +31,11 @@ type NcmClientOptions = {
   songUrlQualityCache?: NcmSongUrlQualityCache;
 };
 
+export type NcmRequestOptions = {
+  signal?: AbortSignal;
+  timeoutMs?: number;
+};
+
 export const NCM_SONG_URL_QUALITY_LEVELS = [
   'lossless',
   'exhigh',
@@ -288,7 +293,7 @@ export class NcmClient {
           );
         }
 
-        const songUrl = await this.getSongUrlAtLevel(id, level, remainingMs);
+        const songUrl = await this.getSongUrlAtLevel(id, level, { timeoutMs: remainingMs });
         if (songUrl?.url) {
           this.setCachedSongUrlQuality(options.qualityCacheKey, level, nowMs);
           return songUrl;
@@ -317,12 +322,12 @@ export class NcmClient {
   private async getSongUrlAtLevel(
     id: string,
     level: NcmSongUrlQualityLevel,
-    timeoutMs?: number
+    options?: NcmRequestOptions
   ): Promise<NcmSongUrl | null> {
     const json = await this.getJson('/song/url/v1', {
       id,
       level
-    }, timeoutMs);
+    }, options);
 
     const parsed = ncmSongUrlResponseSchema.safeParse(json);
     if (!parsed.success) {
@@ -387,8 +392,8 @@ export class NcmClient {
     this.songUrlQualityCache.set(qualityCacheKey, { level, cachedAtMs: nowMs });
   }
 
-  async getLyric(id: string): Promise<NcmLyric | null> {
-    const json = await this.getJson('/lyric', { id });
+  async getLyric(id: string, options?: NcmRequestOptions): Promise<NcmLyric | null> {
+    const json = await this.getJson('/lyric', { id }, options);
     const parsed = ncmLyricResponseSchema.safeParse(json);
     if (!parsed.success) {
       throw new NcmApiError(
@@ -527,8 +532,11 @@ export class NcmClient {
     await this.getJson('/like', { id, like: like ? 'true' : 'false', timestamp: String(Date.now()) });
   }
 
-  async getSongWikiSummary(id: string): Promise<Record<string, unknown> | null> {
-    const json = await this.getJson('/song/wiki/summary', { id });
+  async getSongWikiSummary(
+    id: string,
+    options?: NcmRequestOptions
+  ): Promise<Record<string, unknown> | null> {
+    const json = await this.getJson('/song/wiki/summary', { id }, options);
     if (!json || typeof json !== 'object') {
       return null;
     }
@@ -588,8 +596,12 @@ export class NcmClient {
       .slice(0, 30);
   }
 
-  private async getJson(path: string, query: Record<string, string>, timeoutMs?: number): Promise<any> {
-    const response = await this.rawFetch(path, query, timeoutMs);
+  private async getJson(
+    path: string,
+    query: Record<string, string>,
+    options?: NcmRequestOptions
+  ): Promise<any> {
+    const response = await this.rawFetch(path, query, options);
 
     if (!response.ok) {
       throw classifyHttpError(path, response.status);
@@ -605,8 +617,13 @@ export class NcmClient {
   private async rawFetch(
     path: string,
     query: Record<string, string>,
-    timeoutMs = this.fetchTimeoutMs
+    options: NcmRequestOptions = {}
   ): Promise<Response> {
+    const parentSignal = options.signal;
+    if (parentSignal?.aborted) {
+      throw parentSignal.reason;
+    }
+
     const url = new URL(path, this.baseUrl);
     Object.entries(query).forEach(([key, value]) => {
       url.searchParams.set(key, value);
@@ -618,17 +635,28 @@ export class NcmClient {
     }
 
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), Math.max(0, timeoutMs));
+    let timedOut = false;
+    const abortFromParent = (): void => controller.abort(parentSignal?.reason);
+    parentSignal?.addEventListener('abort', abortFromParent, { once: true });
+    const timeoutMs = options.timeoutMs ?? this.fetchTimeoutMs;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, Math.max(0, timeoutMs));
 
     try {
       return await fetch(url, { method: 'GET', signal: controller.signal });
     } catch (error) {
-      if (isAbortError(error)) {
+      if (parentSignal?.aborted) {
+        throw parentSignal.reason;
+      }
+      if (timedOut) {
         throw new NcmApiError(NCM_ERROR_CODE.TIMEOUT, `NCM request timed out: ${path}`, error);
       }
       throw new NcmApiError(NCM_ERROR_CODE.UNAVAILABLE, `NCM request failed: ${path}`, error);
     } finally {
       clearTimeout(timer);
+      parentSignal?.removeEventListener('abort', abortFromParent);
     }
   }
 }
@@ -746,12 +774,5 @@ function isSongUrlQualityFallbackError(error: unknown): error is NcmApiError {
   return (
     error instanceof NcmApiError &&
     (error.code === NCM_ERROR_CODE.BAD_RESPONSE || error.code === NCM_ERROR_CODE.UNKNOWN)
-  );
-}
-
-function isAbortError(error: unknown): boolean {
-  return (
-    (error instanceof DOMException && error.name === 'AbortError') ||
-    (error instanceof Error && error.name === 'AbortError')
   );
 }
