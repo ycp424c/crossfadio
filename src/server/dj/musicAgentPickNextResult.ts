@@ -115,6 +115,13 @@ export function handleMusicAgentPickNextOutput(input: {
       legacyFallbackSuppressed: true,
       lyricsAwareDiagnostics
     });
+    emit({
+      type: 'dj.pick-next.done',
+      added: false,
+      addedCount: 0,
+      reason: 'lyrics-safety-block',
+      targetCount: targetPickCount
+    });
     return { status: 'handled', debugBroadcastSent: true };
   }
 
@@ -365,7 +372,6 @@ function getMusicAgentShortfallDiagnostics(
 
 function getMusicAgentRoutePath(output: MusicAgentRunOutput): DjPickNextFallbackPath {
   return output.picks.some((pick) => pick.reason === 'ranked fallback')
-    || hasSafeAssessedRankedPicks(output)
     ? 'music_agent_ranked_fallback'
     : 'music_agent_success';
 }
@@ -377,16 +383,7 @@ function hasRankedRecoveryPicks(output: MusicAgentRunOutput): boolean {
 }
 
 function shouldRouteRankedRecoveryToLegacy(output: MusicAgentRunOutput): boolean {
-  if (output.picks.some((pick) => pick.reason === 'ranked fallback')) {
-    return !hasSafeAssessedRankedPicks(output);
-  }
-  if (!output.picks.some((pick) => pick.reason === 'ranked convergence')) return false;
-
-  const diagnostics = output.lyricsAwareDiagnostics;
-  return diagnostics !== undefined
-    && isLyricsEnforcementMode(diagnostics.mode)
-    && diagnostics.enforcementApplied === true
-    && !hasSafeAssessedRankedPicks(output);
+  return hasRankedRecoveryPicks(output) && !hasSafeAssessedRankedPicks(output);
 }
 
 function hasSafeAssessedRankedPicks(output: MusicAgentRunOutput): boolean {

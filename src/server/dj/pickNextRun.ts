@@ -1,4 +1,5 @@
 import type { Track } from '../agent/schema.js';
+import type { MusicAgentRunOutput } from '../music-agent/schema.js';
 import { LlmClient } from '../llm/client.js';
 import { resolveLlmConfig } from '../llm/config.js';
 import type { NcmClient } from '../ncm/client.js';
@@ -49,6 +50,17 @@ import type { DiscoveryMode } from '../../shared/dj.js';
 export { buildTrackDedupeKey, getMusicAgentCandidateSourceDiagnostics, isTrackDedupeKeyExcluded };
 export type { DiscoveryMode } from '../../shared/dj.js';
 export type { DjPickNextFallbackPath } from './musicAgentPickNextResult.js';
+
+export function handleLyricsAwareSafetyBlockAtRoute(input: {
+  result: { status: 'handled' | 'legacy-fallback' | 'aborted'; output: MusicAgentRunOutput };
+  handle(): void;
+}): boolean {
+  if (input.result.status === 'aborted' && isLyricsAwareSafetyBlock(input.result.output)) {
+    input.handle();
+    return true;
+  }
+  return false;
+}
 
 const JOB_TIMEOUT_MS = 180_000;
 const LARGE_BATCH_JOB_TIMEOUT_MS = 210_000;
@@ -424,8 +436,9 @@ export async function runDjPickNext(
         selectionStartedEventId: result.selectionStartedEventId
       };
       if (signal?.aborted) return;
-      if (isLyricsAwareSafetyBlock(output)) {
-        handleMusicAgentPickNextOutput({
+      if (handleLyricsAwareSafetyBlockAtRoute({
+        result,
+        handle: () => handleMusicAgentPickNextOutput({
           userId,
           output,
           excludeState,
@@ -438,7 +451,8 @@ export async function runDjPickNext(
           logger,
           setPickReason: (trackId, reason) => djPickReasonCache.set(trackId, reason),
           fallbackStatsSnapshot: () => djPickNextFallbackStats.snapshot()
-        });
+        })
+      })) {
         return;
       }
       if (output.status === 'aborted') {

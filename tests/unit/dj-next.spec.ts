@@ -4,8 +4,10 @@ import path from 'node:path';
 import { extractQueueDirectiveFromText } from '../../src/server/http/chat-sse-worker';
 import { buildDiscoveryModePromptParts, buildDjTimeContext, buildTrackDedupeKey, getCandidateSourceMix, getMusicAgentCandidateSourceDiagnostics, parseDjCandidatePicks, serializeDjPickNextErrorForLog, searchCandidates } from '../../src/server/http/routes/djNext';
 import { createDjPickNextFallbackStatsTracker } from '../../src/server/dj/pickNextTelemetry';
+import { handleLyricsAwareSafetyBlockAtRoute } from '../../src/server/dj/pickNextRun';
 import { LlmError } from '../../src/server/llm/client';
 import type { NcmClient } from '../../src/server/ncm/client';
+import type { MusicAgentRunOutput } from '../../src/server/music-agent/schema';
 import type { NcmSong } from '../../src/shared/schema';
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -267,7 +269,13 @@ describe('DJ pick-next diagnostics', () => {
     expect(runDjPickNext).toContain("result.status === 'handled'");
     expect(runDjPickNext).toContain("result.status === 'legacy-fallback'");
     expect(runDjPickNext).toContain('handleMusicAgentPickNextOutput({');
-    expect(runDjPickNext).toContain('isLyricsAwareSafetyBlock(output)');
+    expect(runDjPickNext).toContain('if (handleLyricsAwareSafetyBlockAtRoute({');
+    const safetyRouteHelper = extractBetween(
+      pickNextRunSource,
+      'export function handleLyricsAwareSafetyBlockAtRoute',
+      'const JOB_TIMEOUT_MS'
+    );
+    expect(safetyRouteHelper).toContain("input.result.status === 'aborted' && isLyricsAwareSafetyBlock(input.result.output)");
     expect(runDjPickNext).toContain('return;');
     expect(djAgentSource).toContain("output.status !== 'ok'");
     expect(runDjPickNext).toContain('const targetPickCount = getAutoFillBatchSize(userId)');
@@ -320,6 +328,37 @@ describe('DJ pick-next diagnostics', () => {
     expect(runDjPickNext).toContain('pickAbort.cleanup()');
     expectBefore(runDjPickNext, 'const pickAbort = createAbortTimeoutSignal(signal, PICK_LLM_TIMEOUT_MS)', 'parseDjCandidatePicks');
     expectBefore(runDjPickNext, '{ signal: pickAbort.signal }', 'pickAbort.cleanup()');
+  });
+
+  it('supplements an aborted lyrics safety block exactly once but never re-handles a handled result', () => {
+    const output = {
+      status: 'empty_pool',
+      picks: [],
+      lyricsAwareDiagnostics: {
+        mode: 'enforce_fit',
+        enrichment: {},
+        promptChars: 1,
+        assessmentCoverageValid: true,
+        assessmentValidationProblems: [],
+        decisions: [],
+        allReturnedPicksAssessed: true,
+        enforcementApplied: true,
+        fallbackSuppressed: true
+      }
+    } as MusicAgentRunOutput;
+    const handle = vi.fn();
+
+    expect(handleLyricsAwareSafetyBlockAtRoute({
+      result: { status: 'handled', output },
+      handle
+    })).toBe(false);
+    expect(handle).not.toHaveBeenCalled();
+
+    expect(handleLyricsAwareSafetyBlockAtRoute({
+      result: { status: 'aborted', output },
+      handle
+    })).toBe(true);
+    expect(handle).toHaveBeenCalledOnce();
   });
 
   it('keeps the HTTP route as an adapter around the DJ pick-next run module', () => {

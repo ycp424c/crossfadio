@@ -52,6 +52,40 @@ describe('player DJ pick-next stream consumer', () => {
       reason: 'already-running'
     }));
   });
+
+  it('finishes the stream lifecycle for a lyrics safety block with no appended track', async () => {
+    const onQueueAppended = vi.fn();
+    const onDone = vi.fn();
+    const stream = vi.fn(async function* () {
+      yield {
+        type: 'dj.pick-next.done',
+        data: {
+          added: false,
+          addedCount: 0,
+          reason: 'lyrics-safety-block',
+          targetCount: 2
+        }
+      };
+    });
+
+    await consumePlayerPickNextStream({
+      queue: [track('current')],
+      currentIndex: 0,
+      stream,
+      onQueueAppended,
+      onDebug: vi.fn(),
+      onDone
+    });
+
+    expect(onQueueAppended).not.toHaveBeenCalled();
+    expect(onDone).toHaveBeenCalledOnce();
+    expect(onDone).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'dj.pick-next.done',
+      added: false,
+      reason: 'lyrics-safety-block',
+      data: expect.objectContaining({ addedCount: 0, targetCount: 2 })
+    }));
+  });
 });
 
 function track(id: string): QueueTrackDto {
