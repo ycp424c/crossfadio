@@ -12,3 +12,6 @@ playwright-report
 # Local agent settings
 .claude/
 .trae/
+
+# Isolated feature worktrees
+.worktrees/
