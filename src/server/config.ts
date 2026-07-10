@@ -1,3 +1,5 @@
+import { lyricsSelectionModeSchema, type LyricsSelectionMode } from './music-agent/track-understanding.js';
+
 export type ServerConfig = {
   jwtSecret: string;
   jwtTtlDays: number;
@@ -7,6 +9,7 @@ export type ServerConfig = {
   host: string;
   allowedOrigins: string[];
   adminNcmId: string | null;
+  lyricsSelectionMode: LyricsSelectionMode;
 };
 
 const DEFAULT_EMBEDDING_BASE_URL = 'https://dashscope.aliyuncs.com/compatible-mode/v1';
@@ -41,10 +44,16 @@ export function loadConfig(): ServerConfig {
       .split(',')
       .map((s) => s.trim())
       .filter(Boolean),
-    adminNcmId: process.env.CROSSFADIO_ADMIN_NCM_ID?.trim() || null
+    adminNcmId: process.env.CROSSFADIO_ADMIN_NCM_ID?.trim() || null,
+    lyricsSelectionMode: resolveLyricsSelectionMode(process.env.CROSSFADIO_LYRICS_SELECTION_MODE)
   };
 
   return _config;
+}
+
+function resolveLyricsSelectionMode(value: string | undefined): LyricsSelectionMode {
+  const parsed = lyricsSelectionModeSchema.safeParse(value?.trim());
+  return parsed.success ? parsed.data : 'off';
 }
 
 export function getConfig(): ServerConfig {
