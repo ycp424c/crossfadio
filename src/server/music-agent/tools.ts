@@ -85,6 +85,7 @@ export type MusicAgentTool = (
 
 export type MusicAgentToolRegistry = Partial<Record<MusicAgentToolName, MusicAgentTool>> & {
   prepare_for_ranking?: MusicAgentTool;
+  getQueryPlan?: () => QueryPlan | null;
   getQueryFunnel?: () => QueryFunnelEntry[];
   recordQueryFunnel?: () => void;
   recordFinalPicks?: (picks: FinalPick[]) => void;
@@ -178,6 +179,7 @@ export function createMusicAgentTools(input: CreateMusicAgentToolsInput): MusicA
 
   const registry: MusicAgentToolRegistry = {
     prepare_for_ranking: async (_toolInput, signal) => prepareCandidateQuality(input, state, signal),
+    getQueryPlan: () => state.queryPlan,
 
     get_context_summary: async (_toolInput, signal) => {
       if (signal?.aborted) return abortedObservation(input.candidatePool);

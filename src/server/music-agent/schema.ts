@@ -335,6 +335,34 @@ export const finalPickDiagnosticsSchema = z.object({
 
 export type FinalPickDiagnostics = z.infer<typeof finalPickDiagnosticsSchema>;
 
+const lyricsAwareDiagnosticsSchema = z.object({
+  mode: z.enum(['off', 'shadow', 'enforce_fit', 'enforce_all']),
+  enrichment: z.object({
+    shortlistCount: z.number().int().nonnegative(), cacheHits: z.number().int().nonnegative(),
+    cacheMisses: z.number().int().nonnegative(), lyricAttempted: z.number().int().nonnegative(),
+    lyricSuccess: z.number().int().nonnegative(), lyricMissing: z.number().int().nonnegative(),
+    lyricFail: z.number().int().nonnegative(), lyricTimeout: z.number().int().nonnegative(),
+    lyricCancelled: z.number().int().nonnegative(), wikiAttempted: z.number().int().nonnegative(),
+    wikiSuccess: z.number().int().nonnegative(), wikiFail: z.number().int().nonnegative(),
+    wikiTimeout: z.number().int().nonnegative(), wikiCancelled: z.number().int().nonnegative(),
+    cacheWriteFailed: z.number().int().nonnegative(), sampledChars: z.number().int().nonnegative(),
+    elapsedMs: z.number().nonnegative(), deadlineReached: z.boolean()
+  }).strict(),
+  promptChars: z.number().int().nonnegative(),
+  assessmentCoverageValid: z.boolean(),
+  assessmentValidationProblems: z.array(z.string().max(160)).max(24),
+  decisions: z.array(z.object({
+    id: z.string().min(1),
+    compatibility: z.enum(['compatible', 'uncertain', 'conflict']),
+    compatibilityConfidence: z.enum(['low', 'medium', 'high']),
+    quality: z.enum(['trusted', 'acceptable', 'suspicious']),
+    eligible: z.boolean()
+  }).strict()).max(12),
+  allReturnedPicksAssessed: z.boolean(),
+  enforcementApplied: z.boolean(),
+  fallbackSuppressed: z.boolean()
+}).strict();
+
 export const queryFunnelEntrySchema = z.object({
   query: z.string().min(1),
   normalizedQuery: z.string().min(1),
@@ -436,6 +464,7 @@ export const musicAgentFinalOutputSchema = z.object({
   picks: z.array(finalPickSchema).min(1).max(AUTO_FILL_BATCH_SIZE_MAX),
   rejected: z.array(rejectedPickSchema).default([]),
   finalPickDiagnostics: finalPickDiagnosticsSchema.optional(),
+  lyricsAwareDiagnostics: lyricsAwareDiagnosticsSchema.optional(),
   queryFunnel: z.array(queryFunnelEntrySchema).default([]),
   trace: z.array(agentTraceStepSchema).default([]),
   candidateScoreTable: z.array(candidateScoreTableRowSchema).default([])
@@ -454,6 +483,7 @@ export const musicAgentRunOutputSchema = z.discriminatedUnion('status', [
     picks: z.array(finalPickSchema).length(0),
     rejected: z.array(rejectedPickSchema).default([]),
     finalPickDiagnostics: finalPickDiagnosticsSchema.optional(),
+    lyricsAwareDiagnostics: lyricsAwareDiagnosticsSchema.optional(),
     queryFunnel: z.array(queryFunnelEntrySchema).default([]),
     trace: z.array(agentTraceStepSchema).default([]),
     candidateScoreTable: z.array(candidateScoreTableRowSchema).default([])

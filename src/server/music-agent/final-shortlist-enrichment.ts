@@ -4,6 +4,7 @@ import type { NcmRequestOptions } from '../ncm/client.js';
 import {
   getMusicTrackAnalysisCaches,
   recordMusicTrackLyricRefresh,
+  saveMusicTrackSemanticProfile,
   type MusicTrackAnalysisCacheRecord
 } from '../store/music-track-analysis-cache.js';
 import {
@@ -38,6 +39,15 @@ export type FinalShortlistEnricher = (
   options?: { signal?: AbortSignal }
 ) => Promise<FinalShortlistEnrichmentResult>;
 
+export type PersistTrackAssessmentsInput = {
+  assessments: TrackAssessment[];
+  enrichment: FinalShortlistEnrichmentResult;
+};
+
+export type TrackAssessmentPersister = (
+  input: PersistTrackAssessmentsInput
+) => Promise<void> | void;
+
 export type FinalShortlistNcmClient = {
   getLyric(id: string, options?: NcmRequestOptions): Promise<NcmLyric | null>;
   getSongWikiSummary(
@@ -57,6 +67,80 @@ export type CreateFinalShortlistEnricherOptions = {
   maxLyricEvidenceChars?: number;
   now?: () => number;
 };
+
+export function createFinalShortlistAssessmentPersister({
+  analyzerVersion,
+  analysisModel
+}: {
+  analyzerVersion: string;
+  analysisModel: string;
+}): TrackAssessmentPersister {
+  return ({ assessments, enrichment }) => {
+    const packetsById = new Map(enrichment.promptPackets.map((packet) => [packet.id, packet]));
+    const caches = getMusicTrackAnalysisCaches('ncm', assessments.map((assessment) => assessment.id));
+    for (const assessment of assessments) {
+      const packet = packetsById.get(assessment.id);
+      if (packet?.kind !== 'evidence') continue;
+      const cached = caches.get(assessment.id) ?? null;
+      if (!cached) continue;
+      saveMusicTrackSemanticProfile({
+        provider: 'ncm',
+        trackId: assessment.id,
+        analyzerVersion,
+        analysisModel,
+        lyricHash: cached.lyricHash,
+        lyricRefreshedAt: cached.lastLyricRefreshAt,
+        profile: assessment.profile,
+        confidence: assessment.confidence,
+        evidence: sanitizeAssessmentEvidence(assessment.evidence, packet),
+        extractionSummary: stableExtractionSummary(packet)
+      });
+    }
+  };
+}
+
+function sanitizeAssessmentEvidence(
+  evidence: TrackAssessment['evidence'],
+  packet: Extract<ShortlistPromptPacket, { kind: 'evidence' }>
+): TrackAssessment['evidence'] {
+  const rawSamples = packet.lyricEvidence.sampledLines.flatMap((line) =>
+    [line.text, line.translation].filter((value): value is string => Boolean(value)).map(normalizedText)
+  );
+  return evidence.filter(({ claim }) => {
+    const value = claim.trim();
+    const normalizedClaim = normalizedText(value);
+    return value.length > 0
+      && value.length <= 160
+      && !/[\r\n]/.test(value)
+      && !/\[\d{1,3}:\d{2}(?:[.:]\d{1,3})?\]/.test(value)
+      && !/[“”"「」『』]/.test(value)
+      && !rawSamples.some((sample) =>
+        sample.length >= 12
+        && normalizedClaim.length >= 12
+        && (sample.includes(normalizedClaim) || normalizedClaim.includes(sample))
+      );
+  });
+}
+
+function normalizedText(value: string): string {
+  return value.toLowerCase().replace(/\s+/g, ' ').trim();
+}
+
+function stableExtractionSummary(
+  packet: Extract<ShortlistPromptPacket, { kind: 'evidence' }>
+): Record<string, unknown> {
+  const evidence = packet.lyricEvidence;
+  return {
+    lyricStatus: evidence.lyricStatus,
+    sampleMode: evidence.sampleMode,
+    lineCount: evidence.lineCount,
+    hasTranslation: evidence.hasTranslation,
+    repeatedHookCount: evidence.repeatedHookCount,
+    sampledCharCount: evidence.sampledCharCount,
+    creditRoleCount: Object.values(evidence.credits).filter((names) => names.length > 0).length,
+    wikiTags: packet.wikiTags.slice(0, 8)
+  };
+}
 
 export function createFinalShortlistEnricher({
   ncmClient,

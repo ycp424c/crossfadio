@@ -21,6 +21,15 @@ import type {
 } from './schema.js';
 import { parseAutoFillBatchSize } from '../../shared/dj.js';
 import { getActiveTemporaryQueueBanDedupeState } from '../store/temporary-bans.js';
+import {
+  createFinalShortlistAssessmentPersister,
+  createFinalShortlistEnricher,
+  type FinalShortlistEnricher,
+  type TrackAssessmentPersister
+} from './final-shortlist-enrichment.js';
+import type { LyricsSelectionMode } from './track-understanding.js';
+
+const TRACK_ANALYZER_VERSION = 'lyrics-selection-v1';
 
 export type MusicAgentOptions = {
   llmClient?: MusicAgentLlmClient;
@@ -28,6 +37,10 @@ export type MusicAgentOptions = {
   embeddingClient?: MusicAgentEmbeddingClient | null;
   embeddingModel?: string | null;
   webMusicDiscoveryProvider?: WebMusicDiscoveryProvider | null;
+  lyricsSelectionMode?: LyricsSelectionMode;
+  finalShortlistEnricher?: FinalShortlistEnricher;
+  persistTrackAssessments?: TrackAssessmentPersister;
+  trackAnalysisModel?: string;
 };
 
 type EmbeddingRuntime = {
@@ -80,11 +93,19 @@ export class MusicAgent {
   private readonly fallbackLogger: ((event: MusicAgentFallbackLogEvent & { userId: string }) => void) | undefined;
   private readonly embeddingRuntime: EmbeddingRuntime | null;
   private readonly webMusicDiscoveryProvider: WebMusicDiscoveryProvider | null;
+  private readonly lyricsSelectionMode: LyricsSelectionMode;
+  private readonly finalShortlistEnricher: FinalShortlistEnricher | undefined;
+  private readonly persistTrackAssessments: TrackAssessmentPersister | undefined;
+  private readonly trackAnalysisModel: string;
 
   constructor(options: MusicAgentOptions = {}) {
     this.llmClient = resolveLlmClient(options);
     this.embeddingRuntime = resolveEmbeddingRuntime(options);
     this.webMusicDiscoveryProvider = resolveWebMusicDiscoveryProvider(options);
+    this.lyricsSelectionMode = resolveLyricsSelectionMode(options);
+    this.finalShortlistEnricher = options.finalShortlistEnricher;
+    this.persistTrackAssessments = options.persistTrackAssessments;
+    this.trackAnalysisModel = resolveTrackAnalysisModel(options);
     this.fallbackLogger = options.llmConfig
       ? (event) => {
           const logger = getLogger();
@@ -127,6 +148,20 @@ export class MusicAgent {
       webMusicDiscoveryProvider: this.webMusicDiscoveryProvider,
       targetPickCount
     });
+    const finalShortlistEnricher = this.lyricsSelectionMode === 'off'
+      ? undefined
+      : this.finalShortlistEnricher ?? createFinalShortlistEnricher({
+          ncmClient: input.ncmClient,
+          mode: this.lyricsSelectionMode,
+          analyzerVersion: TRACK_ANALYZER_VERSION,
+          analysisModel: this.trackAnalysisModel
+        });
+    const persistTrackAssessments = this.lyricsSelectionMode === 'off'
+      ? undefined
+      : this.persistTrackAssessments ?? createFinalShortlistAssessmentPersister({
+          analyzerVersion: TRACK_ANALYZER_VERSION,
+          analysisModel: this.trackAnalysisModel
+        });
 
     return runMusicAgentLoop({
       mode: 'pick_next',
@@ -137,6 +172,9 @@ export class MusicAgent {
       budget,
       targetPickCount,
       signal: input.signal,
+      lyricsSelectionMode: this.lyricsSelectionMode,
+      finalShortlistEnricher,
+      persistTrackAssessments,
       fallbackLogger: this.withUserIdFallbackLogger(input.userId)
     });
   }
@@ -267,6 +305,25 @@ function resolveEmbeddingRuntime(options: MusicAgentOptions): EmbeddingRuntime |
 function resolveWebMusicDiscoveryProvider(options: MusicAgentOptions): WebMusicDiscoveryProvider | null {
   if ('webMusicDiscoveryProvider' in options) return options.webMusicDiscoveryProvider ?? null;
   return options.llmConfig ? createDefaultWebMusicDiscoveryProvider() : null;
+}
+
+function resolveLyricsSelectionMode(options: MusicAgentOptions): LyricsSelectionMode {
+  if (options.lyricsSelectionMode) return options.lyricsSelectionMode;
+  try {
+    return getConfig().lyricsSelectionMode;
+  } catch {
+    return 'off';
+  }
+}
+
+function resolveTrackAnalysisModel(options: MusicAgentOptions): string {
+  if (options.trackAnalysisModel?.trim()) return options.trackAnalysisModel.trim();
+  if (options.llmConfig?.model.trim()) return options.llmConfig.model.trim();
+  try {
+    return getConfig().llm.model;
+  } catch {
+    return 'music-agent-runtime-model';
+  }
 }
 
 function pickNextBudget(targetPickCount = 2): AgentBudget {

@@ -122,6 +122,26 @@ export const finalShortlistEnrichmentDiagnosticsSchema = z.object({
   deadlineReached: z.boolean()
 }).strict();
 
+export const lyricsAwareDecisionSummarySchema = z.object({
+  id: z.string().min(1),
+  compatibility: z.enum(['compatible', 'uncertain', 'conflict']),
+  compatibilityConfidence: z.enum(['low', 'medium', 'high']),
+  quality: z.enum(['trusted', 'acceptable', 'suspicious']),
+  eligible: z.boolean()
+}).strict();
+
+export const lyricsAwareDiagnosticsSchema = z.object({
+  mode: lyricsSelectionModeSchema,
+  enrichment: finalShortlistEnrichmentDiagnosticsSchema,
+  promptChars: z.number().int().nonnegative(),
+  assessmentCoverageValid: z.boolean(),
+  assessmentValidationProblems: z.array(z.string().max(160)).max(24),
+  decisions: z.array(lyricsAwareDecisionSummarySchema).max(12),
+  allReturnedPicksAssessed: z.boolean(),
+  enforcementApplied: z.boolean(),
+  fallbackSuppressed: z.boolean()
+}).strict();
+
 export type SemanticLevel = z.infer<typeof semanticLevelSchema>;
 export type LyricsSelectionMode = z.infer<typeof lyricsSelectionModeSchema>;
 export type TrackSemanticProfile = z.infer<typeof trackSemanticProfileSchema>;
@@ -133,3 +153,5 @@ export type ShortlistBasePromptPacket = z.infer<typeof shortlistBasePromptPacket
 export type ShortlistProfilePromptPacket = z.infer<typeof shortlistProfilePromptPacketSchema>;
 export type ShortlistEvidencePromptPacket = z.infer<typeof shortlistEvidencePromptPacketSchema>;
 export type FinalShortlistEnrichmentDiagnostics = z.infer<typeof finalShortlistEnrichmentDiagnosticsSchema>;
+export type LyricsAwareDecisionSummary = z.infer<typeof lyricsAwareDecisionSummarySchema>;
+export type LyricsAwareDiagnostics = z.infer<typeof lyricsAwareDiagnosticsSchema>;

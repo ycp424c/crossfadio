@@ -1,4 +1,8 @@
-import { buildFinalPickMessages, buildLoopMessages, FINAL_PICK_RESPONSE_FORMAT } from './prompts.js';
+import {
+  buildFinalPickPromptPayload,
+  buildLoopMessages,
+  FINAL_PICK_RESPONSE_FORMAT
+} from './prompts.js';
 import { CandidatePool, validateFinalPicks } from './candidates.js';
 import { parseAutoFillBatchSize } from '../../shared/dj.js';
 import {
@@ -28,6 +32,25 @@ import {
   type QueryFunnelEntry
 } from './schema.js';
 import type { MusicAgentToolRegistry, ToolObservation } from './tools.js';
+import type {
+  FinalShortlistEnricher,
+  FinalShortlistEnrichmentResult,
+  TrackAssessmentPersister
+} from './final-shortlist-enrichment.js';
+import {
+  evaluateCandidateQuality,
+  evaluateTrackCompatibility,
+  type CandidateQualityFacts,
+  type CandidateQualityDecision,
+  type TrackCompatibilityDecision
+} from './selection-eligibility.js';
+import type {
+  LyricsAwareDecisionSummary,
+  LyricsAwareDiagnostics,
+  LyricsSelectionMode,
+  ShortlistPromptPacket,
+  TrackAssessment
+} from './track-understanding.js';
 
 export type RunMusicAgentLoopInput = {
   llmClient: MusicAgentLlmClient;
@@ -39,6 +62,9 @@ export type RunMusicAgentLoopInput = {
   mode?: MusicAgentFinalOutput['mode'];
   signal?: AbortSignal;
   fallbackLogger?: MusicAgentFallbackLogger;
+  finalShortlistEnricher?: FinalShortlistEnricher;
+  lyricsSelectionMode?: LyricsSelectionMode;
+  persistTrackAssessments?: TrackAssessmentPersister;
 };
 
 export type MusicAgentFallbackReason =
@@ -97,6 +123,27 @@ type CompletedFinalPicks = {
   picks: FinalPick[];
   finalPickDiagnostics: FinalPickDiagnostics;
 };
+
+type LyricsAwareDecision = {
+  assessment: TrackAssessment;
+  compatibility: TrackCompatibilityDecision;
+  quality: CandidateQualityDecision;
+  eligible: boolean;
+};
+
+type LyricsAwareRunState = {
+  preparation?: Promise<FinalShortlistEnrichmentResult>;
+  enrichment?: FinalShortlistEnrichmentResult;
+  assessments: Map<string, TrackAssessment>;
+  decisions: Map<string, LyricsAwareDecision>;
+  coverageValid: boolean;
+  validationProblems: string[];
+  promptChars: number;
+  persistenceAttempted: boolean;
+  fallbackSuppressed: boolean;
+};
+
+const lyricsAwareRunStates = new WeakMap<RunMusicAgentLoopInput, LyricsAwareRunState>();
 
 const DEFAULT_TOOL_NAME = 'rank_candidates';
 
@@ -166,6 +213,25 @@ type ToolRewrite = {
 };
 
 export async function runMusicAgentLoop(input: RunMusicAgentLoopInput): Promise<MusicAgentRunOutput> {
+  if (isLyricsAwareEnabled(input)) {
+    lyricsAwareRunStates.set(input, {
+      assessments: new Map(),
+      decisions: new Map(),
+      coverageValid: false,
+      validationProblems: [],
+      promptChars: 0,
+      persistenceAttempted: false,
+      fallbackSuppressed: false
+    });
+  }
+  try {
+    return await runMusicAgentLoopInternal(input);
+  } finally {
+    lyricsAwareRunStates.delete(input);
+  }
+}
+
+async function runMusicAgentLoopInternal(input: RunMusicAgentLoopInput): Promise<MusicAgentRunOutput> {
   const startedAt = Date.now();
   const observations: LoopObservation[] = [];
   const trace: AgentTraceStep[] = [];
@@ -210,7 +276,11 @@ export async function runMusicAgentLoop(input: RunMusicAgentLoopInput): Promise<
     step += 1;
 
     if (output.type === 'final') {
+      if (isLyricsAwareEnabled(input) && output.assessments.length === 0) {
+        return askExtraFinalPick(input, observations, trace, startedAt, step, llmCalls, toolCalls);
+      }
       try {
+        await applyLyricsAwareAssessments(output, input);
         const picks = validateEligibleFinalPicks(output.picks, input);
         await prepareForRanking(input);
         const completed = completeFinalPicks(picks, input, output.picks.length, output.rejected?.length ?? 0);
@@ -227,6 +297,7 @@ export async function runMusicAgentLoop(input: RunMusicAgentLoopInput): Promise<
           picks: completed.picks,
           rejected: output.rejected ?? [],
           finalPickDiagnostics: completed.finalPickDiagnostics,
+          ...lyricsAwareOutputFields(input, completed.picks),
           queryFunnel,
           trace,
           candidateScoreTable: createCandidateScoreTable(input)
@@ -432,12 +503,17 @@ async function askExtraFinalPick(
     candidateCount: input.candidatePool.count()
   };
   const finalPickObservations = [...observations, finalObservation];
-  const messages = buildFinalPickMessages({
+  const enrichment = await prepareLyricsAwareShortlist(input);
+  const promptPayload = buildFinalPickPromptPayload({
     context: input.context,
     observations: finalPickObservations,
     candidateSummary: summarizeCandidatePool(input.candidatePool, input.context),
-    targetPickCount: targetPickCount(input)
+    targetPickCount: targetPickCount(input),
+    ...(enrichment ? { promptPackets: enrichment.promptPackets } : {})
   });
+  const messages = promptPayload.messages;
+  const lyricsState = lyricsAwareRunStates.get(input);
+  if (lyricsState) lyricsState.promptChars = promptPayload.promptChars;
 
   const nextLlmCalls = llmCalls + 1;
   const nextStep = step + 1;
@@ -536,13 +612,18 @@ async function retryHardFinalOnlyPick(
     candidateCount: input.candidatePool.count(),
     problems: ['extra final returned non-final output']
   };
-  const messages = buildFinalPickMessages({
+  const enrichment = await prepareLyricsAwareShortlist(input);
+  const promptPayload = buildFinalPickPromptPayload({
     context: input.context,
     observations: [...observations, retryObservation],
     candidateSummary: summarizeCandidatePool(input.candidatePool, input.context),
     targetPickCount: targetPickCount(input),
-    hardFinalOnlyRetry: true
+    hardFinalOnlyRetry: true,
+    ...(enrichment ? { promptPackets: enrichment.promptPackets } : {})
   });
+  const messages = promptPayload.messages;
+  const lyricsState = lyricsAwareRunStates.get(input);
+  if (lyricsState) lyricsState.promptChars = promptPayload.promptChars;
   const nextLlmCalls = llmCalls + 1;
   const nextStep = step + 1;
   let responseContent = '';
@@ -622,6 +703,7 @@ async function acceptExtraFinalPick(
   toolCalls: number
 ): Promise<MusicAgentRunOutput> {
   try {
+    await applyLyricsAwareAssessments(output, input);
     const picks = validateEligibleFinalPicks(output.picks, input);
     await prepareForRanking(input);
     const completed = completeFinalPicks(picks, input, output.picks.length, output.rejected?.length ?? 0);
@@ -652,6 +734,7 @@ async function acceptExtraFinalPick(
       picks: completed.picks,
       rejected: output.rejected ?? [],
       finalPickDiagnostics: completed.finalPickDiagnostics,
+      ...lyricsAwareOutputFields(input, completed.picks),
       queryFunnel,
       trace,
       candidateScoreTable: createCandidateScoreTable(input)
@@ -1023,16 +1106,19 @@ async function rankedFallback(
 ): Promise<MusicAgentRunOutput> {
   const mode = resolveMode(input);
   await prepareForRanking(input);
+  await prepareLyricsAwareShortlist(input);
   const options = rankOptions(input.context);
   const ranked = rankCandidates(input.candidatePool.list(), input.candidatePool.count(), options);
   const selectable = rankedFallbackSelectableCandidates(ranked, input);
-  const picks = selectRankedPickCandidates(selectable, targetPickCount(input)).map((candidate) => ({
+  const picks = selectRankedPickCandidates(selectable, targetPickCount(input), input).map((candidate) => ({
     id: candidate.id,
     name: candidate.name,
     artist: candidate.artist,
     reason: 'ranked fallback',
     source: candidate.sources[0]
   }));
+  const finalPickDiagnostics = extra.finalPickDiagnostics
+    ?? lyricsAwareRankedDiagnostics(input, picks);
   const queryFunnel = recordSearchHistoryAndReadQueryFunnel(input);
 
   const output: MusicAgentRunOutput = {
@@ -1043,7 +1129,8 @@ async function rankedFallback(
       : '暂时没有可用候选，先不追加新歌。',
     picks,
     rejected: [],
-    ...(extra.finalPickDiagnostics ? { finalPickDiagnostics: extra.finalPickDiagnostics } : {}),
+    ...(finalPickDiagnostics ? { finalPickDiagnostics } : {}),
+    ...lyricsAwareOutputFields(input, picks),
     queryFunnel,
     trace,
     candidateScoreTable: buildCandidateScoreTableRows(ranked, options)
@@ -1062,7 +1149,7 @@ async function rankedFallback(
     budget: input.budget,
     lastTraceStep: trace.at(-1),
     traceLastSteps: trace.slice(-3),
-    finalPickDiagnostics: extra.finalPickDiagnostics,
+    finalPickDiagnostics,
     queryFunnel,
     candidateScoreTablePreview: output.candidateScoreTable.slice(0, 20),
     candidateScoreTableCount: output.candidateScoreTable.length,
@@ -1082,22 +1169,28 @@ async function rankedConvergence(
 ): Promise<MusicAgentRunOutput> {
   const mode = resolveMode(input);
   await prepareForRanking(input);
+  await prepareLyricsAwareShortlist(input);
   const options = rankOptions(input.context);
   const ranked = rankCandidates(input.candidatePool.list(), input.candidatePool.count(), options);
-  const picks = selectRankedPickCandidates(ranked, targetPickCount(input)).map((candidate) => ({
+  const picks = selectRankedPickCandidates(ranked, targetPickCount(input), input).map((candidate) => ({
     id: candidate.id,
     name: candidate.name,
     artist: candidate.artist,
     reason: 'ranked convergence',
     source: candidate.sources[0]
   }));
+  const finalPickDiagnostics = lyricsAwareRankedDiagnostics(input, picks);
 
   const output: MusicAgentRunOutput = {
-    status: 'ok',
+    status: picks.length > 0 ? 'ok' : 'empty_pool',
     mode,
-    say: `我从已经排序的候选池里收束出${formatPickCount(picks.length)}更适合现在的歌。`,
+    say: picks.length > 0
+      ? `我从已经排序的候选池里收束出${formatPickCount(picks.length)}更适合现在的歌。`
+      : '候选与当前场景存在明确冲突，先不追加新歌。',
     picks,
     rejected: [],
+    ...(finalPickDiagnostics ? { finalPickDiagnostics } : {}),
+    ...lyricsAwareOutputFields(input, picks),
     queryFunnel: recordAndReadQueryFunnel(input, picks),
     trace,
     candidateScoreTable: buildCandidateScoreTableRows(ranked, options)
@@ -1179,12 +1272,17 @@ function createCandidateScoreTable(input: RunMusicAgentLoopInput) {
   return buildCandidateScoreTableRows(ranked, options);
 }
 
-function selectRankedPickCandidates(candidates: MusicCandidate[], target: number): MusicCandidate[] {
-  const diverse = diversifyCandidates(candidates.slice(0, 10), target);
+function selectRankedPickCandidates(
+  candidates: MusicCandidate[],
+  target: number,
+  input: RunMusicAgentLoopInput
+): MusicCandidate[] {
+  const eligible = candidates.filter((candidate) => isCandidateEligible(candidate, input));
+  const diverse = diversifyCandidates(eligible.slice(0, 10), target);
   if (diverse.length >= target) return diverse;
 
   const selectedIds = new Set(diverse.map((candidate) => candidate.id));
-  const backfill = candidates
+  const backfill = eligible
     .filter((candidate) => !selectedIds.has(candidate.id) && !isHardFilteredCandidate(candidate))
     .slice(0, target - diverse.length);
 
@@ -1192,8 +1290,12 @@ function selectRankedPickCandidates(candidates: MusicCandidate[], target: number
 }
 
 function validateEligibleFinalPicks(picks: FinalPick[], input: RunMusicAgentLoopInput): FinalPick[] {
-  return validateFinalPicks(picks, input.candidatePool, {
-    isCandidateEligible: (candidate) => !isHardFilteredCandidate(candidate)
+  const eligiblePicks = picks.filter((pick) => {
+    const candidate = input.candidatePool.get(pick.id);
+    return !candidate || isCandidateEligible(candidate, input);
+  });
+  return validateFinalPicks(eligiblePicks, input.candidatePool, {
+    isCandidateEligible: (candidate) => isCandidateEligible(candidate, input)
   }).slice(0, targetPickCount(input));
 }
 
@@ -1203,7 +1305,7 @@ function completeFinalPicks(
   rawPickCount = picks.length,
   rejectedPickCount = 0
 ): CompletedFinalPicks {
-  return modeFromContext(input.context) === 'pick_next'
+  const completed = modeFromContext(input.context) === 'pick_next'
     ? rankedBackfillFinalPicks(picks, input, rawPickCount, rejectedPickCount)
     : {
         picks,
@@ -1217,6 +1319,51 @@ function completeFinalPicks(
           rejectedPickCount
         })
       };
+  return withLyricsAwareFinalPickDiagnostics(completed, input);
+}
+
+function withLyricsAwareFinalPickDiagnostics(
+  completed: CompletedFinalPicks,
+  input: RunMusicAgentLoopInput
+): CompletedFinalPicks {
+  const state = lyricsAwareRunStates.get(input);
+  if (!state) return completed;
+  const decisions = [...state.decisions.values()];
+  return {
+    ...completed,
+    finalPickDiagnostics: {
+      ...completed.finalPickDiagnostics,
+      semanticConflictDroppedCount: decisions.filter((decision) =>
+        decision.compatibility.status === 'conflict'
+      ).length,
+      qualityDroppedCount: decisions.filter((decision) =>
+        decision.quality.tier === 'suspicious' && !decision.eligible
+      ).length,
+      unassessedDroppedCount: isEnforcementMode(input)
+        ? Math.max(0, (state.enrichment?.shortlist.length ?? 0) - state.assessments.size)
+        : 0,
+      assessmentValidationFailureCount: state.validationProblems.length > 0 ? 1 : 0
+    }
+  };
+}
+
+function lyricsAwareRankedDiagnostics(
+  input: RunMusicAgentLoopInput,
+  picks: FinalPick[]
+): FinalPickDiagnostics | undefined {
+  if (!lyricsAwareRunStates.has(input)) return undefined;
+  return withLyricsAwareFinalPickDiagnostics({
+    picks,
+    finalPickDiagnostics: buildFinalPickDiagnostics({
+      targetPickCount: targetPickCount(input),
+      rawPickCount: picks.length,
+      eligiblePickCount: picks.length,
+      acceptedPickCount: picks.length,
+      titleMotifDroppedCount: 0,
+      rankedBackfillCount: 0,
+      rejectedPickCount: 0
+    })
+  }, input).finalPickDiagnostics;
 }
 
 function rankedBackfillFinalPicks(
@@ -1262,7 +1409,7 @@ function rankedBackfillFinalPicks(
   const blockedTitleMotifs = titleMotifsFromFinalPicks(diversePicks, input);
   const options = rankOptions(input.context);
   const ranked = rankCandidates(input.candidatePool.list(), input.candidatePool.count(), options)
-    .filter((candidate) => !pickedIds.has(candidate.id) && !isHardFilteredCandidate(candidate));
+    .filter((candidate) => !pickedIds.has(candidate.id) && isCandidateEligible(candidate, input));
   const backfill = diversifyCandidates(ranked, target - diversePicks.length, { blockedTitleMotifs }).map((candidate) => ({
     id: candidate.id,
     name: candidate.name,
@@ -1369,6 +1516,193 @@ function formatPickCount(pickCount: number): string {
 
 async function prepareForRanking(input: RunMusicAgentLoopInput): Promise<void> {
   await input.tools.prepare_for_ranking?.({}, input.signal);
+}
+
+function isLyricsAwareEnabled(input: RunMusicAgentLoopInput): boolean {
+  return (input.lyricsSelectionMode ?? 'off') !== 'off' && input.finalShortlistEnricher !== undefined;
+}
+
+function isEnforcementMode(input: RunMusicAgentLoopInput): boolean {
+  return input.lyricsSelectionMode === 'enforce_fit' || input.lyricsSelectionMode === 'enforce_all';
+}
+
+async function prepareLyricsAwareShortlist(
+  input: RunMusicAgentLoopInput
+): Promise<FinalShortlistEnrichmentResult | null> {
+  const state = lyricsAwareRunStates.get(input);
+  if (!state || !input.finalShortlistEnricher) return null;
+  if (!state.preparation) {
+    const ranked = rankCandidates(
+      input.candidatePool.list(),
+      input.candidatePool.count(),
+      rankOptions(input.context)
+    );
+    state.preparation = input.finalShortlistEnricher(ranked, { signal: input.signal })
+      .catch(() => {
+        state.validationProblems = ['enrichment_failed'];
+        const shortlist = ranked.slice(0, 12);
+        return {
+          shortlist,
+          promptPackets: shortlist.map((candidate) => ({
+            id: candidate.id,
+            name: candidate.name,
+            artist: candidate.artist,
+            sources: candidate.sources,
+            ...(candidate.qualitySignals ? { qualitySignals: candidate.qualitySignals } : {}),
+            kind: 'base' as const
+          })),
+          diagnostics: emptyLyricsAwareEnrichmentDiagnostics(shortlist.length)
+        };
+      })
+      .then((enrichment) => {
+        state.enrichment = enrichment;
+        for (const packet of enrichment.promptPackets) {
+          if (packet.kind === 'profile') state.assessments.set(packet.id, packet.assessment);
+        }
+        rebuildLyricsAwareDecisions(input);
+        return enrichment;
+      });
+  }
+  return state.preparation;
+}
+
+function emptyLyricsAwareEnrichmentDiagnostics(shortlistCount: number) {
+  return {
+    shortlistCount,
+    cacheHits: 0, cacheMisses: shortlistCount,
+    lyricAttempted: 0, lyricSuccess: 0, lyricMissing: 0, lyricFail: 0,
+    lyricTimeout: 0, lyricCancelled: 0, wikiAttempted: 0, wikiSuccess: 0,
+    wikiFail: 0, wikiTimeout: 0, wikiCancelled: 0, cacheWriteFailed: 0,
+    sampledChars: 0, elapsedMs: 0, deadlineReached: false
+  };
+}
+
+async function applyLyricsAwareAssessments(
+  output: Extract<ParsedLoopOutput, { type: 'final' }>,
+  input: RunMusicAgentLoopInput
+): Promise<void> {
+  const state = lyricsAwareRunStates.get(input);
+  if (!state) return;
+  const enrichment = await prepareLyricsAwareShortlist(input);
+  if (!enrichment) return;
+
+  const expectedIds = enrichment.shortlist.map((candidate) => candidate.id);
+  const expected = new Set(expectedIds);
+  const returnedIds = output.assessments.map((assessment) => assessment.id);
+  const returned = new Set(returnedIds);
+  const duplicateIds = returnedIds.filter((id, index) => returnedIds.indexOf(id) !== index);
+  const missingIds = expectedIds.filter((id) => !returned.has(id));
+  const unknownIds = [...returned].filter((id) => !expected.has(id));
+  const problems = [
+    ...(duplicateIds.length > 0 ? [`duplicate_assessment_ids:${[...new Set(duplicateIds)].join(',')}`] : []),
+    ...(missingIds.length > 0 ? [`missing_assessment_ids:${missingIds.join(',')}`] : []),
+    ...(unknownIds.length > 0 ? [`unknown_assessment_ids:${unknownIds.join(',')}`] : []),
+    ...(returnedIds.length !== expectedIds.length
+      ? [`assessment_count_mismatch:${returnedIds.length}/${expectedIds.length}`]
+      : [])
+  ];
+
+  state.validationProblems = problems.slice(0, 24);
+  state.coverageValid = problems.length === 0;
+  if (!state.coverageValid) {
+    if (isEnforcementMode(input)) {
+      state.assessments.clear();
+      state.decisions.clear();
+    }
+    return;
+  }
+
+  state.assessments = new Map(output.assessments.map((assessment) => [assessment.id, assessment]));
+  rebuildLyricsAwareDecisions(input);
+  if (!state.persistenceAttempted && input.persistTrackAssessments) {
+    state.persistenceAttempted = true;
+    try {
+      await input.persistTrackAssessments({ assessments: output.assessments, enrichment });
+    } catch {
+      enrichment.diagnostics.cacheWriteFailed += 1;
+    }
+  }
+}
+
+function rebuildLyricsAwareDecisions(input: RunMusicAgentLoopInput): void {
+  const state = lyricsAwareRunStates.get(input);
+  if (!state?.enrichment) return;
+  const packetById = new Map(state.enrichment.promptPackets.map((packet) => [packet.id, packet]));
+  const preliminary = state.enrichment.shortlist.flatMap((candidate) => {
+    const assessment = state.assessments.get(candidate.id);
+    if (!assessment) return [];
+    const compatibility = evaluateTrackCompatibility({
+      context: input.context,
+      assessment,
+      listeningConstraints: input.tools.getQueryPlan?.()?.listeningConstraints ?? []
+    });
+    const quality = evaluateCandidateQuality(candidate, qualityFacts(packetById.get(candidate.id)));
+    return [{ candidate, assessment, compatibility, quality }];
+  });
+  const hasAcceptableAlternative = preliminary.some(({ compatibility, quality }) =>
+    compatibility.status !== 'conflict' && quality.tier !== 'suspicious'
+  );
+  state.decisions = new Map(preliminary.map(({ candidate, assessment, compatibility, quality }) => {
+    const externalSuspicious = quality.tier === 'suspicious' && !candidate.sources.includes('liked');
+    const eligible = !isEnforcementMode(input)
+      || (compatibility.status !== 'conflict'
+        && (input.lyricsSelectionMode !== 'enforce_all'
+          || !externalSuspicious
+          || !hasAcceptableAlternative));
+    return [candidate.id, { assessment, compatibility, quality, eligible }];
+  }));
+}
+
+function qualityFacts(packet: ShortlistPromptPacket | undefined): CandidateQualityFacts {
+  if (packet?.kind === 'evidence') {
+    return {
+      lyricStatus: packet.lyricEvidence.lyricStatus,
+      creditRoleCount: Object.values(packet.lyricEvidence.credits)
+        .filter((names) => names.length > 0).length,
+      wikiTags: packet.wikiTags
+    };
+  }
+  return { lyricStatus: 'unknown', creditRoleCount: 0, wikiTags: [] };
+}
+
+function isCandidateEligible(candidate: MusicCandidate, input: RunMusicAgentLoopInput): boolean {
+  if (isHardFilteredCandidate(candidate)) return false;
+  if (!isEnforcementMode(input)) return true;
+  return lyricsAwareRunStates.get(input)?.decisions.get(candidate.id)?.eligible === true;
+}
+
+function lyricsAwareOutputFields(
+  input: RunMusicAgentLoopInput,
+  picks: FinalPick[]
+): { lyricsAwareDiagnostics?: LyricsAwareDiagnostics } {
+  const state = lyricsAwareRunStates.get(input);
+  if (!state?.enrichment) return {};
+  if (isEnforcementMode(input) && picks.length === 0 && input.candidatePool.count() > 0) {
+    state.fallbackSuppressed = true;
+  }
+  const decisions: LyricsAwareDecisionSummary[] = state.enrichment.shortlist.flatMap((candidate) => {
+    const decision = state.decisions.get(candidate.id);
+    return decision ? [{
+      id: candidate.id,
+      compatibility: decision.compatibility.status,
+      compatibilityConfidence: decision.compatibility.confidence,
+      quality: decision.quality.tier,
+      eligible: decision.eligible
+    }] : [];
+  });
+  return {
+    lyricsAwareDiagnostics: {
+      mode: input.lyricsSelectionMode ?? 'off',
+      enrichment: state.enrichment.diagnostics,
+      promptChars: state.promptChars,
+      assessmentCoverageValid: state.coverageValid,
+      assessmentValidationProblems: state.validationProblems,
+      decisions,
+      allReturnedPicksAssessed: picks.every((pick) => state.assessments.has(pick.id)),
+      enforcementApplied: isEnforcementMode(input),
+      fallbackSuppressed: state.fallbackSuppressed
+    }
+  };
 }
 
 function summarizeCandidatePool(pool: CandidatePool, context: MusicAgentContextSummary): string {

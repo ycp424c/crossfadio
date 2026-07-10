@@ -170,6 +170,62 @@ describe('MusicAgent facade', () => {
     expect(ncmClient.getSongDetails).toHaveBeenCalledWith(['101']);
   });
 
+  it('injects the configured shortlist enricher and assessment persister into pickNext only', async () => {
+    const ncmClient = {
+      getLikedSongIds: vi.fn(async () => ['101']),
+      getSongDetails: vi.fn(async () => [
+        { id: 101, name: 'Soft Song', artists: ['Singer'], durationMs: 200_000 }
+      ]),
+      searchSongs: vi.fn(async () => []), getPlaylistDetail: vi.fn(async () => null),
+      getSearchHotDetail: vi.fn(async () => []), getTopSongHints: vi.fn(async () => []),
+      getArtistToplist: vi.fn(async () => [])
+    };
+    const fake = new FakeLlmClient()
+      .queueResponse(JSON.stringify({ type: 'tool_call', tool: 'recall_from_liked', input: { limit: 5 } }))
+      .queueResponse(JSON.stringify({
+        type: 'final', say: 'first', picks: [{ id: '101', reason: 'fit', source: 'liked' }],
+        rejected: [], assessments: []
+      }))
+      .queueResponse(JSON.stringify({
+        type: 'final', say: 'fused', picks: [{ id: '101', reason: 'fit', source: 'liked' }],
+        rejected: [], assessments: [{
+          id: '101',
+          profile: { genres: [], moods: ['calm'], energy: 'low', aggression: 'low', vocalIntensity: 'low', lyricThemes: [], language: 'unknown' },
+          confidence: { genres: 0.2, moods: 0.9, energy: 0.9, aggression: 0.9, vocalIntensity: 0.9, lyricThemes: 0.2, language: 0.2 },
+          evidence: [{ claim: 'mood=calm', source: 'lyric_analysis' }]
+        }]
+      }));
+    const enrich = vi.fn(async (candidates: any[]) => ({
+      shortlist: candidates,
+      promptPackets: candidates.map((candidate) => ({
+        id: candidate.id, name: candidate.name, artist: candidate.artist,
+        sources: candidate.sources, kind: 'base' as const
+      })),
+      diagnostics: {
+        shortlistCount: candidates.length, cacheHits: 0, cacheMisses: candidates.length,
+        lyricAttempted: 0, lyricSuccess: 0, lyricMissing: 0, lyricFail: 0,
+        lyricTimeout: 0, lyricCancelled: 0, wikiAttempted: 0, wikiSuccess: 0,
+        wikiFail: 0, wikiTimeout: 0, wikiCancelled: 0, cacheWriteFailed: 0,
+        sampledChars: 0, elapsedMs: 0, deadlineReached: false
+      }
+    }));
+    const persist = vi.fn();
+    const { MusicAgent } = await import('../../src/server/music-agent/index.js');
+    const agent = new MusicAgent({
+      llmClient: fake,
+      lyricsSelectionMode: 'shadow',
+      finalShortlistEnricher: enrich,
+      persistTrackAssessments: persist
+    });
+
+    const result = await agent.pickNext({ userId: 'lyrics-aware', ncmClient: ncmClient as any });
+
+    expect(result.status).toBe('ok');
+    expect(result.say).toBe('fused');
+    expect(enrich).toHaveBeenCalledTimes(1);
+    expect(persist).toHaveBeenCalledTimes(1);
+  });
+
   it('excludes queued and recently played tracks before ranking MusicAgent candidates', async () => {
     const ncmClient = {
       getLikedSongIds: vi.fn(async () => ['queued-id', 'duplicate-id', 'fresh-1', 'fresh-2']),
@@ -2186,6 +2242,7 @@ describe('createMusicAgentTools', () => {
     expect(candidatePool.get('artist-track-1')).toBeDefined();
     expect(candidatePool.get('playlist-track-1')).toBeDefined();
     expect(JSON.stringify(observation?.data)).toContain('entity_recall');
+    expect(tools.getQueryPlan?.()?.listeningConstraints).toEqual(['下午', '男声', '不吵']);
   });
 
   it('auto-fill mix prefers cantopop web discovery when exact anchors include Cantonese artists', async () => {
