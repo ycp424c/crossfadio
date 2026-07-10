@@ -141,6 +141,43 @@ describe('track compatibility eligibility', () => {
     expect(decision.status).not.toBe('conflict');
   });
 
+  it.each([
+    "I don't want calm music, give me something aggressive",
+    'I do not want soothing music',
+    'I dislike quiet music',
+    'no calm music',
+    '我不想听安静舒缓的，来点躁的',
+    '不是舒缓的'
+  ])('does not activate calm from a negated fallback phrase: %s', (currentUserText) => {
+    const decision = evaluateTrackCompatibility({
+      context: context({ currentUserText }),
+      assessment: assessment({
+        energy: 'high',
+        aggression: 'high',
+        confidence: { energy: 0.95, aggression: 0.95 }
+      })
+    });
+
+    expect(decision.status).not.toBe('conflict');
+  });
+
+  it.each([
+    'never instrumental',
+    'I do not want instrumental music',
+    'I dislike instrumental music',
+    '我不喜欢纯音乐'
+  ])('does not activate instrumental from a negated fallback phrase: %s', (currentUserText) => {
+    const decision = evaluateTrackCompatibility({
+      context: context({ currentUserText }),
+      assessment: assessment({
+        vocalIntensity: 'high',
+        confidence: { vocalIntensity: 0.95 }
+      })
+    });
+
+    expect(decision.status).not.toBe('conflict');
+  });
+
   it('rejects high vocal intensity for instrumental listening unless evidence names an instrumental version', () => {
     const vocal = evaluateTrackCompatibility({
       context: context({
@@ -223,10 +260,14 @@ describe('track compatibility eligibility', () => {
   it.each([
     ['死亡金属', 'death metal'],
     ['デスメタル', 'death metal'],
+    ['死核', 'deathcore'],
+    ['デスコア', 'deathcore'],
     ['硬核', 'hardcore'],
     ['ハードコア', 'hardcore'],
     ['碾核', 'grindcore'],
-    ['グラインドコア', 'grindcore']
+    ['グラインドコア', 'grindcore'],
+    ['金属核', 'metalcore'],
+    ['メタルコア', 'metalcore']
   ])('canonicalizes authoritative aggressive genre %s', (genre, canonicalGenre) => {
     const decision = evaluateTrackCompatibility({
       context: context(),

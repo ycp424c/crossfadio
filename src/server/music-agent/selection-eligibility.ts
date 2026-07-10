@@ -24,10 +24,10 @@ export type CandidateQualityDecision = {
 
 const AGGRESSIVE_GENRE_ALIASES = [
   { canonical: 'death metal', pattern: /(?:\bdeath\s*metal\b|死亡金属|デスメタル)/i },
-  { canonical: 'deathcore', pattern: /\bdeathcore\b/i },
+  { canonical: 'deathcore', pattern: /(?:\bdeathcore\b|死核|デスコア)/i },
   { canonical: 'grindcore', pattern: /(?:\bgrindcore\b|碾核|グラインドコア)/i },
   { canonical: 'hardcore', pattern: /(?:\bhardcore\b|硬核|ハードコア)/i },
-  { canonical: 'metalcore', pattern: /\bmetalcore\b/i }
+  { canonical: 'metalcore', pattern: /(?:\bmetalcore\b|金属核|メタルコア)/i }
 ] as const;
 const CALM_CONSTRAINT_PATTERNS = [
   /\bcalm\b/i,
@@ -317,8 +317,8 @@ function constraintMatches(text: string, pattern: RegExp): Array<{ index: number
 
 function hasPrecedingNegation(clause: string, matchIndex: number): boolean {
   const prefix = clause.slice(Math.max(0, matchIndex - 48), matchIndex);
-  return /(?:不要|别|避免|排除)[^,，;；.!！？]{0,24}$/u.test(prefix)
-    || /\b(?:not|no|without|avoid|exclude)\b[^,;.!?]{0,40}$/iu.test(prefix);
+  return /(?:不想(?:听)?|不喜欢|不是|不要|别|避免|排除)[^,，;；.!！？]{0,24}$/u.test(prefix)
+    || /(?:\b(?:do\s+not|never|dislike|not\s+want|not|no|without|avoid|exclude)\b|\bdon['’]t\b)[^,;.!?]{0,40}$/iu.test(prefix);
 }
 
 function canonicalAggressiveGenres(values: string[]): string[] {
