@@ -987,6 +987,8 @@ describe('runMusicAgentLoop', () => {
     expect(llmClient.calls).toHaveLength(3);
     expectProviderSafeFinalPickResponseFormat(llmClient.calls[1].opts?.responseFormat);
     expectProviderSafeFinalPickResponseFormat(llmClient.calls[2].opts?.responseFormat);
+    expect(llmClient.calls[1].opts?.maxTokens).toBe(16_000);
+    expect(llmClient.calls[2].opts?.maxTokens).toBe(24_000);
     const retryPrompt = llmClient.calls[2].messages.map((message) => message.content).join('\n');
     expect(retryPrompt).toContain('上一轮输出不是 final');
     expect(retryPrompt).not.toContain('tool_call');
