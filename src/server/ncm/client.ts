@@ -117,8 +117,7 @@ export class NcmClient {
 
   async health(): Promise<boolean> {
     try {
-      const response = await this.rawFetch('/', {});
-      return response.ok;
+      return await this.rawFetch('/', {}, (response) => response.ok);
     } catch {
       return false;
     }
@@ -601,24 +600,34 @@ export class NcmClient {
     query: Record<string, string>,
     options?: NcmRequestOptions
   ): Promise<any> {
-    const response = await this.rawFetch(path, query, options);
+    return this.rawFetch(
+      path,
+      query,
+      async (response) => {
+        if (!response.ok) {
+          throw classifyHttpError(path, response.status);
+        }
 
-    if (!response.ok) {
-      throw classifyHttpError(path, response.status);
-    }
-
-    try {
-      return await response.json();
-    } catch (error) {
-      throw new NcmApiError(NCM_ERROR_CODE.BAD_RESPONSE, `NCM returned non-JSON from ${path}`, error);
-    }
+        try {
+          return await response.json();
+        } catch (error) {
+          throw new NcmApiError(
+            NCM_ERROR_CODE.BAD_RESPONSE,
+            `NCM returned non-JSON from ${path}`,
+            error
+          );
+        }
+      },
+      options
+    );
   }
 
-  private async rawFetch(
+  private async rawFetch<T>(
     path: string,
     query: Record<string, string>,
+    consumeResponse: (response: Response) => T | Promise<T>,
     options: NcmRequestOptions = {}
-  ): Promise<Response> {
+  ): Promise<T> {
     const parentSignal = options.signal;
     if (parentSignal?.aborted) {
       throw parentSignal.reason;
@@ -645,13 +654,17 @@ export class NcmClient {
     }, Math.max(0, timeoutMs));
 
     try {
-      return await fetch(url, { method: 'GET', signal: controller.signal });
+      const response = await fetch(url, { method: 'GET', signal: controller.signal });
+      return await consumeResponse(response);
     } catch (error) {
       if (parentSignal?.aborted) {
         throw parentSignal.reason;
       }
       if (timedOut) {
         throw new NcmApiError(NCM_ERROR_CODE.TIMEOUT, `NCM request timed out: ${path}`, error);
+      }
+      if (error instanceof NcmApiError) {
+        throw error;
       }
       throw new NcmApiError(NCM_ERROR_CODE.UNAVAILABLE, `NCM request failed: ${path}`, error);
     } finally {

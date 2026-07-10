@@ -24,6 +24,42 @@ function mockFetch(handler: (url: URL, init?: RequestInit) => Promise<Response>)
   }));
 }
 
+function pendingJsonResponse(signal: AbortSignal, value: unknown): {
+  response: Response;
+  bodyReadStarted: Promise<void>;
+  releaseBody: () => void;
+} {
+  let streamController: ReadableStreamDefaultController<Uint8Array>;
+  let markBodyReadStarted: () => void;
+  const bodyReadStarted = new Promise<void>((resolve) => {
+    markBodyReadStarted = resolve;
+  });
+  const abortBody = (): void => streamController.error(signal.reason);
+  const body = new ReadableStream<Uint8Array>({
+    start(controller) {
+      streamController = controller;
+    }
+  });
+  signal.addEventListener('abort', abortBody, { once: true });
+  const response = new (class extends Response {
+    override json(): Promise<any> {
+      markBodyReadStarted();
+      return super.json();
+    }
+  })(body, { status: 200, headers: { 'Content-Type': 'application/json' } });
+
+  return {
+    response,
+    bodyReadStarted,
+    releaseBody: () => {
+      if (signal.aborted) return;
+      signal.removeEventListener('abort', abortBody);
+      streamController.enqueue(new TextEncoder().encode(JSON.stringify(value)));
+      streamController.close();
+    }
+  };
+}
+
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.useRealTimers();
@@ -196,6 +232,47 @@ describe('NcmClient cancellable enrichment requests', () => {
     expect(fetchAbortSpy).toHaveBeenCalledTimes(1);
     expect(removeListenerSpy).toHaveBeenCalledWith('abort', expect.any(Function));
     expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('keeps parent cancellation active while the response body is pending', async () => {
+    const parent = new AbortController();
+    let pending: ReturnType<typeof pendingJsonResponse> | undefined;
+    mockFetch(async (_url, init) => {
+      pending = pendingJsonResponse(init?.signal as AbortSignal, {
+        lrc: { lyric: '[00:00]hello' }
+      });
+      return pending.response;
+    });
+    const client = new NcmClient('http://127.0.0.1:3000');
+    const reason = new Error('dj run cancelled');
+
+    const request = client.getLyric('42', { signal: parent.signal, timeoutMs: 1_000 });
+    await pending?.bodyReadStarted;
+    const assertion = expect(request).rejects.toBe(reason);
+    parent.abort(reason);
+    pending?.releaseBody();
+
+    await assertion;
+  });
+
+  it('keeps the per-request timeout active while the response body is pending', async () => {
+    vi.useFakeTimers();
+    let pending: ReturnType<typeof pendingJsonResponse> | undefined;
+    mockFetch(async (_url, init) => {
+      pending = pendingJsonResponse(init?.signal as AbortSignal, {
+        lrc: { lyric: '[00:00]hello' }
+      });
+      return pending.response;
+    });
+    const client = new NcmClient('http://127.0.0.1:3000', { fetchTimeoutMs: 60_000 });
+
+    const request = client.getLyric('42', { timeoutMs: 25 });
+    await pending?.bodyReadStarted;
+    const assertion = expect(request).rejects.toMatchObject({ code: NCM_ERROR_CODE.TIMEOUT });
+    await vi.advanceTimersByTimeAsync(25);
+    pending?.releaseBody();
+
+    await assertion;
   });
 });
 
