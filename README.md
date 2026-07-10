@@ -42,6 +42,7 @@ Crossfadio 是一个本地运行的 AI DJ Web App（Node.js + React + TypeScript
 - `CROSSFADIO_NCM_DISABLE_AUTO=1`: 禁用默认自动拉起
 - `CROSSFADIO_HOST`: 服务绑定地址（默认 `127.0.0.1`）
 - `CROSSFADIO_ALLOWED_ORIGINS`: 逗号分隔的 CORS 来源
+- `CROSSFADIO_LYRICS_SELECTION_MODE`: 歌词感知选歌模式，支持 `off` / `shadow` / `enforce_fit` / `enforce_all`（默认及非法值均为 `off`）
 
 多用户必需环境变量：
 

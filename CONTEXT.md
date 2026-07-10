@@ -60,6 +60,14 @@ _Avoid_: title duplicate penalty, same-song dedupe
 A non-entity listening preference that describes fit for the current moment, such as energy, scene, vocal presence, or novelty. It should guide discovery and ranking without being treated as a literal platform search phrase.
 _Avoid_: search keyword, query modifier
 
+**Track Understanding**:
+A reusable, versioned semantic assessment of a track, derived from bounded lyric evidence, credits, wiki tags, and platform metadata. It contains a stable profile, per-field confidence, and short source-attributed evidence summaries; raw lyrics are neither logged nor persisted. Cached understanding is reused only while its analyzer version and lyric hash remain current, and a changed lyric hash invalidates the prior semantic profile.
+_Avoid_: raw lyric cache, current-scene judgment, permanent ground truth
+
+**Track Compatibility**:
+A current-run decision about whether Track Understanding fits the effective Listening Constraints. Query-plan constraints take precedence over fallback context; compatibility is distinct from Candidate Quality, and an uncertain semantic fit is not itself a conflict. Missing or invalid assessment coverage fails closed in enforcement modes, while `off` preserves the legacy path, `shadow` observes without changing picks, `enforce_fit` rejects semantic conflicts, and `enforce_all` may additionally reject a suspicious external candidate when an acceptable alternative exists.
+_Avoid_: ranking score, track quality, stable track attribute
+
 **Music Entity**:
 A verifiable music object that can lead to playable candidates, such as a track, artist, album, playlist, or chart item.
 _Avoid_: search term, vibe, style word
