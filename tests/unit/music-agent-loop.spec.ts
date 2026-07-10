@@ -86,7 +86,13 @@ function candidate(overrides: Partial<MusicCandidate> = {}): MusicCandidate {
 }
 
 function expectProviderSafeFinalPickResponseFormat(responseFormat: LlmCompleteOptions['responseFormat'] | undefined): void {
-  expect(responseFormat).toEqual({ type: 'json_object' });
+  expect(responseFormat).toMatchObject({
+    type: 'json_schema',
+    json_schema: {
+      name: 'music_agent_final_pick',
+      strict: true
+    }
+  });
 }
 
 describe('runMusicAgentLoop', () => {

@@ -1,5 +1,6 @@
 import type { LlmMessage, LlmResponseFormat } from '../llm/client.js';
 import { musicAgentToolNameSchema, type MusicAgentContextSummary } from './schema.js';
+import { AUTO_FILL_BATCH_SIZE_MAX } from '../../shared/dj.js';
 import type {
   ShortlistEvidencePromptPacket,
   ShortlistPromptPacket
@@ -42,7 +43,119 @@ const MAX_FINAL_CANDIDATE_BASE_CHARS = 8_000;
 const MAX_FINAL_LYRIC_EVIDENCE_CHARS = 40_000;
 const MAX_FINAL_PROMPT_CHARS = 48_000;
 
-export const FINAL_PICK_RESPONSE_FORMAT: LlmResponseFormat = { type: 'json_object' };
+const TRACK_PROFILE_PROPERTIES = {
+  genres: { type: 'array', items: { type: 'string', maxLength: 48 }, maxItems: 8 },
+  moods: { type: 'array', items: { type: 'string', maxLength: 48 }, maxItems: 8 },
+  energy: { type: 'string', enum: ['low', 'medium', 'high', 'unknown'] },
+  aggression: { type: 'string', enum: ['low', 'medium', 'high', 'unknown'] },
+  vocalIntensity: { type: 'string', enum: ['low', 'medium', 'high', 'unknown'] },
+  lyricThemes: { type: 'array', items: { type: 'string', maxLength: 80 }, maxItems: 8 },
+  language: { type: 'string', maxLength: 24 }
+};
+
+const TRACK_CONFIDENCE_PROPERTIES = Object.fromEntries(
+  Object.keys(TRACK_PROFILE_PROPERTIES).map((key) => [
+    key,
+    { type: 'number', minimum: 0, maximum: 1 }
+  ])
+);
+
+export const FINAL_PICK_RESPONSE_FORMAT: LlmResponseFormat = {
+  type: 'json_schema',
+  json_schema: {
+    name: 'music_agent_final_pick',
+    strict: true,
+    schema: {
+      type: 'object',
+      additionalProperties: false,
+      required: ['type', 'say', 'assessments', 'picks', 'rejected'],
+      properties: {
+        type: { type: 'string', const: 'final' },
+        say: { type: 'string', minLength: 1 },
+        assessments: {
+          type: 'array',
+          maxItems: 12,
+          items: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['id', 'profile', 'confidence', 'evidence'],
+            properties: {
+              id: { type: 'string', minLength: 1 },
+              profile: {
+                type: 'object',
+                additionalProperties: false,
+                required: Object.keys(TRACK_PROFILE_PROPERTIES),
+                properties: TRACK_PROFILE_PROPERTIES
+              },
+              confidence: {
+                type: 'object',
+                additionalProperties: false,
+                required: Object.keys(TRACK_CONFIDENCE_PROPERTIES),
+                properties: TRACK_CONFIDENCE_PROPERTIES
+              },
+              evidence: {
+                type: 'array',
+                maxItems: 12,
+                items: {
+                  type: 'object',
+                  additionalProperties: false,
+                  required: ['claim', 'source'],
+                  properties: {
+                    claim: { type: 'string', maxLength: 160 },
+                    source: {
+                      type: 'string',
+                      enum: [
+                        'wiki_tag',
+                        'lyric_analysis',
+                        'lyric_and_genre_analysis',
+                        'platform_metadata'
+                      ]
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        picks: {
+          type: 'array',
+          minItems: 1,
+          maxItems: AUTO_FILL_BATCH_SIZE_MAX,
+          items: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['id', 'reason', 'source'],
+            properties: {
+              id: { type: 'string', minLength: 1 },
+              reason: { type: 'string', minLength: 1 },
+              source: {
+                type: 'string',
+                enum: ['liked', 'playlist', 'search', 'style_expansion', 'trend']
+              }
+            }
+          }
+        },
+        rejected: {
+          type: 'array',
+          items: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['id', 'reason'],
+            properties: {
+              id: { type: 'string', minLength: 1 },
+              reason: { type: 'string', minLength: 1 }
+            }
+          }
+        }
+      }
+    }
+  }
+};
+
+function serializedFinalPickJsonSchema(): string {
+  if (FINAL_PICK_RESPONSE_FORMAT.type !== 'json_schema') return '{}';
+  return JSON.stringify(FINAL_PICK_RESPONSE_FORMAT.json_schema.schema);
+}
 
 export function buildLoopMessages(input: BuildLoopMessagesInput): LlmMessage[] {
   const context = compactJson(input.context, MAX_CONTEXT_CHARS);
@@ -257,6 +370,8 @@ function buildAssessmentAwareFinalSystem(input: BuildLoopMessagesInput, targetPi
         ]
       : []),
     'Return this top-level shape: {"type":"final","say":"...","assessments":[...],"picks":[...],"rejected":[...]}.',
+    `The exact output JSON Schema is ${serializedFinalPickJsonSchema()}`,
+    'Follow that schema exactly even when the provider does not enforce response_format; never abbreviate nested objects into scalar values or id-only arrays.',
     'Return exactly one assessment per candidate id, in candidate order, with no missing, duplicate, or unknown candidate ids.',
     'Each assessment must contain only {"id","profile","confidence","evidence"}; profile contains genres, moods, energy, aggression, vocalIntensity, lyricThemes, language.',
     'When material is insufficient, use unknown for semantic levels/language, empty arrays for unsupported lists, low confidence, and never guess.',

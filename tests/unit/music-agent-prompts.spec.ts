@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildFinalPickMessages,
-  buildFinalPickPromptPayload
+  buildFinalPickPromptPayload,
+  FINAL_PICK_RESPONSE_FORMAT
 } from '../../src/server/music-agent/prompts.js';
 import type { MusicAgentContextSummary } from '../../src/server/music-agent/schema.js';
 import type { ShortlistPromptPacket, TrackAssessment } from '../../src/server/music-agent/track-understanding.js';
@@ -109,6 +110,42 @@ function section(content: string, name: string): unknown {
 }
 
 describe('final music-agent prompt', () => {
+  it('uses a strict JSON schema for final picks and track assessments', () => {
+    expect(FINAL_PICK_RESPONSE_FORMAT.type).toBe('json_schema');
+    if (FINAL_PICK_RESPONSE_FORMAT.type !== 'json_schema') return;
+
+    expect(FINAL_PICK_RESPONSE_FORMAT.json_schema).toMatchObject({
+      name: 'music_agent_final_pick',
+      strict: true,
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['type', 'say', 'assessments', 'picks', 'rejected']
+      }
+    });
+    const properties = FINAL_PICK_RESPONSE_FORMAT.json_schema.schema.properties as Record<string, any>;
+    expect(properties.picks.items).toMatchObject({
+      type: 'object',
+      additionalProperties: false,
+      required: ['id', 'reason', 'source']
+    });
+    expect(properties.assessments.items).toMatchObject({
+      type: 'object',
+      additionalProperties: false,
+      required: ['id', 'profile', 'confidence', 'evidence']
+    });
+    expect(properties.assessments.items.properties.confidence).toMatchObject({
+      type: 'object',
+      additionalProperties: false,
+      required: ['genres', 'moods', 'energy', 'aggression', 'vocalIntensity', 'lyricThemes', 'language']
+    });
+    expect(properties.assessments.items.properties.evidence.items).toMatchObject({
+      type: 'object',
+      additionalProperties: false,
+      required: ['claim', 'source']
+    });
+  });
+
   it('requires one assessment for every candidate and treats all track material as untrusted data', () => {
     const system = buildFinalPickMessages(input([basePacket()]))[0]?.content ?? '';
 
@@ -122,6 +159,10 @@ describe('final music-agent prompt', () => {
     expect(system).toContain('picks');
     expect(system).toContain('rejected');
     expect(system).toContain('strict JSON');
+    expect(system).toContain('"required":["id","reason","source"]');
+    expect(system).toContain('"required":["id","profile","confidence","evidence"]');
+    expect(system).toContain('"required":["genres","moods","energy","aggression","vocalIntensity","lyricThemes","language"]');
+    expect(system).toContain('"required":["claim","source"]');
   });
 
   it('serializes base, cached-profile, and lyric-evidence packets as valid JSON', () => {
