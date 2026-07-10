@@ -1,0 +1,241 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+const originalDataDir = process.env.CROSSFADIO_DATA_DIR;
+let dataDir: string;
+
+const calmProfile = {
+  genres: ['ambient'],
+  moods: ['calm'],
+  energy: 'low',
+  aggression: 'low',
+  vocalIntensity: 'low',
+  lyricThemes: ['reflection'],
+  language: 'en'
+} as const;
+
+const calmAssessment = {
+  id: '42',
+  profile: calmProfile,
+  confidence: {
+    genres: 0.9,
+    moods: 0.8,
+    energy: 0.95,
+    aggression: 0.9,
+    vocalIntensity: 0.7,
+    lyricThemes: 0.6,
+    language: 0.99
+  },
+  evidence: [{ claim: 'energy=low', source: 'lyric_analysis' }]
+} as const;
+
+beforeEach(async () => {
+  vi.resetModules();
+  dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'crossfadio-track-analysis-'));
+  process.env.CROSSFADIO_DATA_DIR = dataDir;
+
+  const { initDb } = await import('../../src/server/store/db.js');
+  initDb();
+});
+
+afterEach(async () => {
+  const { _resetDbForTest } = await import('../../src/server/store/db.js');
+  _resetDbForTest();
+  fs.rmSync(dataDir, { recursive: true, force: true });
+  if (originalDataDir === undefined) delete process.env.CROSSFADIO_DATA_DIR;
+  else process.env.CROSSFADIO_DATA_DIR = originalDataDir;
+});
+
+describe('track understanding schemas', () => {
+  it('accepts bounded strict assessments and rejects malformed semantic output', async () => {
+    const { trackAssessmentSchema } = await import('../../src/server/music-agent/track-understanding.js');
+
+    expect(trackAssessmentSchema.safeParse(calmAssessment).success).toBe(true);
+    expect(trackAssessmentSchema.safeParse({
+      ...calmAssessment,
+      profile: { ...calmProfile, genres: Array.from({ length: 9 }, (_, index) => `genre-${index}`) }
+    }).success).toBe(false);
+    expect(trackAssessmentSchema.safeParse({
+      ...calmAssessment,
+      confidence: { ...calmAssessment.confidence, energy: 1.1 }
+    }).success).toBe(false);
+    expect(trackAssessmentSchema.safeParse({ ...calmAssessment, unexpected: true }).success).toBe(false);
+  });
+});
+
+describe('music track analysis cache', () => {
+  it('upserts and reads a validated semantic profile', async () => {
+    const {
+      getMusicTrackAnalysisCache,
+      recordMusicTrackLyricRefresh,
+      saveMusicTrackSemanticProfile
+    } = await import('../../src/server/store/music-track-analysis-cache.js');
+
+    recordMusicTrackLyricRefresh({
+      provider: 'ncm',
+      trackId: '42',
+      lyricStatus: 'available',
+      lyricHash: 'hash-a',
+      extractionSummary: { lineCount: 20 },
+      refreshedAt: '2026-07-10T10:00:00.000Z'
+    });
+    saveMusicTrackSemanticProfile({
+      provider: 'ncm',
+      trackId: '42',
+      analyzerVersion: 'lyrics-v1',
+      lyricHash: 'hash-a',
+      profile: calmProfile,
+      evidence: [{ claim: 'energy=low', source: 'lyric_analysis' }],
+      extractionSummary: { lineCount: 20 },
+      analysisModel: 'test-model',
+      lyricRefreshedAt: '2026-07-10T10:00:00.000Z'
+    });
+
+    expect(getMusicTrackAnalysisCache('ncm', '42')).toMatchObject({
+      provider: 'ncm',
+      trackId: '42',
+      analyzerVersion: 'lyrics-v1',
+      lyricStatus: 'available',
+      lyricHash: 'hash-a',
+      profile: calmProfile,
+      evidence: [{ claim: 'energy=low', source: 'lyric_analysis' }],
+      extractionSummary: { lineCount: 20 },
+      analysisModel: 'test-model',
+      lastLyricRefreshAt: '2026-07-10T10:00:00.000Z'
+    });
+  });
+
+  it('isolates providers and batch-loads deduplicated track ids', async () => {
+    const {
+      getMusicTrackAnalysisCaches,
+      recordMusicTrackLyricRefresh
+    } = await import('../../src/server/store/music-track-analysis-cache.js');
+
+    recordMusicTrackLyricRefresh({
+      provider: 'ncm', trackId: '42', lyricStatus: 'available', lyricHash: 'ncm-hash',
+      extractionSummary: {}, refreshedAt: '2026-07-10T10:00:00.000Z'
+    });
+    recordMusicTrackLyricRefresh({
+      provider: 'spotify', trackId: '42', lyricStatus: 'available', lyricHash: 'spotify-hash',
+      extractionSummary: {}, refreshedAt: '2026-07-10T10:00:00.000Z'
+    });
+    recordMusicTrackLyricRefresh({
+      provider: 'ncm', trackId: '43', lyricStatus: 'missing', lyricHash: null,
+      extractionSummary: { reason: 'not_found' }, refreshedAt: '2026-07-10T10:01:00.000Z'
+    });
+
+    expect(getMusicTrackAnalysisCaches('ncm', [])).toEqual(new Map());
+    const records = getMusicTrackAnalysisCaches('ncm', ['42', '42', '43', 'absent']);
+    expect([...records.keys()]).toEqual(['42', '43']);
+    expect(records.get('42')?.lyricHash).toBe('ncm-hash');
+    expect(records.get('43')).toMatchObject({ lyricStatus: 'missing', profile: null });
+  });
+
+  it('preserves a semantic profile when the refreshed lyric hash is unchanged', async () => {
+    const {
+      getMusicTrackAnalysisCache,
+      recordMusicTrackLyricRefresh,
+      saveMusicTrackSemanticProfile
+    } = await import('../../src/server/store/music-track-analysis-cache.js');
+    saveMusicTrackSemanticProfile({
+      provider: 'ncm', trackId: '42', analyzerVersion: 'lyrics-v1', lyricHash: 'hash-a',
+      profile: calmProfile, evidence: calmAssessment.evidence, extractionSummary: { lineCount: 20 },
+      analysisModel: 'test-model', lyricRefreshedAt: '2026-07-10T10:00:00.000Z'
+    });
+
+    recordMusicTrackLyricRefresh({
+      provider: 'ncm', trackId: '42', lyricStatus: 'available', lyricHash: 'hash-a',
+      extractionSummary: { lineCount: 22 }, refreshedAt: '2026-07-10T11:00:00.000Z'
+    });
+
+    expect(getMusicTrackAnalysisCache('ncm', '42')).toMatchObject({
+      profile: calmProfile,
+      analyzerVersion: 'lyrics-v1',
+      analysisModel: 'test-model',
+      extractionSummary: { lineCount: 22 }
+    });
+  });
+
+  it('atomically clears analysis when a non-null lyric hash changes', async () => {
+    const {
+      getMusicTrackAnalysisCache,
+      recordMusicTrackLyricRefresh,
+      saveMusicTrackSemanticProfile
+    } = await import('../../src/server/store/music-track-analysis-cache.js');
+    saveMusicTrackSemanticProfile({
+      provider: 'ncm', trackId: '42', analyzerVersion: 'lyrics-v1', lyricHash: 'hash-a',
+      profile: calmProfile, evidence: calmAssessment.evidence, extractionSummary: {},
+      analysisModel: 'test-model', lyricRefreshedAt: '2026-07-10T10:00:00.000Z'
+    });
+
+    recordMusicTrackLyricRefresh({
+      provider: 'ncm', trackId: '42', lyricStatus: 'available', lyricHash: 'hash-b',
+      extractionSummary: { lineCount: 24 }, refreshedAt: '2026-07-10T12:00:00.000Z'
+    });
+
+    expect(getMusicTrackAnalysisCache('ncm', '42')).toMatchObject({
+      lyricHash: 'hash-b',
+      profile: null,
+      evidence: [],
+      analyzerVersion: null,
+      analysisModel: null
+    });
+  });
+
+  it('records missing lyrics without manufacturing a semantic profile', async () => {
+    const {
+      getMusicTrackAnalysisCache,
+      recordMusicTrackLyricRefresh
+    } = await import('../../src/server/store/music-track-analysis-cache.js');
+
+    recordMusicTrackLyricRefresh({
+      provider: 'ncm', trackId: 'missing', lyricStatus: 'missing', lyricHash: null,
+      extractionSummary: { reason: 'not_found' }, refreshedAt: '2026-07-10T10:00:00.000Z'
+    });
+
+    expect(getMusicTrackAnalysisCache('ncm', 'missing')).toMatchObject({
+      lyricStatus: 'missing', lyricHash: null, profile: null, evidence: [],
+      extractionSummary: { reason: 'not_found' }
+    });
+  });
+
+  it('returns null semantic fields instead of throwing for invalid database JSON', async () => {
+    const { getDb } = await import('../../src/server/store/db.js');
+    const {
+      getMusicTrackAnalysisCache,
+      recordMusicTrackLyricRefresh
+    } = await import('../../src/server/store/music-track-analysis-cache.js');
+    recordMusicTrackLyricRefresh({
+      provider: 'ncm', trackId: 'corrupt', lyricStatus: 'available', lyricHash: 'hash-a',
+      extractionSummary: {}, refreshedAt: '2026-07-10T10:00:00.000Z'
+    });
+    getDb().prepare(
+      `UPDATE music_track_analysis_cache
+       SET profile_json = ?, evidence_json = ?, extraction_summary_json = ?
+       WHERE provider = ? AND track_id = ?`
+    ).run('{bad json', '[{"claim":"x","source":"bad"}]', '[]', 'ncm', 'corrupt');
+
+    expect(() => getMusicTrackAnalysisCache('ncm', 'corrupt')).not.toThrow();
+    expect(getMusicTrackAnalysisCache('ncm', 'corrupt')).toMatchObject({
+      profile: null,
+      evidence: [],
+      extractionSummary: {}
+    });
+  });
+
+  it('keeps the appended migration idempotent', async () => {
+    const { _resetDbForTest, getDb, initDb } = await import('../../src/server/store/db.js');
+    _resetDbForTest();
+    initDb();
+    _resetDbForTest();
+    initDb();
+
+    const row = getDb().prepare(
+      `SELECT COUNT(*) AS count FROM sqlite_master
+       WHERE type = 'table' AND name = 'music_track_analysis_cache'`
+    ).get() as { count: number };
+    expect(row.count).toBe(1);
+  });
+});

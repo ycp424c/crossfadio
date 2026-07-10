@@ -253,6 +253,23 @@ CREATE TABLE IF NOT EXISTS personal_dj_context_tokens (
 
 CREATE INDEX IF NOT EXISTS idx_personal_dj_context_tokens_user
   ON personal_dj_context_tokens (user_id, created_at DESC);
+  `,
+  `
+CREATE TABLE IF NOT EXISTS music_track_analysis_cache (
+  provider                TEXT NOT NULL,
+  track_id                TEXT NOT NULL,
+  analyzer_version        TEXT,
+  lyric_status            TEXT NOT NULL DEFAULT 'unknown',
+  lyric_hash              TEXT,
+  profile_json            TEXT,
+  evidence_json           TEXT,
+  extraction_summary_json TEXT NOT NULL DEFAULT '{}',
+  analysis_model          TEXT,
+  last_lyric_refresh_at   TEXT,
+  created_at              TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at              TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (provider, track_id)
+);
   `
 ];
 
