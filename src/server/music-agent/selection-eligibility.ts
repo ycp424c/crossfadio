@@ -39,9 +39,14 @@ export function evaluateTrackCompatibility({
   assessment: TrackAssessment;
   listeningConstraints?: string[];
 }): TrackCompatibilityDecision {
-  const constraints = collectConstraintText(context, listeningConstraints);
+  const explicitConstraints = listeningConstraints.filter((constraint) => clean(constraint).length > 0);
+  const usesExplicitConstraints = explicitConstraints.length > 0;
+  const constraints = usesExplicitConstraints
+    ? explicitConstraints.join(' ')
+    : collectFallbackConstraintText(context);
   const wantsCalm = CALM_CONSTRAINT_PATTERN.test(constraints);
-  const wantsInstrumental = context.personalDjContext?.musicGuidance.vocalPreference === 'instrumental'
+  const wantsInstrumental = (!usesExplicitConstraints
+    && context.personalDjContext?.musicGuidance.vocalPreference === 'instrumental')
     || INSTRUMENTAL_CONSTRAINT_PATTERN.test(constraints);
 
   if (!wantsCalm && !wantsInstrumental) {
@@ -167,49 +172,60 @@ export function evaluateCandidateQuality(
   const strongNegativeSignals: string[] = [];
   const supportingNegativeSignals: string[] = [];
   const positiveSignals: string[] = [];
+  const strongNegativeCategories = new Set<string>();
+  const negativeCategories = new Set<string>();
   const quality = candidate.qualitySignals;
   const albumName = clean(facts.albumName) || clean(quality?.albumName);
   const instrumental = hasInstrumentalQualityEvidence(candidate, facts);
+  const addStrongNegative = (signal: string, category: string): void => {
+    strongNegativeSignals.push(signal);
+    strongNegativeCategories.add(category);
+    negativeCategories.add(category);
+  };
+  const addSupportingNegative = (signal: string, category: string): void => {
+    supportingNegativeSignals.push(signal);
+    negativeCategories.add(category);
+  };
 
   if (quality?.privilegeSt !== undefined && quality.privilegeSt < 0) {
-    strongNegativeSignals.push('unplayable_privilege');
+    addStrongNegative('unplayable_privilege', 'availability');
   }
   if (quality?.privilegeToast === true) {
-    strongNegativeSignals.push('unplayable_privilege_notice');
+    addStrongNegative('unplayable_privilege_notice', 'availability');
   }
   if (quality?.copyright === 0) {
-    strongNegativeSignals.push('copyright_unavailable');
+    addStrongNegative('copyright_unavailable', 'availability');
   }
   if (quality?.noCopyrightRcmd === true) {
-    strongNegativeSignals.push('copyright_recommendation_blocked');
+    addStrongNegative('copyright_recommendation_blocked', 'availability');
   }
   if (resolveTitlePollution(candidate) === 'strong') {
-    strongNegativeSignals.push('strong_title_pollution');
+    addStrongNegative('strong_title_pollution', 'title');
   }
   if (PLACEHOLDER_ARTIST_PATTERN.test(clean(candidate.artist))) {
-    strongNegativeSignals.push('placeholder_or_collection_artist');
+    addStrongNegative('placeholder_or_collection_artist', 'identity');
   }
   if (hasMalformedIdentity(candidate)) {
-    strongNegativeSignals.push('malformed_track_identity');
+    addStrongNegative('malformed_track_identity', 'identity');
   }
 
   if (quality?.popularity !== undefined && quality.popularity < 15) {
-    supportingNegativeSignals.push('very_low_popularity');
+    addSupportingNegative('very_low_popularity', 'popularity');
   }
   if (!albumName) {
-    supportingNegativeSignals.push('missing_album');
+    addSupportingNegative('missing_album', 'album');
   }
   if (SUSPICIOUS_TITLE_PATTERN.test(candidate.name)) {
-    supportingNegativeSignals.push('suspicious_title_pattern');
+    addSupportingNegative('suspicious_title_pattern', 'title');
   }
   if (facts.lyricStatus === 'missing' && !instrumental) {
-    supportingNegativeSignals.push('missing_lyrics_for_vocal_track');
+    addSupportingNegative('missing_lyrics_for_vocal_track', 'lyrics');
   }
   if (facts.creditRoleCount <= 0) {
-    supportingNegativeSignals.push('missing_credits');
+    addSupportingNegative('missing_credits', 'credits');
   }
   if (!quality || (quality.popularity === undefined && quality.copyright === undefined)) {
-    supportingNegativeSignals.push('metadata_incomplete');
+    addSupportingNegative('metadata_incomplete', 'metadata');
   }
 
   if (albumName) positiveSignals.push('normal_album');
@@ -233,11 +249,13 @@ export function evaluateCandidateQuality(
     || signal === 'unplayable_privilege_notice'
     || signal === 'copyright_unavailable'
   );
-  const independentNegativeCount = strongNegativeSignals.length + supportingNegativeSignals.length;
+  const independentNegativeCount = negativeCategories.size;
   const tier = hasUnplayableSignal
-    || (strongNegativeSignals.length > 0 && independentNegativeCount >= 2)
+    || (strongNegativeCategories.size > 0 && independentNegativeCount >= 2)
     ? 'suspicious'
-    : supportingNegativeSignals.length === 0 && positiveSignals.length >= 3
+    : strongNegativeCategories.size === 0
+      && supportingNegativeSignals.length === 0
+      && positiveSignals.length >= 3
       ? 'trusted'
       : 'acceptable';
 
@@ -249,19 +267,12 @@ export function evaluateCandidateQuality(
   };
 }
 
-function collectConstraintText(
-  context: MusicAgentContextSummary,
-  listeningConstraints: string[]
-): string {
+function collectFallbackConstraintText(context: MusicAgentContextSummary): string {
   const personal = context.personalDjContext;
   return [
-    ...listeningConstraints,
     context.activeDirective,
     context.currentUserText,
-    personal?.summary,
-    personal?.currentState?.mood,
-    ...(personal?.musicGuidance.preferredTextures ?? []),
-    ...(personal?.musicGuidance.avoidTextures ?? [])
+    ...(personal?.musicGuidance.preferredTextures ?? [])
   ].filter((value): value is string => typeof value === 'string' && value.length > 0).join(' ');
 }
 

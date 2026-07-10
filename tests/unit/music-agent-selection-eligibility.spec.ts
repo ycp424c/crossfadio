@@ -70,6 +70,44 @@ describe('track compatibility eligibility', () => {
     });
   });
 
+  it('uses explicit listening constraints without mixing context fallbacks', () => {
+    const decision = evaluateTrackCompatibility({
+      context: context({
+        currentUserText: '来点安静舒缓的歌',
+        activeDirective: '只放低能量音乐',
+        personalDjContext: personalContext({ vocalPreference: 'instrumental' })
+      }),
+      listeningConstraints: ['energetic workout'],
+      assessment: assessment({
+        energy: 'high',
+        aggression: 'high',
+        vocalIntensity: 'high',
+        confidence: { energy: 0.95, aggression: 0.95, vocalIntensity: 0.95 }
+      })
+    });
+
+    expect(decision).toEqual({
+      status: 'compatible',
+      confidence: 'high',
+      reasons: ['no_restrictive_listening_constraint']
+    });
+  });
+
+  it('does not treat avoided calm textures as a desired calm constraint', () => {
+    const decision = evaluateTrackCompatibility({
+      context: context({
+        personalDjContext: personalContext({ avoidTextures: ['calm', 'quiet ambient'] })
+      }),
+      assessment: assessment({
+        energy: 'high',
+        aggression: 'high',
+        confidence: { energy: 0.92, aggression: 0.93 }
+      })
+    });
+
+    expect(decision.status).not.toBe('conflict');
+  });
+
   it('rejects high vocal intensity for instrumental listening unless evidence names an instrumental version', () => {
     const vocal = evaluateTrackCompatibility({
       context: context({
@@ -119,6 +157,51 @@ describe('candidate quality eligibility', () => {
       'missing_album',
       'missing_lyrics_for_vocal_track'
     ]));
+  });
+
+  it('counts title pollution and suspicious title pattern as one evidence dimension', () => {
+    const decision = evaluateCandidateQuality(candidate({
+      name: '抖音热歌合集｜车载DJ版｜无损串烧',
+      artist: 'Real Artist',
+      qualitySignals: {
+        popularity: 55,
+        copyright: 2,
+        albumName: 'Real Album',
+        titlePollution: 'strong'
+      }
+    }), facts({
+      lyricStatus: 'available',
+      creditRoleCount: 2,
+      wikiTags: ['pop'],
+      albumName: 'Real Album'
+    }));
+
+    expect(decision.strongNegativeSignals).toContain('strong_title_pollution');
+    expect(decision.supportingNegativeSignals).toContain('suspicious_title_pattern');
+    expect(decision.tier).toBe('acceptable');
+  });
+
+  it('counts placeholder and malformed artist identity as one evidence dimension', () => {
+    const decision = evaluateCandidateQuality(candidate({
+      artist: 'Unknown',
+      qualitySignals: {
+        popularity: 55,
+        copyright: 2,
+        albumName: 'Real Album',
+        titlePollution: 'none'
+      }
+    }), facts({
+      lyricStatus: 'available',
+      creditRoleCount: 2,
+      wikiTags: ['indie pop'],
+      albumName: 'Real Album'
+    }));
+
+    expect(decision.strongNegativeSignals).toEqual(expect.arrayContaining([
+      'placeholder_or_collection_artist',
+      'malformed_track_identity'
+    ]));
+    expect(decision.tier).toBe('acceptable');
   });
 
   it('does not treat an unknown but legitimate indie track as suspicious', () => {
