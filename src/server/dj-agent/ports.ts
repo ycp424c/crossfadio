@@ -55,6 +55,7 @@ export type DJAgentPickNextInput = {
   broadcastAppended: DJAgentBroadcastAppended;
   logger: DJAgentLogger;
   setPickReason(trackId: string, reason: string): void;
+  recordRouteOutcome?(path: DjPickNextFallbackPath): unknown;
   fallbackStatsSnapshot(): unknown;
 };
 

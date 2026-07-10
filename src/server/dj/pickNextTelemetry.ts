@@ -125,7 +125,9 @@ function cloneDjPickNextFallbackStats(stats: DjPickNextFallbackStats): DjPickNex
 }
 
 function isDjPickNextFallbackPath(path: DjPickNextFallbackPath): boolean {
-  return path !== 'music_agent_success' && path !== 'legacy_llm_success';
+  return path !== 'music_agent_success'
+    && path !== 'music_agent_safety_block'
+    && path !== 'legacy_llm_success';
 }
 
 function roundRate(value: number): number {

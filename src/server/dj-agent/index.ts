@@ -76,6 +76,7 @@ export class DJAgent {
       logger: input.logger,
       queuePort,
       setPickReason: input.setPickReason,
+      recordRouteOutcome: input.recordRouteOutcome,
       fallbackStatsSnapshot: input.fallbackStatsSnapshot
     });
 

@@ -428,6 +428,7 @@ export async function runDjPickNext(
         broadcastAppended,
         logger,
         setPickReason: (trackId, reason) => djPickReasonCache.set(trackId, reason),
+        recordRouteOutcome: djPickNextTelemetry.recordFallbackStats,
         fallbackStatsSnapshot: () => djPickNextFallbackStats.snapshot()
       });
       const output = result.output;
@@ -450,6 +451,7 @@ export async function runDjPickNext(
           broadcastAppended,
           logger,
           setPickReason: (trackId, reason) => djPickReasonCache.set(trackId, reason),
+          recordRouteOutcome: djPickNextTelemetry.recordFallbackStats,
           fallbackStatsSnapshot: () => djPickNextFallbackStats.snapshot()
         })
       })) {

@@ -19,16 +19,22 @@ describe('DJ pick-next telemetry', () => {
       fallbackRate: 0,
       fallbackPaths: {}
     });
-    expect(tracker.record({ path: 'music_agent_ranked_fallback' })).toMatchObject({
+    expect(tracker.record({ path: 'music_agent_safety_block' })).toMatchObject({
       totalRuns: 2,
+      fallbackRuns: 0,
+      fallbackRate: 0,
+      fallbackPaths: {}
+    });
+    expect(tracker.record({ path: 'music_agent_ranked_fallback' })).toMatchObject({
+      totalRuns: 3,
       fallbackRuns: 1,
-      fallbackRate: 0.5,
+      fallbackRate: 0.333,
       fallbackPaths: { music_agent_ranked_fallback: 1 }
     });
     expect(tracker.record({ path: 'legacy_random_fallback' })).toMatchObject({
-      totalRuns: 3,
+      totalRuns: 4,
       fallbackRuns: 2,
-      fallbackRate: 0.667,
+      fallbackRate: 0.5,
       fallbackPaths: {
         music_agent_ranked_fallback: 1,
         legacy_random_fallback: 1

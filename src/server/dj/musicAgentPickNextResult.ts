@@ -10,6 +10,7 @@ import { getRemainingPickSlots, hasReachedPickTarget } from './pickNextQueueProg
 export type DjPickNextFallbackPath =
   | 'music_agent_success'
   | 'music_agent_ranked_fallback'
+  | 'music_agent_safety_block'
   | 'music_agent_legacy_fallback'
   | 'legacy_llm_success'
   | 'legacy_random_fallback'
@@ -83,6 +84,7 @@ export function handleMusicAgentPickNextOutput(input: {
   logger: Logger;
   queuePort?: DJAgentQueuePort;
   setPickReason(trackId: string, reason: string): void;
+  recordRouteOutcome?(path: DjPickNextFallbackPath): unknown;
   fallbackStatsSnapshot(): unknown;
 }): MusicAgentPickNextHandlingResult {
   const {
@@ -98,17 +100,21 @@ export function handleMusicAgentPickNextOutput(input: {
     logger,
     queuePort = defaultDJAgentQueuePort,
     setPickReason,
+    recordRouteOutcome,
     fallbackStatsSnapshot
   } = input;
 
   if (isLyricsAwareSafetyBlock(output)) {
     const lyricsAwareDiagnostics = compactLyricsAwareDiagnostics(output);
+    const fallbackStats = recordRouteOutcome?.('music_agent_safety_block')
+      ?? fallbackStatsSnapshot();
     logger.warn(
       {
         routeOutcome: 'lyrics_safety_block',
+        fallbackPath: 'music_agent_safety_block',
         legacyFallbackSuppressed: true,
         lyricsAwareDiagnostics,
-        fallbackStats: fallbackStatsSnapshot()
+        fallbackStats
       },
       'DJ pick-next: lyrics-aware safety block suppressed legacy fallback'
     );
@@ -314,6 +320,7 @@ function buildMusicAgentDebugPayload(input: {
 }): Record<string, unknown> {
   const { output, appendedPicks, excludeState } = input;
   const candidateSourceDiagnostics = getMusicAgentCandidateSourceDiagnostics(output);
+  const lyricsAwareDiagnostics = compactLyricsAwareDiagnostics(output);
 
   return {
     type: 'dj.debug',
@@ -333,8 +340,8 @@ function buildMusicAgentDebugPayload(input: {
     ...candidateSourceDiagnostics,
     candidateScoreTable: output.candidateScoreTable,
     selectedSay: output.say,
-    ...(output.lyricsAwareDiagnostics
-      ? { lyricsAwareDiagnostics: compactLyricsAwareDiagnostics(output) }
+    ...(lyricsAwareDiagnostics
+      ? { lyricsAwareDiagnostics }
       : {}),
     ...(input.partial !== undefined ? { partial: input.partial } : {}),
     ...(input.targetCount !== undefined ? { targetCount: input.targetCount } : {}),
@@ -386,7 +393,13 @@ function hasRankedRecoveryPicks(output: MusicAgentRunOutput): boolean {
 }
 
 function shouldRouteRankedRecoveryToLegacy(output: MusicAgentRunOutput): boolean {
-  return hasRankedRecoveryPicks(output) && !hasSafeAssessedRankedPicks(output);
+  if (output.picks.some((pick) => pick.reason === 'ranked fallback')) {
+    return !hasSafeAssessedRankedPicks(output);
+  }
+  if (!output.picks.some((pick) => pick.reason === 'ranked convergence')) return false;
+
+  return isLyricsEnforcementMode(output.lyricsAwareDiagnostics?.mode ?? '')
+    && !hasSafeAssessedRankedPicks(output);
 }
 
 function hasSafeAssessedRankedPicks(output: MusicAgentRunOutput): boolean {
@@ -419,7 +432,8 @@ export function isLyricsAwareSafetyBlock(output: MusicAgentRunOutput): boolean {
   const parsedDiagnostics = lyricsAwareDiagnosticsSchema.safeParse(output.lyricsAwareDiagnostics);
   if (!parsedDiagnostics.success) return false;
   const diagnostics = parsedDiagnostics.data;
-  return output.picks.length === 0
+  return output.status === 'empty_pool'
+    && output.picks.length === 0
     && isLyricsEnforcementMode(diagnostics.mode)
     && diagnostics.enforcementApplied === true
     && diagnostics.fallbackSuppressed === true
@@ -431,8 +445,9 @@ function isLyricsEnforcementMode(mode: string): mode is 'enforce_fit' | 'enforce
 }
 
 function compactLyricsAwareDiagnostics(output: MusicAgentRunOutput): Record<string, unknown> | undefined {
-  const diagnostics = output.lyricsAwareDiagnostics;
-  if (!diagnostics) return undefined;
+  const parsedDiagnostics = lyricsAwareDiagnosticsSchema.safeParse(output.lyricsAwareDiagnostics);
+  if (!parsedDiagnostics.success) return undefined;
+  const diagnostics = parsedDiagnostics.data;
   return {
     mode: diagnostics.mode,
     assessmentCoverageValid: diagnostics.assessmentCoverageValid,
