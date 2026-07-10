@@ -142,6 +142,9 @@ type LyricsAwareRunState = {
   promptChars: number;
   persistenceAttempted: boolean;
   fallbackSuppressed: boolean;
+  semanticDroppedIds: Set<string>;
+  qualityDroppedIds: Set<string>;
+  unassessedDroppedIds: Set<string>;
 };
 
 const lyricsAwareRunStates = new WeakMap<RunMusicAgentLoopInput, LyricsAwareRunState>();
@@ -222,7 +225,10 @@ export async function runMusicAgentLoop(input: RunMusicAgentLoopInput): Promise<
       validationProblems: [],
       promptChars: 0,
       persistenceAttempted: false,
-      fallbackSuppressed: false
+      fallbackSuppressed: false,
+      semanticDroppedIds: new Set(),
+      qualityDroppedIds: new Set(),
+      unassessedDroppedIds: new Set()
     });
   }
   try {
@@ -1281,20 +1287,27 @@ function selectRankedPickCandidates(
 ): MusicCandidate[] {
   const eligible = candidates.filter((candidate) => isCandidateEligible(candidate, input));
   const diverse = diversifyCandidates(eligible.slice(0, 10), target);
-  if (diverse.length >= target) return diverse;
+  if (diverse.length >= target) {
+    recordRankedSelectionRejections(candidates, diverse, target, input);
+    return diverse;
+  }
 
   const selectedIds = new Set(diverse.map((candidate) => candidate.id));
   const backfill = eligible
     .filter((candidate) => !selectedIds.has(candidate.id) && !isHardFilteredCandidate(candidate))
     .slice(0, target - diverse.length);
 
-  return [...diverse, ...backfill];
+  const selected = [...diverse, ...backfill];
+  recordRankedSelectionRejections(candidates, selected, target, input);
+  return selected;
 }
 
 function validateEligibleFinalPicks(picks: FinalPick[], input: RunMusicAgentLoopInput): FinalPick[] {
   const eligiblePicks = picks.filter((pick) => {
     const candidate = input.candidatePool.get(pick.id);
-    return !candidate || isCandidateEligible(candidate, input);
+    const accepted = !candidate || isCandidateEligible(candidate, input);
+    if (candidate && !accepted) recordLyricsAwareRejection(candidate, input);
+    return accepted;
   });
   return validateFinalPicks(eligiblePicks, input.candidatePool, {
     isCandidateEligible: (candidate) => isCandidateEligible(candidate, input)
@@ -1330,20 +1343,13 @@ function withLyricsAwareFinalPickDiagnostics(
 ): CompletedFinalPicks {
   const state = lyricsAwareRunStates.get(input);
   if (!state) return completed;
-  const decisions = [...state.decisions.values()];
   return {
     ...completed,
     finalPickDiagnostics: {
       ...completed.finalPickDiagnostics,
-      semanticConflictDroppedCount: decisions.filter((decision) =>
-        decision.compatibility.status === 'conflict' && !decision.eligible
-      ).length,
-      qualityDroppedCount: decisions.filter((decision) =>
-        decision.quality.tier === 'suspicious' && !decision.eligible
-      ).length,
-      unassessedDroppedCount: isEnforcementMode(input)
-        ? Math.max(0, (state.enrichment?.shortlist.length ?? 0) - state.assessments.size)
-        : 0,
+      semanticConflictDroppedCount: state.semanticDroppedIds.size,
+      qualityDroppedCount: state.qualityDroppedIds.size,
+      unassessedDroppedCount: state.unassessedDroppedIds.size,
       assessmentValidationFailureCount: state.validationProblems.length > 0 ? 1 : 0
     }
   };
@@ -1410,8 +1416,9 @@ function rankedBackfillFinalPicks(
   const pickedIds = new Set(picks.map((pick) => pick.id));
   const blockedTitleMotifs = titleMotifsFromFinalPicks(diversePicks, input);
   const options = rankOptions(input.context);
-  const ranked = rankCandidates(input.candidatePool.list(), input.candidatePool.count(), options)
-    .filter((candidate) => !pickedIds.has(candidate.id) && isCandidateEligible(candidate, input));
+  const rankedCandidates = rankCandidates(input.candidatePool.list(), input.candidatePool.count(), options)
+    .filter((candidate) => !pickedIds.has(candidate.id));
+  const ranked = rankedCandidates.filter((candidate) => isCandidateEligible(candidate, input));
   const backfill = diversifyCandidates(ranked, target - diversePicks.length, { blockedTitleMotifs }).map((candidate) => ({
     id: candidate.id,
     name: candidate.name,
@@ -1419,6 +1426,15 @@ function rankedBackfillFinalPicks(
     reason: 'ranked backfill',
     source: candidate.sources[0]
   }));
+  recordRankedSelectionRejections(
+    rankedCandidates,
+    backfill.flatMap((pick) => {
+      const candidate = input.candidatePool.get(pick.id);
+      return candidate ? [candidate] : [];
+    }),
+    target - diversePicks.length,
+    input
+  );
 
   return {
     picks: [...diversePicks, ...backfill],
@@ -1545,6 +1561,7 @@ async function prepareLyricsAwareShortlist(
         const shortlist = ranked.slice(0, 12);
         return {
           shortlist,
+          expectedLyricVersions: [],
           promptPackets: shortlist.map((candidate) => ({
             id: candidate.id,
             name: candidate.name,
@@ -1607,10 +1624,6 @@ async function applyFusedLyricsAwareAssessments(
   state.validationProblems = problems.slice(0, 24);
   state.coverageValid = problems.length === 0;
   if (!state.coverageValid) {
-    if (isEnforcementMode(input)) {
-      state.assessments.clear();
-      state.decisions.clear();
-    }
     return;
   }
 
@@ -1676,6 +1689,46 @@ function isCandidateEligible(candidate: MusicCandidate, input: RunMusicAgentLoop
   if (isHardFilteredCandidate(candidate)) return false;
   if (!isEnforcementMode(input)) return true;
   return lyricsAwareRunStates.get(input)?.decisions.get(candidate.id)?.eligible === true;
+}
+
+function recordLyricsAwareRejection(candidate: MusicCandidate, input: RunMusicAgentLoopInput): void {
+  if (!isEnforcementMode(input) || isHardFilteredCandidate(candidate)) return;
+  const state = lyricsAwareRunStates.get(input);
+  if (!state) return;
+  const decision = state.decisions.get(candidate.id);
+  if (!decision) {
+    state.unassessedDroppedIds.add(candidate.id);
+    return;
+  }
+  if (decision.compatibility.status === 'conflict') {
+    state.semanticDroppedIds.add(candidate.id);
+    return;
+  }
+  if (decision.quality.tier === 'suspicious' && !decision.eligible) {
+    state.qualityDroppedIds.add(candidate.id);
+  }
+}
+
+function recordRankedSelectionRejections(
+  candidates: MusicCandidate[],
+  selected: MusicCandidate[],
+  target: number,
+  input: RunMusicAgentLoopInput
+): void {
+  if (!isEnforcementMode(input) || candidates.length === 0) return;
+  const selectedIds = new Set(selected.map((candidate) => candidate.id));
+  const lastSelectedIndex = candidates.reduce(
+    (last, candidate, index) => selectedIds.has(candidate.id) ? index : last,
+    -1
+  );
+  const cutoff = selected.length >= target && lastSelectedIndex >= 0
+    ? lastSelectedIndex
+    : candidates.length - 1;
+  for (const candidate of candidates.slice(0, cutoff + 1)) {
+    if (!selectedIds.has(candidate.id) && !isCandidateEligible(candidate, input)) {
+      recordLyricsAwareRejection(candidate, input);
+    }
+  }
 }
 
 function lyricsAwareOutputFields(

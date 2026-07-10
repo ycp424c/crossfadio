@@ -31,7 +31,14 @@ const PROFILE_CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1_000;
 export type FinalShortlistEnrichmentResult = {
   shortlist: MusicCandidate[];
   promptPackets: ShortlistPromptPacket[];
+  expectedLyricVersions: ExpectedLyricVersion[];
   diagnostics: FinalShortlistEnrichmentDiagnostics;
+};
+
+export type ExpectedLyricVersion = {
+  id: string;
+  lyricHash: string | null;
+  lyricRefreshedAt: string;
 };
 
 export type FinalShortlistEnricher = (
@@ -78,25 +85,26 @@ export function createFinalShortlistAssessmentPersister({
 }): TrackAssessmentPersister {
   return ({ assessments, enrichment, context }) => {
     const packetsById = new Map(enrichment.promptPackets.map((packet) => [packet.id, packet]));
-    const caches = getMusicTrackAnalysisCaches('ncm', assessments.map((assessment) => assessment.id));
+    const expectedById = new Map(enrichment.expectedLyricVersions.map((item) => [item.id, item]));
     for (const assessment of assessments) {
       const packet = packetsById.get(assessment.id);
       if (packet?.kind !== 'evidence') continue;
-      const cached = caches.get(assessment.id) ?? null;
-      if (!cached) continue;
+      const expected = expectedById.get(assessment.id);
+      if (!expected) continue;
       const sanitized = sanitizeAssessment(assessment, packet, context);
-      saveMusicTrackSemanticProfile({
+      const saved = saveMusicTrackSemanticProfile({
         provider: 'ncm',
         trackId: assessment.id,
         analyzerVersion,
         analysisModel,
-        lyricHash: cached.lyricHash,
-        lyricRefreshedAt: cached.lastLyricRefreshAt,
+        lyricHash: expected.lyricHash,
+        lyricRefreshedAt: expected.lyricRefreshedAt,
         profile: sanitized.profile,
         confidence: assessment.confidence,
         evidence: sanitized.evidence,
         extractionSummary: stableExtractionSummary(packet)
       });
+      if (!saved) enrichment.diagnostics.cacheWriteFailed += 1;
     }
   };
 }
@@ -197,10 +205,18 @@ export function createFinalShortlistEnricher({
     const shortlist = candidates.slice(0, boundedShortlistSize);
     const diagnostics = emptyDiagnostics(shortlist.length);
     const promptPackets: ShortlistPromptPacket[] = shortlist.map(basePacket);
+    const expectedLyricVersions = new Map<string, ExpectedLyricVersion>();
+
+    const result = (): FinalShortlistEnrichmentResult => ({
+      shortlist,
+      promptPackets,
+      expectedLyricVersions: [...expectedLyricVersions.values()],
+      diagnostics
+    });
 
     if (mode === 'off' || shortlist.length === 0) {
       diagnostics.elapsedMs = elapsedMs(startedAt, now());
-      return { shortlist, promptPackets, diagnostics };
+      return result();
     }
 
     const cachedById = getMusicTrackAnalysisCaches('ncm', shortlist.map((candidate) => candidate.id));
@@ -225,7 +241,7 @@ export function createFinalShortlistEnricher({
 
     if (misses.length === 0 || options.signal?.aborted) {
       diagnostics.elapsedMs = elapsedMs(startedAt, now());
-      return { shortlist, promptPackets, diagnostics };
+      return result();
     }
 
     const lyricCharBudget = Math.min(
@@ -254,6 +270,13 @@ export function createFinalShortlistEnricher({
         }> => {
           if (cachedMissing) {
             diagnostics.lyricMissing += 1;
+            if (item.cached?.lastLyricRefreshAt) {
+              expectedLyricVersions.set(item.candidate.id, {
+                id: item.candidate.id,
+                lyricHash: item.cached.lyricHash,
+                lyricRefreshedAt: item.cached.lastLyricRefreshAt
+              });
+            }
             return {
               evidence: prepareLyricEvidence(null, { charBudget: lyricCharBudget }),
               settled: true
@@ -289,13 +312,19 @@ export function createFinalShortlistEnricher({
           else diagnostics.lyricMissing += 1;
           diagnostics.sampledChars += lyricEvidence.sampledCharCount;
           try {
+            const refreshedAt = new Date(now()).toISOString();
             recordMusicTrackLyricRefresh({
               provider: 'ncm',
               trackId: item.candidate.id,
               lyricStatus: lyricEvidence.lyricStatus,
               lyricHash: lyricEvidence.lyricStatus === 'available' ? lyricEvidence.lyricHash : null,
               extractionSummary: extractionSummary(lyricEvidence),
-              refreshedAt: new Date(now()).toISOString()
+              refreshedAt
+            });
+            expectedLyricVersions.set(item.candidate.id, {
+              id: item.candidate.id,
+              lyricHash: lyricEvidence.lyricStatus === 'available' ? lyricEvidence.lyricHash : null,
+              lyricRefreshedAt: refreshedAt
             });
           } catch {
             diagnostics.cacheWriteFailed += 1;
@@ -365,7 +394,7 @@ export function createFinalShortlistEnricher({
 
     diagnostics.deadlineReached = deadlineReached;
     diagnostics.elapsedMs = elapsedMs(startedAt, now());
-    return { shortlist, promptPackets, diagnostics };
+    return result();
   };
 }
 

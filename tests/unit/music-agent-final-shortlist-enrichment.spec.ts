@@ -639,6 +639,9 @@ describe('final shortlist enrichment', () => {
       },
       enrichment: {
         shortlist: [item],
+        expectedLyricVersions: [{
+          id: item.id, lyricHash: 'hash-0', lyricRefreshedAt: '2026-07-10T10:00:00.000Z'
+        }],
         promptPackets: [{
           id: item.id, name: item.name, artist: item.artist, sources: item.sources,
           kind: 'evidence', wikiTags: [],
@@ -674,6 +677,53 @@ describe('final shortlist enrichment', () => {
     });
   });
 
+  it('does not bind a stale assessment to lyrics that changed after prompt construction', async () => {
+    const item = candidate(0);
+    const { recordMusicTrackLyricRefresh, getMusicTrackAnalysisCache } =
+      await import('../../src/server/store/music-track-analysis-cache.js');
+    const { createFinalShortlistAssessmentPersister } =
+      await import('../../src/server/music-agent/final-shortlist-enrichment.js');
+    recordMusicTrackLyricRefresh({
+      provider: 'ncm', trackId: item.id, lyricStatus: 'available', lyricHash: 'hash-a',
+      extractionSummary: {}, refreshedAt: '2026-07-10T10:00:00.000Z'
+    });
+    const enrichment = {
+      shortlist: [item],
+      expectedLyricVersions: [{
+        id: item.id, lyricHash: 'hash-a', lyricRefreshedAt: '2026-07-10T10:00:00.000Z'
+      }],
+      promptPackets: [{
+        id: item.id, name: item.name, artist: item.artist, sources: item.sources,
+        kind: 'evidence' as const, wikiTags: [],
+        lyricEvidence: {
+          lyricStatus: 'available' as const, lyricHash: 'hash-a', sampleMode: 'full' as const,
+          credits: {}, lineCount: 1, hasTranslation: false, repeatedHookCount: 0,
+          sampledCharCount: 10, sampledLines: [{ position: 'opening' as const, text: 'old lyric' }]
+        }
+      }],
+      diagnostics: {
+        shortlistCount: 1, cacheHits: 0, cacheMisses: 1,
+        lyricAttempted: 1, lyricSuccess: 1, lyricMissing: 0, lyricFail: 0,
+        lyricTimeout: 0, lyricCancelled: 0, wikiAttempted: 1, wikiSuccess: 1,
+        wikiFail: 0, wikiTimeout: 0, wikiCancelled: 0, cacheWriteFailed: 0,
+        sampledChars: 10, elapsedMs: 5, deadlineReached: false
+      }
+    };
+    recordMusicTrackLyricRefresh({
+      provider: 'ncm', trackId: item.id, lyricStatus: 'available', lyricHash: 'hash-b',
+      extractionSummary: {}, refreshedAt: '2026-07-10T10:01:00.000Z'
+    });
+
+    await createFinalShortlistAssessmentPersister({
+      analyzerVersion: 'lyrics-v1', analysisModel: 'analysis-model'
+    })({ assessments: [{ id: item.id, profile, confidence, evidence: [] }], enrichment });
+
+    expect(getMusicTrackAnalysisCache('ncm', item.id)).toMatchObject({
+      lyricHash: 'hash-b', analyzerVersion: null, profile: null
+    });
+    expect(enrichment.diagnostics.cacheWriteFailed).toBe(1);
+  });
+
   it('persists a missing-lyrics assessment against the cache null hash', async () => {
     const item = candidate(0);
     const { recordMusicTrackLyricRefresh, getMusicTrackAnalysisCache } =
@@ -691,6 +741,9 @@ describe('final shortlist enrichment', () => {
       assessments: [{ id: item.id, profile, confidence, evidence: [] }],
       enrichment: {
         shortlist: [item],
+        expectedLyricVersions: [{
+          id: item.id, lyricHash: null, lyricRefreshedAt: '2026-07-10T10:00:00.000Z'
+        }],
         promptPackets: [{
           id: item.id, name: item.name, artist: item.artist, sources: item.sources,
           kind: 'evidence', wikiTags: [],

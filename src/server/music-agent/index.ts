@@ -30,6 +30,10 @@ import {
 import type { LyricsSelectionMode } from './track-understanding.js';
 
 const TRACK_ANALYZER_VERSION = 'lyrics-selection-v1';
+const sharedDefaultFinalShortlistEnrichers = new WeakMap<
+  NcmClient,
+  Map<string, FinalShortlistEnricher>
+>();
 
 export type MusicAgentOptions = {
   llmClient?: MusicAgentLlmClient;
@@ -97,6 +101,7 @@ export class MusicAgent {
   private readonly finalShortlistEnricher: FinalShortlistEnricher | undefined;
   private readonly persistTrackAssessments: TrackAssessmentPersister | undefined;
   private readonly trackAnalysisModel: string;
+  private readonly defaultTrackAssessmentPersister: TrackAssessmentPersister | undefined;
 
   constructor(options: MusicAgentOptions = {}) {
     this.llmClient = resolveLlmClient(options);
@@ -106,6 +111,12 @@ export class MusicAgent {
     this.finalShortlistEnricher = options.finalShortlistEnricher;
     this.persistTrackAssessments = options.persistTrackAssessments;
     this.trackAnalysisModel = resolveTrackAnalysisModel(options);
+    this.defaultTrackAssessmentPersister = this.lyricsSelectionMode === 'off'
+      ? undefined
+      : createFinalShortlistAssessmentPersister({
+          analyzerVersion: TRACK_ANALYZER_VERSION,
+          analysisModel: this.trackAnalysisModel
+        });
     this.fallbackLogger = options.llmConfig
       ? (event) => {
           const logger = getLogger();
@@ -148,20 +159,10 @@ export class MusicAgent {
       webMusicDiscoveryProvider: this.webMusicDiscoveryProvider,
       targetPickCount
     });
-    const finalShortlistEnricher = this.lyricsSelectionMode === 'off'
-      ? undefined
-      : this.finalShortlistEnricher ?? createFinalShortlistEnricher({
-          ncmClient: input.ncmClient,
-          mode: this.lyricsSelectionMode,
-          analyzerVersion: TRACK_ANALYZER_VERSION,
-          analysisModel: this.trackAnalysisModel
-        });
+    const finalShortlistEnricher = this.resolveFinalShortlistEnricher(input.ncmClient);
     const persistTrackAssessments = this.lyricsSelectionMode === 'off'
       ? undefined
-      : this.persistTrackAssessments ?? createFinalShortlistAssessmentPersister({
-          analyzerVersion: TRACK_ANALYZER_VERSION,
-          analysisModel: this.trackAnalysisModel
-        });
+      : this.persistTrackAssessments ?? this.defaultTrackAssessmentPersister;
 
     return runMusicAgentLoop({
       mode: 'pick_next',
@@ -220,6 +221,27 @@ export class MusicAgent {
     return (event: MusicAgentFallbackLogEvent) => {
       this.fallbackLogger?.({ ...event, userId });
     };
+  }
+
+  private resolveFinalShortlistEnricher(ncmClient: NcmClient): FinalShortlistEnricher | undefined {
+    if (this.lyricsSelectionMode === 'off') return undefined;
+    if (this.finalShortlistEnricher) return this.finalShortlistEnricher;
+    let byConfiguration = sharedDefaultFinalShortlistEnrichers.get(ncmClient);
+    if (!byConfiguration) {
+      byConfiguration = new Map();
+      sharedDefaultFinalShortlistEnrichers.set(ncmClient, byConfiguration);
+    }
+    const key = `${this.lyricsSelectionMode}\u0000${TRACK_ANALYZER_VERSION}\u0000${this.trackAnalysisModel}`;
+    const existing = byConfiguration.get(key);
+    if (existing) return existing;
+    const created = createFinalShortlistEnricher({
+      ncmClient,
+      mode: this.lyricsSelectionMode,
+      analyzerVersion: TRACK_ANALYZER_VERSION,
+      analysisModel: this.trackAnalysisModel
+    });
+    byConfiguration.set(key, created);
+    return created;
   }
 }
 

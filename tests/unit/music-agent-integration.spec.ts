@@ -197,6 +197,7 @@ describe('MusicAgent facade', () => {
       }));
     const enrich = vi.fn(async (candidates: any[]) => ({
       shortlist: candidates,
+      expectedLyricVersions: [],
       promptPackets: candidates.map((candidate) => ({
         id: candidate.id, name: candidate.name, artist: candidate.artist,
         sources: candidate.sources, kind: 'base' as const
@@ -224,6 +225,87 @@ describe('MusicAgent facade', () => {
     expect(result.say).toBe('fused');
     expect(enrich).toHaveBeenCalledTimes(1);
     expect(persist).toHaveBeenCalledTimes(1);
+  });
+
+  it('reuses one default enricher across concurrent pickNext runs for single-flight and global NCM limits', async () => {
+    const ids = ['101', '102', '103', '104'];
+    let activeNcm = 0;
+    let maxActiveNcm = 0;
+    const sharedRequest = async <T>(value: T): Promise<T> => {
+      activeNcm += 1;
+      maxActiveNcm = Math.max(maxActiveNcm, activeNcm);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      activeNcm -= 1;
+      return value;
+    };
+    const ncmClient = {
+      getLikedSongIds: vi.fn(async () => ids),
+      getSongDetails: vi.fn(async (requested: string[]) => requested.map((id) => ({
+        id, name: `Song ${id}`, artists: [`Artist ${id}`], durationMs: 200_000,
+        popularity: 80, album: { name: `Album ${id}` }
+      }))),
+      searchSongs: vi.fn(async () => []), getPlaylistDetail: vi.fn(async () => null),
+      getSearchHotDetail: vi.fn(async () => []), getTopSongHints: vi.fn(async () => []),
+      getArtistToplist: vi.fn(async () => []),
+      getLyric: vi.fn(async (id: string) => sharedRequest({
+        id, lyric: '[00:00.00]quiet line', translation: null
+      })),
+      getSongWikiSummary: vi.fn(async () => sharedRequest({ tags: ['calm'] }))
+    };
+    const assessments = ids.map((id) => ({
+      id,
+      profile: { genres: [], moods: ['calm'], energy: 'low', aggression: 'low', vocalIntensity: 'low', lyricThemes: [], language: 'unknown' },
+      confidence: { genres: 0.2, moods: 0.9, energy: 0.9, aggression: 0.9, vocalIntensity: 0.9, lyricThemes: 0.2, language: 0.2 },
+      evidence: [{ claim: 'mood=calm', source: 'lyric_analysis' }]
+    }));
+    const concurrentLlm: MusicAgentLlmClient = {
+      async complete(messages) {
+        const prompt = messages.map((message) => message.content).join('\n');
+        if (prompt.includes("Crossfadio's final music selector")) {
+          return {
+            content: JSON.stringify({
+              type: 'final', say: 'fused', assessments,
+              picks: [{ id: '101', reason: 'fit', source: 'liked' }], rejected: []
+            }),
+            model: 'test-model'
+          };
+        }
+        if (prompt.includes('candidate_pool:\n[]')) {
+          return {
+            content: JSON.stringify({ type: 'tool_call', tool: 'recall_from_liked', input: { limit: 4 } }),
+            model: 'test-model'
+          };
+        }
+        return {
+          content: JSON.stringify({
+            type: 'final', say: 'untrusted', assessments: [],
+            picks: [{ id: '101', reason: 'fit', source: 'liked' }], rejected: []
+          }),
+          model: 'test-model'
+        };
+      }
+    };
+    const { MusicAgent } = await import('../../src/server/music-agent/index.js');
+    const firstAgent = new MusicAgent({ llmClient: concurrentLlm, lyricsSelectionMode: 'shadow' });
+    const secondAgent = new MusicAgent({ llmClient: concurrentLlm, lyricsSelectionMode: 'shadow' });
+    const sharedContext = {
+      request: 'auto-fill' as const, currentUserText: '', activeDirective: '',
+      currentMoment: { localTime: 'now', daypart: 'evening', weather: null },
+      tasteSummary: '', recentPreferenceSummary: '', recentPlaySignals: '',
+      queueStateSummary: '', bannedSummary: ''
+    };
+
+    const results = await Promise.all([
+      firstAgent.pickNext({ userId: 'concurrent-a', ncmClient: ncmClient as any, context: sharedContext }),
+      secondAgent.pickNext({ userId: 'concurrent-b', ncmClient: ncmClient as any, context: sharedContext })
+    ]);
+
+    expect(results.every((result) => result.status === 'ok')).toBe(true);
+    for (const id of ids) {
+      expect(ncmClient.getLyric.mock.calls.filter((call) => call[0] === id)).toHaveLength(1);
+      expect(ncmClient.getSongWikiSummary.mock.calls.filter((call) => call[0] === id)).toHaveLength(1);
+    }
+    expect(maxActiveNcm).toBeLessThanOrEqual(6);
   });
 
   it('excludes queued and recently played tracks before ranking MusicAgent candidates', async () => {

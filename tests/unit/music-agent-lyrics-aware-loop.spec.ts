@@ -132,6 +132,7 @@ function enricherFor(
   return vi.fn(async () => ({
     shortlist: items,
     promptPackets: packets,
+    expectedLyricVersions: [],
     diagnostics: {
       shortlistCount: items.length,
       cacheHits: packets.filter((packet) => packet.kind === 'profile').length,
@@ -265,6 +266,30 @@ describe('lyrics-aware music agent loop', () => {
     expect(result.lyricsAwareDiagnostics).toMatchObject({ assessmentCoverageValid: false, fallbackSuppressed: true });
   });
 
+  it('retains trusted cached assessments for safe fallback after malformed fused coverage', async () => {
+    const cached = candidate('cached'); const fresh = candidate('fresh');
+    const pool = new CandidatePool(); pool.upsert(cached); pool.upsert(fresh);
+    const result = await runMusicAgentLoop({
+      llmClient: llm([
+        finalOutput(['fresh'], []),
+        finalOutput(['fresh'], [assessment('fresh')])
+      ]),
+      context: context(), candidatePool: pool, tools: {}, budget: budget(),
+      lyricsSelectionMode: 'enforce_fit',
+      finalShortlistEnricher: enricherFor(
+        [cached, fresh],
+        [profilePacket(cached, assessment('cached')), evidencePacket(fresh)]
+      )
+    });
+
+    expect(result.status).toBe('ok');
+    expect(result.picks.map((pick) => pick.id)).toEqual(['cached']);
+    expect(result.lyricsAwareDiagnostics).toMatchObject({
+      assessmentCoverageValid: false,
+      allReturnedPicksAssessed: true
+    });
+  });
+
   it('keeps the final picks in shadow mode even when assessment coverage is invalid', async () => {
     const one = candidate('one'); const two = candidate('two');
     const pool = new CandidatePool(); pool.upsert(one); pool.upsert(two);
@@ -326,6 +351,26 @@ describe('lyrics-aware music agent loop', () => {
     expect(client.calls).toBe(2);
     expect(result.picks.map((pick) => pick.id)).toEqual(['one', 'two']);
     expect(result.finalPickDiagnostics).toMatchObject({ rankedBackfillCount: 2, semanticConflictDroppedCount: 1 });
+  });
+
+  it('does not count an unselected conflicting shortlist track as an actual semantic drop', async () => {
+    const calm = candidate('calm'); const death = candidate('death');
+    const pool = new CandidatePool(); pool.upsert(calm); pool.upsert(death);
+    const result = await runMusicAgentLoop({
+      llmClient: llm([
+        finalOutput(['calm'], []),
+        finalOutput(['calm'], [
+          assessment('calm'),
+          assessment('death', { genres: ['death metal'], energy: 'high', aggression: 'high' }, 'genre=death metal')
+        ])
+      ]),
+      context: context(), candidatePool: pool,
+      tools: { getQueryPlan: () => queryPlan(['calm']) }, budget: budget(),
+      lyricsSelectionMode: 'enforce_fit', finalShortlistEnricher: enricherFor([calm, death])
+    });
+
+    expect(result.picks.map((pick) => pick.id)).toEqual(['calm']);
+    expect(result.finalPickDiagnostics).toMatchObject({ semanticConflictDroppedCount: 0 });
   });
 
   it('does not let ranked fallback reselect a cached aggressive assessment', async () => {
