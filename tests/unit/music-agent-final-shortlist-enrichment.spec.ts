@@ -104,7 +104,12 @@ describe('final shortlist enrichment', () => {
         evidence: [{ claim: 'energy=low', source: 'lyric_analysis' }]
       }
     });
-    expect(result.diagnostics).toMatchObject({ cacheHits: 1, cacheMisses: 0 });
+    expect(result.diagnostics).toMatchObject({
+      cacheHits: 1,
+      cacheMisses: 0,
+      lyricAttempted: 0,
+      wikiAttempted: 0
+    });
   });
 
   it('builds bounded deterministic lyric evidence and wiki tags on a cache miss', async () => {
@@ -131,7 +136,9 @@ describe('final shortlist enrichment', () => {
     expect(result.diagnostics).toMatchObject({
       cacheHits: 0,
       cacheMisses: 1,
+      lyricAttempted: 1,
       lyricSuccess: 1,
+      wikiAttempted: 1,
       wikiSuccess: 1
     });
     const { getMusicTrackAnalysisCache } = await import('../../src/server/store/music-track-analysis-cache.js');
@@ -142,6 +149,75 @@ describe('final shortlist enrichment', () => {
         sampledCharCount: expect.any(Number)
       },
       profile: null
+    });
+  });
+
+  it('retains successful wiki evidence when the lyric request fails', async () => {
+    const ncmClient = createNcmClient({
+      getLyric: async () => { throw new Error('lyric unavailable'); },
+      getSongWikiSummary: async () => ({ tags: ['ambient'] })
+    });
+    const enrich = await createEnricher(ncmClient);
+
+    const result = await enrich(candidates(1));
+
+    expect(result.promptPackets[0]).toMatchObject({
+      kind: 'evidence',
+      id: 'track-0',
+      lyricEvidence: { lyricStatus: 'missing', sampledCharCount: 0 },
+      wikiTags: ['ambient']
+    });
+    expect(result.diagnostics).toMatchObject({
+      lyricAttempted: 1,
+      lyricFail: 1,
+      lyricTimeout: 0,
+      wikiAttempted: 1,
+      wikiSuccess: 1
+    });
+  });
+
+  it('retains settled wiki evidence when the lyric request reaches the shared deadline', async () => {
+    const ncmClient = createNcmClient({
+      getLyric: (_id, options) => rejectWhenAborted(options?.signal),
+      getSongWikiSummary: async () => ({ tags: ['dream pop'] })
+    });
+    const enrich = await createEnricher(ncmClient, { deadlineMs: 25 });
+
+    const result = await enrich(candidates(1));
+
+    expect(result.promptPackets[0]).toMatchObject({
+      kind: 'evidence',
+      lyricEvidence: { lyricStatus: 'missing' },
+      wikiTags: ['dream pop']
+    });
+    expect(result.diagnostics).toMatchObject({
+      lyricAttempted: 1,
+      lyricTimeout: 1,
+      wikiAttempted: 1,
+      wikiSuccess: 1,
+      deadlineReached: true
+    });
+  });
+
+  it('retains lyric evidence when the wiki request fails', async () => {
+    const ncmClient = createNcmClient({
+      getLyric: async (id) => lyric(id),
+      getSongWikiSummary: async () => { throw new Error('wiki unavailable'); }
+    });
+    const enrich = await createEnricher(ncmClient);
+
+    const result = await enrich(candidates(1));
+
+    expect(result.promptPackets[0]).toMatchObject({
+      kind: 'evidence',
+      lyricEvidence: { lyricStatus: 'available' },
+      wikiTags: []
+    });
+    expect(result.diagnostics).toMatchObject({
+      lyricAttempted: 1,
+      lyricSuccess: 1,
+      wikiAttempted: 1,
+      wikiFail: 1
     });
   });
 
@@ -193,7 +269,8 @@ describe('final shortlist enrichment', () => {
       getLyric: (_id, options) => {
         if (options?.signal) observedSignals.push(options.signal);
         return rejectWhenAborted(options?.signal);
-      }
+      },
+      getSongWikiSummary: async () => ({ tags: ['settled-before-abort'] })
     });
     const enrich = await createEnricher(ncmClient, { deadlineMs: 1_000 });
     const controller = new AbortController();
@@ -206,7 +283,9 @@ describe('final shortlist enrichment', () => {
     expect(observedSignals.length).toBeGreaterThan(0);
     expect(observedSignals.every((signal) => signal.aborted)).toBe(true);
     expect(result.promptPackets.map((packet) => packet.id)).toEqual(ids(3));
-    expect(result.promptPackets.every((packet) => packet.kind === 'base')).toBe(true);
+    expect(result.promptPackets.some((packet) =>
+      packet.kind === 'evidence' && packet.wikiTags.includes('settled-before-abort')
+    )).toBe(true);
     expect(result.diagnostics.deadlineReached).toBe(false);
   });
 
@@ -254,6 +333,10 @@ describe('final shortlist enrichment', () => {
       lyricEvidence: { lyricStatus: 'missing', sampledCharCount: 0 }
     });
     expect(result.diagnostics.lyricMissing).toBe(1);
+    expect(result.diagnostics).toMatchObject({
+      lyricAttempted: 0,
+      wikiAttempted: 1
+    });
   });
 
   it('does no NCM work or cache mutation when mode is off', async () => {
@@ -268,8 +351,10 @@ describe('final shortlist enrichment', () => {
     expect(result.diagnostics).toMatchObject({
       cacheHits: 0,
       cacheMisses: 0,
+      lyricAttempted: 0,
       lyricSuccess: 0,
       lyricMissing: 0,
+      wikiAttempted: 0,
       wikiSuccess: 0,
       sampledChars: 0,
       deadlineReached: false

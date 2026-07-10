@@ -122,22 +122,31 @@ export function createFinalShortlistEnricher({
       let nextIndex = 0;
       const enrichOne = async (item: typeof misses[number]): Promise<void> => {
         if (deadlineController.signal.aborted) return;
+        const candidateAbort = createLinkedAbortSignal(deadlineController.signal);
 
-        let lyricEvidence: PreparedLyricEvidence;
         const cachedMissing = isFreshMissingCache(item.cached, now());
-        if (cachedMissing) {
-          lyricEvidence = prepareLyricEvidence(null, { charBudget: lyricCharBudget });
-          diagnostics.lyricMissing += 1;
-        } else {
+        const loadLyricEvidence = async (): Promise<{
+          evidence: PreparedLyricEvidence;
+          settled: boolean;
+        }> => {
+          if (cachedMissing) {
+            diagnostics.lyricMissing += 1;
+            return {
+              evidence: prepareLyricEvidence(null, { charBudget: lyricCharBudget }),
+              settled: true
+            };
+          }
+
+          diagnostics.lyricAttempted += 1;
           try {
             const lyric = await abortable(
               ncmClient.getLyric(
                 item.candidate.id,
-                requestOptions(deadlineController.signal, boundedDeadlineMs)
+                requestOptions(candidateAbort.signal, boundedDeadlineMs)
               ),
-              deadlineController.signal
+              candidateAbort.signal
             );
-            lyricEvidence = prepareLyricEvidence(lyric, { charBudget: lyricCharBudget });
+            const lyricEvidence = prepareLyricEvidence(lyric, { charBudget: lyricCharBudget });
             if (lyricEvidence.lyricStatus === 'available') diagnostics.lyricSuccess += 1;
             else diagnostics.lyricMissing += 1;
             diagnostics.sampledChars += lyricEvidence.sampledCharCount;
@@ -149,34 +158,48 @@ export function createFinalShortlistEnricher({
               extractionSummary: extractionSummary(lyricEvidence),
               refreshedAt: new Date(now()).toISOString()
             });
+            return { evidence: lyricEvidence, settled: true };
           } catch {
             if (deadlineReached) diagnostics.lyricTimeout += 1;
             else diagnostics.lyricFail += 1;
-            return;
+            return {
+              evidence: prepareLyricEvidence(null, { charBudget: lyricCharBudget }),
+              settled: false
+            };
           }
-        }
+        };
 
-        let wikiTags: string[] = [];
-        try {
-          const wikiSummary = await abortable(
-            ncmClient.getSongWikiSummary(
-              item.candidate.id,
-              requestOptions(deadlineController.signal, boundedDeadlineMs)
-            ),
-            deadlineController.signal
-          );
-          wikiTags = extractTagsFromWikiSummary(wikiSummary);
-          diagnostics.wikiSuccess += 1;
-        } catch {
-          if (deadlineReached) diagnostics.wikiTimeout += 1;
-          else diagnostics.wikiFail += 1;
-        }
+        const loadWikiTags = async (): Promise<{ tags: string[]; settled: boolean }> => {
+          diagnostics.wikiAttempted += 1;
+          try {
+            const wikiSummary = await abortable(
+              ncmClient.getSongWikiSummary(
+                item.candidate.id,
+                requestOptions(candidateAbort.signal, boundedDeadlineMs)
+              ),
+              candidateAbort.signal
+            );
+            diagnostics.wikiSuccess += 1;
+            return { tags: extractTagsFromWikiSummary(wikiSummary), settled: true };
+          } catch {
+            if (deadlineReached) diagnostics.wikiTimeout += 1;
+            else diagnostics.wikiFail += 1;
+            return { tags: [], settled: false };
+          }
+        };
+
+        const [lyricOutcome, wikiOutcome] = await Promise.all([
+          loadLyricEvidence(),
+          loadWikiTags()
+        ]).finally(candidateAbort.dispose);
+
+        if (!lyricOutcome.settled && !wikiOutcome.settled) return;
 
         promptPackets[item.packetIndex] = {
           ...packetFacts(item.candidate),
           kind: 'evidence',
-          lyricEvidence,
-          wikiTags
+          lyricEvidence: lyricOutcome.evidence,
+          wikiTags: wikiOutcome.tags
         };
       };
 
@@ -283,15 +306,31 @@ function abortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
   });
 }
 
+function createLinkedAbortSignal(parent: AbortSignal): {
+  signal: AbortSignal;
+  dispose: () => void;
+} {
+  const controller = new AbortController();
+  const onAbort = () => controller.abort(parent.reason);
+  if (parent.aborted) onAbort();
+  else parent.addEventListener('abort', onAbort, { once: true });
+  return {
+    signal: controller.signal,
+    dispose: () => parent.removeEventListener('abort', onAbort)
+  };
+}
+
 function emptyDiagnostics(shortlistCount: number): FinalShortlistEnrichmentDiagnostics {
   return {
     shortlistCount,
     cacheHits: 0,
     cacheMisses: 0,
+    lyricAttempted: 0,
     lyricSuccess: 0,
     lyricMissing: 0,
     lyricFail: 0,
     lyricTimeout: 0,
+    wikiAttempted: 0,
     wikiSuccess: 0,
     wikiFail: 0,
     wikiTimeout: 0,
