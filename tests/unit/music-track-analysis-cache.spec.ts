@@ -133,6 +133,28 @@ describe('music track analysis cache', () => {
     expect(records.get('43')).toMatchObject({ lyricStatus: 'missing', profile: null });
   });
 
+  it('batch-loads more track ids than one SQLite variable set can hold', async () => {
+    const {
+      getMusicTrackAnalysisCaches,
+      recordMusicTrackLyricRefresh
+    } = await import('../../src/server/store/music-track-analysis-cache.js');
+    recordMusicTrackLyricRefresh({
+      provider: 'ncm', trackId: 'track-0', lyricStatus: 'available', lyricHash: 'hash-first',
+      extractionSummary: {}, refreshedAt: '2026-07-10T10:00:00.000Z'
+    });
+    recordMusicTrackLyricRefresh({
+      provider: 'ncm', trackId: 'track-39999', lyricStatus: 'available', lyricHash: 'hash-last',
+      extractionSummary: {}, refreshedAt: '2026-07-10T10:00:00.000Z'
+    });
+    const trackIds = Array.from({ length: 40_000 }, (_, index) => `track-${index}`);
+
+    const records = getMusicTrackAnalysisCaches('ncm', trackIds);
+
+    expect([...records.keys()]).toEqual(['track-0', 'track-39999']);
+    expect(records.get('track-0')?.lyricHash).toBe('hash-first');
+    expect(records.get('track-39999')?.lyricHash).toBe('hash-last');
+  });
+
   it('preserves a semantic profile when the refreshed lyric hash is unchanged', async () => {
     const {
       getMusicTrackAnalysisCache,
@@ -184,6 +206,90 @@ describe('music track analysis cache', () => {
     });
   });
 
+  it('clears analysis when an available lyric becomes missing', async () => {
+    const {
+      getMusicTrackAnalysisCache,
+      recordMusicTrackLyricRefresh,
+      saveMusicTrackSemanticProfile
+    } = await import('../../src/server/store/music-track-analysis-cache.js');
+    saveMusicTrackSemanticProfile({
+      provider: 'ncm', trackId: '42', analyzerVersion: 'lyrics-v1', lyricHash: 'hash-a',
+      profile: calmProfile, evidence: calmAssessment.evidence, extractionSummary: {},
+      analysisModel: 'test-model', lyricRefreshedAt: '2026-07-10T10:00:00.000Z'
+    });
+
+    recordMusicTrackLyricRefresh({
+      provider: 'ncm', trackId: '42', lyricStatus: 'missing', lyricHash: null,
+      extractionSummary: { reason: 'not_found' }, refreshedAt: '2026-07-10T12:00:00.000Z'
+    });
+
+    expect(getMusicTrackAnalysisCache('ncm', '42')).toMatchObject({
+      lyricHash: null,
+      profile: null,
+      evidence: [],
+      analyzerVersion: null,
+      analysisModel: null
+    });
+  });
+
+  it('clears analysis when a missing lyric gains a hash', async () => {
+    const {
+      getMusicTrackAnalysisCache,
+      recordMusicTrackLyricRefresh,
+      saveMusicTrackSemanticProfile
+    } = await import('../../src/server/store/music-track-analysis-cache.js');
+    saveMusicTrackSemanticProfile({
+      provider: 'ncm', trackId: '42', analyzerVersion: 'lyrics-v1', lyricHash: null,
+      profile: calmProfile, evidence: calmAssessment.evidence, extractionSummary: {},
+      analysisModel: 'test-model', lyricRefreshedAt: '2026-07-10T10:00:00.000Z'
+    });
+
+    recordMusicTrackLyricRefresh({
+      provider: 'ncm', trackId: '42', lyricStatus: 'available', lyricHash: 'hash-b',
+      extractionSummary: { lineCount: 24 }, refreshedAt: '2026-07-10T12:00:00.000Z'
+    });
+
+    expect(getMusicTrackAnalysisCache('ncm', '42')).toMatchObject({
+      lyricHash: 'hash-b',
+      profile: null,
+      evidence: [],
+      analyzerVersion: null,
+      analysisModel: null
+    });
+  });
+
+  it('rejects a stale semantic profile after a newer lyric refresh wins', async () => {
+    const {
+      getMusicTrackAnalysisCache,
+      recordMusicTrackLyricRefresh,
+      saveMusicTrackSemanticProfile
+    } = await import('../../src/server/store/music-track-analysis-cache.js');
+    recordMusicTrackLyricRefresh({
+      provider: 'ncm', trackId: '42', lyricStatus: 'available', lyricHash: 'hash-a',
+      extractionSummary: { lineCount: 20 }, refreshedAt: '2026-07-10T10:00:00.000Z'
+    });
+    recordMusicTrackLyricRefresh({
+      provider: 'ncm', trackId: '42', lyricStatus: 'available', lyricHash: 'hash-b',
+      extractionSummary: { lineCount: 24 }, refreshedAt: '2026-07-10T11:00:00.000Z'
+    });
+
+    const saved = saveMusicTrackSemanticProfile({
+      provider: 'ncm', trackId: '42', analyzerVersion: 'lyrics-v1', lyricHash: 'hash-a',
+      profile: calmProfile, evidence: calmAssessment.evidence, extractionSummary: { lineCount: 20 },
+      analysisModel: 'test-model', lyricRefreshedAt: '2026-07-10T10:00:00.000Z'
+    });
+
+    expect(saved).toBe(false);
+    expect(getMusicTrackAnalysisCache('ncm', '42')).toMatchObject({
+      lyricHash: 'hash-b',
+      profile: null,
+      evidence: [],
+      analyzerVersion: null,
+      analysisModel: null,
+      extractionSummary: { lineCount: 24 }
+    });
+  });
+
   it('records missing lyrics without manufacturing a semantic profile', async () => {
     const {
       getMusicTrackAnalysisCache,
@@ -199,6 +305,45 @@ describe('music track analysis cache', () => {
       lyricStatus: 'missing', lyricHash: null, profile: null, evidence: [],
       extractionSummary: { reason: 'not_found' }
     });
+  });
+
+  it('normalizes refresh timestamps to UTC ISO strings at both write boundaries', async () => {
+    const {
+      getMusicTrackAnalysisCache,
+      recordMusicTrackLyricRefresh,
+      saveMusicTrackSemanticProfile
+    } = await import('../../src/server/store/music-track-analysis-cache.js');
+    recordMusicTrackLyricRefresh({
+      provider: 'ncm', trackId: '42', lyricStatus: 'available', lyricHash: 'hash-a',
+      extractionSummary: {}, refreshedAt: '2026-07-10T18:00:00+08:00'
+    });
+    expect(getMusicTrackAnalysisCache('ncm', '42')?.lastLyricRefreshAt)
+      .toBe('2026-07-10T10:00:00.000Z');
+
+    expect(saveMusicTrackSemanticProfile({
+      provider: 'ncm', trackId: '42', analyzerVersion: 'lyrics-v1', lyricHash: 'hash-a',
+      profile: calmProfile, evidence: calmAssessment.evidence, extractionSummary: {},
+      analysisModel: 'test-model', lyricRefreshedAt: '2026-07-10T19:00:00+08:00'
+    })).toBe(true);
+    expect(getMusicTrackAnalysisCache('ncm', '42')?.lastLyricRefreshAt)
+      .toBe('2026-07-10T11:00:00.000Z');
+  });
+
+  it('rejects invalid refresh timestamps with the input field name', async () => {
+    const {
+      recordMusicTrackLyricRefresh,
+      saveMusicTrackSemanticProfile
+    } = await import('../../src/server/store/music-track-analysis-cache.js');
+
+    expect(() => recordMusicTrackLyricRefresh({
+      provider: 'ncm', trackId: 'bad-refresh', lyricStatus: 'missing', lyricHash: null,
+      extractionSummary: {}, refreshedAt: 'not-a-date'
+    })).toThrowError('Invalid refreshedAt: expected a valid date');
+    expect(() => saveMusicTrackSemanticProfile({
+      provider: 'ncm', trackId: 'bad-analysis', analyzerVersion: 'lyrics-v1', lyricHash: null,
+      profile: calmProfile, evidence: calmAssessment.evidence, extractionSummary: {},
+      analysisModel: 'test-model', lyricRefreshedAt: 'still-not-a-date'
+    })).toThrowError('Invalid lyricRefreshedAt: expected a valid date');
   });
 
   it('returns null semantic fields instead of throwing for invalid database JSON', async () => {

@@ -9,6 +9,7 @@ import { getDb } from './db.js';
 
 const evidenceListSchema = z.array(trackAssessmentEvidenceSchema).max(12);
 const extractionSummarySchema = z.record(z.unknown());
+const BATCH_QUERY_SIZE = 500;
 
 export type MusicTrackLyricStatus = 'unknown' | 'available' | 'missing';
 
@@ -87,12 +88,16 @@ export function getMusicTrackAnalysisCaches(
   const normalizedTrackIds = [...new Set(trackIds.map((id) => id.trim()).filter(Boolean))];
   if (!normalizedProvider || normalizedTrackIds.length === 0) return new Map();
 
-  const placeholders = normalizedTrackIds.map(() => '?').join(', ');
-  const rows = getDb().prepare(
-    `SELECT *
-     FROM music_track_analysis_cache
-     WHERE provider = ? AND track_id IN (${placeholders})`
-  ).all(normalizedProvider, ...normalizedTrackIds) as MusicTrackAnalysisCacheRow[];
+  const rows: MusicTrackAnalysisCacheRow[] = [];
+  for (let offset = 0; offset < normalizedTrackIds.length; offset += BATCH_QUERY_SIZE) {
+    const batch = normalizedTrackIds.slice(offset, offset + BATCH_QUERY_SIZE);
+    const placeholders = batch.map(() => '?').join(', ');
+    rows.push(...getDb().prepare(
+      `SELECT *
+       FROM music_track_analysis_cache
+       WHERE provider = ? AND track_id IN (${placeholders})`
+    ).all(normalizedProvider, ...batch) as MusicTrackAnalysisCacheRow[]);
+  }
   const recordsById = new Map(rows.map((row) => [row.track_id, recordFromRow(row)]));
 
   const result = new Map<string, MusicTrackAnalysisCacheRecord>();
@@ -107,6 +112,7 @@ export function recordMusicTrackLyricRefresh(input: RecordMusicTrackLyricRefresh
   const provider = input.provider.trim();
   const trackId = input.trackId.trim();
   if (!provider || !trackId) return;
+  const refreshedAt = normalizeIsoDate(input.refreshedAt, 'refreshedAt');
 
   getDb().prepare(
     `INSERT INTO music_track_analysis_cache (
@@ -116,27 +122,19 @@ export function recordMusicTrackLyricRefresh(input: RecordMusicTrackLyricRefresh
      VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
      ON CONFLICT(provider, track_id) DO UPDATE SET
        analyzer_version = CASE
-         WHEN music_track_analysis_cache.lyric_hash IS NOT NULL
-          AND excluded.lyric_hash IS NOT NULL
-          AND music_track_analysis_cache.lyric_hash <> excluded.lyric_hash
+         WHEN music_track_analysis_cache.lyric_hash IS NOT excluded.lyric_hash
          THEN NULL ELSE music_track_analysis_cache.analyzer_version END,
        lyric_status = excluded.lyric_status,
        lyric_hash = excluded.lyric_hash,
        profile_json = CASE
-         WHEN music_track_analysis_cache.lyric_hash IS NOT NULL
-          AND excluded.lyric_hash IS NOT NULL
-          AND music_track_analysis_cache.lyric_hash <> excluded.lyric_hash
+         WHEN music_track_analysis_cache.lyric_hash IS NOT excluded.lyric_hash
          THEN NULL ELSE music_track_analysis_cache.profile_json END,
        evidence_json = CASE
-         WHEN music_track_analysis_cache.lyric_hash IS NOT NULL
-          AND excluded.lyric_hash IS NOT NULL
-          AND music_track_analysis_cache.lyric_hash <> excluded.lyric_hash
+         WHEN music_track_analysis_cache.lyric_hash IS NOT excluded.lyric_hash
          THEN NULL ELSE music_track_analysis_cache.evidence_json END,
        extraction_summary_json = excluded.extraction_summary_json,
        analysis_model = CASE
-         WHEN music_track_analysis_cache.lyric_hash IS NOT NULL
-          AND excluded.lyric_hash IS NOT NULL
-          AND music_track_analysis_cache.lyric_hash <> excluded.lyric_hash
+         WHEN music_track_analysis_cache.lyric_hash IS NOT excluded.lyric_hash
          THEN NULL ELSE music_track_analysis_cache.analysis_model END,
        last_lyric_refresh_at = excluded.last_lyric_refresh_at,
        updated_at = datetime('now')`
@@ -146,20 +144,23 @@ export function recordMusicTrackLyricRefresh(input: RecordMusicTrackLyricRefresh
     input.lyricStatus,
     nullableTrimmedString(input.lyricHash),
     JSON.stringify(extractionSummarySchema.parse(input.extractionSummary)),
-    input.refreshedAt
+    refreshedAt
   );
 }
 
-export function saveMusicTrackSemanticProfile(input: SaveMusicTrackSemanticProfileInput): void {
+export function saveMusicTrackSemanticProfile(input: SaveMusicTrackSemanticProfileInput): boolean {
   const provider = input.provider.trim();
   const trackId = input.trackId.trim();
-  if (!provider || !trackId) return;
+  if (!provider || !trackId) return false;
 
   const profile = trackSemanticProfileSchema.parse(input.profile);
   const evidence = evidenceListSchema.parse(input.evidence);
   const extractionSummary = extractionSummarySchema.parse(input.extractionSummary);
+  const lyricRefreshedAt = input.lyricRefreshedAt === null
+    ? null
+    : normalizeIsoDate(input.lyricRefreshedAt, 'lyricRefreshedAt');
 
-  getDb().prepare(
+  const result = getDb().prepare(
     `INSERT INTO music_track_analysis_cache (
        provider, track_id, analyzer_version, lyric_hash, profile_json,
        evidence_json, extraction_summary_json, analysis_model,
@@ -174,7 +175,8 @@ export function saveMusicTrackSemanticProfile(input: SaveMusicTrackSemanticProfi
        extraction_summary_json = excluded.extraction_summary_json,
        analysis_model = excluded.analysis_model,
        last_lyric_refresh_at = excluded.last_lyric_refresh_at,
-       updated_at = datetime('now')`
+       updated_at = datetime('now')
+     WHERE music_track_analysis_cache.lyric_hash IS excluded.lyric_hash`
   ).run(
     provider,
     trackId,
@@ -184,8 +186,9 @@ export function saveMusicTrackSemanticProfile(input: SaveMusicTrackSemanticProfi
     JSON.stringify(evidence),
     JSON.stringify(extractionSummary),
     input.analysisModel.trim(),
-    input.lyricRefreshedAt
+    lyricRefreshedAt
   );
+  return result.changes > 0;
 }
 
 function recordFromRow(row: MusicTrackAnalysisCacheRow): MusicTrackAnalysisCacheRecord {
@@ -223,4 +226,12 @@ function nullableTrimmedString(value: string | null): string | null {
   if (value === null) return null;
   const trimmed = value.trim();
   return trimmed || null;
+}
+
+function normalizeIsoDate(value: string, fieldName: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    throw new Error(`Invalid ${fieldName}: expected a valid date`);
+  }
+  return date.toISOString();
 }
