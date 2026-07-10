@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const originalDataDir = process.env.CROSSFADIO_DATA_DIR;
@@ -407,5 +408,50 @@ describe('music track analysis cache', () => {
        WHERE type = 'table' AND name = 'music_track_analysis_cache'`
     ).get() as { count: number };
     expect(row.count).toBe(1);
+  });
+
+  it('upgrades a schema-version 17 cache table without losing existing rows', async () => {
+    const { _resetDbForTest, getDb, initDb } = await import('../../src/server/store/db.js');
+    _resetDbForTest();
+    fs.rmSync(dataDir, { recursive: true, force: true });
+    fs.mkdirSync(dataDir, { recursive: true });
+
+    const legacyDb = new Database(path.join(dataDir, 'state.db'));
+    legacyDb.exec(`
+      CREATE TABLE meta (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      );
+      INSERT INTO meta (key, value) VALUES ('schema_version', '17');
+      CREATE TABLE music_track_analysis_cache (
+        provider                TEXT NOT NULL,
+        track_id                TEXT NOT NULL,
+        analyzer_version        TEXT,
+        lyric_status            TEXT NOT NULL DEFAULT 'unknown',
+        lyric_hash              TEXT,
+        profile_json            TEXT,
+        evidence_json           TEXT,
+        extraction_summary_json TEXT NOT NULL DEFAULT '{}',
+        analysis_model          TEXT,
+        last_lyric_refresh_at   TEXT,
+        created_at              TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at              TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (provider, track_id)
+      );
+      INSERT INTO music_track_analysis_cache (provider, track_id, lyric_status)
+      VALUES ('ncm', 'legacy-track', 'missing');
+    `);
+    legacyDb.close();
+
+    initDb();
+
+    const columns = getDb().prepare(`PRAGMA table_info(music_track_analysis_cache)`).all() as Array<{
+      name: string;
+    }>;
+    expect(columns.map((column) => column.name)).toContain('confidence_json');
+    expect(getDb().prepare(
+      `SELECT lyric_status FROM music_track_analysis_cache
+       WHERE provider = 'ncm' AND track_id = 'legacy-track'`
+    ).get()).toEqual({ lyric_status: 'missing' });
   });
 });

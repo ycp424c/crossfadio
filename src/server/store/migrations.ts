@@ -262,7 +262,6 @@ CREATE TABLE IF NOT EXISTS music_track_analysis_cache (
   lyric_status            TEXT NOT NULL DEFAULT 'unknown',
   lyric_hash              TEXT,
   profile_json            TEXT,
-  confidence_json         TEXT,
   evidence_json           TEXT,
   extraction_summary_json TEXT NOT NULL DEFAULT '{}',
   analysis_model          TEXT,
@@ -271,6 +270,9 @@ CREATE TABLE IF NOT EXISTS music_track_analysis_cache (
   updated_at              TEXT NOT NULL DEFAULT (datetime('now')),
   PRIMARY KEY (provider, track_id)
 );
+  `,
+  `
+ALTER TABLE music_track_analysis_cache ADD COLUMN confidence_json TEXT;
   `
 ];
 
