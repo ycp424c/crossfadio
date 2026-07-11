@@ -113,12 +113,16 @@ describe('player layout', () => {
     expect(source).not.toContain('flex-1 overflow-hidden');
   });
 
-  it('prioritizes playback before mode details and queue on phones only', () => {
+  it('keeps playback before mode details in DOM order and restores desktop visual order', () => {
     const source = fs.readFileSync(path.join(root, 'src/renderer/views/Player/PlayerView.tsx'), 'utf-8');
+    const playerStart = source.indexOf('{/* Mobile-first DOM: player controls precede mode diagnostics for focus and reading order. */}');
+    const modeStart = source.indexOf('{/* Desktop visually restores mode controls before the player. */}');
 
-    expect(source).toContain('order-1 md:order-none');
-    expect(source).toContain('order-2 md:order-none');
-    expect(source).toContain('order-3 md:order-none');
+    expect(playerStart).toBeGreaterThan(-1);
+    expect(modeStart).toBeGreaterThan(playerStart);
+    expect(source).toContain('md:order-2');
+    expect(source).toContain('md:order-1');
+    expect(source).toContain('md:order-3');
   });
 
   it('keeps the primary mobile transport controls touchable and icon-first', () => {
@@ -147,7 +151,8 @@ describe('player layout', () => {
   it('uses dynamic viewport height with a fallback and preserves bottom safe area', () => {
     const source = fs.readFileSync(path.join(root, 'src/renderer/App.tsx'), 'utf-8');
 
-    expect(source).toContain('h-screen h-[100dvh]');
+    expect(source).toContain('h-screen supports-[height:100dvh]:h-[100dvh]');
+    expect(source).not.toContain('h-screen h-[100dvh]');
     expect(source).toContain('pb-[env(safe-area-inset-bottom)]');
   });
 

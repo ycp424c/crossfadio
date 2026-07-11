@@ -1641,67 +1641,9 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
           </div>
         </header>
 
-        <section className="col-span-1 order-2 md:order-none overflow-hidden rounded-xl px-2 py-4 md:col-span-12 md:px-6">
-          <div className="flex flex-col gap-5 xl:flex-row xl:items-end xl:justify-between">
-            <div className="min-w-0">
-              <h1 className={`text-2xl font-bold tracking-normal md:text-3xl ${modeConfig.accent}`}>
-                {modeConfig.title}
-              </h1>
-              <p className="mt-2 text-sm text-zinc-400">{modeConfig.caption}</p>
-            </div>
-            <div className="flex flex-col gap-4 md:flex-row md:items-center">
-              <div className="inline-grid w-full grid-cols-3 gap-1 rounded-xl border border-white/10 bg-black/25 p-1 md:w-[420px]">
-                <button
-                  className={`inline-flex items-center justify-center gap-2 rounded-lg border px-4 py-2.5 text-sm font-medium transition ${
-                    discoveryMode === 'explore' ? modeConfig.active : modeConfig.inactive
-                  }`}
-                  onClick={() => void handleDiscoveryModeChange('explore')}
-                  type="button"
-                >
-                  <Compass className="h-4 w-4" />
-                  探索
-                </button>
-                <button
-                  className={`inline-flex items-center justify-center gap-2 rounded-lg border px-4 py-2.5 text-sm font-medium transition ${
-                    discoveryMode === 'comfort' ? modeConfig.active : modeConfig.inactive
-                  }`}
-                  onClick={() => void handleDiscoveryModeChange('comfort')}
-                  type="button"
-                >
-                  <Home className="h-4 w-4" />
-                  舒适区
-                </button>
-                <button
-                  className={`inline-flex items-center justify-center gap-2 rounded-lg border px-4 py-2.5 text-sm font-medium transition ${
-                    discoveryMode === 'legacy' ? modeConfig.active : modeConfig.inactive
-                  }`}
-                  onClick={() => void handleDiscoveryModeChange('legacy')}
-                  title="跳过 MusicAgent，使用旧版 LLM 选曲链路"
-                  type="button"
-                >
-                  <RefreshCw className="h-4 w-4" />
-                  Legacy
-                </button>
-              </div>
-              <SignalBars colorClass={modeConfig.wave} />
-            </div>
-          </div>
-
-          <div className="mt-6 grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
-            {modeInfoCards.map((card) => (
-              <ModeInfoCard
-                icon={card.icon}
-                key={card.label}
-                label={card.label}
-                modeConfig={modeConfig}
-                value={card.value}
-              />
-            ))}
-          </div>
-        </section>
-
+        {/* Mobile-first DOM: player controls precede mode diagnostics for focus and reading order. */}
         {/* Left column — player */}
-        <section className="col-span-1 order-1 md:order-none space-y-4 md:col-span-12 xl:col-span-8">
+        <section className="col-span-1 md:order-2 space-y-4 md:col-span-12 xl:col-span-8">
           <NowPlayingHero
             coverImgUrl={currentTrack?.coverImgUrl ?? nowPlaying?.coverImgUrl ?? null}
             isLiked={isLiked}
@@ -1778,8 +1720,68 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
           ) : null}
         </section>
 
+        {/* Desktop visually restores mode controls before the player. */}
+        <section className="col-span-1 md:order-1 overflow-hidden rounded-xl px-2 py-4 md:col-span-12 md:px-6">
+          <div className="flex flex-col gap-5 xl:flex-row xl:items-end xl:justify-between">
+            <div className="min-w-0">
+              <h1 className={`text-2xl font-bold tracking-normal md:text-3xl ${modeConfig.accent}`}>
+                {modeConfig.title}
+              </h1>
+              <p className="mt-2 text-sm text-zinc-400">{modeConfig.caption}</p>
+            </div>
+            <div className="flex flex-col gap-4 md:flex-row md:items-center">
+              <div className="inline-grid w-full grid-cols-3 gap-1 rounded-xl border border-white/10 bg-black/25 p-1 md:w-[420px]">
+                <button
+                  className={`inline-flex items-center justify-center gap-2 rounded-lg border px-4 py-2.5 text-sm font-medium transition ${
+                    discoveryMode === 'explore' ? modeConfig.active : modeConfig.inactive
+                  }`}
+                  onClick={() => void handleDiscoveryModeChange('explore')}
+                  type="button"
+                >
+                  <Compass className="h-4 w-4" />
+                  探索
+                </button>
+                <button
+                  className={`inline-flex items-center justify-center gap-2 rounded-lg border px-4 py-2.5 text-sm font-medium transition ${
+                    discoveryMode === 'comfort' ? modeConfig.active : modeConfig.inactive
+                  }`}
+                  onClick={() => void handleDiscoveryModeChange('comfort')}
+                  type="button"
+                >
+                  <Home className="h-4 w-4" />
+                  舒适区
+                </button>
+                <button
+                  className={`inline-flex items-center justify-center gap-2 rounded-lg border px-4 py-2.5 text-sm font-medium transition ${
+                    discoveryMode === 'legacy' ? modeConfig.active : modeConfig.inactive
+                  }`}
+                  onClick={() => void handleDiscoveryModeChange('legacy')}
+                  title="跳过 MusicAgent，使用旧版 LLM 选曲链路"
+                  type="button"
+                >
+                  <RefreshCw className="h-4 w-4" />
+                  Legacy
+                </button>
+              </div>
+              <SignalBars colorClass={modeConfig.wave} />
+            </div>
+          </div>
+
+          <div className="mt-6 grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+            {modeInfoCards.map((card) => (
+              <ModeInfoCard
+                icon={card.icon}
+                key={card.label}
+                label={card.label}
+                modeConfig={modeConfig}
+                value={card.value}
+              />
+            ))}
+          </div>
+        </section>
+
         {/* Right column — queue + status */}
-        <section className="col-span-1 order-3 md:order-none flex flex-col gap-4 md:col-span-12 xl:col-span-4">
+        <section className="col-span-1 md:order-3 flex flex-col gap-4 md:col-span-12 xl:col-span-4">
           <QueuePanel
             currentIndex={currentIndex}
             mode={discoveryMode}
