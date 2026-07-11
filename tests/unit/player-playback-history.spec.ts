@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createPlaybackHistory } from '../../src/renderer/playerPlaybackHistory';
+import { selectQueueTrackAt } from '../../src/renderer/playerQueueRuntime';
 import type { QueueTrackDto } from '../../src/shared/schema';
 
 function track(id: string): QueueTrackDto {
@@ -51,5 +52,22 @@ describe('player playback history', () => {
     const queue = [track('current')];
 
     expect(history.restore(queue)).toBe(queue);
+  });
+
+  it('restores tracks removed by a forward selection in reverse playback order', () => {
+    const history = createPlaybackHistory();
+    const transition = selectQueueTrackAt(
+      { queue: [track('current'), track('middle'), track('target')], currentIndex: 0 },
+      2
+    );
+    for (const removedTrack of transition.removedTracks) {
+      history.record(removedTrack);
+    }
+
+    const firstRestore = history.restore(transition.queue);
+    expect(firstRestore.map((item) => item.id)).toEqual(['middle', 'target']);
+
+    const secondRestore = history.restore(firstRestore);
+    expect(secondRestore.map((item) => item.id)).toEqual(['current', 'middle', 'target']);
   });
 });
