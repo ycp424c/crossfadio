@@ -71,6 +71,36 @@ clipping on a real device. Record the listening evidence below separately.
 | iPhone Safari | NOT EXECUTED | NOT EXECUTED | NOT EXECUTED | NOT EXECUTED | NOT EXECUTED | NOT EXECUTED: no iPhone was available for listening. |
 | Android Chrome | NOT EXECUTED | NOT EXECUTED | NOT EXECUTED | NOT EXECUTED | NOT EXECUTED | NOT EXECUTED: no Android device was available for listening. |
 
+#### Repeatable segue loudness procedure
+
+Run the following procedure independently on each device/browser row:
+
+1. Record the actual device model, OS, browser/version, song, TTS voice, and device
+   output. Set system media volume to a fixed level (50 percent is recommended) and
+   record the actual setting. Disable EQ, sound enhancement, and spatial audio. Use
+   the same TTS voice for the complete device run.
+2. Confirm the tested build retains track ducking at `0.2` during segue speech.
+3. Use the normal DJ queue and wait for a real segue window. For each trial, listen
+   to the song at its unducked original level for 10–15 seconds as the baseline,
+   then listen to the segue. Do not adjust system or application volume at any point
+   during the complete device run.
+4. Complete at least three real segue trials and record the actual song for every
+   trial. To repeat, restart normal playback or select another track and wait for its
+   next segue; do not describe a replay as a newly generated segue or as the same
+   generated audio when it is not.
+5. For each trial, record whether speech is clearly audible near the original-song
+   level. This means no device-volume adjustment is needed, speech is subjectively
+   neither noticeably quieter than nor overpowering the unducked baseline, and the
+   words remain clear.
+6. For every executed trial, the `Pumping/clipping` value must be exactly `NONE HEARD` or
+   `HEARD @ <track/time>: <description>`. Record details and evidence in Notes for
+   every heard artifact.
+7. Mark the device/browser result `PASS` only when all three trials satisfy the
+   near-original criterion and all three report `NONE HEARD`. Otherwise mark it
+   `FAIL` and explain each failed trial or artifact in Notes. More than three trials
+   may be recorded, but do not use extra passes to erase a failure in the required
+   three-trial set.
+
 ### Repeatable prerequisites
 
 - Enter the tested URL as `<deployment-url>` and record the deployed full commit SHA in Notes. Do not begin until the operator has replaced the URL placeholder.

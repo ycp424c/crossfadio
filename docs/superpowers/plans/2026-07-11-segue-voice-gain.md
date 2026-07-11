@@ -1,6 +1,8 @@
 # Segue Voice Gain Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+**Status:** Implemented (2026-07-11)
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Raise DJ segue speech by approximately 6 dB with dynamic peak compression while preserving 20 percent song ducking and safe native fallback.
 
@@ -23,7 +25,7 @@
 - Create: `src/renderer/audio/segueVoiceGain.ts`
 - Create: `tests/unit/segue-voice-gain.spec.ts`
 
-- [ ] **Step 1: Write failing routing and parameter tests**
+- [x] **Step 1: Write failing routing and parameter tests**
 
 Use minimal fakes rather than jsdom:
 
@@ -52,13 +54,13 @@ it('routes source through gain and compressor with the configured values', async
 });
 ```
 
-- [ ] **Step 2: Run and verify RED**
+- [x] **Step 2: Run and verify RED**
 
 Run: `pnpm vitest tests/unit/segue-voice-gain.spec.ts`
 
 Expected: FAIL because `segueVoiceGain.ts` does not exist.
 
-- [ ] **Step 3: Implement the controller contract and enhanced route**
+- [x] **Step 3: Implement the controller contract and enhanced route**
 
 Export:
 
@@ -96,13 +98,13 @@ creation, then connect `source -> gain -> compressor -> destination`. The browse
 factory must feature-detect both standard and prefixed constructors without throwing
 when neither exists.
 
-- [ ] **Step 4: Run and verify GREEN**
+- [x] **Step 4: Run and verify GREEN**
 
 Run: `pnpm vitest tests/unit/segue-voice-gain.spec.ts`
 
 Expected: routing test PASS.
 
-- [ ] **Step 5: Add failing reuse, cleanup, and fallback tests**
+- [x] **Step 5: Add failing reuse, cleanup, and fallback tests**
 
 Add focused tests for:
 
@@ -137,13 +139,13 @@ parameter assignment failures, connection failure before source creation, unknow
 repeated release, disconnect rejection, close rejection, multiple audio elements,
 and prepare after disposal returning `native`.
 
-- [ ] **Step 6: Run and verify RED**
+- [x] **Step 6: Run and verify RED**
 
 Run: `pnpm vitest tests/unit/segue-voice-gain.spec.ts`
 
 Expected: new fallback and lifecycle tests FAIL.
 
-- [ ] **Step 7: Implement idempotence, emergency routing, and cleanup**
+- [x] **Step 7: Implement idempotence, emergency routing, and cleanup**
 
 Keep a `WeakMap<HTMLAudioElement, VoiceNodeChain>` plus an iterable `Set` of active
 chains. If failure occurs before source creation, disconnect partial gain/compressor
@@ -162,7 +164,7 @@ connection also fails, return `unavailable`. Keep release scoped to the exact me
 element identity; releasing one route must not affect another route or close the
 shared context.
 
-- [ ] **Step 8: Verify and commit Task 1**
+- [x] **Step 8: Verify and commit Task 1**
 
 ```bash
 pnpm vitest tests/unit/segue-voice-gain.spec.ts
@@ -180,7 +182,7 @@ Expected: tests and type-check PASS.
 - Modify: `src/renderer/views/Player/PlayerView.tsx`
 - Modify: `tests/unit/player-layout.spec.ts`
 
-- [ ] **Step 1: Add failing integration contract tests**
+- [x] **Step 1: Add failing integration contract tests**
 
 Following the repository's established source-contract style, assert:
 
@@ -198,13 +200,13 @@ expect(source).toContain('const TRACK_DEFAULT_VOLUME = 1');
 Locate blocks with stable function/event markers, not unrestricted whole-file
 contains, so each assertion proves the relevant cleanup path.
 
-- [ ] **Step 2: Run and verify RED**
+- [x] **Step 2: Run and verify RED**
 
 Run: `pnpm vitest tests/unit/player-layout.spec.ts`
 
 Expected: FAIL because PlayerView has no gain controller.
 
-- [ ] **Step 3: Create one controller for PlayerView lifetime**
+- [x] **Step 3: Create one controller for PlayerView lifetime**
 
 Import the browser factory and initialize one controller in a ref or memoized state:
 
@@ -218,7 +220,7 @@ if (!segueVoiceGainRef.current) {
 Use a stable local alias for callbacks and call `void controller.dispose()` in the
 existing unmount cleanup. Do not recreate the controller on render.
 
-- [ ] **Step 4: Prepare before TTS playback without blocking fallback**
+- [x] **Step 4: Prepare before TTS playback without blocking fallback**
 
 When TTS becomes ready, keep `audio.volume = 1`, register the element, and have the
 playback path await `controller.prepare(audio)` before `audio.play()`. Preparation
@@ -229,14 +231,14 @@ replacement. Preserve the existing pending-object, started-state, and audio-iden
 race guards after the await and again after replacement so stale async work cannot
 play or clean up the current element.
 
-- [ ] **Step 5: Release on every unload path**
+- [x] **Step 5: Release on every unload path**
 
 Call `release(audio)` before native unload/disconnect in normal finish, playback
 rejection, pending replacement, forced disposal, track change, and unmount. Do not
 release a segue merely because another pending clip is staged. Preserve the active
 set rule that restores track volume only after the final active voice finishes.
 
-- [ ] **Step 6: Run targeted tests and type-check**
+- [x] **Step 6: Run targeted tests and type-check**
 
 ```bash
 pnpm vitest tests/unit/segue-voice-gain.spec.ts tests/unit/player-layout.spec.ts tests/unit/player-segue-runtime.spec.ts
@@ -245,7 +247,7 @@ pnpm check
 
 Expected: PASS with no change to existing segue timing or ducking tests.
 
-- [ ] **Step 7: Commit Task 2**
+- [x] **Step 7: Commit Task 2**
 
 ```bash
 git diff --check
@@ -258,14 +260,14 @@ git commit -m "feat(player): boost segue playback loudness"
 **Files:**
 - Modify: `docs/verification/mobile-background-playback.md`
 
-- [ ] **Step 1: Add a segue loudness listening row without claiming automation proves perception**
+- [x] **Step 1: Add a segue loudness listening row without claiming automation proves perception**
 
 Add a manual check for iPhone Safari and Android Chrome that records the song, TTS
 voice, device output, whether speech is clearly audible at the original song level,
 whether pumping/clipping is heard, and PASS/FAIL notes. Leave it `NOT EXECUTED` unless
 real listening evidence is available.
 
-- [ ] **Step 2: Run fresh automated verification**
+- [x] **Step 2: Run fresh automated verification**
 
 ```bash
 pnpm check
@@ -278,13 +280,13 @@ git diff --check
 Expected: all commands exit 0. Record exact file/test counts in the handoff, not as a
 claim of perceptual loudness.
 
-- [ ] **Step 3: Inspect the production CSS/JS build boundary**
+- [x] **Step 3: Inspect the production CSS/JS build boundary**
 
 Confirm the build contains the Web Audio module without adding a server dependency,
 and confirm `package.json` / `pnpm-lock.yaml` are unchanged. Verify `git status` has
 only the intended documentation change before committing.
 
-- [ ] **Step 4: Commit verification documentation**
+- [x] **Step 4: Commit verification documentation**
 
 ```bash
 git add docs/verification/mobile-background-playback.md

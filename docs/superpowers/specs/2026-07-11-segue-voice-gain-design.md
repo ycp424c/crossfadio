@@ -1,7 +1,7 @@
 # Segue Voice Gain Design
 
 **Date:** 2026-07-11  
-**Status:** Approved for implementation planning  
+**Status:** Implemented (2026-07-11, feature completion at `e9030eb`)
 **Scope:** Renderer-side segue voice playback only
 
 ## Goal
