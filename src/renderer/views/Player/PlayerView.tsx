@@ -68,6 +68,7 @@ import {
   getTrackMediaRetryResumeDecision,
   type PendingTrackMediaRetry
 } from '@renderer/playerMediaRuntime';
+import { createPlaybackHistory } from '@renderer/playerPlaybackHistory';
 import {
   parsePlayerPersistentSseEvent
 } from '@renderer/playerSseEvents';
@@ -183,6 +184,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
   const [discoveryMode, setDiscoveryMode] = useState<DiscoveryMode>('explore');
   const [userTaste, setUserTaste] = useState('');
   const [tasteExpanded, setTasteExpanded] = useState(false);
+  const [historyVersion, setHistoryVersion] = useState(0);
 
   // Body scroll lock when mobile NCM sheet is open
   useEffect(() => {
@@ -207,6 +209,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
   const pendingSegueRef = useRef<PendingSegueAudio | null>(null);
   const activeSegueAudiosRef = useRef<Set<HTMLAudioElement>>(new Set());
   const shouldAutoplayNextRef = useRef(false);
+  const playbackHistoryRef = useRef(createPlaybackHistory());
   const prefetchTriggeredRef = useRef(false);
   const segueClientRequestIdRef = useRef<string | null>(null);
   const segueExpectedFromTrackIdRef = useRef<string | null>(null);
@@ -756,6 +759,8 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
       const startTrack = payload.tracks[randomIdx];
       djPickNextLastCallRef.current = 0;
       djPickNextInFlightRef.current = false;
+      playbackHistoryRef.current.clear();
+      setHistoryVersion((version) => version + 1);
       applyQueueSnapshot({ queue: [startTrack], currentIndex: 0 });
       setTrackStatusText(`DJ 模式启动：随机选中「${startTrack.name ?? startTrack.id}」`);
       setDjStatusText('正在补充队列…');
@@ -1032,12 +1037,17 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
   }
 
   function handlePrev(): void {
-    // DJ mode: no history to go back to
+    const restored = playbackHistoryRef.current.restore(queue);
+    if (restored === queue) return;
+    shouldAutoplayNextRef.current = isPlaying;
+    setHistoryVersion((version) => version + 1);
+    applyQueueSnapshot({ queue: restored, currentIndex: 0 });
   }
 
   function handleSkip(): void {
     const transition = skipCurrentQueueTrack({ queue, currentIndex });
     if (!transition.changed) return;
+    recordPlaybackHistory(transition.removedTracks);
     rememberTemporaryBans(transition.removedTracks);
     if (isPlaying && transition.shouldAutoplayNext) shouldAutoplayNextRef.current = true;
     applyQueueSnapshot(transition);
@@ -1046,6 +1056,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
   function handleSelectIndex(index: number): void {
     const transition = selectQueueTrackAt({ queue, currentIndex }, index);
     if (!transition.changed) return;
+    recordPlaybackHistory(transition.removedTracks);
     rememberTemporaryBans(transition.removedTracks);
     if (isPlaying && transition.shouldAutoplayNext) shouldAutoplayNextRef.current = true;
     applyQueueSnapshot(transition);
@@ -1075,6 +1086,15 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
       ...pendingTemporaryBanTracksRef.current,
       ...tracks
     ]);
+  }
+
+  function recordPlaybackHistory(removedTracks: QueueTrackDto[]): void {
+    for (const track of removedTracks) {
+      playbackHistoryRef.current.record(track);
+    }
+    if (removedTracks.length > 0) {
+      setHistoryVersion((version) => version + 1);
+    }
   }
 
   function handleToggleLike(): void {
@@ -1259,6 +1279,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
 
   function onEnded(): void {
     const transition = advanceQueueAfterEnded({ queue, currentIndex });
+    recordPlaybackHistory(transition.removedTracks);
     if (transition.shouldAutoplayNext) {
       shouldAutoplayNextRef.current = true;
       applyQueueSnapshot(transition);
@@ -1316,7 +1337,10 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
     setError('音频资源加载中断，请稍后重试或切换下一首');
   }
 
-  const canPrev = false;
+  const canPrev = useMemo(
+    () => playbackHistoryRef.current.snapshot().length > 0,
+    [historyVersion]
+  );
   const canSkip = queue.length > 1;
   const isLiked = currentTrackId ? likedTrackIds.includes(currentTrackId) : false;
   const modeConfig = discoveryMode === 'explore'

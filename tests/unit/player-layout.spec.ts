@@ -5,6 +5,39 @@ import { describe, expect, it } from 'vitest';
 const root = process.cwd();
 
 describe('player layout', () => {
+  it('integrates previous-track history without changing delete or temporary-ban semantics', () => {
+    const source = fs.readFileSync(path.join(root, 'src/renderer/views/Player/PlayerView.tsx'), 'utf-8');
+    const endedStart = source.indexOf('function onEnded(): void');
+    const errorStart = source.indexOf('function onTrackMediaError(): void', endedStart);
+    const endedBlock = source.slice(endedStart, errorStart);
+    const prevStart = source.indexOf('function handlePrev(): void');
+    const skipStart = source.indexOf('function handleSkip()', prevStart);
+    const selectStart = source.indexOf('function handleSelectIndex', skipStart);
+    const deleteStart = source.indexOf('function handleDeleteTrack', selectStart);
+    const rememberBansStart = source.indexOf('function rememberTemporaryBans', deleteStart);
+    const prevBlock = source.slice(prevStart, skipStart);
+    const skipBlock = source.slice(skipStart, selectStart);
+    const selectBlock = source.slice(selectStart, deleteStart);
+    const deleteBlock = source.slice(deleteStart, rememberBansStart);
+    const loadLikedQueueStart = source.indexOf('async function loadLikedQueue');
+    const loadNowPlayingStart = source.indexOf('async function loadNowPlaying', loadLikedQueueStart);
+    const loadLikedQueueBlock = source.slice(loadLikedQueueStart, loadNowPlayingStart);
+
+    expect(source).toContain("import { createPlaybackHistory } from '@renderer/playerPlaybackHistory'");
+    expect(source).toContain('const playbackHistoryRef = useRef(createPlaybackHistory())');
+    expect(source).toContain('function recordPlaybackHistory(removedTracks: QueueTrackDto[]): void');
+    expect(endedBlock).toContain('recordPlaybackHistory(transition.removedTracks)');
+    expect(skipBlock).toContain('recordPlaybackHistory(transition.removedTracks)');
+    expect(selectBlock).toContain('recordPlaybackHistory(transition.removedTracks)');
+    expect(deleteBlock).not.toContain('recordPlaybackHistory(');
+    expect(prevBlock).toContain('playbackHistoryRef.current.restore(queue)');
+    expect(prevBlock).toContain('shouldAutoplayNextRef.current = isPlaying');
+    expect(prevBlock).toContain('applyQueueSnapshot({ queue: restored, currentIndex: 0 })');
+    expect(source).toContain('playbackHistoryRef.current.snapshot().length > 0');
+    expect(loadLikedQueueBlock).toContain('playbackHistoryRef.current.clear()');
+    expect(loadLikedQueueBlock).toContain('setHistoryVersion((version) => version + 1)');
+  });
+
   it('allows the active view to scroll instead of clipping tall player content', () => {
     const source = fs.readFileSync(path.join(root, 'src/renderer/App.tsx'), 'utf-8');
 
