@@ -44,12 +44,12 @@ pnpm build:web
 
 These checks require an actual browser inspection. Record each criterion as `PASS`, `FAIL: <observable problem>`, or `NOT EXECUTED: <reason>`. A viewport passes only when every criterion passes. Empty cells and unexecuted results are **not executed**, never passed.
 
-| Viewport | No horizontal scrolling | Controls before diagnostics | Primary targets ≥ 44 px | Queue reachable | Desktop ordering unchanged | Overall result / notes |
-| --- | --- | --- | --- | --- | --- | --- |
-| 360 × 800 | NOT EXECUTED | NOT EXECUTED | NOT EXECUTED | NOT EXECUTED | NOT EXECUTED | NOT EXECUTED: browser inspection was not available. |
-| 390 × 844 | NOT EXECUTED | NOT EXECUTED | NOT EXECUTED | NOT EXECUTED | NOT EXECUTED | NOT EXECUTED: browser inspection was not available. |
-| 768 × 1024 | NOT EXECUTED | NOT EXECUTED | NOT EXECUTED | NOT EXECUTED | NOT EXECUTED | NOT EXECUTED: browser inspection was not available. |
-| 1280 × 800 | NOT EXECUTED | NOT EXECUTED | NOT EXECUTED | NOT EXECUTED | NOT EXECUTED | NOT EXECUTED: browser inspection was not available. |
+| Viewport | No horizontal scrolling | Controls before diagnostics | Primary targets ≥ 44 px | Queue reachable | Desktop ordering unchanged | Safe-area unobscured | Overall result / notes |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 360 × 800 | NOT EXECUTED | NOT EXECUTED | NOT EXECUTED | NOT EXECUTED | NOT EXECUTED | NOT EXECUTED | NOT EXECUTED: browser inspection was not available. |
+| 390 × 844 | NOT EXECUTED | NOT EXECUTED | NOT EXECUTED | NOT EXECUTED | NOT EXECUTED | NOT EXECUTED | NOT EXECUTED: browser inspection was not available. |
+| 768 × 1024 | NOT EXECUTED | NOT EXECUTED | NOT EXECUTED | NOT EXECUTED | NOT EXECUTED | NOT EXECUTED | NOT EXECUTED: browser inspection was not available. |
+| 1280 × 800 | NOT EXECUTED | NOT EXECUTED | NOT EXECUTED | NOT EXECUTED | NOT EXECUTED | NOT EXECUTED | NOT EXECUTED: browser inspection was not available. |
 
 ## Real-device verification matrix
 
@@ -70,12 +70,13 @@ Record one row per device/browser combination. Use `PASS`, `FAIL`, `UNSUPPORTED`
 
 ### Repeatable procedure and expectations
 
-1. Open `<deployment-url>`, log in, start the current track with a user gesture, and verify audible playback. Expected: playback begins and foreground Wake Lock reports active when supported; otherwise record `UNSUPPORTED` with the browser evidence.
-2. With the current track plus at least five queued tracks, lock the screen for 10 uninterrupted minutes. Expected: audio continues without an unexplained stop. Record any stop time to the nearest second in `FAIL` Notes.
-3. Keep the device locked long enough to cross at least two track boundaries. Expected: each next track starts automatically. Record the exact observed boundary count in the matrix, including `0` on failure.
-4. Exercise lock-screen `play`, `pause`, `previous`, and `next` individually. Expected: each supported action changes playback once and the displayed metadata follows the active track. Record per-action outcomes in Notes; any supported action that does nothing or fires twice is `FAIL`.
-5. Repeat from the short-queue prerequisite and observe the second client/server diagnostics when only one queued track remains. Expected: refill is triggered and playable tracks are appended before playback exhausts the queue. Record the pre-refill and post-refill queue counts plus observation source in Notes.
-6. While playing, trigger an audio interruption (call, alarm, or another app taking audio focus). Expected: playback follows the OS policy and can resume from the same session afterward without duplicating or skipping queue state. Record the interruption type and whether resume was automatic or manual.
-7. Disconnect and reconnect the headphones during playback. Expected: audio does not unexpectedly continue through speakers after disconnect, and playback can resume through the reconnected output without losing the session or queue position.
+1. On an iPhone with a notch or Dynamic Island, inspect the page in portrait and landscape before starting playback. Expected: portrait content is fully below the top sensor area; landscape content clears both left and right rounded/sensor edges; the bottom tab bar and its controls clear the home indicator in both orientations. Record `PASS` or `FAIL` for each edge and orientation, with a screenshot reference on failure.
+2. Open `<deployment-url>`, log in, start the current track with a user gesture, and verify audible playback. Expected: playback begins and foreground Wake Lock reports active when supported; otherwise record `UNSUPPORTED` with the browser evidence.
+3. With the current track plus at least five queued tracks, lock the screen for 10 uninterrupted minutes. Expected: audio continues without an unexplained stop. Record any stop time to the nearest second in `FAIL` Notes.
+4. Keep the device locked long enough to cross at least two track boundaries. Expected: each next track starts automatically. Record the exact observed boundary count in the matrix, including `0` on failure.
+5. Exercise lock-screen `play`, `pause`, `previous`, and `next` individually. Expected: each supported action changes playback once and the displayed metadata follows the active track. Record per-action outcomes in Notes; any supported action that does nothing or fires twice is `FAIL`.
+6. Repeat from the short-queue prerequisite and observe the second client/server diagnostics when only one queued track remains. Expected: refill is triggered and playable tracks are appended before playback exhausts the queue. Record the pre-refill and post-refill queue counts plus observation source in Notes.
+7. While playing, trigger an audio interruption (call, alarm, or another app taking audio focus). Expected: playback follows the OS policy and can resume from the same session afterward without duplicating or skipping queue state. Record the interruption type and whether resume was automatic or manual.
+8. Disconnect and reconnect the headphones during playback. Expected: audio does not unexpectedly continue through speakers after disconnect, and playback can resume through the reconnected output without losing the session or queue position.
 
 For every failure, use `FAIL: step <n>; expected=<expected behavior>; actual=<observed behavior>; time=<elapsed or clock time>; evidence=<screenshot/log/reference>; recovery=<automatic/manual/none>` in Notes. For a pass, retain the observed counts and relevant timings rather than writing only `PASS`.

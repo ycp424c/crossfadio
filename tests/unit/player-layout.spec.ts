@@ -148,12 +148,16 @@ describe('player layout', () => {
     expect(source).toContain('md:text-4xl');
   });
 
-  it('uses dynamic viewport height with a fallback and preserves bottom safe area', () => {
+  it('uses dynamic viewport height with a fallback and keeps content clear of every safe-area edge', () => {
     const source = fs.readFileSync(path.join(root, 'src/renderer/App.tsx'), 'utf-8');
 
     expect(source).toContain('h-screen supports-[height:100dvh]:h-[100dvh]');
     expect(source).not.toContain('h-screen h-[100dvh]');
+    expect(source).toContain('pt-[env(safe-area-inset-top)]');
+    expect(source).toContain('pl-[env(safe-area-inset-left)]');
+    expect(source).toContain('pr-[env(safe-area-inset-right)]');
     expect(source).toContain('pb-[env(safe-area-inset-bottom)]');
+    expect(source).not.toContain('p-[env(safe-area-inset-');
   });
 
   it('limits queue list height and scrolls the playlist internally', () => {
