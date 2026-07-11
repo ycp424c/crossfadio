@@ -70,6 +70,11 @@ import {
 } from '@renderer/playerMediaRuntime';
 import { createPlaybackHistory } from '@renderer/playerPlaybackHistory';
 import {
+  createBrowserPlaybackSession,
+  type PlaybackSession,
+  type WakeLockStatus
+} from '@renderer/playbackSession';
+import {
   parsePlayerPersistentSseEvent
 } from '@renderer/playerSseEvents';
 import {
@@ -162,6 +167,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
   const [positionSec, setPositionSec] = useState(0);
   const [durationSec, setDurationSec] = useState(0);
   const [trackStatusText, setTrackStatusText] = useState('准备就绪');
+  const [wakeLockStatus, setWakeLockStatus] = useState<WakeLockStatus>('inactive');
   const [djStatusText, setDjStatusText] = useState('');
   const [segueStatusText, setSegueStatusText] = useState('');
   const [segueScriptText, setSegueScriptText] = useState('');
@@ -227,6 +233,11 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
   const trackMediaRetryRequestIdRef = useRef(0);
   const pendingTrackMediaRetryRef = useRef<PendingTrackMediaRetry | null>(null);
   const trackMediaManualResumeRequiredRef = useRef(false);
+  const playbackSessionRef = useRef<PlaybackSession | null>(null);
+  const requestTrackPlayRef = useRef<() => Promise<void>>(async () => {});
+  const handlePrevRef = useRef<() => void>(() => {});
+  const handleSkipRef = useRef<() => void>(() => {});
+  const wakeLockNoticeShownRef = useRef(false);
 
   useEffect(() => {
     if (!showNcmDropdown) return;
@@ -248,6 +259,18 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
   currentTrackIdRef.current = currentTrackId;
   const nowPlayingRef = useRef<NowPlayingResponse | null>(nowPlaying);
   nowPlayingRef.current = nowPlaying;
+
+  useEffect(() => {
+    if (!currentTrack) {
+      playbackSessionRef.current?.setMetadata({ title: '', artist: '' });
+      return;
+    }
+    playbackSessionRef.current?.setMetadata({
+      title: currentTrack.name ?? currentTrack.id,
+      artist: currentTrack.artists?.join(' / ') ?? '',
+      artwork: currentTrack.coverImgUrl ?? nowPlaying?.coverImgUrl ?? undefined
+    });
+  }, [currentTrack, nowPlaying?.coverImgUrl]);
 
   const applyQueueSnapshot = useCallback((snapshot: PlayerQueueSnapshot) => {
     queueRef.current = snapshot.queue;
@@ -788,9 +811,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
         audioRef.current.load();
         if (shouldAutoplayNextRef.current) {
           shouldAutoplayNextRef.current = false;
-          void audioRef.current.play().catch(() => {
-            setTrackStatusText('下一首已就绪，点击 Play 继续播放');
-          });
+          void audioRef.current.play().catch(handleContinuationPlayRejection);
         }
       }
 
@@ -845,6 +866,13 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
       setError(err instanceof Error ? `音频资源重试失败：${err.message}` : '音频资源重试失败，请稍后重试或切换下一首');
     }
   }
+
+  const handleContinuationPlayRejection = useCallback((): void => {
+    setIsPlaying(false);
+    shouldAutoplayNextRef.current = false;
+    playbackSessionRef.current?.setPlaying(false);
+    setTrackStatusText('下一首已就绪，点击 Play 继续播放');
+  }, []);
 
   function resetTrackMedia(): void {
     setNowPlaying(null);
@@ -994,46 +1022,56 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
     maybeTriggerSegue();
   }, [isPlaying, currentTrackId, nextTrack, maybeTriggerSegue]);
 
-  function handlePlayPause(): void {
+  const requestTrackPlay = useCallback(async (): Promise<void> => {
     const audio = audioRef.current;
     if (!audio) {
       return;
     }
 
-    if (audio.paused) {
-      const manualResume = getTrackMediaManualResumeDecision({
-        needsFreshStream: trackMediaManualResumeRequiredRef.current || Boolean(audio.error),
-        trackId: currentTrackIdRef.current,
-        currentTimeSec: audio.currentTime,
-        positionSec
-      });
-      if (manualResume.shouldRefresh) {
-        trackMediaManualResumeRequiredRef.current = false;
-        trackMediaRetryAttemptsRef.current = 0;
-        trackMediaRetryRequestIdRef.current += 1;
-        pendingTrackMediaRetryRef.current = null;
-        setError('');
-        setTrackStatusText(`正在刷新音频流，从 ${Math.round(manualResume.resumeAtSec)} 秒继续`);
-        void retryTrackPlaybackAfterError(
-          manualResume.trackId,
-          manualResume.resumeAtSec,
-          trackMediaRetryRequestIdRef.current,
-          true
-        );
-        return;
-      }
-
-      void audio.play().then(() => {
-        maybeStartSegueAudio();
-      }).catch((err) => {
-        setIsPlaying(false);
-        setTrackStatusText('播放启动失败');
-        setError(err instanceof Error ? err.message : '播放启动失败，请稍后重试或切换下一首');
-      });
+    const manualResume = getTrackMediaManualResumeDecision({
+      needsFreshStream: trackMediaManualResumeRequiredRef.current || Boolean(audio.error),
+      trackId: currentTrackIdRef.current,
+      currentTimeSec: audio.currentTime,
+      positionSec
+    });
+    if (manualResume.shouldRefresh) {
+      trackMediaManualResumeRequiredRef.current = false;
+      trackMediaRetryAttemptsRef.current = 0;
+      trackMediaRetryRequestIdRef.current += 1;
+      pendingTrackMediaRetryRef.current = null;
+      setError('');
+      setTrackStatusText(`正在刷新音频流，从 ${Math.round(manualResume.resumeAtSec)} 秒继续`);
+      void retryTrackPlaybackAfterError(
+        manualResume.trackId,
+        manualResume.resumeAtSec,
+        trackMediaRetryRequestIdRef.current,
+        true
+      );
       return;
     }
 
-    audio.pause();
+    try {
+      await audio.play();
+      maybeStartSegueAudio();
+    } catch (err) {
+      setIsPlaying(false);
+      playbackSessionRef.current?.setPlaying(false);
+      setTrackStatusText('播放启动失败');
+      setError(err instanceof Error ? err.message : '播放启动失败，请稍后重试或切换下一首');
+    }
+  }, [maybeStartSegueAudio, positionSec]);
+
+  requestTrackPlayRef.current = requestTrackPlay;
+
+  function handlePlayPause(): void {
+    const audio = audioRef.current;
+    if (!audio) return;
+
+    if (audio.paused) {
+      void requestTrackPlay();
+    } else {
+      audio.pause();
+    }
   }
 
   function handlePrev(): void {
@@ -1052,6 +1090,33 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
     if (isPlaying && transition.shouldAutoplayNext) shouldAutoplayNextRef.current = true;
     applyQueueSnapshot(transition);
   }
+
+  handlePrevRef.current = handlePrev;
+  handleSkipRef.current = handleSkip;
+
+  useEffect(() => {
+    const playbackSession = createBrowserPlaybackSession({
+      onPlay: () => { void requestTrackPlayRef.current(); },
+      onPause: () => audioRef.current?.pause(),
+      onPrevious: () => handlePrevRef.current(),
+      onNext: () => handleSkipRef.current(),
+      onWakeLockStatusChange: (status) => {
+        setWakeLockStatus(status);
+        if (
+          (status === 'unsupported' || status === 'unavailable') &&
+          !wakeLockNoticeShownRef.current
+        ) {
+          wakeLockNoticeShownRef.current = true;
+          setTrackStatusText(status === 'unsupported' ? '浏览器不支持亮屏保护' : '亮屏保护暂不可用');
+        }
+      }
+    });
+    playbackSessionRef.current = playbackSession;
+    return () => {
+      playbackSessionRef.current = null;
+      void playbackSession.dispose();
+    };
+  }, []);
 
   function handleSelectIndex(index: number): void {
     const transition = selectQueueTrackAt({ queue, currentIndex }, index);
@@ -1130,6 +1195,11 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
 
     setPositionSec(audio.currentTime);
     setDurationSec(audio.duration || 0);
+    playbackSessionRef.current?.setPosition({
+      duration: audio.duration,
+      position: audio.currentTime,
+      playbackRate: audio.playbackRate
+    });
 
     const decision = getPrefetchDecision(audio.currentTime, audio.duration || 0, nowPlaying.timing);
 
@@ -1270,14 +1340,24 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
           ) {
             return;
           }
-          setIsPlaying(false);
-          shouldAutoplayNextRef.current = false;
-          setTrackStatusText('重试已就绪，点击 Play 继续播放');
+          handleContinuationPlayRejection();
         });
     }
   }
 
+  function onNativePlay(): void {
+    setIsPlaying(true);
+    playbackSessionRef.current?.setPlaying(true);
+  }
+
+  function onNativePause(): void {
+    setIsPlaying(false);
+    playbackSessionRef.current?.setPlaying(false);
+  }
+
   function onEnded(): void {
+    setIsPlaying(false);
+    playbackSessionRef.current?.setPlaying(false);
     const transition = advanceQueueAfterEnded({ queue, currentIndex });
     recordPlaybackHistory(transition.removedTracks);
     if (transition.shouldAutoplayNext) {
@@ -1285,7 +1365,6 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
       applyQueueSnapshot(transition);
       return;
     }
-    setIsPlaying(false);
     shouldAutoplayNextRef.current = false;
     trackMediaManualResumeRequiredRef.current = false;
     applyQueueSnapshot(transition);
@@ -1689,11 +1768,14 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
             onEnded={onEnded}
             onError={onTrackMediaError}
             onLoadedMetadata={onLoadedMetadata}
-            onPause={() => setIsPlaying(false)}
-            onPlay={() => setIsPlaying(true)}
+            onPause={onNativePause}
+            onPlay={onNativePlay}
             onTimeUpdate={onTimeUpdate}
             ref={audioRef}
           />
+          {wakeLockStatus === 'active' ? (
+            <p className="text-center text-[11px] text-zinc-500">亮屏保护</p>
+          ) : null}
         </section>
 
         {/* Right column — queue + status */}

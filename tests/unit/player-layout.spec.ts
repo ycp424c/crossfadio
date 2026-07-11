@@ -5,6 +5,70 @@ import { describe, expect, it } from 'vitest';
 const root = process.cwd();
 
 describe('player layout', () => {
+  it('creates one browser playback session with stable system transport handlers and disposes it', () => {
+    const source = fs.readFileSync(path.join(root, 'src/renderer/views/Player/PlayerView.tsx'), 'utf-8');
+    const createStart = source.indexOf('const playbackSession = createBrowserPlaybackSession({');
+    const sessionEffectStart = source.lastIndexOf('useEffect(() => {', createStart);
+    const sessionEffectEnd = source.indexOf('}, []);', createStart);
+    const sessionBlock = source.slice(sessionEffectStart, sessionEffectEnd);
+
+    expect(source).toContain('createBrowserPlaybackSession,');
+    expect(source).toContain("from '@renderer/playbackSession'");
+    expect(sessionBlock).toContain('createBrowserPlaybackSession({');
+    expect(sessionBlock).toContain('onPlay: () => { void requestTrackPlayRef.current(); }');
+    expect(sessionBlock).toContain('onPause: () => audioRef.current?.pause()');
+    expect(sessionBlock).toContain('onPrevious: () => handlePrevRef.current()');
+    expect(sessionBlock).toContain('onNext: () => handleSkipRef.current()');
+    expect(sessionBlock).toContain('void playbackSession.dispose()');
+    expect(sessionBlock).not.toContain('setInterval');
+  });
+
+  it('drives playback session state from native audio events and releases it on ended', () => {
+    const source = fs.readFileSync(path.join(root, 'src/renderer/views/Player/PlayerView.tsx'), 'utf-8');
+    const endedStart = source.indexOf('function onEnded(): void');
+    const errorStart = source.indexOf('function onTrackMediaError(): void', endedStart);
+    const endedBlock = source.slice(endedStart, errorStart);
+
+    expect(source).toContain('function onNativePlay(): void');
+    expect(source).toContain('playbackSessionRef.current?.setPlaying(true)');
+    expect(source).toContain('function onNativePause(): void');
+    expect(source).toContain('playbackSessionRef.current?.setPlaying(false)');
+    expect(endedBlock).toContain('playbackSessionRef.current?.setPlaying(false)');
+    expect(source).toContain('onPlay={onNativePlay}');
+    expect(source).toContain('onPause={onNativePause}');
+  });
+
+  it('publishes current-track metadata and valid native audio position', () => {
+    const source = fs.readFileSync(path.join(root, 'src/renderer/views/Player/PlayerView.tsx'), 'utf-8');
+    const timeUpdateStart = source.indexOf('function onTimeUpdate(): void');
+    const metadataStart = source.indexOf('function onLoadedMetadata(): void', timeUpdateStart);
+    const timeUpdateBlock = source.slice(timeUpdateStart, metadataStart);
+
+    expect(source).toContain('playbackSessionRef.current?.setMetadata({');
+    expect(source).toContain("artist: currentTrack.artists?.join(' / ') ?? ''");
+    expect(source).toContain('artwork: currentTrack.coverImgUrl ?? nowPlaying?.coverImgUrl ?? undefined');
+    expect(source).toContain("playbackSessionRef.current?.setMetadata({ title: '', artist: '' })");
+    expect(timeUpdateBlock).toContain('playbackSessionRef.current?.setPosition({');
+    expect(timeUpdateBlock).toContain('duration: audio.duration');
+    expect(timeUpdateBlock).toContain('position: audio.currentTime');
+    expect(timeUpdateBlock).toContain('playbackRate: audio.playbackRate');
+  });
+
+  it('shares the fresh-stream play request between visible and lock-screen controls', () => {
+    const source = fs.readFileSync(path.join(root, 'src/renderer/views/Player/PlayerView.tsx'), 'utf-8');
+    const requestStart = source.indexOf('const requestTrackPlay = useCallback(async (): Promise<void> => {');
+    const playPauseStart = source.indexOf('function handlePlayPause(): void', requestStart);
+    const requestBlock = source.slice(requestStart, playPauseStart);
+    const playPauseEnd = source.indexOf('function handlePrev(): void', playPauseStart);
+    const playPauseBlock = source.slice(playPauseStart, playPauseEnd);
+
+    expect(requestBlock).toContain('getTrackMediaManualResumeDecision({');
+    expect(requestBlock).toContain('retryTrackPlaybackAfterError(');
+    expect(requestBlock).toContain('await audio.play()');
+    expect(playPauseBlock).toContain('void requestTrackPlay();');
+    expect(playPauseBlock).not.toContain('audio.play()');
+  });
+
   it('integrates previous-track history without changing delete or temporary-ban semantics', () => {
     const source = fs.readFileSync(path.join(root, 'src/renderer/views/Player/PlayerView.tsx'), 'utf-8');
     const endedStart = source.indexOf('function onEnded(): void');
@@ -561,7 +625,7 @@ describe('player layout', () => {
       path.join(root, 'src/renderer/views/Player/PlayerView.tsx'),
       'utf-8'
     );
-    const playPauseStart = source.indexOf('function handlePlayPause(): void');
+    const playPauseStart = source.indexOf('const requestTrackPlay = useCallback(async (): Promise<void> => {');
     const prevStart = source.indexOf('function handlePrev(): void');
     const playPauseBody = source.slice(playPauseStart, prevStart);
 
