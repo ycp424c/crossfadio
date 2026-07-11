@@ -161,4 +161,24 @@ describe('segue voice gain controller', () => {
     await expect(controller.prepare(audio())).resolves.toBe('enhanced');
     expect(Prefixed).toHaveBeenCalledOnce();
   });
+
+  it('uses the standard AudioContext constructor when available', async () => {
+    const context = new FakeContext();
+    const Standard = vi.fn(() => context);
+    const Prefixed = vi.fn(() => new FakeContext());
+    const controller = createBrowserSegueVoiceGainController({ AudioContext: Standard, webkitAudioContext: Prefixed });
+    await expect(controller.prepare(audio())).resolves.toBe('enhanced');
+    expect(Standard).toHaveBeenCalledOnce();
+    expect(Prefixed).not.toHaveBeenCalled();
+  });
+
+  it('does not leak errors from browser capability getters', async () => {
+    const host = Object.defineProperties({}, {
+      AudioContext: { get() { throw new Error('blocked standard getter'); } },
+      webkitAudioContext: { get() { throw new Error('blocked prefixed getter'); } }
+    });
+    let controller: ReturnType<typeof createBrowserSegueVoiceGainController> | undefined;
+    expect(() => { controller = createBrowserSegueVoiceGainController(host); }).not.toThrow();
+    await expect(controller!.prepare(audio())).resolves.toBe('native');
+  });
 });

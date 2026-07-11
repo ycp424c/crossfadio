@@ -157,9 +157,9 @@ type AudioContextHost = {
 export function createBrowserSegueVoiceGainController(
   host: AudioContextHost = globalThis as unknown as AudioContextHost
 ): SegueVoiceGainController {
-  const Constructor = host.AudioContext ?? host.webkitAudioContext;
   return createSegueVoiceGainController({
     createContext: () => {
+      const Constructor = host.AudioContext ?? host.webkitAudioContext;
       if (!Constructor) throw new Error('Web Audio is unsupported');
       return new Constructor();
     }
