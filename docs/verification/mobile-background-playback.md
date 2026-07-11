@@ -22,11 +22,17 @@ The development server was not started. No browser smoke, visual review, or devi
 
 ## Future automated reruns
 
-Choose immutable full commit SHAs and replace both placeholders before running. Record a new dated result table instead of overwriting the historical evidence above.
+Choose immutable full commit SHAs and replace both quoted placeholder values before running. Execute the checks from `TARGET` itself, not from a later branch tip. A detached worktree is suitable: create one for the target revision (for example, `git worktree add --detach "<worktree-path>" "<full-target-sha>"`), enter it, and run the template there. The template stops immediately if the worktree/index is dirty or `HEAD` is not exactly `TARGET`. Record a new dated result table instead of overwriting the historical evidence above.
 
 ```bash
-BASE=<full-baseline-sha>
-TARGET=<full-target-sha>
+set -e
+
+BASE="<full-baseline-sha>"
+TARGET="<full-target-sha>"
+
+git diff --quiet && git diff --cached --quiet
+test "$(git rev-parse HEAD)" = "$TARGET"
+
 git diff --check "$BASE..$TARGET"
 pnpm check
 pnpm vitest tests/unit/playback-session.spec.ts tests/unit/player-playback-history.spec.ts tests/unit/player-dj-refill.spec.ts tests/unit/player-media-runtime.spec.ts tests/unit/player-queue-runtime.spec.ts tests/unit/player-layout.spec.ts
