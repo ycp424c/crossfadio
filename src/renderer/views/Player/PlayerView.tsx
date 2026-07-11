@@ -60,6 +60,7 @@ import {
   type DjPickLog
 } from '@renderer/playerDjPickLog';
 import { consumePlayerPickNextStream } from '@renderer/playerDjPickNextStream';
+import { prepareSegueAudioRoute, settleSegueAudioPlay } from '@renderer/playerSegueVoicePlayback';
 import {
   getSegueRequestDecision,
   getSegueWaitingStatus,
@@ -222,7 +223,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
   const pendingSegueRef = useRef<PendingSegueAudio | null>(null);
   const activeSegueAudiosRef = useRef<Set<HTMLAudioElement>>(new Set());
   const segueVoiceGainControllerRef = useRef<SegueVoiceGainController | null>(null);
-  segueVoiceGainControllerRef.current ??= createBrowserSegueVoiceGainController();
+  const playerMountedRef = useRef(false);
   const shouldAutoplayNextRef = useRef(false);
   const playbackHistoryRef = useRef(createPlaybackHistory());
   const prefetchTriggeredRef = useRef(false);
@@ -426,9 +427,11 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
     pending.preparing = true;
     void (async () => {
       let capturedAudio = pending.audio;
-      const route = pending.nativeOnly
-        ? 'native'
-        : await segueVoiceGainControllerRef.current!.prepare(capturedAudio);
+      const route = await prepareSegueAudioRoute({
+        audio: capturedAudio,
+        controller: segueVoiceGainControllerRef.current,
+        nativeOnly: pending.nativeOnly
+      });
       if (
         pendingSegueRef.current !== pending ||
         pending.audio !== capturedAudio ||
@@ -465,29 +468,36 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
       pending.preparing = false;
       activeSegueAudiosRef.current.add(capturedAudio);
       trackAudio.volume = TRACK_DUCKING_VOLUME;
-      try {
-        await capturedAudio.play();
-        setSegueStatusText(`过渡播报中（约 ${Math.round(segueDurationSec)} 秒）`);
-      } catch {
-        const stillCurrent = pendingSegueRef.current === pending && pending.audio === capturedAudio;
-        if (!stillCurrent) {
+      await settleSegueAudioPlay({
+        play: () => capturedAudio.play(),
+        isCurrent: () =>
+          playerMountedRef.current &&
+          pendingSegueRef.current === pending &&
+          pending.audio === capturedAudio &&
+          pending.started,
+        isActive: () => activeSegueAudiosRef.current.has(capturedAudio),
+        cleanupStale: () => {
           capturedAudio.onloadedmetadata = null;
           capturedAudio.onended = null;
           capturedAudio.onerror = null;
           activeSegueAudiosRef.current.delete(capturedAudio);
           segueVoiceGainControllerRef.current?.release(capturedAudio);
           unloadAudioElement(capturedAudio);
-          return;
+        },
+        onCurrentSuccess: () => {
+          setSegueStatusText(`过渡播报中（约 ${Math.round(segueDurationSec)} 秒）`);
+        },
+        onCurrentReject: () => {
+          pending.started = false;
+          pending.preparing = false;
+          activeSegueAudiosRef.current.delete(capturedAudio);
+          segueVoiceGainControllerRef.current?.release(capturedAudio);
+          if (activeSegueAudiosRef.current.size === 0) {
+            restoreTrackVolume();
+          }
+          setSegueStatusText('过渡语音已就绪，等待用户点击 Play 后继续');
         }
-        pending.started = false;
-        pending.preparing = false;
-        activeSegueAudiosRef.current.delete(capturedAudio);
-        segueVoiceGainControllerRef.current?.release(capturedAudio);
-        if (activeSegueAudiosRef.current.size === 0) {
-          restoreTrackVolume();
-        }
-        setSegueStatusText('过渡语音已就绪，等待用户点击 Play 后继续');
-      }
+      });
     })();
   }, [configureSegueAudio, resolveSegueDurationSec, restoreTrackVolume]);
 
@@ -681,11 +691,13 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
   );
 
   useEffect(() => {
-    const segueVoiceGainController = segueVoiceGainControllerRef.current;
+    playerMountedRef.current = true;
+    const segueVoiceGainController = createBrowserSegueVoiceGainController();
+    segueVoiceGainControllerRef.current = segueVoiceGainController;
     return () => {
-      if (segueVoiceGainController) {
-        void segueVoiceGainController.dispose();
-      }
+      playerMountedRef.current = false;
+      segueVoiceGainControllerRef.current = null;
+      void segueVoiceGainController.dispose();
     };
   }, []);
 
