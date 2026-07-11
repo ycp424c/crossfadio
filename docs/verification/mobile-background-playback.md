@@ -22,7 +22,7 @@ The development server was not started. No browser smoke, visual review, or devi
 
 ## Future automated reruns
 
-Choose immutable full commit SHAs and replace both quoted placeholder values before running. Execute the checks from `TARGET` itself, not from a later branch tip. A detached worktree is suitable: create one for the target revision (for example, `git worktree add --detach "<worktree-path>" "<full-target-sha>"`), enter it, and run the template there. The template stops immediately if the worktree/index is dirty or `HEAD` is not exactly `TARGET`. Record a new dated result table instead of overwriting the historical evidence above.
+Choose immutable full commit SHAs and replace both quoted placeholder values before running. Execute the checks from `TARGET` itself, not from a later branch tip. A detached worktree is suitable: create one for the target revision (for example, `git worktree add --detach "<worktree-path>" "<full-target-sha>"`), enter it, and run the template there. The template stops immediately if the worktree contains tracked, staged, or untracked changes, or if `HEAD` is not exactly `TARGET`. Record a new dated result table instead of overwriting the historical evidence above.
 
 ```bash
 set -e
@@ -30,7 +30,7 @@ set -e
 BASE="<full-baseline-sha>"
 TARGET="<full-target-sha>"
 
-git diff --quiet && git diff --cached --quiet
+test -z "$(git status --porcelain)"
 test "$(git rev-parse HEAD)" = "$TARGET"
 
 git diff --check "$BASE..$TARGET"
