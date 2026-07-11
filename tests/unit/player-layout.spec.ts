@@ -481,9 +481,14 @@ describe('player layout', () => {
   it('replaces an unavailable routed element with a fresh native Audio and preserves handlers without preparing it again', () => {
     const source = fs.readFileSync(path.join(root, 'src/renderer/views/Player/PlayerView.tsx'), 'utf-8');
     const start = source.indexOf("if (route === 'unavailable') {");
-    const end = source.indexOf("route !== 'unavailable'", start);
+    const end = source.indexOf('if (pendingSegueRef.current !== pending', start);
     const block = source.slice(start, end);
 
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    expect(block).toContain('capturedAudio.onloadedmetadata = null');
+    expect(block).toContain('capturedAudio.onended = null');
+    expect(block).toContain('capturedAudio.onerror = null');
     expect(block).toContain('segueVoiceGainControllerRef.current?.release(capturedAudio)');
     expect(block).toContain('unloadAudioElement(capturedAudio)');
     expect(block).toContain('const nativeAudioUrl = capturedAudio.src || pending.audioUrl');
@@ -499,17 +504,62 @@ describe('player layout', () => {
     expect(startBlock.indexOf('capturedAudio = nativeAudio')).toBeLessThan(startBlock.indexOf('await capturedAudio.play()'));
   });
 
-  it('releases every segue element before unloading on finish, replacement, force disposal, and unmount', () => {
+  it('ignores late events from replaced segue elements and releases normal finishes before unloading', () => {
     const source = fs.readFileSync(path.join(root, 'src/renderer/views/Player/PlayerView.tsx'), 'utf-8');
     const finishStart = source.indexOf('const finishSegueAudio = useCallback(');
-    const durationStart = source.indexOf('const resolveSegueDurationSec', finishStart);
-    const lifecycle = source.slice(finishStart, durationStart);
+    const finishEnd = source.indexOf('const configureSegueAudio', finishStart);
+    const finishBlock = source.slice(finishStart, finishEnd);
 
-    expect(lifecycle).toContain('segueVoiceGainControllerRef.current?.release(audio)');
-    expect(lifecycle).toMatch(/release\(pending\.audio\)[\s\S]*unloadAudioElement\(pending\.audio\)/);
-    expect(lifecycle).toMatch(/release\(audio\)[\s\S]*unloadAudioElement\(audio\)/);
-    expect(source).toContain('disposeSegueAudio(true)');
-    expect(source).toContain('disposeAllSegueAudio();');
+    expect(finishStart).toBeGreaterThan(-1);
+    expect(finishEnd).toBeGreaterThan(finishStart);
+    expect(finishBlock).toContain('pendingSegueRef.current !== pending || pending.audio !== audio');
+    expect(finishBlock.indexOf('release(audio)')).toBeLessThan(finishBlock.indexOf('unloadAudioElement(audio)'));
+  });
+
+  it('releases a replaced pending clip before unloading without stopping an already playing clip', () => {
+    const source = fs.readFileSync(path.join(root, 'src/renderer/views/Player/PlayerView.tsx'), 'utf-8');
+    const disposeStart = source.indexOf('const disposeSegueAudio = useCallback(');
+    const disposeEnd = source.indexOf('const disposeAllSegueAudio', disposeStart);
+    const disposeBlock = source.slice(disposeStart, disposeEnd);
+    const ttsStart = source.indexOf("type === 'segue.tts-ready'");
+    const ttsEnd = source.indexOf("type === 'segue.degraded'", ttsStart);
+    const ttsBlock = source.slice(ttsStart, ttsEnd);
+
+    expect(disposeEnd).toBeGreaterThan(disposeStart);
+    expect(disposeBlock).toContain('if (pending.started && !force) return');
+    expect(disposeBlock.indexOf('release(pending.audio)')).toBeLessThan(disposeBlock.indexOf('unloadAudioElement(pending.audio)'));
+    expect(ttsBlock).toContain('disposeSegueAudio();');
+    expect(ttsBlock).not.toContain('disposeSegueAudio(true);');
+  });
+
+  it('releases force-disposed pending audio before unloading', () => {
+    const source = fs.readFileSync(path.join(root, 'src/renderer/views/Player/PlayerView.tsx'), 'utf-8');
+    const deleteStart = source.indexOf('function handleDeleteTrack');
+    const deleteEnd = source.indexOf('function rememberTemporaryBans', deleteStart);
+    const deleteBlock = source.slice(deleteStart, deleteEnd);
+    const disposeStart = source.indexOf('const disposeSegueAudio = useCallback(');
+    const disposeEnd = source.indexOf('const disposeAllSegueAudio', disposeStart);
+    const disposeBlock = source.slice(disposeStart, disposeEnd);
+
+    expect(deleteEnd).toBeGreaterThan(deleteStart);
+    expect(deleteBlock).toContain('disposeSegueAudio(true)');
+    expect(disposeBlock.indexOf('release(pending.audio)')).toBeLessThan(disposeBlock.indexOf('unloadAudioElement(pending.audio)'));
+  });
+
+  it('releases every pending and active segue before unmount disposal', () => {
+    const source = fs.readFileSync(path.join(root, 'src/renderer/views/Player/PlayerView.tsx'), 'utf-8');
+    const allStart = source.indexOf('const disposeAllSegueAudio = useCallback(() => {');
+    const allEnd = source.indexOf('const resolveSegueDurationSec', allStart);
+    const allBlock = source.slice(allStart, allEnd);
+    const cleanupStart = source.indexOf('() => () => {\n      disposeAllSegueAudio();');
+    const cleanupEnd = source.indexOf('[disposeAllSegueAudio]', cleanupStart);
+    const cleanupBlock = source.slice(cleanupStart, cleanupEnd);
+
+    expect(allEnd).toBeGreaterThan(allStart);
+    expect(allBlock.indexOf('release(pending.audio)')).toBeLessThan(allBlock.indexOf('unloadAudioElement(pending.audio)'));
+    expect(allBlock.indexOf('release(audio)')).toBeLessThan(allBlock.indexOf('unloadAudioElement(audio)'));
+    expect(cleanupEnd).toBeGreaterThan(cleanupStart);
+    expect(cleanupBlock).toContain('disposeAllSegueAudio();');
   });
 
   it('cleans up a rejected segue play for a later retry without losing native retry semantics', () => {
@@ -517,12 +567,16 @@ describe('player layout', () => {
     const start = source.indexOf('const maybeStartSegueAudio = useCallback(() => {');
     const end = source.indexOf('useEffect(() => {', start);
     const block = source.slice(start, end);
+    const catchStart = block.indexOf('} catch {');
+    const catchBlock = block.slice(catchStart);
 
-    expect(block).toContain('pending.started = false');
-    expect(block).toContain('pending.preparing = false');
-    expect(block).toContain('activeSegueAudiosRef.current.delete(capturedAudio)');
-    expect(block).toContain('segueVoiceGainControllerRef.current?.release(capturedAudio)');
-    expect(block).toContain('等待用户点击 Play 后继续');
+    expect(catchStart).toBeGreaterThan(-1);
+    expect(catchBlock).toContain('pending.started = false');
+    expect(catchBlock).toContain('pending.preparing = false');
+    expect(catchBlock).toContain('activeSegueAudiosRef.current.delete(capturedAudio)');
+    expect(catchBlock).toContain('segueVoiceGainControllerRef.current?.release(capturedAudio)');
+    expect(catchBlock).not.toContain('unloadAudioElement(capturedAudio)');
+    expect(catchBlock).toContain('等待用户点击 Play 后继续');
   });
 
   it('keeps ducking constants and only tracks the final element that actually plays', () => {

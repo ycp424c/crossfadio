@@ -290,8 +290,23 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
     }
   }, []);
 
+  const finishDetachedActiveSegueAudio = useCallback(
+    (audio: HTMLAudioElement) => {
+      activeSegueAudiosRef.current.delete(audio);
+      segueVoiceGainControllerRef.current?.release(audio);
+      unloadAudioElement(audio);
+      if (activeSegueAudiosRef.current.size === 0) {
+        restoreTrackVolume();
+      }
+    },
+    [restoreTrackVolume]
+  );
+
   const finishSegueAudio = useCallback(
-    (pending: PendingSegueAudio, audio: HTMLAudioElement) => {
+    (pending: PendingSegueAudio, audio: HTMLAudioElement): boolean => {
+      if (pendingSegueRef.current !== pending || pending.audio !== audio) {
+        return false;
+      }
       pending.started = false;
       pending.preparing = false;
       activeSegueAudiosRef.current.delete(audio);
@@ -306,6 +321,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
       if (activeSegueAudiosRef.current.size === 0) {
         restoreTrackVolume();
       }
+      return true;
     },
     [restoreTrackVolume]
   );
@@ -325,8 +341,9 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
         finishSegueAudio(pending, audio);
       };
       audio.onerror = () => {
-        finishSegueAudio(pending, audio);
-        setSegueStatusText('过渡语音播放失败');
+        if (finishSegueAudio(pending, audio)) {
+          setSegueStatusText('过渡语音播放失败');
+        }
       };
     },
     [finishSegueAudio]
@@ -425,6 +442,9 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
 
       if (route === 'unavailable') {
         const nativeAudioUrl = capturedAudio.src || pending.audioUrl;
+        capturedAudio.onloadedmetadata = null;
+        capturedAudio.onended = null;
+        capturedAudio.onerror = null;
         segueVoiceGainControllerRef.current?.release(capturedAudio);
         unloadAudioElement(capturedAudio);
         const nativeAudio = new Audio(nativeAudioUrl);
@@ -1044,6 +1064,13 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
             }
 
             disposeSegueAudio();
+            const activePending = pendingSegueRef.current;
+            if (activePending?.started) {
+              const activeAudio = activePending.audio;
+              activeAudio.onloadedmetadata = null;
+              activeAudio.onended = () => finishDetachedActiveSegueAudio(activeAudio);
+              activeAudio.onerror = () => finishDetachedActiveSegueAudio(activeAudio);
+            }
             const audio = new Audio(ttsPayload.audioUrl);
             const pending: PendingSegueAudio = {
               audio,
@@ -1077,7 +1104,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
         setError(message);
       }
     })();
-  }, [configureSegueAudio, currentTrack, currentTrackId, disposeSegueAudio, maybeStartSegueAudio, nextTrack, queue]);
+  }, [configureSegueAudio, currentTrack, currentTrackId, disposeSegueAudio, finishDetachedActiveSegueAudio, maybeStartSegueAudio, nextTrack, queue]);
 
   useEffect(() => {
     maybeTriggerSegue();
