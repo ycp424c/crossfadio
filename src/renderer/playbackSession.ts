@@ -32,8 +32,8 @@ export interface PlaybackDocument {
 export interface MediaSessionLike {
   metadata: MediaMetadata | null;
   playbackState: MediaSessionPlaybackState;
-  setActionHandler(action: MediaSessionAction, handler: MediaSessionActionHandler | null): void;
-  setPositionState(state?: MediaPositionState): void;
+  setActionHandler?(action: MediaSessionAction, handler: MediaSessionActionHandler | null): void;
+  setPositionState?(state?: MediaPositionState): void;
 }
 
 export interface PlaybackSession {
@@ -41,7 +41,7 @@ export interface PlaybackSession {
   setMetadata(metadata: PlaybackMetadata): void;
   setPosition(position: PlaybackPosition): void;
   settle(): Promise<void>;
-  dispose(): void;
+  dispose(): Promise<void>;
 }
 
 export interface CreatePlaybackSessionOptions {
@@ -69,6 +69,9 @@ export function createPlaybackSession(options: CreatePlaybackSessionOptions): Pl
   let sentinel: WakeLockSentinelLike | undefined;
   let pending: Promise<void> = Promise.resolve();
   let requestGeneration = 0;
+  let metadataAvailable = true;
+  let playbackStateAvailable = true;
+  let positionStateAvailable = true;
   const installedActions = new Set<MediaSessionAction>();
 
   const report = (status: WakeLockStatus): void => {
@@ -139,7 +142,7 @@ export function createPlaybackSession(options: CreatePlaybackSessionOptions): Pl
   };
 
   options.document?.addEventListener('visibilitychange', onVisibilityChange);
-  if (options.mediaSession) {
+  if (options.mediaSession?.setActionHandler) {
     for (const [action, callbackName] of actions) {
       try {
         const callback = options[callbackName] as (() => void) | undefined;
@@ -153,39 +156,67 @@ export function createPlaybackSession(options: CreatePlaybackSessionOptions): Pl
 
   return {
     setPlaying(nextPlaying) {
-      if (disposed) return;
+      if (disposed || playing === nextPlaying) return;
       const transitionedToPlaying = nextPlaying && !playing;
       playing = nextPlaying;
-      if (options.mediaSession) options.mediaSession.playbackState = playing ? 'playing' : 'paused';
+      if (options.mediaSession && playbackStateAvailable) {
+        try {
+          options.mediaSession.playbackState = playing ? 'playing' : 'paused';
+        } catch {
+          playbackStateAvailable = false;
+        }
+      }
       if (transitionedToPlaying) requestWakeLock();
       else if (!playing) releaseWakeLock();
     },
     setMetadata(metadata) {
-      if (disposed || !options.mediaSession) return;
-      const init: MediaMetadataInit = { title: metadata.title, artist: metadata.artist };
-      if (metadata.artwork) init.artwork = [{ src: metadata.artwork }];
-      options.mediaSession.metadata = options.createMediaMetadata
-        ? options.createMediaMetadata(init)
-        : (init as MediaMetadata);
+      if (disposed || !options.mediaSession || !metadataAvailable) return;
+      const base: MediaMetadataInit = { title: metadata.title, artist: metadata.artist };
+      const attempts: MediaMetadataInit[] = metadata.artwork
+        ? [{ ...base, artwork: [{ src: metadata.artwork }] }, base]
+        : [base];
+      for (const init of attempts) {
+        try {
+          const value = options.createMediaMetadata
+            ? options.createMediaMetadata(init)
+            : (init as MediaMetadata);
+          options.mediaSession.metadata = value;
+          return;
+        } catch {
+          // Invalid artwork and partial implementations are retried without artwork.
+        }
+      }
+      metadataAvailable = false;
     },
     setPosition(position) {
-      if (disposed || !options.mediaSession) return;
+      if (disposed || !options.mediaSession || !positionStateAvailable) return;
       const { duration, playbackRate } = position;
       if (
         Number.isFinite(duration) && duration > 0 &&
         Number.isFinite(position.position) && position.position >= 0 && position.position <= duration &&
         Number.isFinite(playbackRate) && playbackRate > 0
       ) {
-        options.mediaSession.setPositionState(position);
+        if (!options.mediaSession.setPositionState) {
+          positionStateAvailable = false;
+          return;
+        }
+        try {
+          options.mediaSession.setPositionState(position);
+        } catch {
+          positionStateAvailable = false;
+        }
       }
     },
     settle() {
       return pending;
     },
-    dispose() {
-      if (disposed) return;
+    async dispose() {
+      if (disposed) {
+        await pending;
+        return;
+      }
       options.document?.removeEventListener('visibilitychange', onVisibilityChange);
-      if (options.mediaSession) {
+      if (options.mediaSession?.setActionHandler) {
         for (const action of installedActions) {
           try {
             options.mediaSession.setActionHandler(action, null);
@@ -197,6 +228,7 @@ export function createPlaybackSession(options: CreatePlaybackSessionOptions): Pl
       playing = false;
       releaseWakeLock();
       disposed = true;
+      await pending;
     },
   };
 }

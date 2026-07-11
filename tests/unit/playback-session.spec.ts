@@ -182,6 +182,63 @@ describe('PlaybackSession', () => {
     expect(mediaSession.positionCalls).toHaveLength(1);
   });
 
+  it('isolates partial and throwing media session features from playback', () => {
+    const mediaSession = fakeMediaSession();
+    let playbackState: MediaSessionPlaybackState = 'none';
+    Object.defineProperty(mediaSession, 'playbackState', {
+      get: () => playbackState,
+      set: () => { throw new Error('playback state unavailable'); },
+    });
+    mediaSession.setPositionState = () => { throw new Error('position unavailable'); };
+    const metadataAttempts: MediaMetadataInit[] = [];
+    const session = createPlaybackSession({
+      mediaSession,
+      createMediaMetadata: (init) => {
+        metadataAttempts.push(init);
+        if (init.artwork) throw new Error('bad artwork');
+        return init as MediaMetadata;
+      },
+    });
+
+    expect(() => session.setPlaying(true)).not.toThrow();
+    expect(() => session.setMetadata({ title: 'Song', artist: 'Artist', artwork: 'bad://cover' })).not.toThrow();
+    expect(metadataAttempts).toEqual([
+      { title: 'Song', artist: 'Artist', artwork: [{ src: 'bad://cover' }] },
+      { title: 'Song', artist: 'Artist' },
+    ]);
+    expect(mediaSession.metadata).toEqual({ title: 'Song', artist: 'Artist' });
+    expect(() => session.setPosition({ duration: 10, position: 2, playbackRate: 1 })).not.toThrow();
+    expect(playbackState).toBe('none');
+
+    const partial = { metadata: null, playbackState: 'none', setActionHandler: vi.fn() } as unknown as MediaSessionLike;
+    const partialSession = createPlaybackSession({ mediaSession: partial });
+    expect(() => partialSession.setPosition({ duration: 10, position: 2, playbackRate: 1 })).not.toThrow();
+  });
+
+  it('skips metadata when construction or assignment remains unavailable', () => {
+    const mediaSession = fakeMediaSession();
+    Object.defineProperty(mediaSession, 'metadata', {
+      get: () => null,
+      set: () => { throw new Error('metadata unavailable'); },
+    });
+    const session = createPlaybackSession({
+      mediaSession,
+      createMediaMetadata: () => { throw new Error('constructor unavailable'); },
+    });
+    expect(() => session.setMetadata({ title: 'Song', artist: 'Artist', artwork: 'cover.jpg' })).not.toThrow();
+  });
+
+  it('does not repeat inactive work when setPlaying receives the same false state', async () => {
+    const statuses: string[] = [];
+    const session = createPlaybackSession({ onWakeLockStatusChange: (status) => statuses.push(status) });
+
+    session.setPlaying(false);
+    session.setPlaying(false);
+    await session.settle();
+
+    expect(statuses).toEqual([]);
+  });
+
   it('fully disposes listeners, handlers and wake lock and becomes inert', async () => {
     const document = new FakeDocument();
     const sentinel = new FakeSentinel();
@@ -191,8 +248,9 @@ describe('PlaybackSession', () => {
     session.setPlaying(true);
     await session.settle();
 
-    session.dispose();
-    await session.settle();
+    const disposal = session.dispose();
+    expect(disposal).toBeInstanceOf(Promise);
+    await disposal;
     expect(document.listenerCount).toBe(0);
     expect(sentinel.releaseCalls).toBe(1);
     expect([...mediaSession.handlers.values()].every((handler) => handler === null)).toBe(true);
