@@ -568,15 +568,42 @@ describe('player layout', () => {
     const end = source.indexOf('useEffect(() => {', start);
     const block = source.slice(start, end);
     const catchStart = block.indexOf('} catch {');
-    const catchBlock = block.slice(catchStart);
+    const currentRetryStart = block.indexOf('pending.started = false', catchStart);
+    const catchBlock = block.slice(currentRetryStart);
 
     expect(catchStart).toBeGreaterThan(-1);
+    expect(currentRetryStart).toBeGreaterThan(catchStart);
     expect(catchBlock).toContain('pending.started = false');
     expect(catchBlock).toContain('pending.preparing = false');
     expect(catchBlock).toContain('activeSegueAudiosRef.current.delete(capturedAudio)');
     expect(catchBlock).toContain('segueVoiceGainControllerRef.current?.release(capturedAudio)');
     expect(catchBlock).not.toContain('unloadAudioElement(capturedAudio)');
     expect(catchBlock).toContain('等待用户点击 Play 后继续');
+  });
+
+  it('isolates a late play rejection from a replacement pending segue while unloading the rejected element', () => {
+    const source = fs.readFileSync(path.join(root, 'src/renderer/views/Player/PlayerView.tsx'), 'utf-8');
+    const start = source.indexOf('const maybeStartSegueAudio = useCallback(() => {');
+    const end = source.indexOf('useEffect(() => {', start);
+    const startBlock = source.slice(start, end);
+    const catchStart = startBlock.indexOf('} catch {');
+    const staleEnd = startBlock.indexOf('pending.started = false', catchStart);
+    const staleBlock = startBlock.slice(catchStart, staleEnd);
+
+    expect(catchStart).toBeGreaterThan(-1);
+    expect(staleEnd).toBeGreaterThan(catchStart);
+    expect(staleBlock).toContain('const stillCurrent = pendingSegueRef.current === pending && pending.audio === capturedAudio');
+    expect(staleBlock).toContain('if (!stillCurrent) {');
+    expect(staleBlock).toContain('capturedAudio.onloadedmetadata = null');
+    expect(staleBlock).toContain('capturedAudio.onended = null');
+    expect(staleBlock).toContain('capturedAudio.onerror = null');
+    expect(staleBlock).toContain('activeSegueAudiosRef.current.delete(capturedAudio)');
+    expect(staleBlock.indexOf('release(capturedAudio)')).toBeLessThan(staleBlock.indexOf('unloadAudioElement(capturedAudio)'));
+    expect(staleBlock).toContain('return;');
+    expect(staleBlock).not.toContain('pending.started = false');
+    expect(staleBlock).not.toContain('pending.preparing = false');
+    expect(staleBlock).not.toContain('restoreTrackVolume()');
+    expect(staleBlock).not.toContain('setSegueStatusText(');
   });
 
   it('keeps ducking constants and only tracks the final element that actually plays', () => {

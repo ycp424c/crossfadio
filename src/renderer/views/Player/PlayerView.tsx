@@ -469,6 +469,16 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
         await capturedAudio.play();
         setSegueStatusText(`过渡播报中（约 ${Math.round(segueDurationSec)} 秒）`);
       } catch {
+        const stillCurrent = pendingSegueRef.current === pending && pending.audio === capturedAudio;
+        if (!stillCurrent) {
+          capturedAudio.onloadedmetadata = null;
+          capturedAudio.onended = null;
+          capturedAudio.onerror = null;
+          activeSegueAudiosRef.current.delete(capturedAudio);
+          segueVoiceGainControllerRef.current?.release(capturedAudio);
+          unloadAudioElement(capturedAudio);
+          return;
+        }
         pending.started = false;
         pending.preparing = false;
         activeSegueAudiosRef.current.delete(capturedAudio);
