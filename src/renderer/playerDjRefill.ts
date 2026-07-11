@@ -23,7 +23,7 @@ export function shouldTriggerDjRefill(input: RefillGateInput): boolean {
     && !input.segueInFlight
     && !input.pickNextInFlight
     && input.now >= input.backoffUntil
-    && getBackupTrackCount(input.queueLength, input.currentIndex) <= input.lowWaterMark
+    && getBackupTrackCount(input.queueLength, input.currentIndex) < input.lowWaterMark
     && input.now - input.lastCallAt >= input.cooldownMs;
 }
 

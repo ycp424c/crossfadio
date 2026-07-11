@@ -1,7 +1,7 @@
 export const AUTO_FILL_BATCH_SIZE_MIN = 2;
 export const AUTO_FILL_BATCH_SIZE_MAX = 5;
 export const DEFAULT_AUTO_FILL_BATCH_SIZE = 2;
-export const AUTO_FILL_LOW_WATER_MARK = 2;
+export const AUTO_FILL_LOW_WATER_MARK = 5;
 export const AUTO_FILL_BATCH_SIZE_OPTIONS = [2, 3, 4, 5] as const;
 export const DISCOVERY_MODE_VALUES = ['explore', 'comfort', 'legacy'] as const;
 
