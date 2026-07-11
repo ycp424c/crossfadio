@@ -15,3 +15,6 @@ playwright-report
 
 # Isolated feature worktrees
 .worktrees/
+
+# Local visual brainstorming artifacts
+.superpowers/
