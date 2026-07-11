@@ -11,7 +11,7 @@ import {
   type SegueAudioContextLike
 } from '../../src/renderer/audio/segueVoiceGain';
 
-type Failure = 'resume' | 'gain' | 'compressor' | 'parameter' | 'source' | 'source-connect' | 'source-connect-persistent' | 'gain-connect' | 'compressor-connect' | 'disconnect' | 'close';
+type Failure = 'resume' | 'gain' | 'compressor' | 'parameter' | 'source' | 'source-connect' | 'source-connect-persistent' | 'source-connect-disconnect' | 'gain-connect' | 'compressor-connect' | 'disconnect' | 'close';
 
 class FakeNode {
   readonly connections: unknown[] = [];
@@ -22,7 +22,7 @@ class FakeNode {
     this.events.push(`${this.name}.connect`);
     this.connectCount++;
     if (this.failure === `${this.name}-connect-persistent`) throw new Error('connect failed');
-    if (this.failure === `${this.name}-connect` && this.connectCount === 1) {
+    if ((this.failure === `${this.name}-connect` || (this.name === 'source' && this.failure === 'source-connect-disconnect')) && this.connectCount === 1) {
       throw new Error('connect failed');
     }
     this.connections.push(target);
@@ -31,7 +31,7 @@ class FakeNode {
   disconnect() {
     this.disconnectCount++;
     this.events.push(`${this.name}.disconnect`);
-    if (this.failure === 'disconnect') throw new Error('disconnect failed');
+    if (this.failure === 'disconnect' || (this.name === 'source' && this.failure === 'source-connect-disconnect')) throw new Error('disconnect failed');
     this.connections.length = 0;
   }
 }
@@ -156,6 +156,17 @@ describe('segue voice gain controller', () => {
     await expect(controller.prepare(element)).resolves.toBe('unavailable');
     expect(context.events.filter((event) => event === 'source.connect')).toHaveLength(2);
     await expect(controller.dispose()).resolves.toBeUndefined();
+  });
+
+  it('does not attempt unity fallback when the failed source route cannot be disconnected', async () => {
+    const context = new FakeContext('source-connect-disconnect');
+    const controller = createSegueVoiceGainController({ createContext: () => context });
+    const element = audio();
+    await expect(controller.prepare(element)).resolves.toBe('unavailable');
+    expect(context.sources[0].connectCount).toBe(1);
+    expect(context.sources[0].connections).not.toContain(context.destination);
+    await expect(controller.dispose()).resolves.toBeUndefined();
+    expect(context.sources[0].disconnectCount).toBe(2);
   });
 
   it('does not build a route when dispose wins a deferred resume race', async () => {

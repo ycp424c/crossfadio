@@ -135,9 +135,15 @@ export function createSegueVoiceGainController(options: SegueVoiceGainController
         compressor.connect(ctx.destination);
         return 'enhanced';
       } catch {
-        safeDisconnect(route.source);
-        safeDisconnect(gain);
-        safeDisconnect(compressor);
+        const sourceDisconnected = safeDisconnect(route.source);
+        const gainDisconnected = safeDisconnect(gain);
+        const compressorDisconnected = safeDisconnect(compressor);
+        if (gainDisconnected) route.gain = undefined;
+        if (compressorDisconnected) route.compressor = undefined;
+        if (!sourceDisconnected) {
+          route.mode = 'unavailable';
+          return route.mode;
+        }
         try {
           route.source.connect(ctx.destination);
           route.mode = 'native';
