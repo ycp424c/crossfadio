@@ -228,6 +228,26 @@ describe('PlaybackSession', () => {
     expect(() => session.setMetadata({ title: 'Song', artist: 'Artist', artwork: 'cover.jpg' })).not.toThrow();
   });
 
+  it('remembers invalid artwork URLs while allowing different artwork to be attempted', () => {
+    const mediaSession = fakeMediaSession();
+    const artworkAttempts: Array<string | undefined> = [];
+    const session = createPlaybackSession({
+      mediaSession,
+      createMediaMetadata: (init) => {
+        const artwork = init.artwork?.[0]?.src;
+        artworkAttempts.push(artwork);
+        if (artwork === 'bad://cover') throw new Error('bad artwork');
+        return init as MediaMetadata;
+      },
+    });
+
+    session.setMetadata({ title: 'First', artist: 'Artist', artwork: 'bad://cover' });
+    session.setMetadata({ title: 'Second', artist: 'Artist', artwork: 'bad://cover' });
+    session.setMetadata({ title: 'Third', artist: 'Artist', artwork: 'good://cover' });
+
+    expect(artworkAttempts).toEqual(['bad://cover', undefined, undefined, 'good://cover']);
+  });
+
   it('does not repeat inactive work when setPlaying receives the same false state', async () => {
     const statuses: string[] = [];
     const session = createPlaybackSession({ onWakeLockStatusChange: (status) => statuses.push(status) });
@@ -260,5 +280,17 @@ describe('PlaybackSession', () => {
     document.dispatchVisibility('visible');
     await session.settle();
     expect(request).toHaveBeenCalledTimes(1);
+  });
+
+  it('isolates a rejecting wake lock release from dispose and settle', async () => {
+    const sentinel = new FakeSentinel();
+    sentinel.release = vi.fn(async () => { throw new Error('release failed'); });
+    const session = createPlaybackSession({ wakeLock: { request: async () => sentinel } });
+    session.setPlaying(true);
+    await session.settle();
+
+    await expect(session.dispose()).resolves.toBeUndefined();
+    await expect(session.settle()).resolves.toBeUndefined();
+    expect(sentinel.release).toHaveBeenCalledOnce();
   });
 });

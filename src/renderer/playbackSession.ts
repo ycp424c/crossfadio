@@ -72,6 +72,7 @@ export function createPlaybackSession(options: CreatePlaybackSessionOptions): Pl
   let metadataAvailable = true;
   let playbackStateAvailable = true;
   let positionStateAvailable = true;
+  const invalidArtworkUrls = new Set<string>();
   const installedActions = new Set<MediaSessionAction>();
 
   const report = (status: WakeLockStatus): void => {
@@ -106,6 +107,8 @@ export function createPlaybackSession(options: CreatePlaybackSessionOptions): Pl
     enqueue(async () => {
       try {
         if (!current.released) await current.release();
+      } catch {
+        // Wake lock release is auxiliary and must never reject the session queue.
       } finally {
         report('inactive');
       }
@@ -172,8 +175,10 @@ export function createPlaybackSession(options: CreatePlaybackSessionOptions): Pl
     setMetadata(metadata) {
       if (disposed || !options.mediaSession || !metadataAvailable) return;
       const base: MediaMetadataInit = { title: metadata.title, artist: metadata.artist };
-      const attempts: MediaMetadataInit[] = metadata.artwork
-        ? [{ ...base, artwork: [{ src: metadata.artwork }] }, base]
+      const artwork = metadata.artwork;
+      const shouldTryArtwork = artwork && !invalidArtworkUrls.has(artwork);
+      const attempts: MediaMetadataInit[] = shouldTryArtwork
+        ? [{ ...base, artwork: [{ src: artwork }] }, base]
         : [base];
       for (const init of attempts) {
         try {
@@ -183,7 +188,7 @@ export function createPlaybackSession(options: CreatePlaybackSessionOptions): Pl
           options.mediaSession.metadata = value;
           return;
         } catch {
-          // Invalid artwork and partial implementations are retried without artwork.
+          if (init.artwork && artwork) invalidArtworkUrls.add(artwork);
         }
       }
       metadataAvailable = false;
