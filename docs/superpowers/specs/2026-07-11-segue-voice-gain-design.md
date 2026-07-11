@@ -49,7 +49,7 @@ The module exposes a small controller:
 
 ```ts
 type SegueVoiceGainController = {
-  prepare(audio: HTMLAudioElement): Promise<'enhanced' | 'native'>;
+  prepare(audio: HTMLAudioElement): Promise<'enhanced' | 'native' | 'unavailable'>;
   release(audio: HTMLAudioElement): void;
   dispose(): Promise<void>;
 };
@@ -57,8 +57,10 @@ type SegueVoiceGainController = {
 
 `prepare` ensures an audio context exists, attempts to resume it, and connects the
 given element exactly once. It returns `enhanced` only when the complete Web Audio
-route is ready. Any unsupported or rejected operation returns `native` without
-throwing into the player.
+route is ready. Unsupported or rejected operations before source binding return
+`native` without throwing into the player. A post-source failure returns
+`unavailable` only when neither the enhanced route nor an emergency unity route can
+safely carry audio.
 
 `release` disconnects the nodes associated with one voice element. `dispose`
 disconnects every registered voice and closes the shared context.
@@ -98,7 +100,10 @@ When a `segue.tts-ready` event supplies a new TTS audio element:
 
 1. Set the element's native volume to `1`.
 2. Call `controller.prepare(audio)` before attempting playback.
-3. Continue playback whether preparation returns `enhanced` or `native`.
+3. Continue with that element when preparation returns `enhanced` or `native`.
+4. If preparation returns `unavailable`, release and unload that element, create a
+   fresh native `Audio` replacement for the same URL, and play the replacement
+   without preparing it through Web Audio.
 
 The existing segue timing, overlapping-voice handling, and song ducking remain
 authoritative. When speech begins, track volume remains `0.2`. When the final active
@@ -140,6 +145,11 @@ gain/compression, even though Web Audio carries the signal. The controller must 
 leave the track permanently ducked or mark the segue as failed solely because
 enhancement failed.
 
+If the partial enhanced route cannot be safely disconnected, or the direct unity
+connection also fails, return `unavailable`. `PlayerView` then replaces the bound
+element with a fresh native `Audio` element; the original element's media source
+identity cannot be rebound or restored to implicit native output.
+
 Once a media element has been successfully connected to a
 `MediaElementAudioSourceNode`, its sound is routed through the AudioContext. The
 implementation must not create a second source for that same element or connect the
@@ -155,6 +165,8 @@ not block the segue.
 - Public controller methods do not throw Web Audio capability failures into
   `PlayerView`.
 - Releasing an already released or unknown element is a no-op.
+- Release is identity-specific: it removes only the route owned by the supplied
+  media element and never closes the shared context.
 - Individual `disconnect()` and context `close()` failures are isolated.
 - Failure for one TTS element does not disable enhancement for later elements unless
   context creation itself is unavailable.
@@ -193,6 +205,9 @@ Following the repository's current source-contract testing style, verify that:
 - the track still ducks to `0.2` while speech plays and returns to `1` after the last
   active segue finishes;
 - enhancement fallback does not skip native TTS playback.
+- `unavailable` replaces the routed element with a fresh native element, while
+  pending-object and audio-identity checks prevent a late prepare/play result from
+  reviving a replaced or disposed segue.
 
 ### Verification Commands
 

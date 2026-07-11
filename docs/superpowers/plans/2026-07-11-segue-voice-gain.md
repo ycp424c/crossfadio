@@ -4,7 +4,7 @@
 
 **Goal:** Raise DJ segue speech by approximately 6 dB with dynamic peak compression while preserving 20 percent song ducking and safe native fallback.
 
-**Architecture:** Add a dependency-injected renderer audio controller that lazily owns one AudioContext and one node chain per TTS element. PlayerView prepares each segue element before playback and releases it on every cleanup path, while all enhancement failures remain isolated from native TTS playback.
+**Architecture:** Add a dependency-injected renderer audio controller that lazily owns one AudioContext and one node chain per TTS element. PlayerView prepares each segue element before playback and releases it on every cleanup path, while all enhancement failures remain isolated from native TTS playback. The implemented prepare contract has three outcomes: `enhanced`, unity-route `native`, and post-source `unavailable`; the last causes `PlayerView` to create a fresh native `Audio` replacement.
 
 **Tech Stack:** TypeScript 5.8, Web Audio API, native `HTMLAudioElement`, React 18, Vitest 3.
 
@@ -73,7 +73,7 @@ export const SEGUE_COMPRESSOR_SETTINGS = {
 } as const;
 
 export type SegueVoiceGainController = {
-  prepare(audio: HTMLAudioElement): Promise<'enhanced' | 'native'>;
+  prepare(audio: HTMLAudioElement): Promise<'enhanced' | 'native' | 'unavailable'>;
   release(audio: HTMLAudioElement): void;
   dispose(): Promise<void>;
 };
@@ -157,6 +157,11 @@ once.
 Catch capability, disconnect, and close failures inside the controller. `dispose`
 marks the controller inert before awaiting close.
 
+If a post-source enhanced route cannot be cleaned up safely, or its emergency unity
+connection also fails, return `unavailable`. Keep release scoped to the exact media
+element identity; releasing one route must not affect another route or close the
+shared context.
+
 - [ ] **Step 8: Verify and commit Task 1**
 
 ```bash
@@ -218,7 +223,11 @@ existing unmount cleanup. Do not recreate the controller on render.
 When TTS becomes ready, keep `audio.volume = 1`, register the element, and have the
 playback path await `controller.prepare(audio)` before `audio.play()`. Preparation
 returns a status and does not throw, so both `enhanced` and `native` continue to
-playback. Preserve the existing pending/started race guards after the await.
+playback. For `unavailable`, release and unload the source-bound element, create a
+fresh native `Audio` for the same URL, mark it native-only, and continue with that
+replacement. Preserve the existing pending-object, started-state, and audio-identity
+race guards after the await and again after replacement so stale async work cannot
+play or clean up the current element.
 
 - [ ] **Step 5: Release on every unload path**
 

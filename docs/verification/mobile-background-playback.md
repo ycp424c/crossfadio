@@ -60,6 +60,17 @@ Record one row per device/browser combination. Use `PASS`, `FAIL`, `UNSUPPORTED`
 | iPhone (model TBD) | iOS (version TBD) | Safari (version TBD) | NOT EXECUTED | NOT EXECUTED | NOT EXECUTED (0 observed) | NOT EXECUTED | NOT EXECUTED | NOT EXECUTED | No real-device hardware was available for this run. Replace all TBD values before execution. |
 | Android phone (model TBD) | Android (version TBD) | Chrome (version TBD) | NOT EXECUTED | NOT EXECUTED | NOT EXECUTED (0 observed) | NOT EXECUTED | NOT EXECUTED | NOT EXECUTED | No real-device hardware was available for this run. Replace all TBD values before execution. |
 
+### Segue loudness listening check
+
+Automated tests can verify routing, gain/compressor parameters, fallback, and player
+cleanup contracts. They cannot prove perceived loudness, audibility, pumping, or
+clipping on a real device. Record the listening evidence below separately.
+
+| Device/browser | Song | TTS voice | Device output | Clearly audible near original-song level | Pumping/clipping | Result / notes |
+| --- | --- | --- | --- | --- | --- | --- |
+| iPhone Safari | NOT EXECUTED | NOT EXECUTED | NOT EXECUTED | NOT EXECUTED | NOT EXECUTED | NOT EXECUTED: no iPhone was available for listening. |
+| Android Chrome | NOT EXECUTED | NOT EXECUTED | NOT EXECUTED | NOT EXECUTED | NOT EXECUTED | NOT EXECUTED: no Android device was available for listening. |
+
 ### Repeatable prerequisites
 
 - Enter the tested URL as `<deployment-url>` and record the deployed full commit SHA in Notes. Do not begin until the operator has replaced the URL placeholder.
