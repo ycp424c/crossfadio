@@ -241,7 +241,7 @@ describe('player layout', () => {
     expect(triggerBlock).toContain('backoffUntil: djPickNextBackoffUntilRef.current');
     expect(doneBlock).toContain("reason === 'already-running'");
     expect(doneBlock).toContain('djPickNextBackoffUntilRef.current = Date.now() + DJ_ALREADY_RUNNING_BACKOFF_MS');
-    expect(doneBlock).toContain("setDjStatusText(latestBackupTrackCount > AUTO_FILL_LOW_WATER_MARK ? '已补充队列' : '正在补充队列…')");
+    expect(doneBlock).toContain("setDjStatusText(latestBackupTrackCount >= AUTO_FILL_LOW_WATER_MARK ? '已补充队列' : '正在补充队列…')");
     expect(doneBlock.indexOf("reason === 'already-running'")).toBeLessThan(
       doneBlock.indexOf('djPickNextLastCallRef.current = 0')
     );

@@ -1208,7 +1208,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
                   if (reason === 'already-running') {
                     djPickNextBackoffUntilRef.current = Date.now() + DJ_ALREADY_RUNNING_BACKOFF_MS;
                     const latestBackupTrackCount = getBackupTrackCount(queueRef.current.length, currentIndexRef.current);
-                    setDjStatusText(latestBackupTrackCount > AUTO_FILL_LOW_WATER_MARK ? '已补充队列' : '正在补充队列…');
+                    setDjStatusText(latestBackupTrackCount >= AUTO_FILL_LOW_WATER_MARK ? '已补充队列' : '正在补充队列…');
                   } else {
                     djPickNextBackoffUntilRef.current = 0;
                     djPickNextLastCallRef.current = 0;
