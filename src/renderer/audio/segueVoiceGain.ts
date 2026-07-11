@@ -30,7 +30,7 @@ export type SegueAudioContextLike = {
 };
 
 export type SegueVoiceGainController = {
-  prepare(audio: HTMLMediaElement): Promise<'enhanced' | 'native'>;
+  prepare(audio: HTMLMediaElement): Promise<'enhanced' | 'native' | 'unavailable'>;
   release(audio: HTMLMediaElement): void;
   dispose(): Promise<void>;
 };
@@ -44,7 +44,7 @@ type ElementRoute = {
   gain?: GainNodeLike;
   compressor?: CompressorNodeLike;
   active: boolean;
-  emergency: boolean;
+  mode: 'enhanced' | 'native' | 'unavailable';
 };
 
 export function createSegueVoiceGainController(options: SegueVoiceGainControllerOptions): SegueVoiceGainController {
@@ -53,17 +53,30 @@ export function createSegueVoiceGainController(options: SegueVoiceGainController
   const routes = new WeakMap<HTMLMediaElement, ElementRoute>();
   const activeRoutes = new Set<ElementRoute>();
 
-  const safeDisconnect = (node?: AudioNodeLike) => {
-    try { node?.disconnect?.(); } catch { /* best-effort cleanup */ }
+  const safeDisconnect = (node?: AudioNodeLike): boolean => {
+    if (!node) return true;
+    if (!node.disconnect) return false;
+    try {
+      node.disconnect();
+      return true;
+    } catch {
+      return false;
+    }
   };
 
-  const releaseRoute = (route: ElementRoute) => {
-    if (!route.active) return;
-    safeDisconnect(route.source);
-    safeDisconnect(route.gain);
-    safeDisconnect(route.compressor);
-    route.active = false;
-    activeRoutes.delete(route);
+  const releaseRoute = (route: ElementRoute): boolean => {
+    if (!route.active) return true;
+    const sourceDisconnected = safeDisconnect(route.source);
+    const gainDisconnected = safeDisconnect(route.gain);
+    const compressorDisconnected = safeDisconnect(route.compressor);
+    const clean = sourceDisconnected && gainDisconnected && compressorDisconnected;
+    if (clean) {
+      route.active = false;
+      activeRoutes.delete(route);
+    } else {
+      route.mode = 'unavailable';
+    }
+    return clean;
   };
 
   return {
@@ -77,9 +90,10 @@ export function createSegueVoiceGainController(options: SegueVoiceGainController
       } catch {
         return 'native';
       }
+      if (disposed || context !== ctx) return 'native';
 
       const existing = routes.get(audio);
-      if (existing?.active) return existing.emergency ? 'native' : 'enhanced';
+      if (existing?.active) return existing.mode;
 
       let gain: GainNodeLike | undefined;
       let compressor: CompressorNodeLike | undefined;
@@ -101,7 +115,7 @@ export function createSegueVoiceGainController(options: SegueVoiceGainController
       let route = existing;
       if (!route) {
         try {
-          route = { source: ctx.createMediaElementSource(audio), active: false, emergency: false };
+          route = { source: ctx.createMediaElementSource(audio), active: false, mode: 'unavailable' };
           routes.set(audio, route);
         } catch {
           safeDisconnect(gain);
@@ -113,7 +127,7 @@ export function createSegueVoiceGainController(options: SegueVoiceGainController
       route.gain = gain;
       route.compressor = compressor;
       route.active = true;
-      route.emergency = false;
+      route.mode = 'enhanced';
       activeRoutes.add(route);
       try {
         route.source.connect(gain);
@@ -124,9 +138,13 @@ export function createSegueVoiceGainController(options: SegueVoiceGainController
         safeDisconnect(route.source);
         safeDisconnect(gain);
         safeDisconnect(compressor);
-        route.emergency = true;
-        try { route.source.connect(ctx.destination); } catch { /* never surface Web Audio failures */ }
-        return 'native';
+        try {
+          route.source.connect(ctx.destination);
+          route.mode = 'native';
+        } catch {
+          route.mode = 'unavailable';
+        }
+        return route.mode;
       }
     },
 
