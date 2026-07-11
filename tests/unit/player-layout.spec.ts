@@ -113,6 +113,44 @@ describe('player layout', () => {
     expect(source).not.toContain('flex-1 overflow-hidden');
   });
 
+  it('prioritizes playback before mode details and queue on phones only', () => {
+    const source = fs.readFileSync(path.join(root, 'src/renderer/views/Player/PlayerView.tsx'), 'utf-8');
+
+    expect(source).toContain('order-1 md:order-none');
+    expect(source).toContain('order-2 md:order-none');
+    expect(source).toContain('order-3 md:order-none');
+  });
+
+  it('keeps the primary mobile transport controls touchable and icon-first', () => {
+    const source = fs.readFileSync(
+      path.join(root, 'src/renderer/components/player/TransportControls.tsx'),
+      'utf-8'
+    );
+
+    expect(source.match(/min-h-11 min-w-11/g)?.length ?? 0).toBeGreaterThanOrEqual(3);
+    expect(source).toContain('<span className="hidden sm:inline">Prev</span>');
+    expect(source).toContain('<span className="hidden sm:inline">Skip</span>');
+  });
+
+  it('uses compact phone artwork and title sizing while restoring the desktop hero scale', () => {
+    const source = fs.readFileSync(
+      path.join(root, 'src/renderer/components/player/NowPlayingHero.tsx'),
+      'utf-8'
+    );
+
+    expect(source).toContain('h-28 w-28');
+    expect(source).toContain('md:h-44 md:w-44');
+    expect(source).toContain('text-2xl');
+    expect(source).toContain('md:text-4xl');
+  });
+
+  it('uses dynamic viewport height with a fallback and preserves bottom safe area', () => {
+    const source = fs.readFileSync(path.join(root, 'src/renderer/App.tsx'), 'utf-8');
+
+    expect(source).toContain('h-screen h-[100dvh]');
+    expect(source).toContain('pb-[env(safe-area-inset-bottom)]');
+  });
+
   it('limits queue list height and scrolls the playlist internally', () => {
     const source = fs.readFileSync(path.join(root, 'src/renderer/components/player/QueuePanel.tsx'), 'utf-8');
 

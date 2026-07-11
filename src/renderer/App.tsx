@@ -24,7 +24,7 @@ export function App(): JSX.Element {
   }, []);
 
   return (
-    <div className="flex h-screen flex-col bg-zinc-950 text-zinc-100">
+    <div className="flex h-screen h-[100dvh] flex-col bg-zinc-950 text-zinc-100">
       {/* Main content — all views stay mounted so audio and chat history persist */}
       <div className="min-h-0 flex-1 overflow-y-auto">
         <div style={{ display: tab === 'player' ? 'block' : 'none' }}>

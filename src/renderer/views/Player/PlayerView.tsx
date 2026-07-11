@@ -1641,7 +1641,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
           </div>
         </header>
 
-        <section className="col-span-1 overflow-hidden rounded-xl px-2 py-4 md:col-span-12 md:px-6">
+        <section className="col-span-1 order-2 md:order-none overflow-hidden rounded-xl px-2 py-4 md:col-span-12 md:px-6">
           <div className="flex flex-col gap-5 xl:flex-row xl:items-end xl:justify-between">
             <div className="min-w-0">
               <h1 className={`text-2xl font-bold tracking-normal md:text-3xl ${modeConfig.accent}`}>
@@ -1701,7 +1701,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
         </section>
 
         {/* Left column — player */}
-        <section className="col-span-1 space-y-4 md:col-span-12 xl:col-span-8">
+        <section className="col-span-1 order-1 md:order-none space-y-4 md:col-span-12 xl:col-span-8">
           <NowPlayingHero
             coverImgUrl={currentTrack?.coverImgUrl ?? nowPlaying?.coverImgUrl ?? null}
             isLiked={isLiked}
@@ -1774,12 +1774,12 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
             ref={audioRef}
           />
           {wakeLockStatus === 'active' ? (
-            <p className="text-center text-[11px] text-zinc-500">亮屏保护</p>
+            <p className="min-w-0 truncate px-2 text-center text-[11px] text-zinc-500">亮屏保护</p>
           ) : null}
         </section>
 
         {/* Right column — queue + status */}
-        <section className="col-span-1 flex flex-col gap-4 md:col-span-12 xl:col-span-4">
+        <section className="col-span-1 order-3 md:order-none flex flex-col gap-4 md:col-span-12 xl:col-span-4">
           <QueuePanel
             currentIndex={currentIndex}
             mode={discoveryMode}
