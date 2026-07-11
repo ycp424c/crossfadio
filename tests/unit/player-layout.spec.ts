@@ -40,10 +40,14 @@ describe('player layout', () => {
 
   it('publishes current-track metadata and valid native audio position', () => {
     const source = fs.readFileSync(path.join(root, 'src/renderer/views/Player/PlayerView.tsx'), 'utf-8');
+    const sessionCreation = source.indexOf('const playbackSession = createBrowserPlaybackSession({');
+    const metadataSync = source.indexOf('playbackSessionRef.current?.setMetadata({');
     const timeUpdateStart = source.indexOf('function onTimeUpdate(): void');
     const metadataStart = source.indexOf('function onLoadedMetadata(): void', timeUpdateStart);
     const timeUpdateBlock = source.slice(timeUpdateStart, metadataStart);
 
+    expect(sessionCreation).toBeGreaterThan(-1);
+    expect(metadataSync).toBeGreaterThan(sessionCreation);
     expect(source).toContain('playbackSessionRef.current?.setMetadata({');
     expect(source).toContain("artist: currentTrack.artists?.join(' / ') ?? ''");
     expect(source).toContain('artwork: currentTrack.coverImgUrl ?? nowPlaying?.coverImgUrl ?? undefined');

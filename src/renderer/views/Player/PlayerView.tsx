@@ -260,18 +260,6 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
   const nowPlayingRef = useRef<NowPlayingResponse | null>(nowPlaying);
   nowPlayingRef.current = nowPlaying;
 
-  useEffect(() => {
-    if (!currentTrack) {
-      playbackSessionRef.current?.setMetadata({ title: '', artist: '' });
-      return;
-    }
-    playbackSessionRef.current?.setMetadata({
-      title: currentTrack.name ?? currentTrack.id,
-      artist: currentTrack.artists?.join(' / ') ?? '',
-      artwork: currentTrack.coverImgUrl ?? nowPlaying?.coverImgUrl ?? undefined
-    });
-  }, [currentTrack, nowPlaying?.coverImgUrl]);
-
   const applyQueueSnapshot = useCallback((snapshot: PlayerQueueSnapshot) => {
     queueRef.current = snapshot.queue;
     currentIndexRef.current = snapshot.currentIndex;
@@ -1117,6 +1105,18 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
       void playbackSession.dispose();
     };
   }, []);
+
+  useEffect(() => {
+    if (!currentTrack) {
+      playbackSessionRef.current?.setMetadata({ title: '', artist: '' });
+      return;
+    }
+    playbackSessionRef.current?.setMetadata({
+      title: currentTrack.name ?? currentTrack.id,
+      artist: currentTrack.artists?.join(' / ') ?? '',
+      artwork: currentTrack.coverImgUrl ?? nowPlaying?.coverImgUrl ?? undefined
+    });
+  }, [currentTrack, nowPlaying?.coverImgUrl]);
 
   function handleSelectIndex(index: number): void {
     const transition = selectQueueTrackAt({ queue, currentIndex }, index);
