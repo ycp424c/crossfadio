@@ -6,13 +6,13 @@ This runbook verifies the automated contracts and records the manual evidence ne
 
 The Web platform can only provide best-effort background playback. Browser and OS power policies may suspend JavaScript, networking, timers, Wake Lock, or media playback after the page is backgrounded or the device is locked. Automated unit tests and a production build validate application contracts, but they do not prove that a particular browser/device combination will continue playing while locked. Wake Lock is a foreground aid, not a guarantee of background execution. Release confidence therefore requires the real-device matrix below.
 
-## Automated verification
+## Historical automated evidence
 
-Run date: 2026-07-11 (CST, Asia/Shanghai). Repository baseline for the range check: `60ab90c..HEAD`.
+Run date: 2026-07-11 (CST, Asia/Shanghai). This evidence is frozen to baseline `60ab90cf9cd50997808e17fbde94059ffa986def` and target `22f00ee8f50f9d65cbc622972f26ca640b193ec4`; it must not be interpreted as evidence for later commits.
 
 | Command | Started | Finished | Result | Evidence |
 | --- | --- | --- | --- | --- |
-| `git diff --check 60ab90c..HEAD` | 09:18:38 | 09:18:38 | PASS (exit 0) | No whitespace errors reported. |
+| `git diff --check 60ab90cf9cd50997808e17fbde94059ffa986def..22f00ee8f50f9d65cbc622972f26ca640b193ec4` | 09:18:38 | 09:18:38 | PASS (exit 0) | No whitespace errors reported for the frozen change range. |
 | `pnpm check` | 09:18:41 | 09:18:45 | PASS (exit 0) | Node and Web TypeScript projects completed with no errors. |
 | `pnpm vitest tests/unit/playback-session.spec.ts tests/unit/player-playback-history.spec.ts tests/unit/player-dj-refill.spec.ts tests/unit/player-media-runtime.spec.ts tests/unit/player-queue-runtime.spec.ts tests/unit/player-layout.spec.ts` | 09:18:51 | 09:18:52 | PASS (exit 0) | 6 test files passed; 80 tests passed. |
 | `pnpm test` | 09:18:55 | 09:19:02 | PASS (exit 0) | 109 test files passed, 1 skipped; 920 tests passed, 1 skipped (921 total). The skipped test was `tests/unit/ncm-real-smoke.spec.ts`. |
@@ -20,23 +20,56 @@ Run date: 2026-07-11 (CST, Asia/Shanghai). Repository baseline for the range che
 
 The development server was not started. No browser smoke, visual review, or device behavior is inferred from the automated results above.
 
+## Future automated reruns
+
+Choose immutable full commit SHAs and replace both placeholders before running. Record a new dated result table instead of overwriting the historical evidence above.
+
+```bash
+BASE=<full-baseline-sha>
+TARGET=<full-target-sha>
+git diff --check "$BASE..$TARGET"
+pnpm check
+pnpm vitest tests/unit/playback-session.spec.ts tests/unit/player-playback-history.spec.ts tests/unit/player-dj-refill.spec.ts tests/unit/player-media-runtime.spec.ts tests/unit/player-queue-runtime.spec.ts tests/unit/player-layout.spec.ts
+pnpm test
+pnpm build:web
+```
+
 ## Responsive viewport checklist
 
-These checks require an actual browser inspection. An empty or unexecuted result means **not executed**, never passed.
+These checks require an actual browser inspection. Record each criterion as `PASS`, `FAIL: <observable problem>`, or `NOT EXECUTED: <reason>`. A viewport passes only when every criterion passes. Empty cells and unexecuted results are **not executed**, never passed.
 
-| Viewport | Layout/overflow | Player controls | Queue/history usability | Result | Notes |
-| --- | --- | --- | --- | --- | --- |
-| 360 × 800 | Not executed | Not executed | Not executed | NOT EXECUTED | Browser inspection was not available for this run. |
-| 390 × 844 | Not executed | Not executed | Not executed | NOT EXECUTED | Browser inspection was not available for this run. |
-| 768 × 1024 | Not executed | Not executed | Not executed | NOT EXECUTED | Browser inspection was not available for this run. |
-| 1280 × 800 | Not executed | Not executed | Not executed | NOT EXECUTED | Browser inspection was not available for this run. |
+| Viewport | No horizontal scrolling | Controls before diagnostics | Primary targets ≥ 44 px | Queue reachable | Desktop ordering unchanged | Overall result / notes |
+| --- | --- | --- | --- | --- | --- | --- |
+| 360 × 800 | NOT EXECUTED | NOT EXECUTED | NOT EXECUTED | NOT EXECUTED | NOT EXECUTED | NOT EXECUTED: browser inspection was not available. |
+| 390 × 844 | NOT EXECUTED | NOT EXECUTED | NOT EXECUTED | NOT EXECUTED | NOT EXECUTED | NOT EXECUTED: browser inspection was not available. |
+| 768 × 1024 | NOT EXECUTED | NOT EXECUTED | NOT EXECUTED | NOT EXECUTED | NOT EXECUTED | NOT EXECUTED: browser inspection was not available. |
+| 1280 × 800 | NOT EXECUTED | NOT EXECUTED | NOT EXECUTED | NOT EXECUTED | NOT EXECUTED | NOT EXECUTED: browser inspection was not available. |
 
 ## Real-device verification matrix
 
-Record one row per device/browser combination. Do not convert blank cells into a pass: blank or `Not executed` means **not executed**.
+Record one row per device/browser combination. Use `PASS`, `FAIL`, `UNSUPPORTED`, or `NOT EXECUTED` for every behavior. `Crossed track boundaries` must include an observed integer count, for example `PASS (3)` or `FAIL (0)`. Do not convert blank cells into a pass.
 
 | Device model | OS | Browser/version | Foreground Wake Lock | 10 min lock | Crossed track boundaries | Lock-screen play/pause/prev/next | Short queue refill | Interruption/headphone recovery | Notes |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Not executed | Not executed | Not executed | Not executed | Not executed | Not executed | Not executed | Not executed | Not executed | NOT EXECUTED: no real-device hardware was available for this run. |
+| iPhone (model TBD) | iOS (version TBD) | Safari (version TBD) | NOT EXECUTED | NOT EXECUTED | NOT EXECUTED (0 observed) | NOT EXECUTED | NOT EXECUTED | NOT EXECUTED | No real-device hardware was available for this run. Replace all TBD values before execution. |
+| Android phone (model TBD) | Android (version TBD) | Chrome (version TBD) | NOT EXECUTED | NOT EXECUTED | NOT EXECUTED (0 observed) | NOT EXECUTED | NOT EXECUTED | NOT EXECUTED | No real-device hardware was available for this run. Replace all TBD values before execution. |
 
-For a manual run, start playback from a user gesture, confirm the foreground Wake Lock state where supported, lock the screen for at least 10 minutes, and keep the queue short enough to force a refill. The run is complete only after playback crosses track boundaries and every supported lock-screen control is exercised. Then interrupt playback (for example, with a call/alarm or audio-focus change), disconnect and reconnect headphones, and record recovery behavior plus browser/OS-specific limitations in Notes.
+### Repeatable prerequisites
+
+- Enter the tested URL as `<deployment-url>` and record the deployed full commit SHA in Notes. Do not begin until the operator has replaced the URL placeholder.
+- Record device model, OS version, and browser version; log in with a test account that can play the selected tracks.
+- For the continuity run, prepare the current track plus at least five playable queued tracks.
+- For the refill run, separately prepare a short queue with the current track plus one remaining playable track. Keep the queue view or server diagnostics available on a second foreground client so the operator can observe new tracks being appended without unlocking the device under test.
+- Connect headphones that can be physically disconnected and reconnected. Ensure the device has enough battery and no deliberate battery-saver mode unless that mode is the subject of the run.
+
+### Repeatable procedure and expectations
+
+1. Open `<deployment-url>`, log in, start the current track with a user gesture, and verify audible playback. Expected: playback begins and foreground Wake Lock reports active when supported; otherwise record `UNSUPPORTED` with the browser evidence.
+2. With the current track plus at least five queued tracks, lock the screen for 10 uninterrupted minutes. Expected: audio continues without an unexplained stop. Record any stop time to the nearest second in `FAIL` Notes.
+3. Keep the device locked long enough to cross at least two track boundaries. Expected: each next track starts automatically. Record the exact observed boundary count in the matrix, including `0` on failure.
+4. Exercise lock-screen `play`, `pause`, `previous`, and `next` individually. Expected: each supported action changes playback once and the displayed metadata follows the active track. Record per-action outcomes in Notes; any supported action that does nothing or fires twice is `FAIL`.
+5. Repeat from the short-queue prerequisite and observe the second client/server diagnostics when only one queued track remains. Expected: refill is triggered and playable tracks are appended before playback exhausts the queue. Record the pre-refill and post-refill queue counts plus observation source in Notes.
+6. While playing, trigger an audio interruption (call, alarm, or another app taking audio focus). Expected: playback follows the OS policy and can resume from the same session afterward without duplicating or skipping queue state. Record the interruption type and whether resume was automatic or manual.
+7. Disconnect and reconnect the headphones during playback. Expected: audio does not unexpectedly continue through speakers after disconnect, and playback can resume through the reconnected output without losing the session or queue position.
+
+For every failure, use `FAIL: step <n>; expected=<expected behavior>; actual=<observed behavior>; time=<elapsed or clock time>; evidence=<screenshot/log/reference>; recovery=<automatic/manual/none>` in Notes. For a pass, retain the observed counts and relevant timings rather than writing only `PASS`.
