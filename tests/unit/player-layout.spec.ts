@@ -571,7 +571,8 @@ describe('player layout', () => {
     const end = source.indexOf('useEffect(() => {', start);
     const block = source.slice(start, end);
 
-    expect(source).toContain('prepareSegueAudioRoute, settleSegueAudioPlay');
+    expect(source).toContain('prepareSegueAudioRoute,');
+    expect(source).toContain('settleSegueAudioPlay,');
     expect(source).toContain("from '@renderer/playerSegueVoicePlayback'");
     expect(source).toContain('const playerMountedRef = useRef(false)');
     expect(block).toContain('await settleSegueAudioPlay({');
@@ -585,6 +586,22 @@ describe('player layout', () => {
     const successStart = block.indexOf('onCurrentSuccess: () => {');
     expect(successStart).toBeGreaterThan(-1);
     expect(block.indexOf('setSegueStatusText(`过渡播报中', successStart)).toBeGreaterThan(successStart);
+  });
+
+  it('restores ducked track volume only when stale cleanup removes the final active segue', () => {
+    const source = fs.readFileSync(path.join(root, 'src/renderer/views/Player/PlayerView.tsx'), 'utf-8');
+    const start = source.indexOf('cleanupStale: () => {');
+    const end = source.indexOf('onCurrentSuccess: () => {', start);
+    const block = source.slice(start, end);
+
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    expect(block).toContain('activeSegueAudiosRef.current.delete(capturedAudio)');
+    expect(block).toContain('shouldRestoreTrackVolumeAfterSegueCleanup(activeSegueAudiosRef.current.size)');
+    expect(block).toContain('restoreTrackVolume();');
+    expect(block.indexOf('activeSegueAudiosRef.current.delete(capturedAudio)')).toBeLessThan(
+      block.indexOf('shouldRestoreTrackVolumeAfterSegueCleanup(activeSegueAudiosRef.current.size)')
+    );
   });
 
   it('keeps ducking constants and only tracks the final element that actually plays', () => {

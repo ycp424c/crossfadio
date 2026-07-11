@@ -60,7 +60,11 @@ import {
   type DjPickLog
 } from '@renderer/playerDjPickLog';
 import { consumePlayerPickNextStream } from '@renderer/playerDjPickNextStream';
-import { prepareSegueAudioRoute, settleSegueAudioPlay } from '@renderer/playerSegueVoicePlayback';
+import {
+  prepareSegueAudioRoute,
+  settleSegueAudioPlay,
+  shouldRestoreTrackVolumeAfterSegueCleanup
+} from '@renderer/playerSegueVoicePlayback';
 import {
   getSegueRequestDecision,
   getSegueWaitingStatus,
@@ -483,6 +487,9 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
           activeSegueAudiosRef.current.delete(capturedAudio);
           segueVoiceGainControllerRef.current?.release(capturedAudio);
           unloadAudioElement(capturedAudio);
+          if (shouldRestoreTrackVolumeAfterSegueCleanup(activeSegueAudiosRef.current.size)) {
+            restoreTrackVolume();
+          }
         },
         onCurrentSuccess: () => {
           setSegueStatusText(`过渡播报中（约 ${Math.round(segueDurationSec)} 秒）`);

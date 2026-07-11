@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   prepareSegueAudioRoute,
+  shouldRestoreTrackVolumeAfterSegueCleanup,
   settleSegueAudioPlay
 } from '../../src/renderer/playerSegueVoicePlayback';
 
@@ -19,6 +20,12 @@ function deferred(): {
 }
 
 describe('player segue voice playback settlement', () => {
+  it('restores track volume only after the final active segue is removed', () => {
+    expect(shouldRestoreTrackVolumeAfterSegueCleanup(0)).toBe(true);
+    expect(shouldRestoreTrackVolumeAfterSegueCleanup(1)).toBe(false);
+    expect(shouldRestoreTrackVolumeAfterSegueCleanup(2)).toBe(false);
+  });
+
   it('reports success only while the same pending audio is still current', async () => {
     const play = deferred();
     const onCurrentSuccess = vi.fn();

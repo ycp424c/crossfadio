@@ -2,6 +2,10 @@ type SeguePrepareController = {
   prepare(audio: HTMLMediaElement): Promise<'enhanced' | 'native' | 'unavailable'>;
 };
 
+export function shouldRestoreTrackVolumeAfterSegueCleanup(activeSegueCount: number): boolean {
+  return activeSegueCount === 0;
+}
+
 export async function prepareSegueAudioRoute(input: {
   audio: HTMLAudioElement;
   controller: SeguePrepareController | null;
