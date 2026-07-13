@@ -87,7 +87,7 @@ export async function runTasteAnalysis(userId: string, ncmClient: NcmClient): Pr
 
   // 3. Call LLM. Large libraries are summarized chunk-by-chunk first so every
   // liked song can participate without building an oversized prompt.
-  const llmConfig = resolveLlmConfig();
+  const llmConfig = resolveLlmConfig(userId);
   if (!llmConfig) {
     logger.warn({ userId }, 'Taste analysis skipped: LLM not configured');
     return null;

@@ -267,8 +267,7 @@ async function runMusicAgentLoopInternal(input: RunMusicAgentLoopInput): Promise
     const response = await input.llmClient.complete(messages, {
       signal: input.signal,
       temperature: 0.2,
-      maxTokens: LOOP_LLM_MAX_TOKENS,
-      thinking: { type: 'disabled' }
+      maxTokens: LOOP_LLM_MAX_TOKENS
     });
     llmCalls += 1;
 
@@ -559,7 +558,6 @@ async function askExtraFinalPick(
       signal: input.signal,
       temperature: 0.2,
       maxTokens: EXTRA_FINAL_PICK_MAX_TOKENS,
-      thinking: { type: 'disabled' },
       responseFormat: FINAL_PICK_RESPONSE_FORMAT
     });
     responseContent = response.content;
@@ -745,7 +743,6 @@ async function retryHardFinalOnlyPick(
       signal: input.signal,
       temperature: 0.1,
       maxTokens: HARD_FINAL_ONLY_PICK_MAX_TOKENS,
-      thinking: { type: 'disabled' },
       responseFormat: FINAL_PICK_RESPONSE_FORMAT
     });
     responseContent = response.content;

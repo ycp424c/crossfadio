@@ -8,6 +8,7 @@ import { getPref, setPref } from '../../store/prefs.js';
 import { getConfig } from '../../config.js';
 import { TtsClient } from '../../tts/client.js';
 import { resolveTtsConfig } from '../../tts/config.js';
+import { supportsThinkingControl } from '../../llm/client.js';
 import { buildSegueAudioUrl } from './segue.js';
 import { DEFAULT_TTS_MODEL, DEFAULT_TTS_VOICE, TTS_PREVIEW_TEXT } from '../../../shared/tts.js';
 import {
@@ -39,13 +40,16 @@ export function createGetSettingsHandler() {
     const dailyThemeEnabled = getPref<boolean>(userId, 'dailyTheme.enabled') !== false;
     const discoveryMode = getDiscoveryMode(userId);
     const autoFillBatchSize = getAutoFillBatchSize(userId);
+    const thinkingEnabled = getPref<boolean>(userId, 'llm.thinkingEnabled') === true;
 
     res.json({
       ok: true,
       llm: {
         baseUrl: config.llm.baseUrl,
         model: config.llm.model,
-        hasApiKey: Boolean(config.llm.apiKey)
+        hasApiKey: Boolean(config.llm.apiKey),
+        thinkingEnabled,
+        thinkingSupported: supportsThinkingControl(config.llm.model, config.llm.baseUrl)
       },
       tts: {
         baseUrl: config.tts.baseUrl,
@@ -64,6 +68,7 @@ export function createGetSettingsHandler() {
 // ── PUT /api/settings ─────────────────────────────────────────────────────────
 
 const settingsBodySchema = z.object({
+  llm: z.object({ thinkingEnabled: z.boolean() }).optional(),
   tts: z.object({ voice: z.string().min(1) }).optional(),
   dailyThemeEnabled: z.boolean().optional(),
   discoveryMode: z.enum(DISCOVERY_MODE_VALUES).optional(),
@@ -79,6 +84,9 @@ export function createSaveSettingsHandler() {
     }
     if (parsed.data.tts?.voice) {
       setPref(userId, 'tts.voice', parsed.data.tts.voice);
+    }
+    if (parsed.data.llm?.thinkingEnabled !== undefined) {
+      setPref(userId, 'llm.thinkingEnabled', parsed.data.llm.thinkingEnabled);
     }
     if (parsed.data.dailyThemeEnabled !== undefined) {
       setPref(userId, 'dailyTheme.enabled', parsed.data.dailyThemeEnabled);

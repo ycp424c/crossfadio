@@ -72,6 +72,7 @@ describe('settings routes', () => {
     expect(res.statusCode).toBe(200);
     expect(res.body).toMatchObject({
       ok: true,
+      llm: { thinkingEnabled: false, thinkingSupported: false },
       tts: { model: DEFAULT_TTS_MODEL, voice: 'Cherry' },
       dailyThemeEnabled: true,
       discoveryMode: 'explore',
@@ -79,11 +80,19 @@ describe('settings routes', () => {
     });
   });
 
-  it('PUT saves dailyThemeEnabled, discoveryMode and autoFillBatchSize and GET reflects them', () => {
+  it('PUT saves LLM thinking, dailyThemeEnabled, discoveryMode and autoFillBatchSize and GET reflects them', () => {
     const saveHandler = createSaveSettingsHandler();
     const saveRes = createJsonResponse();
     saveHandler(
-      { userId: 'test-user', body: { dailyThemeEnabled: false, discoveryMode: 'comfort', autoFillBatchSize: 5 } } as never,
+      {
+        userId: 'test-user',
+        body: {
+          llm: { thinkingEnabled: true },
+          dailyThemeEnabled: false,
+          discoveryMode: 'comfort',
+          autoFillBatchSize: 5
+        }
+      } as never,
       saveRes as never
     );
     expect(saveRes.statusCode).toBe(200);
@@ -92,7 +101,12 @@ describe('settings routes', () => {
     const getHandler = createGetSettingsHandler();
     const getRes = createJsonResponse();
     getHandler({ userId: 'test-user' } as never, getRes as never);
-    expect(getRes.body).toMatchObject({ dailyThemeEnabled: false, discoveryMode: 'comfort', autoFillBatchSize: 5 });
+    expect(getRes.body).toMatchObject({
+      llm: { thinkingEnabled: true },
+      dailyThemeEnabled: false,
+      discoveryMode: 'comfort',
+      autoFillBatchSize: 5
+    });
   });
 
   it('PUT saves legacy discoveryMode and GET reflects it', () => {

@@ -52,7 +52,7 @@ export async function handleChatMessage(
     appendListenerRequestReceivedEvent(userId, userMessageId, text);
     applyQueueDirectiveFallbackFromText(userId, text);
 
-    const llmConfig = resolveLlmConfig();
+    const llmConfig = resolveLlmConfig(userId);
     if (!llmConfig) {
       const fallback = '抱歉，AI DJ 暂时不可用（未配置 LLM）。';
       send('chat.done', { say: fallback, intent: 'chitchat', actions: [] });

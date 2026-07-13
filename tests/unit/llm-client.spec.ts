@@ -101,7 +101,7 @@ describe('LlmClient.complete', () => {
     });
   });
 
-  it('passes DeepSeek thinking control only for supported models', async () => {
+  it('passes thinking control for DeepSeek and TokenHub Hy3 but omits it for unsupported models', async () => {
     const capturedBodies: Array<Record<string, unknown>> = [];
     mockFetch(async (_url, init) => {
       capturedBodies.push(JSON.parse(init?.body as string) as Record<string, unknown>);
@@ -123,8 +123,56 @@ describe('LlmClient.complete', () => {
       thinking: { type: 'disabled' }
     });
 
+    await new LlmClient({
+      ...config,
+      baseUrl: 'https://tokenhub.tencentmaas.com/v1',
+      model: 'hy3',
+      thinking: { type: 'enabled' }
+    }).complete([{ role: 'user', content: 'json' }]);
+
     expect(capturedBodies[0]?.thinking).toEqual({ type: 'disabled' });
     expect(capturedBodies[1]).not.toHaveProperty('thinking');
+    expect(capturedBodies[2]?.thinking).toEqual({ type: 'enabled' });
+  });
+
+  it('raises the TokenHub Hy3 output budget when thinking is enabled', async () => {
+    let capturedBody: Record<string, unknown> | undefined;
+    mockFetch(async (_url, init) => {
+      capturedBody = JSON.parse(init?.body as string) as Record<string, unknown>;
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: '{"ok":true}' } }],
+        model: 'hy3'
+      }), { status: 200 });
+    });
+
+    await new LlmClient({
+      ...config,
+      baseUrl: 'https://tokenhub.tencentmaas.com/v1',
+      model: 'hy3',
+      thinking: { type: 'enabled' }
+    }).complete([{ role: 'user', content: 'json' }], { maxTokens: 1_400 });
+
+    expect(capturedBody?.max_tokens).toBe(128_000);
+  });
+
+  it('keeps the requested TokenHub Hy3 output budget when thinking is disabled', async () => {
+    let capturedBody: Record<string, unknown> | undefined;
+    mockFetch(async (_url, init) => {
+      capturedBody = JSON.parse(init?.body as string) as Record<string, unknown>;
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: '{"ok":true}' } }],
+        model: 'hy3'
+      }), { status: 200 });
+    });
+
+    await new LlmClient({
+      ...config,
+      baseUrl: 'https://tokenhub.tencentmaas.com/v1',
+      model: 'hy3',
+      thinking: { type: 'disabled' }
+    }).complete([{ role: 'user', content: 'json' }], { maxTokens: 1_400 });
+
+    expect(capturedBody?.max_tokens).toBe(1_400);
   });
 
   it('throws LlmError on non-2xx response', async () => {
@@ -266,6 +314,25 @@ describe('LlmClient.stream', () => {
     // consume the stream
     for await (const _ of client.stream([{ role: 'user', content: 'hi' }])) { /* noop */ }
     expect(capturedBody?.stream).toBe(true);
+  });
+
+  it('uses the configured TokenHub Hy3 thinking preference for stream requests', async () => {
+    let capturedBody: Record<string, unknown> | undefined;
+    mockFetch(async (_url, init) => {
+      capturedBody = JSON.parse(init?.body as string) as Record<string, unknown>;
+      return new Response(makeSSEStream(['data: [DONE]\n\n']), { status: 200 });
+    });
+
+    const client = new LlmClient({
+      ...config,
+      baseUrl: 'https://tokenhub.tencentmaas.com/v1',
+      model: 'hy3',
+      thinking: { type: 'enabled' }
+    });
+    for await (const _ of client.stream([{ role: 'user', content: 'hi' }])) { /* noop */ }
+
+    expect(capturedBody?.thinking).toEqual({ type: 'enabled' });
+    expect(capturedBody?.max_tokens).toBe(128_000);
   });
 
   it('retries 429 responses before yielding a stream', async () => {

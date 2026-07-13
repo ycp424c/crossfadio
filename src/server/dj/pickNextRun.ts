@@ -399,7 +399,7 @@ export async function runDjPickNext(
   let legacyFallbackPath: DjPickNextFallbackPath | undefined;
   let djEventContext: DjSelectionEventContext | undefined;
 
-  const llmConfig = resolveLlmConfig();
+  const llmConfig = resolveLlmConfig(userId);
   if (llmConfig && discoveryMode === 'legacy') {
     logger.info(
       { discoveryMode, targetPickCount },

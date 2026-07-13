@@ -173,6 +173,22 @@ export function SettingsView(): JSX.Element {
     }
   }
 
+  async function handleThinkingToggle(): Promise<void> {
+    if (!llm?.thinkingSupported) return;
+    const next = !llm.thinkingEnabled;
+    setLlm({ ...llm, thinkingEnabled: next });
+    setSaveStatus({ type: 'saving' });
+    try {
+      await saveSettings({ llm: { thinkingEnabled: next } });
+      setSaveStatus({ type: 'ok' });
+      clearTimeout(statusTimerRef.current);
+      statusTimerRef.current = setTimeout(() => setSaveStatus({ type: 'idle' }), 2000);
+    } catch (err) {
+      setLlm((current) => current ? { ...current, thinkingEnabled: !next } : current);
+      setSaveStatus({ type: 'error', message: err instanceof Error ? err.message : '深度思考设置保存失败' });
+    }
+  }
+
   async function handleCreatePersonalContextToken(): Promise<void> {
     setPersonalContextOpStatus({ type: 'loading' });
     try {
@@ -235,7 +251,7 @@ export function SettingsView(): JSX.Element {
       </div>
 
       <div className="min-h-0 flex-1 space-y-8 overflow-y-auto px-4 py-4 pb-8 md:px-6 md:py-6 md:pb-8">
-        {/* LLM section — read-only */}
+        {/* LLM section */}
         <section>
           <h2 className="mb-4 text-sm font-medium uppercase tracking-wider text-zinc-400">
             语言模型（LLM）
@@ -248,6 +264,34 @@ export function SettingsView(): JSX.Element {
               value={llm?.hasApiKey ? '已配置 API Key' : '未配置 API Key'}
               valueClass={llm?.hasApiKey ? 'text-emerald-400' : 'text-amber-400'}
             />
+            <div className="flex items-center justify-between gap-4 border-t border-zinc-800 pt-3">
+              <div>
+                <p className="text-sm text-zinc-200">启用深度思考</p>
+                <p className="mt-0.5 text-xs text-zinc-500">
+                  开启后模型会投入更多推理，通常响应更慢并消耗更多 Token。
+                </p>
+                {llm && !llm.thinkingSupported && (
+                  <p className="mt-1 text-xs text-amber-400">当前模型或服务不支持切换思考模式。</p>
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={() => void handleThinkingToggle()}
+                disabled={!llm?.thinkingSupported || saveStatus.type === 'saving'}
+                className={`relative inline-flex h-6 w-11 shrink-0 rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none disabled:cursor-not-allowed disabled:opacity-50 ${
+                  llm?.thinkingEnabled ? 'bg-indigo-600' : 'bg-zinc-700'
+                }`}
+                role="switch"
+                aria-label="启用深度思考"
+                aria-checked={llm?.thinkingEnabled ?? false}
+              >
+                <span
+                  className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
+                    llm?.thinkingEnabled ? 'translate-x-5' : 'translate-x-0'
+                  }`}
+                />
+              </button>
+            </div>
           </div>
         </section>
 

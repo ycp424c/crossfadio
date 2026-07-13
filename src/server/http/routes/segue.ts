@@ -132,7 +132,7 @@ async function runSegueJob(
   let ttsTimeout: ReturnType<typeof setTimeout> | null = null;
 
   try {
-    const llmConfig = resolveLlmConfig();
+    const llmConfig = resolveLlmConfig(userId);
     if (!llmConfig) {
       emit({ type: 'segue.degraded', reason: 'no-llm' });
       return;

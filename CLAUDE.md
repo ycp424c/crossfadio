@@ -56,7 +56,7 @@ src/
 
 - **No mock in integration paths**: NCM auth, LLM calls in route handlers use real clients injected via middleware
 - **All HTTP routes registered in** `src/server/http/index.ts` — single source of truth, split into public and protected
-- **LLM/TTS keys from env vars**: `CROSSFADIO_LLM_*` / `CROSSFADIO_TTS_*` required at startup. Only TTS voice is per-user pref.
+- **LLM/TTS runtime from env vars**: `CROSSFADIO_LLM_*` / `CROSSFADIO_TTS_*` are required at startup. LLM thinking mode and TTS voice are per-user prefs; base URLs, API keys, and model names remain server-wide env config.
 - **JWT auth required for protected routes**: `Authorization: Bearer <token>` header, verified by `authMiddleware`
 - **Error codes**: `NCM_E_*` for NCM errors, zod validation for DTOs at boundaries
 - **TypeScript strict**: `pnpm check` runs `tsc --noEmit` on both tsconfigs, must pass before commit
@@ -79,7 +79,7 @@ src/
 | `CROSSFADIO_JWT_TTL_DAYS` | `7` | JWT token validity in days |
 | `CROSSFADIO_LLM_BASE_URL` | **required** | LLM API base URL (multi-user) |
 | `CROSSFADIO_LLM_API_KEY` | **required** | LLM API key (multi-user) |
-| `CROSSFADIO_LLM_MODEL` | **required** | LLM model name (multi-user) |
+| `CROSSFADIO_LLM_MODEL` | **required** | Server-wide LLM model name; review the provider-switch checklist in `docs/ops-runbook.md` before changing it |
 | `CROSSFADIO_TTS_BASE_URL` | **required** | TTS API base URL (multi-user) |
 | `CROSSFADIO_TTS_API_KEY` | **required** | TTS API key (multi-user) |
 | `CROSSFADIO_TTS_VOICE_DEFAULT` | (none) | Default TTS voice, falls back to 'Cherry' |
@@ -156,13 +156,13 @@ src/
 ### Settings & Location
 | Method | Path | Auth | Purpose |
 |--------|------|------|---------|
-| GET | `/api/settings` | JWT | Get settings (LLM/TTS config + dailyThemeEnabled + discoveryMode) |
-| PUT | `/api/settings` | JWT | Save preferences (TTS voice, dailyThemeEnabled, discoveryMode) |
+| GET | `/api/settings` | JWT | Get settings (LLM/TTS config + per-user LLM thinking/TTS voice + dailyThemeEnabled + discoveryMode) |
+| PUT | `/api/settings` | JWT | Save preferences (LLM thinking, TTS voice, dailyThemeEnabled, discoveryMode) |
 | GET | `/api/settings/player-context` | JWT | Player context (daily theme + taste + discoveryMode) |
 | POST | `/api/settings/analyze-taste` | JWT | Analyze music taste from liked songs |
 | POST | `/api/location` | JWT | Set browser geolocation |
 
-> **Note:** LLM/TTS `baseUrl`, `model`, and `apiKey` come from env vars (`CROSSFADIO_LLM_*`, `CROSSFADIO_TTS_*`), not from the Settings UI. The Settings UI exposes TTS voice selection, daily theme toggle, and player-side discovery mode.
+> **Note:** LLM/TTS `baseUrl`, `model`, and `apiKey` come from env vars (`CROSSFADIO_LLM_*`, `CROSSFADIO_TTS_*`), not from the Settings UI. The Settings UI exposes per-user LLM thinking mode when the configured provider/model supports it, plus TTS voice selection, daily theme toggle, and player-side discovery mode.
 
 ## Commands
 
@@ -197,4 +197,5 @@ Production-specific topology and access details belong only in the ignored local
 - **Whitelist**: `allowlist.json` in app data dir controls which NCM user IDs can log in. Admin can manage via Settings UI. Removal also deletes `users` record to immediately revoke existing sessions. `userScopeMiddleware` double-checks `isAllowed()` on every request.
 - **Per-user isolation**: All DB tables have `user_id` column. Queue/location are per-user `Map`s. User corpus files under `users/<ncmId>/`.
 - **Daily theme**: LLM-generated daily radio theme (holidays, solar terms, artist anniversaries). Per-user toggle in Settings (pref `dailyTheme.enabled`). When disabled, DJ pick-next and segue skip theme context. Timeout controlled by `CROSSFADIO_DAILY_THEME_TIMEOUT_MS` (default 15s).
+- **LLM thinking**: Per-user and disabled by default. TokenHub `hy3` / `hy3-preview` requests set `max_tokens` to 128,000 when thinking is enabled because reasoning and the final answer share the output budget. Provider/model switches must re-check thinking support, parameter constraints, and output budgets as documented in `docs/ops-runbook.md`.
 - **Responsive layout**: `md` = 768px breakpoint, single-column mobile (grid-cols-1), desktop preserves 12-col grid. NCM auth uses full-screen sheet on mobile via `useMediaQuery`. Status panel collapsed to one-line summary on mobile. `viewport-fit=cover` for iPhone safe areas.

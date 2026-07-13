@@ -1,9 +1,16 @@
 import { z } from 'zod';
 
+export const llmThinkingControlSchema = z.object({
+  type: z.enum(['enabled', 'disabled'])
+});
+
+export type LlmThinkingControl = z.infer<typeof llmThinkingControlSchema>;
+
 export const llmConfigSchema = z.object({
   baseUrl: z.string().url(),
   apiKey: z.string().min(1),
-  model: z.string().min(1)
+  model: z.string().min(1),
+  thinking: llmThinkingControlSchema.optional()
 });
 
 export type LlmConfig = z.infer<typeof llmConfigSchema>;
@@ -40,7 +47,7 @@ export type LlmCompleteOptions = {
   temperature?: number;
   maxTokens?: number;
   responseFormat?: LlmResponseFormat;
-  thinking?: { type: 'enabled' | 'disabled' };
+  thinking?: LlmThinkingControl;
   signal?: AbortSignal;
 };
 
@@ -49,6 +56,7 @@ const RATE_LIMIT_STATUS = 429;
 const RATE_LIMIT_MAX_RETRIES = 2;
 const RATE_LIMIT_BASE_DELAY_MS = 750;
 const RATE_LIMIT_MAX_DELAY_MS = 5_000;
+const TOKENHUB_HY3_THINKING_MAX_TOKENS = 128_000;
 
 export class LlmClient {
   constructor(private readonly config: LlmConfig) {}
@@ -59,7 +67,7 @@ export class LlmClient {
       temperature: opts.temperature,
       maxTokens: opts.maxTokens,
       responseFormat: opts.responseFormat,
-      thinking: opts.thinking
+      thinking: opts.thinking ?? this.config.thinking
     });
 
     const resp = await fetchChatCompletions(this.config, body, opts.signal);
@@ -84,7 +92,7 @@ export class LlmClient {
       temperature: opts.temperature,
       maxTokens: opts.maxTokens,
       responseFormat: opts.responseFormat,
-      thinking: opts.thinking,
+      thinking: opts.thinking ?? this.config.thinking,
       stream: true
     });
 
@@ -149,26 +157,61 @@ function buildRequestBody(
     temperature?: number;
     maxTokens?: number;
     responseFormat?: LlmResponseFormat;
-    thinking?: { type: 'enabled' | 'disabled' };
+    thinking?: LlmThinkingControl;
     stream?: boolean;
   }
 ) {
+  const maxTokens = resolveMaxTokensForThinking(model, opts.baseUrl, opts.thinking, opts.maxTokens);
   return {
     model,
     messages,
     ...(opts.stream !== undefined && { stream: opts.stream }),
     ...(opts.temperature !== undefined && { temperature: opts.temperature }),
-    ...(opts.maxTokens !== undefined && { max_tokens: opts.maxTokens }),
+    ...(maxTokens !== undefined && { max_tokens: maxTokens }),
     ...(opts.responseFormat !== undefined && { response_format: opts.responseFormat }),
     ...(opts.thinking !== undefined && supportsThinkingControl(model, opts.baseUrl) && { thinking: opts.thinking })
   };
 }
 
-function supportsThinkingControl(model: string, baseUrl: string): boolean {
+function resolveMaxTokensForThinking(
+  model: string,
+  baseUrl: string,
+  thinking: LlmThinkingControl | undefined,
+  requestedMaxTokens: number | undefined
+): number | undefined {
   const normalizedModel = model.toLowerCase();
   const normalizedBaseUrl = baseUrl.toLowerCase();
-  return normalizedModel.startsWith('deepseek-v4') || normalizedBaseUrl.includes('api.deepseek.com');
+  const isTokenHubHy3 = normalizedBaseUrl.includes('tokenhub.tencentmaas.com')
+    && (normalizedModel === 'hy3' || normalizedModel === 'hy3-preview');
+  if (thinking?.type !== 'enabled' || !isTokenHubHy3) return requestedMaxTokens;
+  return TOKENHUB_HY3_THINKING_MAX_TOKENS;
 }
+
+export function supportsThinkingControl(model: string, baseUrl: string): boolean {
+  const normalizedModel = model.toLowerCase();
+  const normalizedBaseUrl = baseUrl.toLowerCase();
+  if (normalizedModel.startsWith('deepseek-v4') || normalizedBaseUrl.includes('api.deepseek.com')) {
+    return true;
+  }
+  if (!normalizedBaseUrl.includes('tokenhub.tencentmaas.com')) return false;
+  return TOKENHUB_THINKING_CONTROL_MODELS.has(normalizedModel);
+}
+
+// Models documented by TokenHub as accepting both enabled and disabled.
+// Models whose thinking mode cannot be disabled are intentionally excluded.
+const TOKENHUB_THINKING_CONTROL_MODELS = new Set([
+  'hy3',
+  'hy3-preview',
+  'deepseek-v3.2',
+  'deepseek-v4-flash',
+  'deepseek-v4-pro',
+  'glm-5',
+  'glm-5-turbo',
+  'glm-5v-turbo',
+  'glm-5.1',
+  'kimi-k2.5',
+  'kimi-k2.6'
+]);
 
 async function fetchChatCompletions(
   config: LlmConfig,

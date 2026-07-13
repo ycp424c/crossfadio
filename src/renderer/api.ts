@@ -229,6 +229,8 @@ export type LlmSettings = {
   baseUrl: string;
   model: string;
   hasApiKey: boolean;
+  thinkingEnabled: boolean;
+  thinkingSupported: boolean;
 };
 
 export type TtsSettings = {
@@ -249,6 +251,7 @@ export type SettingsResponse = {
 };
 
 export type SaveSettingsPayload = {
+  llm?: { thinkingEnabled: boolean };
   tts?: { voice: string };
   dailyThemeEnabled?: boolean;
   discoveryMode?: DiscoveryMode;

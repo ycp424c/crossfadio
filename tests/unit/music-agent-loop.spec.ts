@@ -139,9 +139,9 @@ describe('runMusicAgentLoop', () => {
     expect(result.trace.some((step) => step.tool === 'recall_from_liked')).toBe(true);
     expect(llmClient.calls[0].opts).toMatchObject({
       temperature: 0.2,
-      maxTokens: 1400,
-      thinking: { type: 'disabled' }
+      maxTokens: 1400
     });
+    expect(llmClient.calls[0].opts).not.toHaveProperty('thinking');
   });
 
   it('keeps structured tool observation diagnostics in trace steps', async () => {

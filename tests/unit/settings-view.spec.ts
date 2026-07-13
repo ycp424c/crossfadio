@@ -75,7 +75,9 @@ describe('settings view', () => {
       llm: {
         baseUrl: 'https://llm.example/v1',
         model: 'test-model',
-        hasApiKey: true
+        hasApiKey: true,
+        thinkingEnabled: false,
+        thinkingSupported: true
       },
       tts: {
         baseUrl: 'https://tts.example/v1',
@@ -176,6 +178,21 @@ describe('settings view', () => {
       tts: { voice: 'Cherry' },
       autoFillBatchSize: 5
     });
+  });
+
+  it('enables LLM thinking from the rendered settings view', async () => {
+    await renderSettingsView();
+
+    const thinkingSwitch = container.querySelector<HTMLButtonElement>('[role="switch"][aria-label="启用深度思考"]');
+    expect(thinkingSwitch?.getAttribute('aria-checked')).toBe('false');
+
+    await act(async () => {
+      thinkingSwitch?.click();
+      await Promise.resolve();
+    });
+
+    expect(saveSettings).toHaveBeenCalledWith({ llm: { thinkingEnabled: true } });
+    expect(thinkingSwitch?.getAttribute('aria-checked')).toBe('true');
   });
 
   it('manages Personal DJ Context Bridge Tokens from settings', async () => {
