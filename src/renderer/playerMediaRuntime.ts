@@ -89,6 +89,17 @@ export function getTrackMediaErrorAction(input: {
   return { type: 'fail' };
 }
 
+export function shouldResetTrackMediaRetryWindow(input: {
+  retryWindowStartedAtSec: number | null;
+  currentTimeSec: number;
+  stablePlaybackSec: number;
+}): boolean {
+  return input.retryWindowStartedAtSec !== null &&
+    Number.isFinite(input.retryWindowStartedAtSec) &&
+    Number.isFinite(input.currentTimeSec) &&
+    input.currentTimeSec - input.retryWindowStartedAtSec >= input.stablePlaybackSec;
+}
+
 export function getTrackMediaManualResumeDecision(input: {
   needsFreshStream: boolean;
   trackId: string | null;

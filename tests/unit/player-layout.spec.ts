@@ -235,7 +235,9 @@ describe('player layout', () => {
     const resetStart = source.indexOf('function resetTrackMedia', retryStart);
     const retryBody = source.slice(retryStart, resetStart);
 
-    expect(source).toContain('const TRACK_MEDIA_ERROR_MAX_RETRIES = 2');
+    expect(source).toContain('const TRACK_MEDIA_ERROR_MAX_RETRIES = 3');
+    expect(source).toContain('const TRACK_MEDIA_RETRY_STABLE_PLAYBACK_SEC = 10');
+    expect(source).toContain('const trackMediaRetryWindowStartedAtSecRef = useRef<number | null>(null)');
     expect(source).toContain('async function retryTrackPlaybackAfterError');
     expect(source).toContain('getTrackMediaErrorAction({');
     expect(source).toContain('getTrackMediaRetryResumeDecision({');
@@ -244,6 +246,27 @@ describe('player layout', () => {
     expect(source).toContain('currentTrackIdRef.current !== trackId');
     expect(retryBody).toContain('const payload = await getNowPlaying(trackId);');
     expect(retryBody).not.toContain('getNowPlaying(trackId, {');
+  });
+
+  it('restores a fresh retry window after ten seconds of stable playback', () => {
+    const source = fs.readFileSync(path.join(root, 'src/renderer/views/Player/PlayerView.tsx'), 'utf-8');
+    const timeUpdateStart = source.indexOf('function onTimeUpdate(): void');
+    const metadataStart = source.indexOf('function onLoadedMetadata(): void', timeUpdateStart);
+    const timeUpdateBody = source.slice(timeUpdateStart, metadataStart);
+
+    expect(source).toContain('shouldResetTrackMediaRetryWindow,');
+    expect(timeUpdateBody).toContain('!audio.paused && shouldResetTrackMediaRetryWindow({');
+    expect(timeUpdateBody).toContain('retryWindowStartedAtSec: trackMediaRetryWindowStartedAtSecRef.current');
+    expect(timeUpdateBody).toContain('stablePlaybackSec: TRACK_MEDIA_RETRY_STABLE_PLAYBACK_SEC');
+    expect(timeUpdateBody).toContain('trackMediaRetryAttemptsRef.current = 0');
+    expect(timeUpdateBody).toContain('trackMediaRetryWindowStartedAtSecRef.current = null');
+
+    const mediaErrorStart = source.indexOf('function onTrackMediaError(): void');
+    const mediaErrorEnd = source.indexOf('const canPrev = useMemo(', mediaErrorStart);
+    const mediaErrorBody = source.slice(mediaErrorStart, mediaErrorEnd);
+    expect(mediaErrorBody).toContain(
+      'trackMediaRetryWindowStartedAtSecRef.current = mediaErrorAction.resumeAtSec'
+    );
   });
 
   it('clears the restored queue snapshot when the final queued track ends', () => {

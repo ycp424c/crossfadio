@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest';
 import {
   getTrackMediaErrorAction,
   getTrackMediaManualResumeDecision,
-  getTrackMediaRetryResumeDecision
+  getTrackMediaRetryResumeDecision,
+  shouldResetTrackMediaRetryWindow
 } from '../../src/renderer/playerMediaRuntime';
 
 describe('player media runtime', () => {
@@ -53,7 +54,15 @@ describe('player media runtime', () => {
       currentTimeSec: 120,
       durationSec: 240,
       retryAttempts: 2,
-      maxRetryAttempts: 2,
+      maxRetryAttempts: 3,
+      trackId: 'current'
+    })).toEqual({ type: 'retry', resumeAtSec: 120 });
+
+    expect(getTrackMediaErrorAction({
+      currentTimeSec: 120,
+      durationSec: 240,
+      retryAttempts: 3,
+      maxRetryAttempts: 3,
       trackId: 'current'
     })).toEqual({ type: 'fail' });
   });
@@ -79,5 +88,25 @@ describe('player media runtime', () => {
       currentTimeSec: 92,
       positionSec: 88
     })).toEqual({ shouldRefresh: false });
+  });
+
+  it('resets the retry window only after ten seconds of stable playback progress', () => {
+    expect(shouldResetTrackMediaRetryWindow({
+      retryWindowStartedAtSec: 120,
+      currentTimeSec: 129.9,
+      stablePlaybackSec: 10
+    })).toBe(false);
+
+    expect(shouldResetTrackMediaRetryWindow({
+      retryWindowStartedAtSec: 120,
+      currentTimeSec: 130,
+      stablePlaybackSec: 10
+    })).toBe(true);
+
+    expect(shouldResetTrackMediaRetryWindow({
+      retryWindowStartedAtSec: null,
+      currentTimeSec: 130,
+      stablePlaybackSec: 10
+    })).toBe(false);
   });
 });

@@ -75,6 +75,7 @@ import {
   getTrackMediaErrorAction,
   getTrackMediaManualResumeDecision,
   getTrackMediaRetryResumeDecision,
+  shouldResetTrackMediaRetryWindow,
   type PendingTrackMediaRetry
 } from '@renderer/playerMediaRuntime';
 import { createPlaybackHistory } from '@renderer/playerPlaybackHistory';
@@ -119,7 +120,8 @@ const TRACK_DUCKING_VOLUME = 0.2;
 const DJ_PICK_COOLDOWN_MS = 3000; // min ms between pick-next calls
 const DJ_ALREADY_RUNNING_BACKOFF_MS = 30000;
 const SEGUE_RETRY_COOLDOWN_MS = 6000; // min ms between segue trigger retries within the same track
-const TRACK_MEDIA_ERROR_MAX_RETRIES = 2;
+const TRACK_MEDIA_ERROR_MAX_RETRIES = 3;
+const TRACK_MEDIA_RETRY_STABLE_PLAYBACK_SEC = 10;
 const QR_LOGIN_POLL_INTERVAL_MS = 2000;
 
 type ModeVisualConfig = {
@@ -244,6 +246,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
   const skipNextQueuePersistRef = useRef(true);
   const pendingTemporaryBanTracksRef = useRef<QueueTrackDto[]>([]);
   const trackMediaRetryAttemptsRef = useRef(0);
+  const trackMediaRetryWindowStartedAtSecRef = useRef<number | null>(null);
   const trackMediaRetryRequestIdRef = useRef(0);
   const pendingTrackMediaRetryRef = useRef<PendingTrackMediaRetry | null>(null);
   const trackMediaManualResumeRequiredRef = useRef(false);
@@ -664,6 +667,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
       setNowPlaying(null);
       resetTrackMedia();
       trackMediaRetryAttemptsRef.current = 0;
+      trackMediaRetryWindowStartedAtSecRef.current = null;
       trackMediaRetryRequestIdRef.current += 1;
       pendingTrackMediaRetryRef.current = null;
       trackMediaManualResumeRequiredRef.current = false;
@@ -674,6 +678,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
     resetTrackMedia();
     prefetchTriggeredRef.current = false;
     trackMediaRetryAttemptsRef.current = 0;
+    trackMediaRetryWindowStartedAtSecRef.current = null;
     trackMediaRetryRequestIdRef.current += 1;
     pendingTrackMediaRetryRef.current = null;
     trackMediaManualResumeRequiredRef.current = false;
@@ -1154,6 +1159,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
     if (manualResume.shouldRefresh) {
       trackMediaManualResumeRequiredRef.current = false;
       trackMediaRetryAttemptsRef.current = 0;
+      trackMediaRetryWindowStartedAtSecRef.current = null;
       trackMediaRetryRequestIdRef.current += 1;
       pendingTrackMediaRetryRef.current = null;
       setError('');
@@ -1324,6 +1330,14 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
 
     setPositionSec(audio.currentTime);
     setDurationSec(audio.duration || 0);
+    if (!audio.paused && shouldResetTrackMediaRetryWindow({
+      retryWindowStartedAtSec: trackMediaRetryWindowStartedAtSecRef.current,
+      currentTimeSec: audio.currentTime,
+      stablePlaybackSec: TRACK_MEDIA_RETRY_STABLE_PLAYBACK_SEC
+    })) {
+      trackMediaRetryAttemptsRef.current = 0;
+      trackMediaRetryWindowStartedAtSecRef.current = null;
+    }
     playbackSessionRef.current?.setPosition({
       duration: audio.duration,
       position: audio.currentTime,
@@ -1522,6 +1536,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
     }
 
     if (trackId && mediaErrorAction.type === 'retry') {
+      trackMediaRetryWindowStartedAtSecRef.current = mediaErrorAction.resumeAtSec;
       trackMediaRetryAttemptsRef.current += 1;
       trackMediaRetryRequestIdRef.current += 1;
       const requestId = trackMediaRetryRequestIdRef.current;
