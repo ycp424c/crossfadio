@@ -46,10 +46,10 @@ describe('getPrefetchDecision', () => {
     expect(decision.shouldTriggerSegue).toBe(true);
   });
 
-  it('keeps prefetch armed after d-10 so coarse timeupdate events cannot miss it', () => {
+  it('starts crossfade at d-8 by default', () => {
     const decision = getPrefetchDecision(172.1, 180);
 
     expect(decision.shouldStartCrossfade).toBe(true);
-    expect(decision.shouldPrefetchNext).toBe(true);
+    expect(decision.shouldPrefetchNext).toBe(false);
   });
 });

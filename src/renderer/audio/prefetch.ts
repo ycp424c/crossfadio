@@ -55,7 +55,11 @@ export function getPrefetchDecision(
 
   return {
     ...milestones,
-    shouldPrefetchNext: hasReachedTriggerPoint(positionSec, milestones.prefetchAtSec),
+    shouldPrefetchNext: isWithinTriggerWindow(
+      positionSec,
+      milestones.prefetchAtSec,
+      resolved.triggerToleranceSec
+    ),
     shouldTriggerSegue: hasReachedTriggerPoint(
       positionSec,
       milestones.segueAtSec
