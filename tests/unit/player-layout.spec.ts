@@ -25,25 +25,25 @@ describe('player layout', () => {
 
   it('drives playback session state from native audio events and releases it on ended', () => {
     const source = fs.readFileSync(path.join(root, 'src/renderer/views/Player/PlayerView.tsx'), 'utf-8');
-    const endedStart = source.indexOf('function onEnded(): void');
-    const errorStart = source.indexOf('function onTrackMediaError(): void', endedStart);
+    const endedStart = source.indexOf('function onEnded(');
+    const errorStart = source.indexOf('function onTrackMediaError(', endedStart);
     const endedBlock = source.slice(endedStart, errorStart);
 
-    expect(source).toContain('function onNativePlay(): void');
+    expect(source).toContain('function onNativePlay(');
     expect(source).toContain('playbackSessionRef.current?.setPlaying(true)');
-    expect(source).toContain('function onNativePause(): void');
+    expect(source).toContain('function onNativePause(');
     expect(source).toContain('playbackSessionRef.current?.setPlaying(false)');
     expect(endedBlock).toContain('playbackSessionRef.current?.setPlaying(false)');
-    expect(source).toContain('onPlay={onNativePlay}');
-    expect(source).toContain('onPause={onNativePause}');
+    expect(source).toContain('onPlay={(event) => onNativePlay(event.currentTarget)}');
+    expect(source).toContain('onPause={(event) => onNativePause(event.currentTarget)}');
   });
 
   it('publishes current-track metadata and valid native audio position', () => {
     const source = fs.readFileSync(path.join(root, 'src/renderer/views/Player/PlayerView.tsx'), 'utf-8');
     const sessionCreation = source.indexOf('const playbackSession = createBrowserPlaybackSession({');
     const metadataSync = source.indexOf('playbackSessionRef.current?.setMetadata({');
-    const timeUpdateStart = source.indexOf('function onTimeUpdate(): void');
-    const metadataStart = source.indexOf('function onLoadedMetadata(): void', timeUpdateStart);
+    const timeUpdateStart = source.indexOf('function onTimeUpdate(');
+    const metadataStart = source.indexOf('function onStandbyLoadedMetadata(', timeUpdateStart);
     const timeUpdateBlock = source.slice(timeUpdateStart, metadataStart);
 
     expect(sessionCreation).toBeGreaterThan(-1);
@@ -75,8 +75,8 @@ describe('player layout', () => {
 
   it('integrates previous-track history without changing delete or temporary-ban semantics', () => {
     const source = fs.readFileSync(path.join(root, 'src/renderer/views/Player/PlayerView.tsx'), 'utf-8');
-    const endedStart = source.indexOf('function onEnded(): void');
-    const errorStart = source.indexOf('function onTrackMediaError(): void', endedStart);
+    const endedStart = source.indexOf('function onEnded(');
+    const errorStart = source.indexOf('function onTrackMediaError(', endedStart);
     const endedBlock = source.slice(endedStart, errorStart);
     const prevStart = source.indexOf('function handlePrev(): void');
     const skipStart = source.indexOf('function handleSkip()', prevStart);
@@ -239,7 +239,7 @@ describe('player layout', () => {
     expect(source).toContain('const TRACK_MEDIA_RETRY_STABLE_PLAYBACK_SEC = 10');
     expect(source).toContain('const trackMediaRetryWindowStartedAtSecRef = useRef<number | null>(null)');
     expect(source).toContain('async function retryTrackPlaybackAfterError');
-    expect(source).toContain('getTrackMediaErrorAction({');
+    expect(source).toContain('getTrackMediaRecoveryAction({');
     expect(source).toContain('getTrackMediaRetryResumeDecision({');
     expect(source).toContain('pendingTrackMediaRetryRef.current = {');
     expect(source).toContain('trackMediaRetryRequestIdRef.current += 1');
@@ -250,8 +250,8 @@ describe('player layout', () => {
 
   it('restores a fresh retry window after ten seconds of stable playback', () => {
     const source = fs.readFileSync(path.join(root, 'src/renderer/views/Player/PlayerView.tsx'), 'utf-8');
-    const timeUpdateStart = source.indexOf('function onTimeUpdate(): void');
-    const metadataStart = source.indexOf('function onLoadedMetadata(): void', timeUpdateStart);
+    const timeUpdateStart = source.indexOf('function onTimeUpdate(');
+    const metadataStart = source.indexOf('function onStandbyLoadedMetadata(', timeUpdateStart);
     const timeUpdateBody = source.slice(timeUpdateStart, metadataStart);
 
     expect(source).toContain('shouldResetTrackMediaRetryWindow,');
@@ -261,21 +261,64 @@ describe('player layout', () => {
     expect(timeUpdateBody).toContain('trackMediaRetryAttemptsRef.current = 0');
     expect(timeUpdateBody).toContain('trackMediaRetryWindowStartedAtSecRef.current = null');
 
-    const mediaErrorStart = source.indexOf('function onTrackMediaError(): void');
+    const mediaErrorStart = source.indexOf('function onTrackMediaError(');
     const mediaErrorEnd = source.indexOf('const canPrev = useMemo(', mediaErrorStart);
     const mediaErrorBody = source.slice(mediaErrorStart, mediaErrorEnd);
     expect(mediaErrorBody).toContain(
-      'trackMediaRetryWindowStartedAtSecRef.current = mediaErrorAction.resumeAtSec'
+      'trackMediaRetryWindowStartedAtSecRef.current = mediaRecoveryAction.resumeAtSec'
     );
+    expect(mediaErrorBody).toContain("mediaRecoveryAction.strategy === 'prepared'");
+    expect(mediaErrorBody).toContain('retryTrackPlaybackAfterError(');
+  });
+
+  it('keeps a preloaded standby deck ready for buffer recovery and the next track', () => {
+    const source = fs.readFileSync(path.join(root, 'src/renderer/views/Player/PlayerView.tsx'), 'utf-8');
+
+    expect(source.match(/<audio/g)).toHaveLength(2);
+    expect(source).toContain('const standbyAudioRef = useRef<HTMLAudioElement | null>(null)');
+    expect(source).toContain('getTrackBufferGuardDecision({');
+    expect(source).toContain("purpose: 'current-recovery'");
+    expect(source).toContain("purpose: 'next-track'");
+    expect(source).toContain('function prefetchNextTrackMedia(fromTrackId: string): boolean');
+    expect(source).toContain('if (prefetchNextTrackMedia(currentTrackId))');
+    expect(source).toContain('shouldHandleStandbyTrackMediaEvent({');
+    expect(source).toContain('scheduleStandbyTrackRetry(');
+    expect(source).toContain('void promotePreparedNextTrack(');
+    expect(source).toContain('function applyLatestEndedTransition(');
+    expect(source).toContain('queue: queueRef.current');
+    expect(source).toContain('currentTrackIdRef.current = getCurrentQueueTrackId(snapshot)');
+    expect(source).toContain('onWaiting={(event) => onTrackWaiting(event.currentTarget)}');
+    expect(source).toContain('onStalled={(event) => onTrackStalled(event.currentTarget)}');
+    expect(source).toContain('cancelStandbyTrackMedia();');
+    expect(source).toContain('const TRACK_PRELOAD_RETRY_DELAY_MS = 500');
+
+    const currentSwitchStart = source.indexOf('function switchToPreparedCurrentTrack(');
+    const nextPromotionStart = source.indexOf('function isPreparedNextTransitionCurrent(', currentSwitchStart);
+    const currentSwitchBody = source.slice(currentSwitchStart, nextPromotionStart);
+    expect(currentSwitchBody).toContain('trackMediaRetryRequestIdRef.current += 1');
+
+    const standbyCanPlayStart = source.indexOf('function onStandbyCanPlay(');
+    const standbyErrorStart = source.indexOf('function onStandbyMediaError(', standbyCanPlayStart);
+    const standbyCanPlayBody = source.slice(standbyCanPlayStart, standbyErrorStart);
+    expect(standbyCanPlayBody).toContain('retryRequestIdBeforeSwitch');
+    expect(standbyCanPlayBody).toContain('retryTrackPlaybackAfterError(');
+
+    const cleanupStart = source.indexOf('playerMountedRef.current = false;');
+    const cleanupEnd = source.indexOf('},', cleanupStart);
+    const cleanupBody = source.slice(cleanupStart, cleanupEnd);
+    expect(cleanupBody).toContain('trackMediaRetryRequestIdRef.current += 1');
+    expect(cleanupBody).toContain('pendingTrackMediaRetryRef.current = null');
   });
 
   it('clears the restored queue snapshot when the final queued track ends', () => {
     const source = fs.readFileSync(path.join(root, 'src/renderer/views/Player/PlayerView.tsx'), 'utf-8');
-    const onEndedStart = source.indexOf('function onEnded(): void');
-    const onErrorStart = source.indexOf('function onTrackMediaError(): void');
+    const onEndedStart = source.indexOf('function onEnded(');
+    const onErrorStart = source.indexOf('function onTrackMediaError(');
     const onEndedBody = source.slice(onEndedStart, onErrorStart);
 
-    expect(onEndedBody).toContain('advanceQueueAfterEnded({ queue, currentIndex })');
+    expect(onEndedBody).toContain('const expectedQueue = queueRef.current');
+    expect(onEndedBody).toContain('queue: expectedQueue');
+    expect(onEndedBody).toContain('currentIndex: expectedCurrentIndex');
     expect(onEndedBody).toContain('applyQueueSnapshot(transition)');
     expect(onEndedBody).toContain("setTrackStatusText('播放完成')");
     expect(source).toContain('persistQueueSnapshot(queue, currentIndex)');
@@ -289,6 +332,7 @@ describe('player layout', () => {
 
     expect(loadNowPlayingBody).toContain('if (currentTrackIdRef.current !== trackId)');
     expect(loadNowPlayingBody).toContain('setNowPlaying(payload)');
+    expect(loadNowPlayingBody).toContain('if (preserveActiveSource)');
     expect(loadNowPlayingBody.indexOf('if (currentTrackIdRef.current !== trackId)')).toBeLessThan(
       loadNowPlayingBody.indexOf('setNowPlaying(payload)')
     );
@@ -577,7 +621,7 @@ describe('player layout', () => {
     const allStart = source.indexOf('const disposeAllSegueAudio = useCallback(() => {');
     const allEnd = source.indexOf('const resolveSegueDurationSec', allStart);
     const allBlock = source.slice(allStart, allEnd);
-    const cleanupStart = source.indexOf('() => () => {\n      disposeAllSegueAudio();');
+    const cleanupStart = source.indexOf('() => () => {\n      playerMountedRef.current = false;');
     const cleanupEnd = source.indexOf('[disposeAllSegueAudio]', cleanupStart);
     const cleanupBlock = source.slice(cleanupStart, cleanupEnd);
 

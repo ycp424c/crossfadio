@@ -73,9 +73,12 @@ import {
   shouldStartPendingSegueAudio
 } from '@renderer/playerSegueRuntime';
 import {
-  getTrackMediaErrorAction,
+  getTrackBufferGuardDecision,
   getTrackMediaManualResumeDecision,
+  getTrackMediaRecoveryAction,
   getTrackMediaRetryResumeDecision,
+  getTrackPreloadRetryDecision,
+  shouldHandleStandbyTrackMediaEvent,
   shouldResetTrackMediaRetryWindow,
   type PendingTrackMediaRetry
 } from '@renderer/playerMediaRuntime';
@@ -123,6 +126,13 @@ const DJ_ALREADY_RUNNING_BACKOFF_MS = 30000;
 const SEGUE_RETRY_COOLDOWN_MS = 6000; // min ms between segue trigger retries within the same track
 const TRACK_MEDIA_ERROR_MAX_RETRIES = 3;
 const TRACK_MEDIA_RETRY_STABLE_PLAYBACK_SEC = 10;
+const TRACK_BUFFER_LOW_THRESHOLD_SEC = 8;
+const TRACK_BUFFER_LOW_REQUIRED_SAMPLES = 3;
+const TRACK_BUFFER_GUARD_MIN_POSITION_SEC = 5;
+const TRACK_RECOVERY_COOLDOWN_MS = 15000;
+const TRACK_PRELOAD_MAX_ATTEMPTS = 3;
+const TRACK_PRELOAD_RETRY_DELAY_MS = 500;
+const TRACK_DECK_CROSSFADE_MS = 160;
 const QR_LOGIN_POLL_INTERVAL_MS = 2000;
 
 type ModeVisualConfig = {
@@ -180,6 +190,37 @@ type PendingSegueAudio = {
   nativeOnly: boolean;
 };
 
+type StandbyTrackTarget =
+  | {
+      purpose: 'current-recovery';
+      trackId: string;
+      resumeAtSec: number;
+      triggerReason: 'low-buffer' | 'waiting' | 'stalled';
+    }
+  | {
+      purpose: 'next-track';
+      trackId: string;
+      fromTrackId: string;
+      resumeAtSec: 0;
+    };
+
+type StagedTrackMedia = {
+  target: StandbyTrackTarget;
+  requestId: number;
+  attempt: number;
+  sourceUrl: string | null;
+  ready: boolean;
+  switching: boolean;
+  switchPromise: Promise<boolean> | null;
+  nowPayload?: NowPlayingResponse;
+  nextPayload?: NextTrackResponse;
+};
+
+type PromotedNextTrack = {
+  trackId: string;
+  payload: NextTrackResponse;
+};
+
 export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
   const [queue, setQueue] = useState<QueueTrackDto[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
@@ -235,6 +276,14 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
 
   const ncmDropdownRef = useRef<HTMLDivElement>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const standbyAudioRef = useRef<HTMLAudioElement | null>(null);
+  const stagedTrackMediaRef = useRef<StagedTrackMedia | null>(null);
+  const standbyTrackRequestIdRef = useRef(0);
+  const standbyTrackRetryTimerRef = useRef<number | null>(null);
+  const trackBufferLowSamplesRef = useRef(0);
+  const trackRecoveryCooldownUntilRef = useRef(0);
+  const promotedNextTrackRef = useRef<PromotedNextTrack | null>(null);
+  const trackDeckCrossfadeTimerRef = useRef<number | null>(null);
   const segueAudioRef = useRef<HTMLAudioElement | null>(null);
   const pendingSegueRef = useRef<PendingSegueAudio | null>(null);
   const activeSegueAudiosRef = useRef<Set<HTMLAudioElement>>(new Set());
@@ -266,6 +315,33 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
   const handleSkipRef = useRef<() => void>(() => {});
   const wakeLockNoticeShownRef = useRef(false);
 
+  function clearStandbyTrackRetryTimer(): void {
+    if (standbyTrackRetryTimerRef.current === null) {
+      return;
+    }
+    window.clearTimeout(standbyTrackRetryTimerRef.current);
+    standbyTrackRetryTimerRef.current = null;
+  }
+
+  function clearTrackDeckCrossfadeTimer(): void {
+    if (trackDeckCrossfadeTimerRef.current === null) {
+      return;
+    }
+    window.clearInterval(trackDeckCrossfadeTimerRef.current);
+    trackDeckCrossfadeTimerRef.current = null;
+  }
+
+  function swapTrackDecks(): { active: HTMLAudioElement; standby: HTMLAudioElement } | null {
+    const active = audioRef.current;
+    const standby = standbyAudioRef.current;
+    if (!active || !standby) {
+      return null;
+    }
+    audioRef.current = standby;
+    standbyAudioRef.current = active;
+    return { active: standby, standby: active };
+  }
+
   useEffect(() => {
     if (!showNcmDropdown) return;
     function handleClickOutside(event: MouseEvent): void {
@@ -290,6 +366,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
   const applyQueueSnapshot = useCallback((snapshot: PlayerQueueSnapshot) => {
     queueRef.current = snapshot.queue;
     currentIndexRef.current = snapshot.currentIndex;
+    currentTrackIdRef.current = getCurrentQueueTrackId(snapshot);
     setQueue(snapshot.queue);
     setCurrentIndex(snapshot.currentIndex);
   }, []);
@@ -694,6 +771,8 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
   useEffect(() => {
     if (!currentTrackId) {
       disposeAllSegueAudio();
+      clearTrackDeckCrossfadeTimer();
+      cancelStandbyTrackMedia();
       setNowPlaying(null);
       resetTrackMedia();
       trackMediaRetryAttemptsRef.current = 0;
@@ -705,8 +784,35 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
     }
 
     disposeSegueAudio();
-    resetTrackMedia();
+    const promotedNext = promotedNextTrackRef.current?.trackId === currentTrackId
+      ? promotedNextTrackRef.current
+      : null;
+    clearTrackDeckCrossfadeTimer();
+    cancelStandbyTrackMedia();
+    if (promotedNext) {
+      const active = audioRef.current;
+      const estimatedDurationSec = promotedNext.payload.durationMs
+        ? promotedNext.payload.durationMs / 1000
+        : 0;
+      setPositionSec(active?.currentTime ?? 0);
+      setDurationSec(active?.duration || estimatedDurationSec);
+      setNowPlaying({
+        ok: true,
+        ncmId: promotedNext.trackId,
+        url: promotedNext.payload.url,
+        coverImgUrl: promotedNext.payload.track.coverImgUrl ?? null,
+        durationMs: promotedNext.payload.durationMs,
+        lyric: null,
+        translation: null,
+        timing: promotedNext.payload.timing
+      });
+      promotedNextTrackRef.current = null;
+    } else {
+      resetTrackMedia();
+    }
     prefetchTriggeredRef.current = false;
+    trackBufferLowSamplesRef.current = 0;
+    trackRecoveryCooldownUntilRef.current = 0;
     trackMediaRetryAttemptsRef.current = 0;
     trackMediaRetryWindowStartedAtSecRef.current = null;
     trackMediaRetryRequestIdRef.current += 1;
@@ -721,13 +827,18 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
     setSegueScriptExpanded(false);
     setTrackStatusText(`正在加载曲目 ${currentTrackId} ...`);
 
-    void loadNowPlaying(currentTrackId);
+    void loadNowPlaying(currentTrackId, Boolean(promotedNext));
     void refreshNextTrack(currentTrackId);
   }, [currentTrackId, disposeAllSegueAudio, disposeSegueAudio]);
 
   useEffect(
     () => () => {
+      playerMountedRef.current = false;
+      trackMediaRetryRequestIdRef.current += 1;
+      pendingTrackMediaRetryRef.current = null;
       disposeAllSegueAudio();
+      cancelStandbyTrackMedia();
+      clearTrackDeckCrossfadeTimer();
     },
     [disposeAllSegueAudio]
   );
@@ -950,7 +1061,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
     }
   }
 
-  async function loadNowPlaying(trackId: string): Promise<void> {
+  async function loadNowPlaying(trackId: string, preserveActiveSource = false): Promise<void> {
     try {
       const trackMeta = queue[currentIndex];
       const payload = await getNowPlaying(trackId, {
@@ -964,7 +1075,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
       trackMediaManualResumeRequiredRef.current = false;
       setError('');
 
-      if (audioRef.current) {
+      if (audioRef.current && !preserveActiveSource) {
         audioRef.current.src = payload.url;
         audioRef.current.load();
         if (shouldAutoplayNextRef.current) {
@@ -976,6 +1087,11 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
       setTrackStatusText(`已加载 ${trackId}`);
     } catch (err) {
       if (currentTrackIdRef.current !== trackId) {
+        return;
+      }
+      if (preserveActiveSource) {
+        setTrackStatusText('已切换曲目，详情加载失败');
+        setError(err instanceof Error ? err.message : 'now 请求失败');
         return;
       }
       setNowPlaying(null);
@@ -1045,6 +1161,226 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
     audio.pause();
     audio.removeAttribute('src');
     audio.load();
+  }
+
+  function cancelStandbyTrackMedia(): void {
+    standbyTrackRequestIdRef.current += 1;
+    clearStandbyTrackRetryTimer();
+    stagedTrackMediaRef.current = null;
+    const standby = standbyAudioRef.current;
+    if (standby) {
+      unloadAudioElement(standby);
+      standby.volume = 0;
+    }
+  }
+
+  function isStandbyTargetStillCurrent(target: StandbyTrackTarget): boolean {
+    if (target.purpose === 'current-recovery') {
+      return currentTrackIdRef.current === target.trackId;
+    }
+    return currentTrackIdRef.current === target.fromTrackId;
+  }
+
+  function failStandbyTrackMedia(target: StandbyTrackTarget, requestId: number): void {
+    if (
+      standbyTrackRequestIdRef.current !== requestId ||
+      !isStandbyTargetStillCurrent(target)
+    ) {
+      return;
+    }
+    stagedTrackMediaRef.current = null;
+    const standby = standbyAudioRef.current;
+    if (standby) {
+      unloadAudioElement(standby);
+      standby.volume = 0;
+    }
+    if (target.purpose === 'current-recovery') {
+      trackRecoveryCooldownUntilRef.current = Date.now() + TRACK_RECOVERY_COOLDOWN_MS;
+    }
+    setTrackStatusText(
+      target.purpose === 'current-recovery'
+        ? '备用音频流预载失败，保留当前播放'
+        : '下一首预载失败，曲终时将重新加载'
+    );
+  }
+
+  function scheduleStandbyTrackRetry(
+    target: StandbyTrackTarget,
+    failedAttempts: number,
+    requestId: number
+  ): void {
+    if (
+      standbyTrackRequestIdRef.current !== requestId ||
+      !isStandbyTargetStillCurrent(target)
+    ) {
+      return;
+    }
+    const retry = getTrackPreloadRetryDecision({
+      failedAttempts,
+      maxAttempts: TRACK_PRELOAD_MAX_ATTEMPTS,
+      retryDelayMs: TRACK_PRELOAD_RETRY_DELAY_MS
+    });
+    if (!retry.shouldRetry) {
+      failStandbyTrackMedia(target, requestId);
+      return;
+    }
+
+    const staged = stagedTrackMediaRef.current;
+    if (!staged || staged.requestId !== requestId) {
+      return;
+    }
+    staged.ready = false;
+    staged.sourceUrl = null;
+    const standby = standbyAudioRef.current;
+    if (standby) {
+      unloadAudioElement(standby);
+      standby.volume = 0;
+    }
+    clearStandbyTrackRetryTimer();
+    setTrackStatusText(
+      `备用音频预载失败，${retry.delayMs}ms 后重试 ${retry.nextAttempt}/${TRACK_PRELOAD_MAX_ATTEMPTS}`
+    );
+    standbyTrackRetryTimerRef.current = window.setTimeout(() => {
+      standbyTrackRetryTimerRef.current = null;
+      const current = stagedTrackMediaRef.current;
+      if (!current || current.requestId !== requestId) {
+        return;
+      }
+      standbyTrackRequestIdRef.current += 1;
+      current.requestId = standbyTrackRequestIdRef.current;
+      current.attempt = retry.nextAttempt;
+      void resolveStandbyTrackMedia(
+        target,
+        retry.nextAttempt,
+        current.requestId
+      );
+    }, retry.delayMs);
+  }
+
+  async function resolveStandbyTrackMedia(
+    target: StandbyTrackTarget,
+    attempt: number,
+    requestId: number
+  ): Promise<void> {
+    try {
+      const resolved = target.purpose === 'current-recovery'
+        ? { nowPayload: await getNowPlaying(target.trackId) }
+        : { nextPayload: await getNextTrack(getQueueTrackIds(queueRef.current), target.fromTrackId) };
+      if (
+        standbyTrackRequestIdRef.current !== requestId ||
+        !isStandbyTargetStillCurrent(target)
+      ) {
+        return;
+      }
+      if (resolved.nextPayload && resolved.nextPayload.track.id !== target.trackId) {
+        return;
+      }
+
+      const standby = standbyAudioRef.current;
+      if (!standby) {
+        return;
+      }
+      const url = resolved.nowPayload?.url ?? resolved.nextPayload?.url;
+      if (!url) {
+        scheduleStandbyTrackRetry(target, attempt, requestId);
+        return;
+      }
+
+      unloadAudioElement(standby);
+      standby.preload = 'auto';
+      standby.volume = 0;
+      const staged = stagedTrackMediaRef.current;
+      if (!staged || staged.requestId !== requestId || staged.target !== target) {
+        return;
+      }
+      const sourceUrl = new URL(url, window.location.href).href;
+      staged.attempt = attempt;
+      staged.sourceUrl = sourceUrl;
+      Object.assign(staged, resolved);
+      if (resolved.nextPayload) {
+        setNextTrack(resolved.nextPayload);
+      }
+      standby.src = url;
+      standby.load();
+      setTrackStatusText(
+        target.purpose === 'current-recovery'
+          ? `正在预热备用音频流（${attempt}/${TRACK_PRELOAD_MAX_ATTEMPTS}）`
+          : `正在预载下一首（${attempt}/${TRACK_PRELOAD_MAX_ATTEMPTS}）`
+      );
+    } catch {
+      scheduleStandbyTrackRetry(target, attempt, requestId);
+    }
+  }
+
+  function startStandbyTrackTarget(target: StandbyTrackTarget): void {
+    const existing = stagedTrackMediaRef.current;
+    if (
+      existing &&
+      existing.target.purpose === target.purpose &&
+      existing.target.trackId === target.trackId
+    ) {
+      return;
+    }
+    standbyTrackRequestIdRef.current += 1;
+    clearStandbyTrackRetryTimer();
+    stagedTrackMediaRef.current = null;
+    const standby = standbyAudioRef.current;
+    if (standby) {
+      unloadAudioElement(standby);
+      standby.volume = 0;
+    }
+    const requestId = standbyTrackRequestIdRef.current;
+    stagedTrackMediaRef.current = {
+      target,
+      requestId,
+      attempt: 1,
+      sourceUrl: null,
+      ready: false,
+      switching: false,
+      switchPromise: null
+    };
+    void resolveStandbyTrackMedia(target, 1, requestId);
+  }
+
+  function prefetchNextTrackMedia(fromTrackId: string): boolean {
+    const latestQueue = queueRef.current;
+    const fromIndex = latestQueue.findIndex((track) => track.id === fromTrackId);
+    const next = fromIndex >= 0 ? latestQueue[fromIndex + 1] : null;
+    if (!next) {
+      return false;
+    }
+    const staged = stagedTrackMediaRef.current;
+    if (staged?.target.purpose === 'current-recovery') {
+      return false;
+    }
+    startStandbyTrackTarget({
+      purpose: 'next-track',
+      trackId: next.id,
+      fromTrackId,
+      resumeAtSec: 0
+    });
+    return true;
+  }
+
+  function prepareCurrentTrackRecovery(reason: 'low-buffer' | 'waiting' | 'stalled'): void {
+    const trackId = currentTrackIdRef.current;
+    const active = audioRef.current;
+    if (!trackId || !active) {
+      return;
+    }
+    const staged = stagedTrackMediaRef.current;
+    if (staged?.target.purpose === 'current-recovery' && staged.target.trackId === trackId) {
+      if (staged.ready) {
+        void switchToPreparedCurrentTrack(staged, reason);
+      }
+      return;
+    }
+    startStandbyTrackTarget({
+      purpose: 'current-recovery',
+      trackId,
+      resumeAtSec: active.currentTime,
+      triggerReason: reason
+    });
   }
 
   async function refreshNextTrack(trackId: string): Promise<void> {
@@ -1352,9 +1688,8 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
     }
   }
 
-  function onTimeUpdate(): void {
-    const audio = audioRef.current;
-    if (!audio || !nowPlaying) {
+  function onTimeUpdate(audio = audioRef.current): void {
+    if (!audio || audio !== audioRef.current || !nowPlaying) {
       return;
     }
 
@@ -1374,12 +1709,34 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
       playbackRate: audio.playbackRate
     });
 
+    const bufferedRanges = Array.from({ length: audio.buffered.length }, (_, index) => ({
+      startSec: audio.buffered.start(index),
+      endSec: audio.buffered.end(index)
+    }));
+    const bufferGuard = getTrackBufferGuardDecision({
+      bufferedRanges,
+      currentTimeSec: audio.currentTime,
+      durationSec: audio.duration,
+      isPlaying: !audio.paused && Date.now() >= trackRecoveryCooldownUntilRef.current,
+      consecutiveLowBufferSamples: trackBufferLowSamplesRef.current,
+      lowBufferThresholdSec: TRACK_BUFFER_LOW_THRESHOLD_SEC,
+      requiredLowBufferSamples: TRACK_BUFFER_LOW_REQUIRED_SAMPLES,
+      endOfTrackGraceSec: 2,
+      minimumPlaybackPositionSec: TRACK_BUFFER_GUARD_MIN_POSITION_SEC
+    });
+    trackBufferLowSamplesRef.current = bufferGuard.nextLowBufferSamples;
+    if (bufferGuard.shouldPrepareRecovery) {
+      trackBufferLowSamplesRef.current = 0;
+      prepareCurrentTrackRecovery('low-buffer');
+    }
+
     const decision = getPrefetchDecision(audio.currentTime, audio.duration || 0, nowPlaying.timing);
 
     if (!prefetchTriggeredRef.current && decision.shouldPrefetchNext && currentTrackId) {
-      prefetchTriggeredRef.current = true;
-      setTrackStatusText('预取触发');
-      void refreshNextTrack(currentTrackId);
+      if (prefetchNextTrackMedia(currentTrackId)) {
+        prefetchTriggeredRef.current = true;
+        setTrackStatusText('预取触发');
+      }
     }
 
     maybeTriggerSegue();
@@ -1473,8 +1830,287 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
     maybeStartSegueAudio();
   }
 
-  function onLoadedMetadata(): void {
-    const audio = audioRef.current;
+  function onStandbyLoadedMetadata(audio: HTMLAudioElement): void {
+    const staged = stagedTrackMediaRef.current;
+    if (!staged || !isCurrentStandbyTrackMediaEvent(audio, staged)) {
+      return;
+    }
+    const requestedPosition = staged.target.resumeAtSec;
+    const maxSeekSec = Number.isFinite(audio.duration) && audio.duration > 0
+      ? Math.max(0, audio.duration - 0.5)
+      : requestedPosition;
+    try {
+      audio.currentTime = Math.min(requestedPosition, maxSeekSec);
+    } catch {
+      // The next canplay/progress event will provide another opportunity to become ready.
+    }
+  }
+
+  function onStandbyCanPlay(audio: HTMLAudioElement): void {
+    const staged = stagedTrackMediaRef.current;
+    if (!staged || !isCurrentStandbyTrackMediaEvent(audio, staged)) {
+      return;
+    }
+    staged.ready = true;
+    setTrackStatusText(
+      staged.target.purpose === 'current-recovery'
+        ? '备用音频流已就绪'
+        : '下一首已预载'
+    );
+    if (staged.target.purpose === 'current-recovery') {
+      const retryRequestIdBeforeSwitch = trackMediaRetryRequestIdRef.current;
+      void switchToPreparedCurrentTrack(staged, staged.target.triggerReason).then((switched) => {
+        if (
+          switched ||
+          !playerMountedRef.current ||
+          trackMediaRetryRequestIdRef.current !== retryRequestIdBeforeSwitch ||
+          currentTrackIdRef.current !== staged.target.trackId
+        ) {
+          return;
+        }
+        const active = audioRef.current;
+        if (!active || active.paused) {
+          return;
+        }
+        trackMediaRetryRequestIdRef.current += 1;
+        const requestId = trackMediaRetryRequestIdRef.current;
+        setTrackStatusText('备用音频切换失败，正在刷新当前音频流');
+        void retryTrackPlaybackAfterError(
+          staged.target.trackId,
+          active.currentTime,
+          requestId,
+          true
+        );
+      });
+    }
+  }
+
+  function onStandbyMediaError(audio: HTMLAudioElement): void {
+    const staged = stagedTrackMediaRef.current;
+    if (!staged || !isCurrentStandbyTrackMediaEvent(audio, staged)) {
+      return;
+    }
+    staged.ready = false;
+    scheduleStandbyTrackRetry(staged.target, staged.attempt, staged.requestId);
+  }
+
+  function isCurrentStandbyTrackMediaEvent(
+    audio: HTMLAudioElement,
+    staged: StagedTrackMedia
+  ): boolean {
+    return audio === standbyAudioRef.current && shouldHandleStandbyTrackMediaEvent({
+      stagedRequestId: staged.requestId,
+      currentRequestId: standbyTrackRequestIdRef.current,
+      stagedSourceUrl: staged.sourceUrl,
+      audioSourceUrl: audio.currentSrc || audio.src
+    });
+  }
+
+  function crossfadeTrackDecks(active: HTMLAudioElement, previous: HTMLAudioElement): void {
+    clearTrackDeckCrossfadeTimer();
+    const targetVolume = previous.volume > 0 ? previous.volume : TRACK_DEFAULT_VOLUME;
+    const startedAt = performance.now();
+    trackDeckCrossfadeTimerRef.current = window.setInterval(() => {
+      const progress = Math.min(1, (performance.now() - startedAt) / TRACK_DECK_CROSSFADE_MS);
+      active.volume = targetVolume * progress;
+      previous.volume = targetVolume * (1 - progress);
+      if (progress < 1) {
+        return;
+      }
+      clearTrackDeckCrossfadeTimer();
+      unloadAudioElement(previous);
+      previous.volume = 0;
+      active.volume = targetVolume;
+    }, 20);
+  }
+
+  function switchToPreparedCurrentTrack(
+    staged: StagedTrackMedia,
+    reason: 'low-buffer' | 'waiting' | 'stalled'
+  ): Promise<boolean> {
+    if (staged.switchPromise) {
+      return staged.switchPromise;
+    }
+    if (
+      !staged.ready ||
+      staged.target.purpose !== 'current-recovery' ||
+      staged.requestId !== standbyTrackRequestIdRef.current ||
+      staged.target.trackId !== currentTrackIdRef.current
+    ) {
+      return Promise.resolve(false);
+    }
+    const previous = audioRef.current;
+    const prepared = standbyAudioRef.current;
+    if (!previous || !prepared) {
+      return Promise.resolve(false);
+    }
+    staged.switching = true;
+    const switchPromise = (async (): Promise<boolean> => {
+      try {
+        const resumeAtSec = previous.currentTime;
+        const maxSeekSec = Number.isFinite(prepared.duration) && prepared.duration > 0
+          ? Math.max(0, prepared.duration - 0.5)
+          : resumeAtSec;
+        prepared.currentTime = Math.min(resumeAtSec, maxSeekSec);
+        prepared.volume = 0;
+        await prepared.play();
+        if (stagedTrackMediaRef.current !== staged || staged.requestId !== standbyTrackRequestIdRef.current) {
+          if (audioRef.current !== prepared) {
+            prepared.pause();
+          }
+          return false;
+        }
+        const swapped = swapTrackDecks();
+        if (!swapped) {
+          prepared.pause();
+          return false;
+        }
+        standbyTrackRequestIdRef.current += 1;
+        clearStandbyTrackRetryTimer();
+        stagedTrackMediaRef.current = null;
+        trackBufferLowSamplesRef.current = 0;
+        trackRecoveryCooldownUntilRef.current = Date.now() + TRACK_RECOVERY_COOLDOWN_MS;
+        prefetchTriggeredRef.current = false;
+        pendingTrackMediaRetryRef.current = null;
+        trackMediaRetryRequestIdRef.current += 1;
+        trackMediaManualResumeRequiredRef.current = false;
+        if (staged.nowPayload) {
+          setNowPlaying(staged.nowPayload);
+        }
+        setIsPlaying(true);
+        playbackSessionRef.current?.setPlaying(true);
+        setError('');
+        const reasonText = reason === 'low-buffer'
+          ? '缓冲水位偏低'
+          : reason === 'waiting'
+            ? '缓冲耗尽'
+            : '网络停滞';
+        setTrackStatusText(`已提前切换备用音频流（${reasonText}）`);
+        crossfadeTrackDecks(swapped.active, swapped.standby);
+        return true;
+      } catch {
+        prepared.pause();
+        if (stagedTrackMediaRef.current === staged) {
+          staged.switching = false;
+          staged.switchPromise = null;
+        }
+        return false;
+      }
+    })();
+    staged.switchPromise = switchPromise;
+    return switchPromise;
+  }
+
+  function isPreparedNextTransitionCurrent(
+    staged: StagedTrackMedia,
+    expectedQueue: QueueTrackDto[],
+    expectedCurrentIndex: number
+  ): boolean {
+    return staged.target.purpose === 'next-track' &&
+      staged.target.fromTrackId === currentTrackIdRef.current &&
+      queueRef.current === expectedQueue &&
+      currentIndexRef.current === expectedCurrentIndex;
+  }
+
+  function applyLatestEndedTransition(
+    staged: StagedTrackMedia,
+    endedAudio: HTMLAudioElement
+  ): void {
+    if (
+      staged.target.purpose !== 'next-track' ||
+      currentTrackIdRef.current !== staged.target.fromTrackId ||
+      audioRef.current !== endedAudio ||
+      !endedAudio.ended
+    ) {
+      return;
+    }
+    const latestTransition = advanceQueueAfterEnded({
+      queue: queueRef.current,
+      currentIndex: currentIndexRef.current
+    });
+    shouldAutoplayNextRef.current = latestTransition.shouldAutoplayNext;
+    applyQueueSnapshot(latestTransition);
+    if (!latestTransition.shouldAutoplayNext) {
+      setTrackStatusText('播放完成');
+    }
+  }
+
+  async function promotePreparedNextTrack(
+    staged: StagedTrackMedia,
+    transition: PlayerQueueSnapshot,
+    expectedQueue: QueueTrackDto[],
+    expectedCurrentIndex: number
+  ): Promise<void> {
+    const prepared = standbyAudioRef.current;
+    const previous = audioRef.current;
+    if (
+      !prepared ||
+      !previous ||
+      !staged.ready ||
+      staged.switching ||
+      staged.target.purpose !== 'next-track' ||
+      !staged.nextPayload
+    ) {
+      if (isPreparedNextTransitionCurrent(staged, expectedQueue, expectedCurrentIndex)) {
+        shouldAutoplayNextRef.current = true;
+        applyQueueSnapshot(transition);
+      }
+      return;
+    }
+    staged.switching = true;
+    try {
+      prepared.currentTime = 0;
+      prepared.volume = TRACK_DEFAULT_VOLUME;
+      await prepared.play();
+      if (
+        stagedTrackMediaRef.current !== staged ||
+        staged.requestId !== standbyTrackRequestIdRef.current ||
+        !isPreparedNextTransitionCurrent(staged, expectedQueue, expectedCurrentIndex)
+      ) {
+        if (audioRef.current !== prepared) {
+          prepared.pause();
+        }
+        applyLatestEndedTransition(staged, previous);
+        return;
+      }
+      const swapped = swapTrackDecks();
+      if (!swapped) {
+        prepared.pause();
+        if (isPreparedNextTransitionCurrent(staged, expectedQueue, expectedCurrentIndex)) {
+          shouldAutoplayNextRef.current = true;
+          applyQueueSnapshot(transition);
+        } else {
+          applyLatestEndedTransition(staged, previous);
+        }
+        return;
+      }
+      promotedNextTrackRef.current = {
+        trackId: staged.target.trackId,
+        payload: staged.nextPayload
+      };
+      standbyTrackRequestIdRef.current += 1;
+      clearStandbyTrackRetryTimer();
+      stagedTrackMediaRef.current = null;
+      unloadAudioElement(swapped.standby);
+      swapped.standby.volume = 0;
+      shouldAutoplayNextRef.current = false;
+      setIsPlaying(true);
+      playbackSessionRef.current?.setPlaying(true);
+      applyQueueSnapshot(transition);
+    } catch {
+      if (stagedTrackMediaRef.current === staged) {
+        staged.switching = false;
+      }
+      if (isPreparedNextTransitionCurrent(staged, expectedQueue, expectedCurrentIndex)) {
+        shouldAutoplayNextRef.current = true;
+        applyQueueSnapshot(transition);
+      } else {
+        applyLatestEndedTransition(staged, previous);
+      }
+    }
+  }
+
+  function onLoadedMetadata(audio = audioRef.current): void {
     if (!audio) {
       return;
     }
@@ -1518,22 +2154,51 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
     }
   }
 
-  function onNativePlay(): void {
+  function onNativePlay(audio = audioRef.current): void {
+    if (!audio || audio !== audioRef.current) {
+      return;
+    }
     setIsPlaying(true);
     playbackSessionRef.current?.setPlaying(true);
   }
 
-  function onNativePause(): void {
+  function onNativePause(audio = audioRef.current): void {
+    if (!audio || audio !== audioRef.current) {
+      return;
+    }
     setIsPlaying(false);
     playbackSessionRef.current?.setPlaying(false);
   }
 
-  function onEnded(): void {
+  function onEnded(audio = audioRef.current): void {
+    if (!audio || audio !== audioRef.current) {
+      return;
+    }
     setIsPlaying(false);
     playbackSessionRef.current?.setPlaying(false);
-    const transition = advanceQueueAfterEnded({ queue, currentIndex });
+    const expectedQueue = queueRef.current;
+    const expectedCurrentIndex = currentIndexRef.current;
+    const transition = advanceQueueAfterEnded({
+      queue: expectedQueue,
+      currentIndex: expectedCurrentIndex
+    });
     recordPlaybackHistory(transition.removedTracks);
     if (transition.shouldAutoplayNext) {
+      const staged = stagedTrackMediaRef.current;
+      const nextTrackId = transition.queue[transition.currentIndex]?.id ?? null;
+      if (
+        staged?.ready &&
+        staged.target.purpose === 'next-track' &&
+        staged.target.trackId === nextTrackId
+      ) {
+        void promotePreparedNextTrack(
+          staged,
+          transition,
+          expectedQueue,
+          expectedCurrentIndex
+        );
+        return;
+      }
       shouldAutoplayNextRef.current = true;
       applyQueueSnapshot(transition);
       return;
@@ -1544,41 +2209,66 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
     setTrackStatusText('播放完成');
   }
 
-  function onTrackMediaError(): void {
-    const audio = audioRef.current;
-    if (!audio) {
+  function onTrackMediaError(audio = audioRef.current): void {
+    if (!audio || audio !== audioRef.current) {
       return;
     }
     pendingTrackMediaRetryRef.current = null;
 
     const trackId = currentTrackIdRef.current;
-    const mediaErrorAction = getTrackMediaErrorAction({
+    const staged = stagedTrackMediaRef.current;
+    const hasPreparedRecovery = Boolean(
+      staged?.ready &&
+      staged.target.purpose === 'current-recovery' &&
+      staged.target.trackId === trackId
+    );
+    const mediaRecoveryAction = getTrackMediaRecoveryAction({
       currentTimeSec: audio.currentTime,
       durationSec: audio.duration,
       retryAttempts: trackMediaRetryAttemptsRef.current,
       maxRetryAttempts: TRACK_MEDIA_ERROR_MAX_RETRIES,
-      trackId
+      trackId,
+      hasPreparedRecovery
     });
-    if (mediaErrorAction.type === 'ended') {
+    if (mediaRecoveryAction.type === 'ended') {
       setTrackStatusText('音频流在结尾断开，继续下一首');
       onEnded();
       return;
     }
 
-    if (trackId && mediaErrorAction.type === 'retry') {
-      trackMediaRetryWindowStartedAtSecRef.current = mediaErrorAction.resumeAtSec;
+    if (trackId && mediaRecoveryAction.type === 'retry') {
+      trackMediaRetryWindowStartedAtSecRef.current = mediaRecoveryAction.resumeAtSec;
       trackMediaRetryAttemptsRef.current += 1;
       trackMediaRetryRequestIdRef.current += 1;
       const requestId = trackMediaRetryRequestIdRef.current;
       const attempt = trackMediaRetryAttemptsRef.current;
+      const shouldPlay = isPlaying || !audio.paused;
       setError('');
       setTrackStatusText(`播放流中断，正在重试 ${attempt}/${TRACK_MEDIA_ERROR_MAX_RETRIES}`);
-      void retryTrackPlaybackAfterError(
-        trackId,
-        mediaErrorAction.resumeAtSec,
-        requestId,
-        isPlaying || !audio.paused
-      );
+      if (mediaRecoveryAction.strategy === 'prepared' && staged) {
+        void switchToPreparedCurrentTrack(staged, 'waiting').then((switched) => {
+          if (
+            switched ||
+            !playerMountedRef.current ||
+            trackMediaRetryRequestIdRef.current !== requestId
+          ) {
+            return;
+          }
+          void retryTrackPlaybackAfterError(
+            trackId,
+            mediaRecoveryAction.resumeAtSec,
+            requestId,
+            shouldPlay
+          );
+        });
+      } else {
+        void retryTrackPlaybackAfterError(
+          trackId,
+          mediaRecoveryAction.resumeAtSec,
+          requestId,
+          shouldPlay
+        );
+      }
       return;
     }
 
@@ -1588,6 +2278,20 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
     shouldAutoplayNextRef.current = false;
     setTrackStatusText('播放流中断');
     setError('音频资源加载中断，请稍后重试或切换下一首');
+  }
+
+  function onTrackWaiting(audio: HTMLAudioElement): void {
+    if (audio !== audioRef.current || audio.paused) {
+      return;
+    }
+    prepareCurrentTrackRecovery('waiting');
+  }
+
+  function onTrackStalled(audio: HTMLAudioElement): void {
+    if (audio !== audioRef.current || audio.paused) {
+      return;
+    }
+    prepareCurrentTrackRecovery('stalled');
   }
 
   const canPrev = useMemo(
@@ -1902,13 +2606,54 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
 
 
           <audio
-            onEnded={onEnded}
-            onError={onTrackMediaError}
-            onLoadedMetadata={onLoadedMetadata}
-            onPause={onNativePause}
-            onPlay={onNativePlay}
-            onTimeUpdate={onTimeUpdate}
+            onCanPlay={(event) => onStandbyCanPlay(event.currentTarget)}
+            onEnded={(event) => onEnded(event.currentTarget)}
+            onError={(event) => {
+              if (event.currentTarget === standbyAudioRef.current) {
+                onStandbyMediaError(event.currentTarget);
+              } else {
+                onTrackMediaError(event.currentTarget);
+              }
+            }}
+            onLoadedMetadata={(event) => {
+              if (event.currentTarget === standbyAudioRef.current) {
+                onStandbyLoadedMetadata(event.currentTarget);
+              } else {
+                onLoadedMetadata(event.currentTarget);
+              }
+            }}
+            onPause={(event) => onNativePause(event.currentTarget)}
+            onPlay={(event) => onNativePlay(event.currentTarget)}
+            onStalled={(event) => onTrackStalled(event.currentTarget)}
+            onTimeUpdate={(event) => onTimeUpdate(event.currentTarget)}
+            onWaiting={(event) => onTrackWaiting(event.currentTarget)}
+            preload="auto"
             ref={audioRef}
+          />
+          <audio
+            onCanPlay={(event) => onStandbyCanPlay(event.currentTarget)}
+            onEnded={(event) => onEnded(event.currentTarget)}
+            onError={(event) => {
+              if (event.currentTarget === standbyAudioRef.current) {
+                onStandbyMediaError(event.currentTarget);
+              } else {
+                onTrackMediaError(event.currentTarget);
+              }
+            }}
+            onLoadedMetadata={(event) => {
+              if (event.currentTarget === standbyAudioRef.current) {
+                onStandbyLoadedMetadata(event.currentTarget);
+              } else {
+                onLoadedMetadata(event.currentTarget);
+              }
+            }}
+            onPause={(event) => onNativePause(event.currentTarget)}
+            onPlay={(event) => onNativePlay(event.currentTarget)}
+            onStalled={(event) => onTrackStalled(event.currentTarget)}
+            onTimeUpdate={(event) => onTimeUpdate(event.currentTarget)}
+            onWaiting={(event) => onTrackWaiting(event.currentTarget)}
+            preload="auto"
+            ref={standbyAudioRef}
           />
           {wakeLockStatus === 'active' ? (
             <p className="min-w-0 truncate px-2 text-center text-[11px] text-zinc-500">亮屏保护</p>
