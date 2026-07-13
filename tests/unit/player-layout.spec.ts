@@ -729,7 +729,7 @@ describe('player layout', () => {
     expect(headerSource).toContain('weatherContext.desc');
   });
 
-  it('shows a tooltip warning when browser location is blocked by insecure origin', () => {
+  it('copies the Chrome setup URL and tells the user to open it manually', () => {
     const source = fs.readFileSync(path.join(root, 'src/renderer/views/Player/PlayerView.tsx'), 'utf-8');
     const headerStart = source.indexOf('{/* Header */}');
     const headerEnd = source.indexOf('</header>', headerStart);
@@ -739,7 +739,15 @@ describe('player layout', () => {
     expect(source).toContain('geolocationIssue');
     expect(source).toContain('Only secure origins are allowed');
     expect(source).toContain('chrome://flags/#unsafely-treat-insecure-origin-as-secure');
-    expect(headerSource).toContain('title={geolocationIssue}');
+    expect(source).toContain('handleGeolocationSetup');
+    expect(source).toContain('window.location.origin');
+    expect(source).toContain('copyTextToClipboard(CHROME_INSECURE_ORIGIN_SETTINGS_URL)');
+    expect(source).not.toContain("window.open(CHROME_INSECURE_ORIGIN_SETTINGS_URL, '_blank'");
+    expect(source).toContain('Chrome 设置页地址已复制，请粘贴到地址栏手动打开');
+    expect(source).toContain('aria-live="polite"');
+    expect(headerSource).toContain('aria-label="复制 Chrome 定位设置页地址"');
+    expect(headerSource).toContain('onClick={handleGeolocationSetup}');
+    expect(headerSource).toContain('title={geolocationIssue.message}');
     expect(headerSource).toContain('<AlertTriangle');
   });
 
