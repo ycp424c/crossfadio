@@ -36,6 +36,3 @@
 - 不改变临近歌曲结尾时把断流视为正常结束的逻辑。
 - 不改变手动点击播放时刷新失效 URL 的恢复路径。
 - 不增加退避时间、服务端重试或新的用户设置。
-
-> 后续双 Deck 主动恢复扩展见
-> [`2026-07-13-track-stream-dual-deck-recovery-design.md`](./2026-07-13-track-stream-dual-deck-recovery-design.md)。原错误刷新路径仍不增加退避；standby 预载使用独立、有界、固定间隔的重试策略。
