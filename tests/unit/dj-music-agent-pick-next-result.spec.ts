@@ -742,6 +742,7 @@ describe('MusicAgent pick-next result handling', () => {
       targetCount: 2,
       appendedCount: 1,
       requestedPickCount: 2,
+      selectedSay: '本次实际选入 1 首：Fresh Song。',
       skippedPicks: [expect.objectContaining({ id: '302', reason: 'id_excluded' })]
     }));
     expect(logger.warn).toHaveBeenCalledWith(
@@ -767,6 +768,50 @@ describe('MusicAgent pick-next result handling', () => {
         discoveryMode: 'explore'
       })
     );
+  });
+
+  it('shows a summary based on the actual appended tracks after final picks are filtered', () => {
+    const emit = vi.fn();
+    const output = makeOutput([
+      { id: '501', name: '关于我爱你', artist: '张悬', reason: '温柔承接', source: 'search' },
+      { id: '502', name: '喜帖街', artist: '谢安琪', reason: '低压恢复', source: 'search' },
+      { id: '503', name: '宝贝 (In a Day)', artist: '张悬', reason: '轻快安抚', source: 'search' }
+    ]);
+    output.say = '为你挑了五首轻压力恢复的人声故事歌。';
+    output.finalPickDiagnostics = {
+      ...output.finalPickDiagnostics,
+      targetPickCount: 5,
+      rawPickCount: 5,
+      eligiblePickCount: 3,
+      acceptedPickCount: 3,
+      droppedPickCount: 2,
+      qualityDroppedCount: 2
+    };
+
+    handleMusicAgentPickNextOutput({
+      userId: 'music-agent-result-user',
+      output,
+      excludeState: { ids: new Set(), dedupeKeys: new Set() },
+      initialQueueLength: 0,
+      targetPickCount: 5,
+      startedAt: Date.now() - 50,
+      discoveryMode: 'explore',
+      emit,
+      broadcastAppended: vi.fn(),
+      logger: { warn: vi.fn() },
+      setPickReason: vi.fn(),
+      fallbackStatsSnapshot: () => ({ totalRuns: 0, fallbackRuns: 0, fallbackRate: 0, fallbackPaths: {} })
+    });
+
+    expect(emit).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'dj.debug',
+      selectedSay: '本次实际选入 3 首：关于我爱你、喜帖街、宝贝 (In a Day)。',
+      selectedTracks: [
+        expect.objectContaining({ id: '501' }),
+        expect.objectContaining({ id: '502' }),
+        expect.objectContaining({ id: '503' })
+      ]
+    }));
   });
 
   it('returns legacy fallback when all MusicAgent picks are skipped', () => {

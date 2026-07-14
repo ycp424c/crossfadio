@@ -339,7 +339,7 @@ function buildMusicAgentDebugPayload(input: {
     totalCandidates: getMusicAgentDebugCandidateCount(output),
     ...candidateSourceDiagnostics,
     candidateScoreTable: output.candidateScoreTable,
-    selectedSay: output.say,
+    selectedSay: buildMusicAgentSelectedSay(output, appendedPicks),
     ...(lyricsAwareDiagnostics
       ? { lyricsAwareDiagnostics }
       : {}),
@@ -349,6 +349,20 @@ function buildMusicAgentDebugPayload(input: {
     ...(input.requestedPickCount !== undefined ? { requestedPickCount: input.requestedPickCount } : {}),
     ...(input.skippedPicks !== undefined ? { skippedPicks: input.skippedPicks } : {})
   };
+}
+
+function buildMusicAgentSelectedSay(
+  output: MusicAgentRunOutput,
+  appendedPicks: MusicAgentRunOutput['picks']
+): string {
+  const rawPickCount = output.finalPickDiagnostics?.rawPickCount ?? output.picks.length;
+  const selectionChanged = rawPickCount !== appendedPicks.length
+    || output.picks.length !== appendedPicks.length
+    || output.picks.some((pick, index) => pick.id !== appendedPicks[index]?.id);
+  if (!selectionChanged) return output.say;
+
+  const trackNames = appendedPicks.map((pick) => pick.name?.trim() || pick.id);
+  return `本次实际选入 ${appendedPicks.length} 首${trackNames.length > 0 ? `：${trackNames.join('、')}` : ''}。`;
 }
 
 function createMusicAgentSelectedTrackDebug(
