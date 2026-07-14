@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { buildDjPickDebugLog, buildDjPickDoneLog } from '../../src/renderer/playerDjPickLog';
+import {
+  buildDjPickDebugLog,
+  buildDjPickDoneLog,
+  formatDjPickElapsed,
+  mergeDjPickDoneLog
+} from '../../src/renderer/playerDjPickLog';
 
 describe('DJ pick debug log', () => {
   it('counts unique query funnel search results and repeated searches separately', () => {
@@ -54,5 +59,33 @@ describe('DJ pick debug log', () => {
       selectedSay: '本次补充 2 首。'
     });
     expect(log?.selectedTracks.map((track) => track.id)).toEqual(['11', '12']);
+  });
+
+  it('adds the completed selection duration without replacing debug details', () => {
+    const debugLog = buildDjPickDebugLog({
+      likedSample: [{ id: '1', name: 'Liked', artist: 'Artist' }],
+      searchQueries: ['warm vocal'],
+      selectedTracks: [{ id: '2', name: 'Selected', artist: 'Singer', reason: 'fits', source: 'search' }],
+      totalCandidates: 14,
+      selectedSay: '选了更适合当前氛围的歌。'
+    });
+
+    expect(mergeDjPickDoneLog(debugLog, {
+      added: true,
+      addedCount: 1,
+      trackIds: ['2'],
+      trackNames: ['Selected'],
+      elapsedMs: 12_345
+    })).toMatchObject({
+      likedSample: debugLog.likedSample,
+      searchQueries: debugLog.searchQueries,
+      selectedTracks: debugLog.selectedTracks,
+      totalCandidates: 14,
+      elapsedMs: 12_345
+    });
+  });
+
+  it('formats the selection duration in seconds for the status details', () => {
+    expect(formatDjPickElapsed(12_345)).toBe('12.3 秒');
   });
 });

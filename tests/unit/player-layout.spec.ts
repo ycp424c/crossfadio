@@ -420,8 +420,11 @@ describe('player layout', () => {
     expect(debugBlock).toContain('console.table');
     expect(debugBlock).toContain('DJ pick-next candidate scores');
     expect(debugBlock).toContain('buildDjPickDebugLog(playerEvent.data)');
+    expect(source).toContain('mergeDjPickDoneLog(prev, playerEvent.data)');
     expect(source).toContain('djPickLog.selectedTracks.map');
     expect(source).toContain('track.reason');
+    expect(source).toContain('选歌总耗时');
+    expect(source).toContain('formatDjPickElapsed(djPickLog.elapsedMs)');
   });
 
   it('includes clientRequestId in direct SSE segue payloads before the player filters them', () => {

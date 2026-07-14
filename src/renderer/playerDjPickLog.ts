@@ -21,6 +21,7 @@ export type DjPickLog = {
   searchSelectedCount: number;
   totalCandidates: number;
   selectedSay: string;
+  elapsedMs: number | null;
 };
 
 type DjQueryFunnelEntry = {
@@ -33,6 +34,12 @@ type DjQueryFunnelEntry = {
 
 function numericField(value: unknown): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : 0;
+}
+
+function elapsedMsField(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0
+    ? Math.round(value)
+    : null;
 }
 
 function queryFunnelEntries(value: unknown): DjQueryFunnelEntry[] {
@@ -62,7 +69,8 @@ export function buildDjPickDebugLog(data: Record<string, unknown>): DjPickLog {
     searchAddedCount: queryFunnel.reduce((sum, entry) => sum + entry.addedCount, 0),
     searchSelectedCount: queryFunnel.reduce((sum, entry) => sum + entry.selectedCount, 0),
     totalCandidates: numericField(data.totalCandidates),
-    selectedSay: typeof data.selectedSay === 'string' ? data.selectedSay : ''
+    selectedSay: typeof data.selectedSay === 'string' ? data.selectedSay : '',
+    elapsedMs: elapsedMsField(data.elapsedMs)
   };
 }
 
@@ -90,6 +98,20 @@ export function buildDjPickDoneLog(data: Record<string, unknown>): DjPickLog | n
     searchAddedCount: 0,
     searchSelectedCount: 0,
     totalCandidates: typeof data.totalCandidates === 'number' ? data.totalCandidates : 0,
-    selectedSay: addedCount > 0 ? `本次补充 ${addedCount} 首。` : ''
+    selectedSay: addedCount > 0 ? `本次补充 ${addedCount} 首。` : '',
+    elapsedMs: elapsedMsField(data.elapsedMs)
   };
+}
+
+export function mergeDjPickDoneLog(
+  previous: DjPickLog | null,
+  data: Record<string, unknown>
+): DjPickLog | null {
+  if (!previous) return buildDjPickDoneLog(data);
+  const elapsedMs = elapsedMsField(data.elapsedMs);
+  return elapsedMs === null ? previous : { ...previous, elapsedMs };
+}
+
+export function formatDjPickElapsed(elapsedMs: number): string {
+  return `${(Math.max(0, elapsedMs) / 1000).toFixed(1)} 秒`;
 }

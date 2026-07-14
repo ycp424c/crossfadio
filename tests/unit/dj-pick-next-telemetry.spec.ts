@@ -82,7 +82,8 @@ describe('DJ pick-next telemetry', () => {
       targetCount: 2,
       trackIds: ['new-1', 'new-2'],
       trackNames: ['New One', 'New Two'],
-      trackName: 'New One、New Two'
+      trackName: 'New One、New Two',
+      elapsedMs: 25
     });
     expect(logger.info).toHaveBeenCalledWith(
       expect.objectContaining({

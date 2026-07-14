@@ -57,7 +57,8 @@ import {
 } from '@renderer/playerDjRefill';
 import {
   buildDjPickDebugLog,
-  buildDjPickDoneLog,
+  formatDjPickElapsed,
+  mergeDjPickDoneLog,
   type DjPickLog
 } from '@renderer/playerDjPickLog';
 import { consumePlayerPickNextStream } from '@renderer/playerDjPickNextStream';
@@ -1445,7 +1446,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
                   djPickNextBackoffUntilRef.current = 0;
                   djPickNextLastCallRef.current = Date.now();
                   setDjStatusText(formatDjPickDoneStatus(playerEvent.data));
-                  setDjPickLog((prev) => prev ?? buildDjPickDoneLog(playerEvent.data));
+                  setDjPickLog((prev) => mergeDjPickDoneLog(prev, playerEvent.data));
                 } else {
                   const reason = playerEvent.reason ?? '稍后重试';
                   if (reason === 'already-running') {
@@ -2292,6 +2293,9 @@ function DjStatusDock({
                 ) : null}
                 <span>搜索入池 <span className="text-zinc-300">{djPickLog.searchAddedCount}</span> 首</span>
                 <span>候选池 <span className="text-cyan-300">{djPickLog.totalCandidates}</span> 首</span>
+                {djPickLog.elapsedMs !== null ? (
+                  <span>选歌总耗时 <span className="text-cyan-300">{formatDjPickElapsed(djPickLog.elapsedMs)}</span></span>
+                ) : null}
               </div>
             </div>
           ) : null}

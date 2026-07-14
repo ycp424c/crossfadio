@@ -86,7 +86,8 @@ export function createDjPickNextTelemetry(input: { logger?: Logger } = {}): DjPi
       targetCount: targetPickCount,
       trackIds: newTracks.map((track) => track.ncmId),
       trackNames: names,
-      trackName: names.join('、') || undefined
+      trackName: names.join('、') || undefined,
+      elapsedMs: metrics.elapsedMs
     });
   }
 
