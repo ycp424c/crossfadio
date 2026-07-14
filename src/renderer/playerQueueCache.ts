@@ -1,7 +1,7 @@
 import type { QueueTrackDto } from '@shared/schema';
 
 export const PLAYER_QUEUE_STORAGE_KEY = 'crossfadio.player.queue.v1';
-export const PLAYER_QUEUE_RESTORE_LIMIT = 4;
+export const PLAYER_QUEUE_RESTORE_LIMIT = 100;
 export const PLAYER_QUEUE_STORAGE_TTL_MS = 12 * 60 * 60 * 1000;
 
 export type PersistedQueueSnapshot = {

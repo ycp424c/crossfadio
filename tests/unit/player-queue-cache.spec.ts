@@ -41,26 +41,29 @@ function makeStorage(initial?: string): Storage {
 describe('player queue cache', () => {
   it('persists only the active restore window from the current track', () => {
     const storage = makeStorage();
-    const queue = Array.from({ length: 12 }, (_, index) => makeTrack(index + 1));
+    const queue = Array.from({ length: 120 }, (_, index) => makeTrack(index + 1));
 
     persistQueueSnapshot(queue, 7, storage, 1_000);
 
     const raw = storage.getItem(PLAYER_QUEUE_STORAGE_KEY);
     expect(raw).not.toBeNull();
     const saved = JSON.parse(raw ?? '{}') as { queue: QueueTrackDto[]; currentIndex: number; savedAt: number };
-    expect(saved.queue.map((track) => track.id)).toEqual(['8', '9', '10', '11']);
+    expect(saved.queue[0]?.id).toBe('8');
+    expect(saved.queue.at(-1)?.id).toBe('107');
     expect(saved.queue).toHaveLength(PLAYER_QUEUE_RESTORE_LIMIT);
     expect(saved.currentIndex).toBe(0);
     expect(saved.savedAt).toBe(1_000);
   });
 
   it('crops legacy oversized snapshots when restoring', () => {
-    const queue = Array.from({ length: 20 }, (_, index) => makeTrack(index + 1));
+    const queue = Array.from({ length: 150 }, (_, index) => makeTrack(index + 1));
     const storage = makeStorage(JSON.stringify({ queue, currentIndex: 15 }));
 
     const restored = restorePersistedQueueSnapshot(storage, 2_000);
 
-    expect(restored?.queue.map((track) => track.id)).toEqual(['16', '17', '18', '19']);
+    expect(restored?.queue[0]?.id).toBe('16');
+    expect(restored?.queue.at(-1)?.id).toBe('115');
+    expect(restored?.queue).toHaveLength(PLAYER_QUEUE_RESTORE_LIMIT);
     expect(restored?.currentIndex).toBe(0);
   });
 
