@@ -5,7 +5,7 @@ import type { MusicAgentToolRegistry } from '../../src/server/music-agent/tools.
 import { musicAgentRunOutputSchema } from '../../src/server/music-agent/schema.js';
 import type {
   AgentBudget,
-  MusicAgentContextSummary,
+  MusicAgentRuntimeContext,
   MusicAgentLlmClient,
   MusicCandidate
 } from '../../src/server/music-agent/schema.js';
@@ -44,7 +44,7 @@ function budget(overrides: Partial<AgentBudget> = {}): AgentBudget {
   };
 }
 
-function context(overrides: Partial<MusicAgentContextSummary> = {}): MusicAgentContextSummary {
+function context(overrides: Partial<MusicAgentRuntimeContext> = {}): MusicAgentRuntimeContext {
   return {
     request: 'chat-recommend',
     currentUserText: '想听轻快一点的女声',
@@ -638,6 +638,51 @@ describe('runMusicAgentLoop', () => {
     expect(prompt).toContain('"repeatPenalty":0');
     expect(prompt).toContain('"adjustedScore"');
     expect(prompt).not.toContain('"id":"plastic-love","name":"プラスティック・ラヴ","artist":"竹内まりや","sources":["liked"],"score"');
+  });
+
+  it('uses the full runtime track penalties when ranking candidates beyond the LLM summary', async () => {
+    const llmClient = new LoopFakeLlmClient([
+      JSON.stringify({
+        type: 'final',
+        say: '选择没有近期重复惩罚的候选。',
+        picks: [{ id: 'fresh-track', reason: '更新鲜且仍贴合当前请求', source: 'liked' }],
+        rejected: []
+      })
+    ]);
+    const pool = new CandidatePool();
+    pool.upsert(candidate({
+      id: 'penalized-tail-track',
+      name: 'Penalty Tail Track',
+      artist: 'Repeated Artist',
+      scores: { ...candidate().scores, intentMatch: 1 }
+    }));
+    pool.upsert(candidate({
+      id: 'fresh-track',
+      name: 'Fresh Track',
+      artist: 'Fresh Artist',
+      scores: { ...candidate().scores, intentMatch: 0.92 }
+    }));
+
+    const result = await runMusicAgentLoop({
+      llmClient,
+      context: context({
+        recentTrackPenalties: [],
+        rankingTrackPenalties: [{
+          trackKey: 'penaltytailtrack::repeatedartist',
+          title: 'Penalty Tail Track',
+          artist: 'Repeated Artist',
+          penalty: 0.22
+        }]
+      }),
+      candidatePool: pool,
+      tools: {},
+      budget: budget()
+    });
+
+    expect(result.candidateScoreTable[0]?.id).toBe('fresh-track');
+    expect(result.candidateScoreTable.find((row) => row.id === 'penalized-tail-track')).toMatchObject({
+      trackPenalty: 0.22
+    });
   });
 
   it('falls back to ranked candidates when final picks are outside the whitelist pool', async () => {

@@ -15,7 +15,7 @@ import {
 import type { MusicAgentFallbackLogEvent } from './loop.js';
 import type {
   AgentBudget,
-  MusicAgentContextSummary,
+  MusicAgentRuntimeContext,
   MusicAgentLlmClient,
   MusicAgentRunOutput
 } from './schema.js';
@@ -73,7 +73,7 @@ export type PickNextInput = {
   excludeTrackIds?: Set<string>;
   excludeTrackDedupeKeys?: Set<string>;
   targetPickCount?: number;
-  context?: MusicAgentContextSummary;
+  context?: MusicAgentRuntimeContext;
   now?: Date;
 };
 

@@ -4,6 +4,7 @@ import {
   diversifyCandidates,
   isHardFilteredCandidate,
   rankCandidates,
+  rankOptionsFromContext,
   resolveTitlePollution,
   scoreCandidateForRanking
 } from './rank.js';
@@ -13,6 +14,7 @@ import {
   type AgentBudget,
   type CandidateSource,
   type MusicAgentContextSummary,
+  type MusicAgentRuntimeContext,
   type MusicAgentToolName,
   type MusicCandidate,
   type MusicCandidateScores,
@@ -99,7 +101,7 @@ type MusicAgentNcmClient = Pick<
 export type CreateMusicAgentToolsInput = {
   userId: string;
   ncmClient: MusicAgentNcmClient;
-  context: MusicAgentContextSummary;
+  context: MusicAgentRuntimeContext;
   candidatePool: CandidatePool;
   budget: AgentBudget;
   maxTrendFetchMs?: number;
@@ -612,7 +614,7 @@ export function createMusicAgentTools(input: CreateMusicAgentToolsInput): MusicA
       const qualityObservation = await prepareCandidateQuality(input, state, signal);
       if (signal?.aborted) return abortedObservation(input.candidatePool);
       const limit = boundedPositiveInt(toolInput.limit, 8, MAX_RANK_DISPLAY_LIMIT);
-      const options = rankOptions(input.context);
+      const options = rankOptionsFromContext(input.context);
       const top = rankCandidates(input.candidatePool.list(), limit, options);
       return observation(input.candidatePool, summarizeCandidates('ranked candidates', top, options), qualityObservation.problems);
     },
@@ -622,7 +624,7 @@ export function createMusicAgentTools(input: CreateMusicAgentToolsInput): MusicA
       const qualityObservation = await prepareCandidateQuality(input, state, signal);
       if (signal?.aborted) return abortedObservation(input.candidatePool);
       const limit = boundedPositiveInt(toolInput.limit, 2, MAX_DIVERSIFY_DISPLAY_LIMIT);
-      const options = rankOptions(input.context);
+      const options = rankOptionsFromContext(input.context);
       const diversified = diversifyCandidates(rankCandidates(input.candidatePool.list(), 20, options), limit);
       return observation(input.candidatePool, summarizeCandidates('diversified candidates', diversified, options), qualityObservation.problems);
     },
@@ -631,7 +633,7 @@ export function createMusicAgentTools(input: CreateMusicAgentToolsInput): MusicA
       if (signal?.aborted) return abortedObservation(input.candidatePool);
       const qualityObservation = await prepareCandidateQuality(input, state, signal);
       if (signal?.aborted) return abortedObservation(input.candidatePool);
-      const options = rankOptions(input.context);
+      const options = rankOptionsFromContext(input.context);
       const top = rankCandidates(input.candidatePool.list(), 5, options);
       return observation(input.candidatePool, summarizeCandidates('finalize candidates', top, options), qualityObservation.problems);
     }
@@ -990,13 +992,6 @@ function likedRecallScanLimit(limit: number, context: MusicAgentContextSummary):
   return Math.min(MAX_LIKED_RECALL_LIMIT, Math.max(limit, limit * AUTO_FILL_LIKED_RECALL_SCAN_MULTIPLIER));
 }
 
-function rankOptions(context: MusicAgentContextSummary) {
-  return {
-    artistPenalties: new Map((context.recentArtistPenalties ?? []).map((item) => [item.artist, item.penalty])),
-    trackPenalties: new Map((context.recentTrackPenalties ?? []).map((item) => [item.trackKey, item.penalty]))
-  };
-}
-
 function withContextAvoidArtists(plan: QueryPlan, context: MusicAgentContextSummary): QueryPlan {
   const avoidArtists = uniqueStrings([
     ...plan.avoidArtists,
@@ -1257,7 +1252,7 @@ function summarizeQueryPlan(plan: QueryPlan): string {
 function summarizeCandidates(
   label: string,
   candidates: MusicCandidate[],
-  options: ReturnType<typeof rankOptions> = { artistPenalties: new Map(), trackPenalties: new Map() }
+  options: ReturnType<typeof rankOptionsFromContext> = { artistPenalties: new Map(), trackPenalties: new Map() }
 ): string {
   if (candidates.length === 0) return `${label}: candidate pool is empty.`;
   return truncate(

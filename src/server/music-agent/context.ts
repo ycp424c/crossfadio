@@ -13,8 +13,10 @@ import {
 } from '../store/personal-dj-context.js';
 import { formatShanghaiLocalTime, getDaypart, getShanghaiTimeParts } from '../timezone.js';
 import {
-  musicAgentContextSummarySchema,
-  type MusicAgentContextSummary
+  MUSIC_AGENT_TRACK_PENALTY_SUMMARY_MAX_ITEMS,
+  musicAgentRuntimeContextSchema,
+  type MusicAgentContextSummary,
+  type MusicAgentRuntimeContext
 } from './schema.js';
 import { buildMusicTrackDedupeKey } from './dedupe.js';
 import { artistKeys, primaryArtistKey } from './artists.js';
@@ -35,7 +37,6 @@ const TRACK_REPEAT_HALF_LIFE_DAYS = 21;
 const TRACK_REPEAT_GROWTH_RATE = 0.22;
 const TRACK_REPEAT_MAX_PENALTY = 0.28;
 const TRACK_REPEAT_MIN_PENALTY = 0.01;
-const TRACK_REPEAT_MAX_ITEMS = 40;
 
 export type BuildMusicAgentContextInput = {
   userId: string;
@@ -52,13 +53,14 @@ type ActiveDirectivePref = {
   expiresAt?: string;
 };
 
-export async function buildMusicAgentContext(input: BuildMusicAgentContextInput): Promise<MusicAgentContextSummary> {
+export async function buildMusicAgentContext(input: BuildMusicAgentContextInput): Promise<MusicAgentRuntimeContext> {
   const now = input.now ?? new Date();
   const weather = await fetchWeatherWithTimeout(input.userId);
   const theme = input.includeDailyTheme === false ? null : getDailyTheme();
   const actionQueries = compactActionQueries(input.actionQueries ?? []);
+  const rankingTrackPenalties = buildRecentTrackPenalties(input.userId, now);
 
-  const context: MusicAgentContextSummary = {
+  const context: MusicAgentRuntimeContext = {
     request: input.request,
     discoveryMode: getDiscoveryMode(input.userId),
     currentUserText: input.request === 'chat-recommend' ? truncate(input.userText ?? '', 600) : '',
@@ -75,12 +77,13 @@ export async function buildMusicAgentContext(input: BuildMusicAgentContextInput)
     recentPlaySignals: buildRecentPlaySignals(input.userId),
     queueStateSummary: buildQueueStateSummary(input.userId),
     recentArtistPenalties: buildRecentArtistPenalties(input.userId, now),
-    recentTrackPenalties: buildRecentTrackPenalties(input.userId, now),
+    recentTrackPenalties: rankingTrackPenalties.slice(0, MUSIC_AGENT_TRACK_PENALTY_SUMMARY_MAX_ITEMS),
+    rankingTrackPenalties,
     ...buildPersonalDjContextForMusicAgent(input.userId, now),
     bannedSummary: buildBannedSummary(input.userId, now)
   };
 
-  return musicAgentContextSummarySchema.parse(context);
+  return musicAgentRuntimeContextSchema.parse(context);
 }
 
 function buildPersonalDjContextForMusicAgent(
@@ -279,8 +282,7 @@ function buildRecentTrackPenalties(userId: string, now: Date): Array<{ trackKey:
       penalty: roundPenalty(TRACK_REPEAT_MAX_PENALTY * (1 - Math.exp(-item.exposure * TRACK_REPEAT_GROWTH_RATE)))
     }))
     .filter((item) => item.penalty >= TRACK_REPEAT_MIN_PENALTY)
-    .sort((left, right) => right.penalty - left.penalty || left.trackKey.localeCompare(right.trackKey))
-    .slice(0, TRACK_REPEAT_MAX_ITEMS);
+    .sort((left, right) => right.penalty - left.penalty || left.trackKey.localeCompare(right.trackKey));
 }
 
 function parseSqliteDate(value: string): Date | null {

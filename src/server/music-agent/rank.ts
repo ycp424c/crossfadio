@@ -1,4 +1,9 @@
-import type { CandidateScoreTableRow, MusicCandidate, MusicCandidateQualitySignals } from './schema.js';
+import type {
+  CandidateScoreTableRow,
+  MusicAgentRuntimeContext,
+  MusicCandidate,
+  MusicCandidateQualitySignals
+} from './schema.js';
 import { areMusicTrackDedupeKeysSimilar, buildMusicTrackDedupeKey } from './dedupe.js';
 import { artistKeys } from './artists.js';
 import {
@@ -43,6 +48,16 @@ export type RankCandidatesOptions = {
 export type DiversifyCandidatesOptions = {
   blockedTitleMotifs?: ReadonlySet<string>;
 };
+
+export function rankOptionsFromContext(
+  context: Pick<MusicAgentRuntimeContext, 'recentArtistPenalties' | 'recentTrackPenalties' | 'rankingTrackPenalties'>
+): RankCandidatesOptions {
+  const trackPenalties = context.rankingTrackPenalties ?? context.recentTrackPenalties ?? [];
+  return {
+    artistPenalties: new Map((context.recentArtistPenalties ?? []).map((item) => [item.artist, item.penalty])),
+    trackPenalties: new Map(trackPenalties.map((item) => [item.trackKey, item.penalty]))
+  };
+}
 
 export function scoreCandidate(candidate: MusicCandidate): number {
   const { scores } = candidate;

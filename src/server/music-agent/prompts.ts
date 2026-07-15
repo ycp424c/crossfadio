@@ -1,5 +1,10 @@
 import type { LlmMessage, LlmResponseFormat } from '../llm/client.js';
-import { musicAgentToolNameSchema, type MusicAgentContextSummary } from './schema.js';
+import {
+  MUSIC_AGENT_TRACK_PENALTY_SUMMARY_MAX_ITEMS,
+  musicAgentContextSummarySchema,
+  musicAgentToolNameSchema,
+  type MusicAgentContextSummary
+} from './schema.js';
 import { AUTO_FILL_BATCH_SIZE_MAX } from '../../shared/dj.js';
 import type {
   ShortlistEvidencePromptPacket,
@@ -158,7 +163,7 @@ function serializedFinalPickJsonSchema(): string {
 }
 
 export function buildLoopMessages(input: BuildLoopMessagesInput): LlmMessage[] {
-  const context = compactJson(input.context, MAX_CONTEXT_CHARS);
+  const context = compactJson(llmSafeContext(input.context), MAX_CONTEXT_CHARS);
   const candidatePool = truncate(input.candidateSummary || '[]', MAX_CANDIDATE_CHARS);
   const targetPickCount = input.targetPickCount ?? 2;
   const observations = compactJson(input.observations.map((item) => ({
@@ -223,7 +228,7 @@ export function buildFinalPickPromptPayload(input: BuildLoopMessagesInput): Fina
       messages,
       promptChars: measurePromptChars(messages),
       sections: {
-        compactContextChars: compactJson(input.context, MAX_CONTEXT_CHARS).length,
+        compactContextChars: compactJson(llmSafeContext(input.context), MAX_CONTEXT_CHARS).length,
         candidateBaseChars: truncate(input.candidateSummary || '[]', MAX_CANDIDATE_CHARS).length,
         cachedProfilesChars: 0,
         lyricEvidenceChars: 0,
@@ -239,7 +244,8 @@ export function buildFinalPickPromptPayload(input: BuildLoopMessagesInput): Fina
     packet.kind === 'profile' ? [packet.assessment] : []
   );
   let cachedProfiles = JSON.stringify(profileAssessments);
-  let compactContext = boundedJson(input.context, MAX_FINAL_CONTEXT_CHARS);
+  const promptContext = llmSafeContext(input.context);
+  let compactContext = boundedJson(promptContext, MAX_FINAL_CONTEXT_CHARS);
   let notes = boundedJson(selectionNotes(input), MAX_OBSERVATION_CHARS);
   const evidencePackets = input.promptPackets.filter((packet): packet is ShortlistEvidencePromptPacket =>
     packet.kind === 'evidence'
@@ -267,7 +273,7 @@ export function buildFinalPickPromptPayload(input: BuildLoopMessagesInput): Fina
   // removing a candidate base record or a cached assessment.
   let fixedChars = system.length + composeUser('').length;
   if (fixedChars + minimumEvidence.length > MAX_FINAL_PROMPT_CHARS) {
-    compactContext = boundedJson(input.context, 1_000);
+    compactContext = boundedJson(promptContext, 1_000);
     fixedChars = system.length + composeUser('').length;
   }
   if (fixedChars + minimumEvidence.length > MAX_FINAL_PROMPT_CHARS) {
@@ -319,7 +325,7 @@ export function measurePromptChars(messages: LlmMessage[]): number {
 }
 
 function buildLegacyFinalPickMessages(input: BuildLoopMessagesInput): LlmMessage[] {
-  const context = compactJson(input.context, MAX_CONTEXT_CHARS);
+  const context = compactJson(llmSafeContext(input.context), MAX_CONTEXT_CHARS);
   const candidatePool = truncate(input.candidateSummary || '[]', MAX_CANDIDATE_CHARS);
   const targetPickCount = input.targetPickCount ?? 2;
   const notes = compactJson(selectionNotes(input), MAX_OBSERVATION_CHARS);
@@ -392,6 +398,15 @@ function selectionNotes(input: BuildLoopMessagesInput): unknown[] {
     candidateCount: item.candidateCount,
     problems: item.problems ?? []
   }));
+}
+
+function llmSafeContext(context: MusicAgentContextSummary): MusicAgentContextSummary {
+  const parsed = musicAgentContextSummarySchema.parse(context);
+  if (!parsed.recentTrackPenalties) return parsed;
+  return {
+    ...parsed,
+    recentTrackPenalties: parsed.recentTrackPenalties.slice(0, MUSIC_AGENT_TRACK_PENALTY_SUMMARY_MAX_ITEMS)
+  };
 }
 
 function boundedCandidateBaseJson(packets: FinalPickPromptPacket[], maxChars: number): string {

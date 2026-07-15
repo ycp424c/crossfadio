@@ -2,9 +2,10 @@ import { describe, expect, it } from 'vitest';
 import {
   buildFinalPickMessages,
   buildFinalPickPromptPayload,
+  buildLoopMessages,
   FINAL_PICK_RESPONSE_FORMAT
 } from '../../src/server/music-agent/prompts.js';
-import type { MusicAgentContextSummary } from '../../src/server/music-agent/schema.js';
+import type { MusicAgentContextSummary, MusicAgentRuntimeContext } from '../../src/server/music-agent/schema.js';
 import type { ShortlistPromptPacket, TrackAssessment } from '../../src/server/music-agent/track-understanding.js';
 
 const context: MusicAgentContextSummary = {
@@ -338,6 +339,54 @@ describe('final music-agent prompt', () => {
     expect(user).toContain('candidate_pool:\n');
     expect(user).toContain('legacy-1');
     expect(user).not.toContain('candidate_base:\n');
+  });
+
+  it('keeps server-only ranking track penalties out of every LLM prompt path', () => {
+    const runtimeContext: MusicAgentRuntimeContext = {
+      ...context,
+      recentTrackPenalties: [{
+        trackKey: 'summarytrack::artist',
+        title: 'Summary Track',
+        artist: 'Artist',
+        penalty: 0.1
+      }],
+      rankingTrackPenalties: [{
+        trackKey: 'serveronlytrack::artist',
+        title: 'Server Only Track',
+        artist: 'Artist',
+        penalty: 0.05
+      }]
+    };
+    const promptInputs = [
+      buildLoopMessages({ ...input(), context: runtimeContext }),
+      buildFinalPickMessages({ ...input(), context: runtimeContext }),
+      buildFinalPickMessages({ ...input([basePacket()]), context: runtimeContext })
+    ];
+
+    for (const messages of promptInputs) {
+      const compactContext = section(messages[1]?.content ?? '', 'compact_context') as Record<string, unknown>;
+      expect(compactContext).toHaveProperty('recentTrackPenalties');
+      expect(compactContext).not.toHaveProperty('rankingTrackPenalties');
+      expect(JSON.stringify(compactContext)).not.toContain('Server Only Track');
+    }
+  });
+
+  it('caps injected track penalty summaries at 40 before building an LLM prompt', () => {
+    const recentTrackPenalties = Array.from({ length: 41 }, (_, index) => ({
+      trackKey: `track${index}::artist`,
+      title: `Track ${index}`,
+      artist: 'Artist',
+      penalty: 0.05
+    }));
+    const payload = buildFinalPickPromptPayload({
+      ...input([basePacket()]),
+      context: { ...context, recentTrackPenalties }
+    });
+    const compactContext = section(payload.messages[1]?.content ?? '', 'compact_context') as MusicAgentContextSummary;
+
+    expect(compactContext.recentTrackPenalties).toHaveLength(40);
+    expect(compactContext.recentTrackPenalties?.at(-1)?.title).toBe('Track 39');
+    expect(JSON.stringify(compactContext)).not.toContain('Track 40');
   });
 
   it('keeps hard-final retry instructions alongside assessment output requirements', () => {

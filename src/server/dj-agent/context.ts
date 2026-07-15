@@ -1,13 +1,13 @@
 import type { NcmClient } from '../ncm/client.js';
 import { buildMusicAgentContext } from '../music-agent/context.js';
-import type { MusicAgentContextSummary } from '../music-agent/schema.js';
+import type { MusicAgentContextSummary, MusicAgentRuntimeContext } from '../music-agent/schema.js';
 import { getRecentDjEvents, type DjEventRecord } from '../store/dj-events.js';
 
 export type DjContextSnapshot = {
   userId: string;
   createdAt: string;
   recentEvents: DjEventRecord[];
-  musicSelectionContext: MusicAgentContextSummary;
+  musicSelectionContext: MusicAgentRuntimeContext;
   personalDjContext: MusicAgentContextSummary['personalDjContext'] | null;
 };
 

@@ -10,7 +10,8 @@ import {
   candidateTitleMotifKeys,
   diversifyCandidates,
   isHardFilteredCandidate,
-  rankCandidates
+  rankCandidates,
+  rankOptionsFromContext
 } from './rank.js';
 import {
   finalPickSchema,
@@ -22,7 +23,7 @@ import {
   type AgentTraceStep,
   type FinalPickDiagnostics,
   type FinalPick,
-  type MusicAgentContextSummary,
+  type MusicAgentRuntimeContext,
   type MusicAgentFinalPickOutput,
   type MusicAgentFinalOutput,
   type MusicAgentLlmClient,
@@ -54,7 +55,7 @@ import type {
 
 export type RunMusicAgentLoopInput = {
   llmClient: MusicAgentLlmClient;
-  context: MusicAgentContextSummary;
+  context: MusicAgentRuntimeContext;
   candidatePool: CandidatePool;
   tools: MusicAgentToolRegistry;
   budget: AgentBudget;
@@ -1266,7 +1267,7 @@ async function rankedFallback(
   const mode = resolveMode(input);
   await prepareForRanking(input);
   await prepareLyricsAwareShortlist(input);
-  const options = rankOptions(input.context);
+  const options = rankOptionsFromContext(input.context);
   const ranked = rankCandidates(input.candidatePool.list(), input.candidatePool.count(), options);
   const selectable = rankedFallbackSelectableCandidates(ranked, input);
   const picks = selectRankedPickCandidates(selectable, targetPickCount(input), input).map((candidate) => ({
@@ -1330,7 +1331,7 @@ async function rankedConvergence(
   const mode = resolveMode(input);
   await prepareForRanking(input);
   await prepareLyricsAwareShortlist(input);
-  const options = rankOptions(input.context);
+  const options = rankOptionsFromContext(input.context);
   const ranked = rankCandidates(input.candidatePool.list(), input.candidatePool.count(), options);
   const picks = selectRankedPickCandidates(ranked, targetPickCount(input), input).map((candidate) => ({
     id: candidate.id,
@@ -1428,7 +1429,7 @@ function readQueryFunnel(input: RunMusicAgentLoopInput): QueryFunnelEntry[] {
 }
 
 function createCandidateScoreTable(input: RunMusicAgentLoopInput) {
-  const options = rankOptions(input.context);
+  const options = rankOptionsFromContext(input.context);
   const ranked = rankCandidates(input.candidatePool.list(), input.candidatePool.count(), options);
   return buildCandidateScoreTableRows(ranked, options);
 }
@@ -1568,7 +1569,7 @@ function rankedBackfillFinalPicks(
 
   const pickedIds = new Set(picks.map((pick) => pick.id));
   const blockedTitleMotifs = titleMotifsFromFinalPicks(diversePicks, input);
-  const options = rankOptions(input.context);
+  const options = rankOptionsFromContext(input.context);
   const rankedCandidates = rankCandidates(input.candidatePool.list(), input.candidatePool.count(), options)
     .filter((candidate) => !pickedIds.has(candidate.id));
   const ranked = rankedCandidates.filter((candidate) => isCandidateEligible(candidate, input));
@@ -1706,7 +1707,7 @@ async function prepareLyricsAwareShortlist(
     const ranked = rankCandidates(
       input.candidatePool.list(),
       input.candidatePool.count(),
-      rankOptions(input.context)
+      rankOptionsFromContext(input.context)
     );
     state.preparation = input.finalShortlistEnricher(ranked, {
       signal: input.signal,
@@ -1760,7 +1761,7 @@ function prepareSkippedLyricsAwareShortlist(input: RunMusicAgentLoopInput): void
   const shortlist = rankCandidates(
     input.candidatePool.list(),
     input.candidatePool.count(),
-    rankOptions(input.context)
+    rankOptionsFromContext(input.context)
   ).slice(0, 12);
   state.enrichment = {
     shortlist,
@@ -1963,8 +1964,8 @@ function lyricsAwareOutputFields(
   };
 }
 
-function summarizeCandidatePool(pool: CandidatePool, context: MusicAgentContextSummary): string {
-  const options = rankOptions(context);
+function summarizeCandidatePool(pool: CandidatePool, context: MusicAgentRuntimeContext): string {
+  const options = rankOptionsFromContext(context);
   const ranked = rankCandidates(pool.list(), 20, options);
   const scoreRows = buildCandidateScoreTableRows(ranked, options);
   return JSON.stringify(ranked.map((candidate, index) => {
@@ -1984,13 +1985,6 @@ function summarizeCandidatePool(pool: CandidatePool, context: MusicAgentContextS
       evidence: candidate.evidence.slice(0, 3)
     };
   }));
-}
-
-function rankOptions(context: MusicAgentContextSummary) {
-  return {
-    artistPenalties: new Map((context.recentArtistPenalties ?? []).map((item) => [item.artist, item.penalty])),
-    trackPenalties: new Map((context.recentTrackPenalties ?? []).map((item) => [item.trackKey, item.penalty]))
-  };
 }
 
 function traceStep(
@@ -2365,7 +2359,7 @@ function resolveMode(input: RunMusicAgentLoopInput): MusicAgentFinalOutput['mode
   return input.mode ?? modeFromContext(input.context);
 }
 
-function modeFromContext(context: MusicAgentContextSummary): MusicAgentFinalOutput['mode'] {
+function modeFromContext(context: MusicAgentRuntimeContext): MusicAgentFinalOutput['mode'] {
   return context.request === 'chat-recommend' ? 'chat_recommend' : 'pick_next';
 }
 

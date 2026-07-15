@@ -354,6 +354,38 @@ describe('music agent context builder', () => {
     expect(penalties.some((item) => item.title === 'Old Theme Song')).toBe(false);
   });
 
+  it('keeps the full track penalty set for server ranking while bounding the LLM summary', async () => {
+    const userId = 'full-track-penalty-ranking-user';
+    const { getDb } = await import('../../src/server/store/db.js');
+    const insertPlay = getDb().prepare(
+      `INSERT INTO plays (user_id, song_id, song_name, artist_name, started_at)
+       VALUES (?, ?, ?, ?, ?)`
+    );
+
+    for (let index = 0; index < 45; index += 1) {
+      insertPlay.run(
+        userId,
+        `penalty-${index}`,
+        `Penalty Track ${String(index).padStart(2, '0')}`,
+        `Penalty Artist ${index}`,
+        '2026-06-11 02:00:00'
+      );
+    }
+
+    const { buildMusicAgentContext } = await import('../../src/server/music-agent/context.js');
+    const context = await buildMusicAgentContext({
+      userId,
+      request: 'auto-fill',
+      now: new Date('2026-06-12T02:00:00.000Z')
+    });
+
+    expect(context.recentTrackPenalties).toHaveLength(40);
+    expect(context.rankingTrackPenalties).toHaveLength(45);
+    expect(context.rankingTrackPenalties).toEqual(expect.arrayContaining([
+      expect.objectContaining({ title: 'Penalty Track 44', penalty: expect.any(Number) })
+    ]));
+  });
+
   it('builds long-lived artist penalties from repeated play history outside the recent window', async () => {
     const userId = 'artist-repeat-user';
     const { getDb } = await import('../../src/server/store/db.js');

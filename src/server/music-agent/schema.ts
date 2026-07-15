@@ -260,6 +260,15 @@ export const musicAgentPersonalDjContextSchema = z.object({
 
 export type MusicAgentPersonalDjContext = z.infer<typeof musicAgentPersonalDjContextSchema>;
 
+export const MUSIC_AGENT_TRACK_PENALTY_SUMMARY_MAX_ITEMS = 40;
+
+const musicAgentTrackPenaltySchema = z.object({
+  trackKey: z.string().min(1),
+  title: z.string().min(1),
+  artist: z.string().default(''),
+  penalty: z.number().min(0)
+});
+
 export const musicAgentContextSummarySchema = z.object({
   request: z.enum(['auto-fill', 'chat-recommend']),
   discoveryMode: z.enum(['explore', 'comfort']).default('explore'),
@@ -280,17 +289,18 @@ export const musicAgentContextSummarySchema = z.object({
     artist: z.string().min(1),
     penalty: z.number().min(0)
   })).optional(),
-  recentTrackPenalties: z.array(z.object({
-    trackKey: z.string().min(1),
-    title: z.string().min(1),
-    artist: z.string().default(''),
-    penalty: z.number().min(0)
-  })).optional(),
+  recentTrackPenalties: z.array(musicAgentTrackPenaltySchema).optional(),
   personalDjContext: musicAgentPersonalDjContextSchema.optional(),
   bannedSummary: z.string().default('')
 });
 
 export type MusicAgentContextSummary = z.infer<typeof musicAgentContextSummarySchema>;
+
+export const musicAgentRuntimeContextSchema = musicAgentContextSummarySchema.extend({
+  rankingTrackPenalties: z.array(musicAgentTrackPenaltySchema).optional()
+});
+
+export type MusicAgentRuntimeContext = z.infer<typeof musicAgentRuntimeContextSchema>;
 
 export const agentTraceStepSchema = z.object({
   step: z.number().int().positive(),
