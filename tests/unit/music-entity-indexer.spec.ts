@@ -106,13 +106,13 @@ describe('music entity indexer', () => {
     );
   });
 
-  it('embeds more than 20 entities in provider-bounded batches', async () => {
+  it('embeds entities in provider-bounded batches of at most 10', async () => {
     const { runMusicEntityIndex } = await import('../../src/server/music-agent/entity-indexer.js');
     const { findSimilarMusicEntities } = await import('../../src/server/store/music-entities.js');
     const ids = Array.from({ length: 25 }, (_, index) => String(1_000 + index));
     const embed = vi.fn(async (input: string | string[]) => {
       const inputs = Array.isArray(input) ? input : [input];
-      if (inputs.length > 20) throw new Error('embedding batch exceeds provider limit');
+      if (inputs.length > 10) throw new Error('embedding batch exceeds provider limit');
       return {
         vectors: inputs.map((_, index) => Float32Array.from([1, index + 1])),
         model: 'bounded-embedding',
@@ -136,7 +136,7 @@ describe('music entity indexer', () => {
       logger: createLogger()
     });
 
-    expect(embed.mock.calls.map(([input]) => Array.isArray(input) ? input.length : 1)).toEqual([20, 5]);
+    expect(embed.mock.calls.map(([input]) => Array.isArray(input) ? input.length : 1)).toEqual([10, 10, 5]);
     expect(result).toMatchObject({
       status: 'completed',
       upsertedCount: 25,
@@ -183,12 +183,14 @@ describe('music entity indexer', () => {
       logger: createLogger()
     });
 
-    expect(embed.mock.calls.map(([input]) => Array.isArray(input) ? input.length : 1)).toEqual([20, 20, 5]);
+    expect(embed.mock.calls.map(([input]) => Array.isArray(input) ? input.length : 1)).toEqual([
+      10, 10, 10, 10, 5
+    ]);
     expect(result).toMatchObject({
       status: 'partial',
       upsertedCount: 45,
-      embeddedCount: 25,
-      skippedCount: 20,
+      embeddedCount: 35,
+      skippedCount: 10,
       errors: { embedding: 'embedding batch two failed' }
     });
     expect(findSimilarMusicEntities({
@@ -196,7 +198,7 @@ describe('music entity indexer', () => {
       model: 'resilient-embedding',
       vector: Float32Array.from([1, 1]),
       limit: 100
-    })).toHaveLength(25);
+    })).toHaveLength(35);
   });
 
   it('marks missing and empty embedding vectors as a partial batch result', async () => {

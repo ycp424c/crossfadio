@@ -80,7 +80,7 @@ const DEFAULT_LISTENING_EPISODES_LIMIT = 80;
 const DEFAULT_INDEX_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_INDEX_ERROR_RETRY_MS = 30 * 60 * 1000;
 const EMBEDDING_TIMEOUT_MS = 45_000;
-const EMBEDDING_BATCH_LIMIT = 20;
+const EMBEDDING_BATCH_LIMIT = 10;
 const SCHEDULED_INDEX_SOURCES: EntityIndexSource[] = ['liked', 'listening_episodes'];
 
 const inFlightIndex = new Set<string>();
