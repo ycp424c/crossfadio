@@ -164,7 +164,7 @@ describe('DJ v2 offline server scenarios', () => {
       factsHash: fixture.factsHash,
       now: new Date(scenarios.now)
     });
-    const renderedNarration = '这轮想把「Plastic Love」— 竹内まりや自然地接进队列。通过最后校验，加入这一轮选择，希望这一段既顺耳，也保留一点被认真挑过的惊喜。';
+    const renderedNarration = '这轮想把「Plastic Love」— 竹内まりや自然地接进队列。夜色里的城市流行律动让这一首自然接进当前队列，希望这一段既顺耳，也保留一点被认真挑过的惊喜。';
     const published: unknown[] = [];
     const worker = createSelectionJourneyNarrationWorker({
       now: () => new Date(scenarios.now),
@@ -175,7 +175,8 @@ describe('DJ v2 offline server scenarios', () => {
             tone: 'warm',
             selections: [{
               entityId: fixture.track.id,
-              reasonCodes: ['final_eligible']
+              reasonCodes: ['final_eligible'],
+              reasonText: '夜色里的城市流行律动让这一首自然接进当前队列。'
             }],
             runReasonCodes: []
           }),

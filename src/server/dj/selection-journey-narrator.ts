@@ -9,7 +9,8 @@ import {
 } from '../../shared/selection.js';
 import {
   isPublicSelectionReasonCode,
-  publicSelectionReasonCopy
+  publicSelectionReasonCopy,
+  sanitizePublicSelectionReason
 } from './selection-journey.js';
 import type { SelectionReasonCode } from '../music-agent/selection-policy/types.js';
 
@@ -36,7 +37,8 @@ const narrationPlanSchema = z.object({
   tone: z.enum(PUBLIC_NARRATION_TONE_TAGS),
   selections: z.array(z.object({
     entityId: z.string().trim().min(1).max(300),
-    reasonCodes: z.array(z.string().trim().min(1).max(200)).min(1).max(6)
+    reasonCodes: z.array(z.string().trim().min(1).max(200)).min(1).max(6),
+    reasonText: z.string().trim().min(6).max(120)
   }).strict()).min(1).max(MAX_SELECTION_JOURNEY_PICKS),
   runReasonCodes: z.array(z.string().trim().min(1).max(200)).max(4)
 }).strict().superRefine((plan, context) => {
@@ -47,6 +49,12 @@ const narrationPlanSchema = z.object({
     if (new Set(selection.reasonCodes).size !== selection.reasonCodes.length) {
       context.addIssue({ code: 'custom', message: 'duplicate reasonCodes' });
     }
+  }
+  if (
+    new Set(plan.selections.map((selection) => narrationReasonDedupeKey(selection.reasonText))).size
+    !== plan.selections.length
+  ) {
+    context.addIssue({ code: 'custom', message: 'duplicate reasonTexts' });
   }
   if (new Set(plan.runReasonCodes).size !== plan.runReasonCodes.length) {
     context.addIssue({ code: 'custom', message: 'duplicate runReasonCodes' });
@@ -88,6 +96,14 @@ const NARRATABLE_RUN_REASON_CODES = new Set<SelectionReasonCode>([
   'batch_selected',
   'queue_target_reached'
 ]);
+
+const PROCEDURAL_NARRATION_REASON_CODES = [
+  'admission_eligible',
+  'recall_included',
+  'ranking_scored',
+  'batch_selected',
+  'final_eligible'
+] as const satisfies readonly SelectionReasonCode[];
 
 export type SelectionJourneyNarrationClient = {
   complete(messages: LlmMessage[], options?: LlmCompleteOptions): Promise<LlmResponse>;
@@ -168,7 +184,7 @@ export async function narrateSelectionJourney(input: {
   const facts = buildSelectionJourneyNarrationFacts(input);
   const response = await input.client.complete(buildNarrationMessages(facts), {
     temperature: 0.7,
-    maxTokens: 300,
+    maxTokens: 800,
     responseFormat: { type: 'json_object' },
     thinking: { type: 'disabled' },
     signal: input.signal
@@ -190,10 +206,14 @@ function buildNarrationMessages(facts: SelectionJourneyNarrationFacts): LlmMessa
         `template 只能是：${SELECTION_NARRATION_TEMPLATES.join(', ')}。`,
         `tone 只能是：${PUBLIC_NARRATION_TONE_TAGS.join(', ')}。`,
         `selections 必须包含 1 到 ${MAX_SELECTION_JOURNEY_PICKS} 首本轮实际选择的歌曲。`,
+        '输出 selections 必须逐一覆盖输入 selections 中的全部歌曲，不得遗漏。',
         'selections[].entityId 只能选择 selectionReasonOptions 中真实存在的 entityId。',
         '每个 selections[].reasonCodes 只能选择同一 entityId 的 allowedReasonCodes，不能跨歌曲借用理由。',
+        '每个 selections[].reasonText 必须用简体中文忠实改写对应 selections[].reason，只保留具体音乐特征、当下场景和队列衔接信息。',
+        '不同歌曲的 reasonText 必须分别依据各自理由撰写，不得复用同一句万能文案。',
+        'reasonCodes 只用于事实溯源；不得把“进入候选、完成排序、通过校验”等流程状态冒充 reasonText。',
         'runReasonCodes 只能选择顶层 runReasonCodes 列表中的原值。',
-        '只输出严格 JSON：{"template":"...","tone":"...","selections":[{"entityId":"...","reasonCodes":["..."]}],"runReasonCodes":[]}。',
+        '只输出严格 JSON：{"template":"...","tone":"...","selections":[{"entityId":"...","reasonCodes":["..."],"reasonText":"..."}],"runReasonCodes":[]}。',
         '不得输出自由文本、额外字段、实体名称、生活信息或推理过程。'
       ].join('\n')
     },
@@ -231,6 +251,16 @@ function validateNarrationPlan(
     ))) {
       throw new Error('narration_reason_not_allowed_for_entity');
     }
+    if (
+      !sanitizePublicSelectionReason(selection.reasonText)
+      || !isChineseNarrationReason(selection.reasonText)
+      || isProceduralOnlyNarrationReason(selection.reasonText)
+    ) {
+      throw new Error('invalid_narration_text');
+    }
+  }
+  if (plan.selections.length !== facts.selections.length) {
+    throw new Error('invalid_narration_plan');
   }
   const allowedRunReasons = new Set(facts.runReasonCodes);
   if (plan.runReasonCodes.some((reasonCode) => (
@@ -247,7 +277,10 @@ function renderNarrationPlan(
   const selectionById = new Map(facts.selections.map((selection) => [selection.trackId, selection]));
   const selectedFacts = plan.selections.map((plannedSelection) => {
     const selection = selectionById.get(plannedSelection.entityId)!;
-    return { selection, reasonCodes: plannedSelection.reasonCodes };
+    return {
+      selection,
+      reasonText: trimNarrationReasonPunctuation(plannedSelection.reasonText)
+    };
   });
   const entities = selectedFacts.map(({ selection }) => {
     return `「${selection.trackName}」${selection.artist ? `— ${selection.artist}` : ''}`;
@@ -267,14 +300,14 @@ function renderNarrationPlan(
 function renderNarrationReasons(
   selections: Array<{
     selection: SelectionJourneySnapshot['selections'][number];
-    reasonCodes: string[];
+    reasonText: string;
   }>,
   runReasonCodes: string[]
 ): string {
   const selectionText = selections.length === 1
-    ? renderReasonCodes(selections[0]!.reasonCodes)
-    : selections.map(({ selection, reasonCodes }) => (
-      `「${selection.trackName}」是因为${renderReasonCodes(reasonCodes)}`
+    ? selections[0]!.reasonText
+    : selections.map(({ selection, reasonText }) => (
+      `「${selection.trackName}」是因为${reasonText}`
     )).join('；');
   const runText = renderReasonCodes(runReasonCodes);
   return [selectionText, runText].filter(Boolean).join('，同时');
@@ -298,6 +331,31 @@ function renderReasonCodes(reasonCodes: string[]): string {
       : []
   ));
   return [...new Set(phrases)].slice(0, 2).join('，也');
+}
+
+function narrationReasonDedupeKey(value: string): string {
+  return value.normalize('NFKC').toLocaleLowerCase()
+    .replace(/[\s。！？!?，,；;：:、]+/gu, '');
+}
+
+function trimNarrationReasonPunctuation(value: string): string {
+  return value.replace(/[。！？!?，,；;：:]+$/u, '');
+}
+
+function isChineseNarrationReason(value: string): boolean {
+  return (value.match(/\p{Script=Han}/gu)?.length ?? 0) >= 4;
+}
+
+function isProceduralOnlyNarrationReason(value: string): boolean {
+  let remaining = narrationReasonDedupeKey(value);
+  for (const reasonCode of PROCEDURAL_NARRATION_REASON_CODES) {
+    remaining = remaining.replaceAll(
+      narrationReasonDedupeKey(publicSelectionReasonCopy(reasonCode)),
+      ''
+    );
+  }
+  remaining = remaining.replace(/(?:因为|也|同时|并且|以及|所以|这首歌|本轮|这一轮)+/gu, '');
+  return remaining.length === 0;
 }
 
 function assertWhitelistedEntity(
