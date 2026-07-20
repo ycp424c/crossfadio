@@ -51,6 +51,24 @@ describe('legacy play data migration', () => {
         legacy_exposure_override: 0.25
       }
     ]);
+    const timestamps = db.prepare(`
+      SELECT id, started_at, last_checkpoint_at, ended_at
+      FROM listening_episodes
+      WHERE id LIKE 'legacy-play-%'
+      ORDER BY track_id
+    `).all() as Array<{
+      id: string;
+      started_at: string;
+      last_checkpoint_at: string;
+      ended_at: string;
+    }>;
+    expect(timestamps).toHaveLength(4);
+    for (const timestamp of timestamps) {
+      expect(timestamp.id).toMatch(/^legacy-play-\d+$/);
+      expect(timestamp.started_at).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+      expect(timestamp.last_checkpoint_at).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+      expect(timestamp.ended_at).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/);
+    }
     db.close();
   });
 });

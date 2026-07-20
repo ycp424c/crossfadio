@@ -80,6 +80,7 @@ const DEFAULT_LISTENING_EPISODES_LIMIT = 80;
 const DEFAULT_INDEX_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_INDEX_ERROR_RETRY_MS = 30 * 60 * 1000;
 const EMBEDDING_TIMEOUT_MS = 45_000;
+const EMBEDDING_BATCH_LIMIT = 20;
 const SCHEDULED_INDEX_SOURCES: EntityIndexSource[] = ['liked', 'listening_episodes'];
 
 const inFlightIndex = new Set<string>();
@@ -573,71 +574,108 @@ async function persistIndexedEntities(input: {
   }
 
   const embeddableEntities = uniqueEntities.filter((item) => item.entity.description.trim().length > 0);
-  const descriptions = embeddableEntities.map((item) => item.entity.description);
-  let embeddingResponse: EmbeddingResponse;
-  try {
-    embeddingResponse = await input.embeddingClient.embed(descriptions, {
-      signal: AbortSignal.timeout(EMBEDDING_TIMEOUT_MS)
-    });
-  } catch (err) {
-    const message = errorMessage(err);
+  let embeddedCount = 0;
+  let embeddingModel: string | null = null;
+  let embeddingDimensions: number | null = null;
+  let embeddingError: string | undefined;
+  const embeddingSignal = AbortSignal.timeout(EMBEDDING_TIMEOUT_MS);
+  for (let offset = 0; offset < embeddableEntities.length; offset += EMBEDDING_BATCH_LIMIT) {
+    const batch = embeddableEntities.slice(offset, offset + EMBEDDING_BATCH_LIMIT);
+    let embeddingResponse: EmbeddingResponse;
+    try {
+      embeddingResponse = await input.embeddingClient.embed(
+        batch.map((item) => item.entity.description),
+        { signal: embeddingSignal }
+      );
+    } catch (err) {
+      const message = errorMessage(err);
+      embeddingError ??= message;
+      skippedCount += batch.length;
+      input.logger.error({
+        err,
+        userId: input.userId,
+        entityCount: embeddableEntities.length,
+        batchOffset: offset,
+        batchSize: batch.length,
+        embeddedCount,
+        ...input.logContext
+      }, 'Music entity index embedding failed');
+      continue;
+    }
+
+    embeddingModel = embeddingResponse.model;
+    embeddingDimensions = embeddingResponse.dimensions;
+    const responseProblems: string[] = [];
+    if (embeddingResponse.vectors.length !== batch.length) {
+      responseProblems.push(
+        `expected ${batch.length} vectors, received ${embeddingResponse.vectors.length}`
+      );
+    }
+    let invalidVectorCount = 0;
+    for (const [index, item] of batch.entries()) {
+      const vector = embeddingResponse.vectors[index];
+      if (!vector || vector.length === 0 || vector.length !== embeddingResponse.dimensions) {
+        skippedCount += 1;
+        invalidVectorCount += 1;
+        continue;
+      }
+      upsertMusicEntityEmbedding({
+        userId: input.userId,
+        entityId: item.entity.id,
+        model: embeddingResponse.model,
+        vector
+      });
+      embeddedCount += 1;
+    }
+    if (invalidVectorCount > 0) {
+      responseProblems.push(`${invalidVectorCount} empty or dimension-mismatched vectors`);
+    }
+    if (responseProblems.length > 0) {
+      const message = `embedding batch response invalid: ${responseProblems.join('; ')}`;
+      embeddingError ??= message;
+      input.logger.error({
+        userId: input.userId,
+        batchOffset: offset,
+        batchSize: batch.length,
+        error: message,
+        ...input.logContext
+      }, 'Music entity index embedding response invalid');
+    }
+  }
+
+  if (embeddingError) {
     recordMusicEntityIndexError({
       userId: input.userId,
       source: 'embedding',
-      error: message,
+      error: embeddingError,
       ranAt: new Date().toISOString()
     });
-    input.logger.error({
-      err,
+  } else {
+    recordMusicEntityIndexSuccess({
       userId: input.userId,
-      entityCount: embeddableEntities.length,
-      ...input.logContext
-    }, 'Music entity index embedding failed');
-    return {
-      upsertedCount,
-      embeddedCount: 0,
-      skippedCount: skippedCount + embeddableEntities.length,
-      embeddingModel: null,
-      embeddingError: message
-    };
-  }
-
-  let embeddedCount = 0;
-  for (const [index, item] of embeddableEntities.entries()) {
-    const vector = embeddingResponse.vectors[index];
-    if (!vector || vector.length === 0) {
-      skippedCount += 1;
-      continue;
-    }
-    upsertMusicEntityEmbedding({
-      userId: input.userId,
-      entityId: item.entity.id,
-      model: embeddingResponse.model,
-      vector
+      source: 'embedding',
+      cursor: `${embeddedCount}/${embeddableEntities.length}`,
+      ranAt: new Date().toISOString()
     });
-    embeddedCount += 1;
   }
-  recordMusicEntityIndexSuccess({
-    userId: input.userId,
-    source: 'embedding',
-    cursor: `${embeddedCount}/${embeddableEntities.length}`,
-    ranAt: new Date().toISOString()
-  });
 
   input.logger.info({
     userId: input.userId,
     entityCount: upsertedCount,
     embeddedCount,
-    embeddingModel: embeddingResponse.model,
-    embeddingDimensions: embeddingResponse.dimensions,
+    embeddingModel,
+    embeddingDimensions,
     ...input.logContext
-  }, 'Music entity index embedding completed');
+  }, embeddingError
+    ? 'Music entity index embedding completed with errors'
+    : 'Music entity index embedding completed');
 
   return {
     upsertedCount,
     embeddedCount,
     skippedCount,
-    embeddingModel: embeddingResponse.model
+    embeddingModel,
+    ...(embeddingError ? { embeddingError } : {})
   };
 }
 

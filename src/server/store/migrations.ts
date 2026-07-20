@@ -708,7 +708,8 @@ const dataMigrationList: DataMigration[] = [
   migrateLegacyPreferenceState,
   normalizeExplicitExclusionIdentities,
   normalizePreferenceEvidenceIdentities,
-  backfillExplicitExclusionAliases
+  backfillExplicitExclusionAliases,
+  normalizeListeningEpisodeTimestamps
 ];
 
 export function runDataMigrations(db: Database.Database): void {
@@ -814,9 +815,19 @@ function importLegacyPlaysAsListeningEpisodes(db: Database.Database): void {
         WHEN 'error' THEN 'failed'
         ELSE 'interrupted'
       END,
-      started_at,
-      COALESCE(ended_at, started_at),
-      COALESCE(ended_at, started_at),
+      COALESCE(strftime('%Y-%m-%dT%H:%M:%fZ', started_at), started_at),
+      COALESCE(
+        strftime('%Y-%m-%dT%H:%M:%fZ', ended_at),
+        ended_at,
+        strftime('%Y-%m-%dT%H:%M:%fZ', started_at),
+        started_at
+      ),
+      COALESCE(
+        strftime('%Y-%m-%dT%H:%M:%fZ', ended_at),
+        ended_at,
+        strftime('%Y-%m-%dT%H:%M:%fZ', started_at),
+        started_at
+      ),
       0,
       CASE WHEN end_reason = 'completed' THEN 1.0 ELSE 0.25 END
     FROM plays
@@ -1118,6 +1129,27 @@ function backfillExplicitExclusionAliases(db: Database.Database): void {
     ].filter(Boolean))];
     update.run(JSON.stringify(aliases), row.id);
   }
+}
+
+function normalizeListeningEpisodeTimestamps(db: Database.Database): void {
+  db.prepare(`
+    UPDATE listening_episodes
+    SET started_at = COALESCE(
+          strftime('%Y-%m-%dT%H:%M:%fZ', started_at),
+          started_at
+        ),
+        last_checkpoint_at = COALESCE(
+          strftime('%Y-%m-%dT%H:%M:%fZ', last_checkpoint_at),
+          last_checkpoint_at
+        ),
+        ended_at = CASE
+          WHEN ended_at IS NULL THEN NULL
+          ELSE COALESCE(
+            strftime('%Y-%m-%dT%H:%M:%fZ', ended_at),
+            ended_at
+          )
+        END
+  `).run();
 }
 
 function parseStringArray(value: string): string[] {

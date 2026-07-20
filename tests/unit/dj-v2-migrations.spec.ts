@@ -144,7 +144,64 @@ describe('DJ v2 additive migrations', () => {
     });
     expect(db.prepare(
       `SELECT value FROM meta WHERE key = 'data_migration_version'`
-    ).get()).toEqual({ value: '7' });
+    ).get()).toEqual({ value: '8' });
+  });
+
+  it('normalizes existing Listening Episode timestamps without destroying unparseable values', () => {
+    runMigrations(db);
+    db.prepare(
+      `INSERT OR REPLACE INTO meta (key, value) VALUES ('data_migration_version', '7')`
+    ).run();
+    const insert = db.prepare(`
+      INSERT INTO listening_episodes (
+        id, user_id, client_episode_id, player_instance_id, deck_id,
+        track_id, track_name, started_at, last_checkpoint_at, ended_at
+      ) VALUES (?, 'timestamp-user', ?, 'legacy-player', 'main', ?, ?, ?, ?, ?)
+    `);
+    insert.run(
+      'legacy-timestamps',
+      'legacy-timestamps',
+      'legacy-track',
+      'Legacy Song',
+      '2026-07-17 10:11:12',
+      '2026-07-17 10:12:13',
+      '2026-07-17 10:13:14'
+    );
+    insert.run(
+      'unparseable-timestamps',
+      'unparseable-timestamps',
+      'unparseable-track',
+      'Unparseable Song',
+      'not-a-timestamp',
+      'still-not-a-timestamp',
+      'also-not-a-timestamp'
+    );
+
+    runDataMigrations(db);
+    runDataMigrations(db);
+
+    expect(db.prepare(`
+      SELECT id, started_at AS startedAt, last_checkpoint_at AS lastCheckpointAt,
+             ended_at AS endedAt
+      FROM listening_episodes
+      ORDER BY id
+    `).all()).toEqual([
+      {
+        id: 'legacy-timestamps',
+        startedAt: '2026-07-17T10:11:12.000Z',
+        lastCheckpointAt: '2026-07-17T10:12:13.000Z',
+        endedAt: '2026-07-17T10:13:14.000Z'
+      },
+      {
+        id: 'unparseable-timestamps',
+        startedAt: 'not-a-timestamp',
+        lastCheckpointAt: 'still-not-a-timestamp',
+        endedAt: 'also-not-a-timestamp'
+      }
+    ]);
+    expect(db.prepare(
+      `SELECT value FROM meta WHERE key = 'data_migration_version'`
+    ).get()).toEqual({ value: '8' });
   });
 
   it('runs data migrations after schema migration during database initialization', () => {
@@ -157,7 +214,7 @@ describe('DJ v2 additive migrations', () => {
       const initialized = initDb();
       expect(initialized.prepare(
         `SELECT value FROM meta WHERE key = 'data_migration_version'`
-      ).get()).toEqual({ value: '7' });
+      ).get()).toEqual({ value: '8' });
     } finally {
       _resetDbForTest();
       fs.rmSync(dataDir, { recursive: true, force: true });

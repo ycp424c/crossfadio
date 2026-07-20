@@ -106,6 +106,143 @@ describe('music entity indexer', () => {
     );
   });
 
+  it('embeds more than 20 entities in provider-bounded batches', async () => {
+    const { runMusicEntityIndex } = await import('../../src/server/music-agent/entity-indexer.js');
+    const { findSimilarMusicEntities } = await import('../../src/server/store/music-entities.js');
+    const ids = Array.from({ length: 25 }, (_, index) => String(1_000 + index));
+    const embed = vi.fn(async (input: string | string[]) => {
+      const inputs = Array.isArray(input) ? input : [input];
+      if (inputs.length > 20) throw new Error('embedding batch exceeds provider limit');
+      return {
+        vectors: inputs.map((_, index) => Float32Array.from([1, index + 1])),
+        model: 'bounded-embedding',
+        dimensions: 2
+      };
+    });
+
+    const result = await runMusicEntityIndex({
+      userId: 'user-bounded-embedding',
+      ncmClient: {
+        getLikedSongIds: vi.fn().mockResolvedValue(ids),
+        getSongDetails: vi.fn().mockResolvedValue(ids.map((id) => ({
+          id,
+          name: `Track ${id}`,
+          artists: [`Artist ${id}`]
+        })))
+      },
+      embeddingClient: { embed },
+      sources: ['liked'],
+      limits: { liked: ids.length },
+      logger: createLogger()
+    });
+
+    expect(embed.mock.calls.map(([input]) => Array.isArray(input) ? input.length : 1)).toEqual([20, 5]);
+    expect(result).toMatchObject({
+      status: 'completed',
+      upsertedCount: 25,
+      embeddedCount: 25,
+      skippedCount: 0
+    });
+    expect(findSimilarMusicEntities({
+      userId: 'user-bounded-embedding',
+      model: 'bounded-embedding',
+      vector: Float32Array.from([1, 1]),
+      limit: 100
+    })).toHaveLength(25);
+  });
+
+  it('keeps successful batches and continues after one embedding batch fails', async () => {
+    const { runMusicEntityIndex } = await import('../../src/server/music-agent/entity-indexer.js');
+    const { findSimilarMusicEntities } = await import('../../src/server/store/music-entities.js');
+    const ids = Array.from({ length: 45 }, (_, index) => String(2_000 + index));
+    let batchNumber = 0;
+    const embed = vi.fn(async (input: string | string[]) => {
+      const inputs = Array.isArray(input) ? input : [input];
+      batchNumber += 1;
+      if (batchNumber === 2) throw new Error('embedding batch two failed');
+      return {
+        vectors: inputs.map((_, index) => Float32Array.from([1, index + 1])),
+        model: 'resilient-embedding',
+        dimensions: 2
+      };
+    });
+
+    const result = await runMusicEntityIndex({
+      userId: 'user-partial-embedding',
+      ncmClient: {
+        getLikedSongIds: vi.fn().mockResolvedValue(ids),
+        getSongDetails: vi.fn().mockResolvedValue(ids.map((id) => ({
+          id,
+          name: `Track ${id}`,
+          artists: [`Artist ${id}`]
+        })))
+      },
+      embeddingClient: { embed },
+      sources: ['liked'],
+      limits: { liked: ids.length },
+      logger: createLogger()
+    });
+
+    expect(embed.mock.calls.map(([input]) => Array.isArray(input) ? input.length : 1)).toEqual([20, 20, 5]);
+    expect(result).toMatchObject({
+      status: 'partial',
+      upsertedCount: 45,
+      embeddedCount: 25,
+      skippedCount: 20,
+      errors: { embedding: 'embedding batch two failed' }
+    });
+    expect(findSimilarMusicEntities({
+      userId: 'user-partial-embedding',
+      model: 'resilient-embedding',
+      vector: Float32Array.from([1, 1]),
+      limit: 100
+    })).toHaveLength(25);
+  });
+
+  it('marks missing and empty embedding vectors as a partial batch result', async () => {
+    const { runMusicEntityIndex } = await import('../../src/server/music-agent/entity-indexer.js');
+    const { findSimilarMusicEntities } = await import('../../src/server/store/music-entities.js');
+    const ids = ['3001', '3002', '3003'];
+
+    const result = await runMusicEntityIndex({
+      userId: 'user-invalid-embedding-response',
+      ncmClient: {
+        getLikedSongIds: vi.fn().mockResolvedValue(ids),
+        getSongDetails: vi.fn().mockResolvedValue(ids.map((id) => ({
+          id,
+          name: `Track ${id}`,
+          artists: [`Artist ${id}`]
+        })))
+      },
+      embeddingClient: {
+        embed: vi.fn().mockResolvedValue({
+          vectors: [Float32Array.from([1, 1]), new Float32Array()],
+          model: 'partial-embedding',
+          dimensions: 2
+        })
+      },
+      sources: ['liked'],
+      limits: { liked: ids.length },
+      logger: createLogger()
+    });
+
+    expect(result).toMatchObject({
+      status: 'partial',
+      upsertedCount: 3,
+      embeddedCount: 1,
+      skippedCount: 2,
+      errors: {
+        embedding: expect.stringContaining('expected 3 vectors, received 2')
+      }
+    });
+    expect(findSimilarMusicEntities({
+      userId: 'user-invalid-embedding-response',
+      model: 'partial-embedding',
+      vector: Float32Array.from([1, 1]),
+      limit: 100
+    })).toHaveLength(1);
+  });
+
   it('records source errors without throwing from the index run', async () => {
     const { runMusicEntityIndex } = await import('../../src/server/music-agent/entity-indexer.js');
     const { getMusicEntityIndexState } = await import('../../src/server/store/music-entity-index-state.js');
