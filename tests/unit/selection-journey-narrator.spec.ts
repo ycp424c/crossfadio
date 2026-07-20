@@ -134,6 +134,68 @@ describe('Selection Journey narrator', () => {
     }));
   });
 
+  it('renders a narration plan covering all five selected tracks', async () => {
+    const selections = Array.from({ length: 5 }, (_, index) => ({
+      trackId: `track-${index + 1}`,
+      trackName: `Track ${index + 1}`,
+      artist: `Artist ${index + 1}`,
+      reason: '通过最后校验。'
+    }));
+    const fiveTrackJourney: SelectionJourneySnapshot = {
+      ...journey,
+      candidates: selections.map((selection) => ({
+        id: selection.trackId,
+        name: selection.trackName,
+        artist: selection.artist,
+        state: 'selected'
+      })),
+      selections
+    };
+    const fiveTrackTrace: SelectionDecisionTrace = {
+      ...trace,
+      decisions: [
+        trace.decisions[0]!,
+        ...selections.map((selection) => ({
+          stage: 'final' as const,
+          action: 'selected' as const,
+          reasonCode: 'final_eligible' as const,
+          candidateId: selection.trackId,
+          provenance: { source: 'system' as const },
+          evidenceRefs: []
+        }))
+      ]
+    };
+    const complete = vi.fn().mockResolvedValue({
+      content: JSON.stringify({
+        template: 'journey_recap',
+        tone: 'reflective',
+        selections: selections.map((selection) => ({
+          entityId: selection.trackId,
+          reasonCodes: ['final_eligible']
+        })),
+        runReasonCodes: []
+      }),
+      model: 'test'
+    });
+
+    const narration = await narrateSelectionJourney({
+      client: { complete },
+      journey: fiveTrackJourney,
+      trace: fiveTrackTrace,
+      djPersona: 'DJ',
+      toneTags: ['reflective'],
+      entityWhitelist: selections.map((selection) => ({
+        id: selection.trackId,
+        name: selection.trackName,
+        artist: selection.artist
+      }))
+    });
+
+    for (const selection of selections) {
+      expect(narration).toContain(`「${selection.trackName}」`);
+    }
+  });
+
   it('rejects hallucinated entity IDs and reason codes from the async plan', async () => {
     const complete = vi.fn()
       .mockResolvedValueOnce({

@@ -2,6 +2,7 @@ import { z } from 'zod';
 
 export const SELECTION_TRACE_SCHEMA_VERSION = 1 as const;
 export const SELECTION_JOURNEY_SCHEMA_VERSION = 1 as const;
+export const MAX_SELECTION_JOURNEY_PICKS = 5;
 
 export const selectionStageSchema = z.enum([
   'admission',
@@ -127,7 +128,7 @@ export const selectionJourneySnapshotSchema = z.object({
   completedAt: z.string().datetime({ offset: true }).optional(),
   stages: z.array(selectionJourneyStageSnapshotSchema).max(5),
   candidates: z.array(selectionJourneyCandidateSchema).max(8),
-  selections: z.array(selectionJourneyPickSchema).max(5),
+  selections: z.array(selectionJourneyPickSchema).max(MAX_SELECTION_JOURNEY_PICKS),
   narration: selectionJourneyNarrationSchema
 }).strict();
 

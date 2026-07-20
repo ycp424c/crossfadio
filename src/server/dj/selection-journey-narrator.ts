@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { LlmCompleteOptions, LlmMessage, LlmResponse } from '../llm/client.js';
 import {
+  MAX_SELECTION_JOURNEY_PICKS,
   selectionDecisionTraceSchema,
   selectionJourneySnapshotSchema,
   type SelectionDecisionTrace,
@@ -36,7 +37,7 @@ const narrationPlanSchema = z.object({
   selections: z.array(z.object({
     entityId: z.string().trim().min(1).max(300),
     reasonCodes: z.array(z.string().trim().min(1).max(200)).min(1).max(6)
-  }).strict()).min(1).max(3),
+  }).strict()).min(1).max(MAX_SELECTION_JOURNEY_PICKS),
   runReasonCodes: z.array(z.string().trim().min(1).max(200)).max(4)
 }).strict().superRefine((plan, context) => {
   if (new Set(plan.selections.map((selection) => selection.entityId)).size !== plan.selections.length) {
@@ -188,6 +189,7 @@ function buildNarrationMessages(facts: SelectionJourneyNarrationFacts): LlmMessa
         '你只负责从受控选项中编排一份手记计划，正文由服务端渲染。',
         `template 只能是：${SELECTION_NARRATION_TEMPLATES.join(', ')}。`,
         `tone 只能是：${PUBLIC_NARRATION_TONE_TAGS.join(', ')}。`,
+        `selections 必须包含 1 到 ${MAX_SELECTION_JOURNEY_PICKS} 首本轮实际选择的歌曲。`,
         'selections[].entityId 只能选择 selectionReasonOptions 中真实存在的 entityId。',
         '每个 selections[].reasonCodes 只能选择同一 entityId 的 allowedReasonCodes，不能跨歌曲借用理由。',
         'runReasonCodes 只能选择顶层 runReasonCodes 列表中的原值。',

@@ -1,4 +1,5 @@
 import {
+  MAX_SELECTION_JOURNEY_PICKS,
   selectionJourneySnapshotSchema,
   type SelectionDecision,
   type SelectionDecisionTrace,
@@ -260,7 +261,7 @@ export function buildSelectionJourney(input: {
           ?? publicSelectionReason(decisionsByCandidate.get(decision.candidateId) ?? [], decision)
       }];
     })
-    .slice(0, 5);
+    .slice(0, MAX_SELECTION_JOURNEY_PICKS);
 
   return selectionJourneySnapshotSchema.parse({
     schemaVersion: 1,
