@@ -327,6 +327,23 @@ describe('track compatibility eligibility', () => {
 });
 
 describe('candidate quality eligibility', () => {
+  it('marks a generic DJ version suspicious even when its platform metadata looks popular', () => {
+    const decision = evaluateCandidateQuality(candidate({
+      name: 'EA7为你化蝶 (DJ版)',
+      artist: '南宫辞',
+      sources: ['playlist'],
+      qualitySignals: { popularity: 90, copyright: 2, albumName: 'EA7为你化蝶' }
+    }), facts({
+      lyricStatus: 'available',
+      creditRoleCount: 2,
+      wikiTags: ['pop'],
+      albumName: 'EA7为你化蝶'
+    }));
+
+    expect(decision.tier).toBe('suspicious');
+    expect(decision.strongNegativeSignals).toContain('autonomous_low_quality_title');
+  });
+
   it('marks polluted network collections suspicious only with multiple independent negatives', () => {
     const decision = evaluateCandidateQuality(candidate({
       name: '2026抖音热歌合集｜车载DJ版｜无损串烧',
@@ -346,7 +363,7 @@ describe('candidate quality eligibility', () => {
     ]));
   });
 
-  it('counts title pollution and suspicious title pattern as one evidence dimension', () => {
+  it('keeps generic collection evidence deduplicated while blocking explicit car-DJ packaging', () => {
     const decision = evaluateCandidateQuality(candidate({
       name: '抖音热歌合集｜车载DJ版｜无损串烧',
       artist: 'Real Artist',
@@ -364,8 +381,9 @@ describe('candidate quality eligibility', () => {
     }));
 
     expect(decision.strongNegativeSignals).toContain('strong_title_pollution');
+    expect(decision.strongNegativeSignals).toContain('autonomous_low_quality_title');
     expect(decision.supportingNegativeSignals).toContain('suspicious_title_pattern');
-    expect(decision.tier).toBe('acceptable');
+    expect(decision.tier).toBe('suspicious');
   });
 
   it('counts placeholder and malformed artist identity as one evidence dimension', () => {

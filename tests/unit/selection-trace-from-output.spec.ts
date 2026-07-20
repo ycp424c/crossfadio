@@ -56,6 +56,26 @@ describe('selection trace from MusicAgent output', () => {
     expect(projected.candidates).toHaveLength(2);
   });
 
+  it('carries a public-safe LLM reason only on the matching selected candidate', () => {
+    const raw = output('ok');
+    raw.picks[0]!.reason = '夜晚氛围柔和，也能让当前队列自然降速。';
+    const projected = selectionTraceFromMusicAgentOutput({
+      runId: 'run-public-reason',
+      createdAt: '2026-07-17T04:00:00.000Z',
+      output: raw
+    });
+
+    expect(projected.candidates).toEqual([
+      {
+        id: 'selected',
+        name: 'Selected Song',
+        artist: 'Selected Artist',
+        selectionReason: '夜晚氛围柔和，也能让当前队列自然降速。'
+      },
+      { id: 'rejected', name: 'Rejected Song', artist: 'Rejected Artist' }
+    ]);
+  });
+
   it('adds live queue-apply rejections and dedupes repeated successful final checks', () => {
     const projected = selectionTraceFromMusicAgentOutput({
       runId: 'run-live-final',

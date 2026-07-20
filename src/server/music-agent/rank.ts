@@ -24,6 +24,7 @@ import {
   type SelectionPolicyMode,
   type SelectionPressureContribution
 } from './selection-policy/types.js';
+import { hasAutonomousLowQualityTitle } from './title-quality.js';
 
 const LOW_POPULARITY_THRESHOLD = 40;
 const VERY_LOW_POPULARITY_THRESHOLD = 15;
@@ -32,7 +33,7 @@ const VERY_LOW_POPULARITY_PENALTY = 0.22;
 const NO_COPYRIGHT_RECOMMENDATION_PENALTY = 0.28;
 const MILD_TITLE_POLLUTION_PENALTY = 0.06;
 const STRONG_TITLE_POLLUTION_PENALTY = 0.16;
-const EXTERNAL_SOURCES = new Set(['search', 'style_expansion', 'trend']);
+const EXTERNAL_SOURCES = new Set(['playlist', 'search', 'style_expansion', 'trend']);
 const TITLE_POLLUTION_TERMS = [
   'lofi',
   'chill',
@@ -290,6 +291,7 @@ function resolveArtistPenalty(candidate: MusicCandidate, penalties: ReadonlyMap<
 }
 
 function detectTitlePollution(title: string): NonNullable<MusicCandidateQualitySignals['titlePollution']> {
+  if (hasAutonomousLowQualityTitle(title)) return 'strong';
   const normalized = title.normalize('NFKC').toLowerCase();
   const compact = normalized.replace(/\s+/g, '');
   const termCount = TITLE_POLLUTION_TERMS.filter((term) => normalized.includes(term)).length;

@@ -11,6 +11,7 @@ export type SelectionJourneyCandidateFact = {
   id: string;
   name: string;
   artist: string;
+  selectionReason?: string;
 };
 
 const STAGES: Array<{
@@ -76,7 +77,7 @@ export const PUBLIC_SELECTION_REASON_COPY = {
   batch_source_repeat: '调整了候选来源分布，避免这一轮过于单一。',
   batch_title_motif_repeat: '调整了相近标题主题的重复，让这一轮更有变化。',
   retrieval_pressure: '结合近期搜索效果，对候选排序做了软调整。',
-  candidate_quality: '结合曲目信息完整度，对候选排序做了软调整。',
+  candidate_quality: '结合曲目版本和信息完整度，降低或排除了质量风险较高的候选。',
   semantic_compatibility: '结合歌曲内容与当前方向的契合度完成了排序。',
   trend_match: '这首歌与近期音乐趋势线索相符。',
   ranking_scored: '结合当前目标与近期反馈完成了排序。',
@@ -95,6 +96,23 @@ export function isPublicSelectionReasonCode(value: string): value is PolicySelec
 
 export function publicSelectionReasonCopy(reasonCode: PolicySelectionReasonCode): string {
   return PUBLIC_SELECTION_REASON_COPY[reasonCode];
+}
+
+export function sanitizePublicSelectionReason(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  const reason = value.replace(/\s+/g, ' ').trim();
+  const normalized = reason.normalize('NFKC');
+  if (reason.length < 6) return undefined;
+  if (/^(?:ranked\s+(?:fallback|backfill|convergence)|fit|ok)$/iu.test(normalized)) {
+    return undefined;
+  }
+  if (/(?:private\s+context|personal_dj_context|currentUserText|activeDirective|sourceRef|private_note|secret|https?:\/\/|[{}])/iu.test(normalized)) {
+    return undefined;
+  }
+  if (/(?:你|用户).{0,12}(?:原话|说过|提到|告诉|分享|透露)|(?:手机号|微信号|住址|经纬度|身份证|真实姓名)/u.test(normalized)) {
+    return undefined;
+  }
+  return reason.slice(0, 300);
 }
 
 const SYSTEM_REASON_COPY: Record<string, string> = {
@@ -225,7 +243,7 @@ export function buildSelectionJourney(input: {
         : actions.has('rejected') || actions.has('suppressed') || actions.has('skipped')
         ? 'excluded' as const
         : 'considering' as const;
-    return { ...candidate, state };
+    return { id: candidate.id, name: candidate.name, artist: candidate.artist, state };
   });
 
   const selections = [...latestFinalByCandidate.values()]
@@ -238,7 +256,8 @@ export function buildSelectionJourney(input: {
         trackId: candidate.id,
         trackName: candidate.name,
         artist: candidate.artist,
-        reason: publicSelectionReason(decisionsByCandidate.get(decision.candidateId) ?? [], decision)
+        reason: sanitizePublicSelectionReason(candidate.selectionReason)
+          ?? publicSelectionReason(decisionsByCandidate.get(decision.candidateId) ?? [], decision)
       }];
     })
     .slice(0, 5);

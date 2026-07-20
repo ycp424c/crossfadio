@@ -11,7 +11,10 @@ import {
   boundSelectionDecisions,
   sharedDecisionsFromPolicy
 } from '../music-agent/selection-policy/decision-trace.js';
-import type { SelectionJourneyCandidateFact } from './selection-journey.js';
+import {
+  sanitizePublicSelectionReason,
+  type SelectionJourneyCandidateFact
+} from './selection-journey.js';
 
 export function createEmptySelectionTrace(input: {
   runId: string;
@@ -111,10 +114,12 @@ export function selectionTraceFactsHash(input: {
 function candidateFacts(output: MusicAgentRunOutput): SelectionJourneyCandidateFact[] {
   const byId = new Map<string, SelectionJourneyCandidateFact>();
   for (const pick of output.picks) {
+    const selectionReason = sanitizePublicSelectionReason(pick.reason);
     byId.set(pick.id, {
       id: pick.id,
       name: pick.name?.trim() || pick.id,
-      artist: pick.artist?.trim() || ''
+      artist: pick.artist?.trim() || '',
+      ...(selectionReason ? { selectionReason } : {})
     });
   }
   for (const row of [...output.candidateScoreTable].sort((left, right) => left.rank - right.rank)) {

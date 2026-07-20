@@ -3,6 +3,13 @@ import { z } from 'zod';
 export const LISTENING_PROTOCOL_VERSION = 2 as const;
 export const LISTENING_EPISODE_DAILY_LIMIT = 500;
 
+const nonnegativeMillisecondsSchema = z.number().finite().nonnegative()
+  .transform((value) => Math.round(value))
+  .pipe(z.number().int().nonnegative());
+const positiveMillisecondsSchema = z.number().finite().positive()
+  .transform((value) => Math.round(value))
+  .pipe(z.number().int().positive());
+
 export const listeningTrackIdentitySchema = z.object({
   id: z.string().trim().min(1).max(200),
   name: z.string().trim().min(1).max(300),
@@ -13,15 +20,15 @@ export const listeningEpisodeCreateSchema = z.object({
   playerInstanceId: z.string().trim().min(1).max(100),
   deckId: z.string().trim().min(1).max(40),
   track: listeningTrackIdentitySchema,
-  durationMs: z.number().int().positive().nullable(),
+  durationMs: positiveMillisecondsSchema.nullable(),
   checkpointSeq: z.literal(0)
 }).strict();
 
 export const listeningEpisodeCheckpointSchema = z.object({
   checkpointSeq: z.number().int().positive(),
-  positionMs: z.number().int().nonnegative(),
-  listenedMs: z.number().int().nonnegative(),
-  durationMs: z.number().int().positive().nullable()
+  positionMs: nonnegativeMillisecondsSchema,
+  listenedMs: nonnegativeMillisecondsSchema,
+  durationMs: positiveMillisecondsSchema.nullable()
 }).strict();
 
 export const playbackOutcomeSchema = z.enum([

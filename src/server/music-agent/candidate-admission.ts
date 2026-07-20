@@ -15,9 +15,9 @@ import {
   cloneCandidateProvenance,
   provenanceForSource
 } from './candidate-provenance.js';
-import type { PlaybackEligibilityReason } from './playback-eligibility.js';
+import type { SelectionReasonCode } from './selection-policy/types.js';
 
-const QUALITY_SOURCES = new Set<CandidateSource>(['search', 'style_expansion', 'trend']);
+const QUALITY_SOURCES = new Set<CandidateSource>(['playlist', 'search', 'style_expansion', 'trend']);
 
 export type UpsertTracksResult = {
   added: number;
@@ -27,7 +27,7 @@ export type UpsertTracksResult = {
   mergedByIdAndDedupe: number;
   invalid: number;
   ineligible: number;
-  ineligibleReasons: Partial<Record<PlaybackEligibilityReason, number>>;
+  ineligibleReasons: Partial<Record<SelectionReasonCode, number>>;
   rejectedByPool: number;
   rejectedReasons: Partial<Record<CandidatePoolRejectReason, number>>;
 };
@@ -85,7 +85,6 @@ export function upsertTracks(
     if (admission.action === 'reject') {
       result.ineligible += 1;
       for (const reason of admission.reasonCodes) {
-        if (!isPlaybackEligibilityReason(reason)) continue;
         result.ineligibleReasons[reason] = (result.ineligibleReasons[reason] ?? 0) + 1;
       }
       continue;
@@ -152,7 +151,7 @@ export function mergeUpsertTracksResult(target: UpsertTracksResult, source: Upse
   }
   for (const [reason, count] of Object.entries(source.ineligibleReasons)) {
     if (!count) continue;
-    const key = reason as PlaybackEligibilityReason;
+    const key = reason as SelectionReasonCode;
     target.ineligibleReasons[key] = (target.ineligibleReasons[key] ?? 0) + count;
   }
 }
@@ -300,11 +299,4 @@ function qualitySignalsProperty(
   qualitySignals: MusicCandidateQualitySignals | undefined
 ): { qualitySignals?: MusicCandidateQualitySignals } {
   return qualitySignals ? { qualitySignals: { ...qualitySignals } } : {};
-}
-
-function isPlaybackEligibilityReason(reason: string): reason is PlaybackEligibilityReason {
-  return reason === 'invalid_track_identity'
-    || reason === 'copyright_unavailable'
-    || reason === 'privilege_unavailable'
-    || reason === 'privilege_notice';
 }

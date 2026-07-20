@@ -193,6 +193,7 @@ export function buildLoopMessages(input: BuildLoopMessagesInput): LlmMessage[] {
         `可调用工具白名单：${TOOL_WHITELIST}。`,
         '输出 tool_call 时格式为 {"type":"tool_call","tool":"工具名","input":{...}}。',
         '输出 final 时格式为 {"type":"final","say":"...","picks":[{"id":"候选池ID","reason":"...","source":"liked|playlist|search|style_expansion|trend"}],"rejected":[]}。',
+        'Each pick reason is user-visible: only describe public musical traits, current-moment fit, or queue flow; never quote user wording, personal data, private context, or system fields.',
         'final picks 的 id 必须来自候选池；不能选择候选池外的歌曲。',
         'activeDirective/current chat 必须优先于趋势、榜单、泛化流行度。',
         'recentArtistPenalties/recentTrackPenalties 只是 Ranking 阶段的可解释 Selection Pressure，不得在 Recall 阶段升级成硬过滤。',
@@ -377,6 +378,7 @@ function buildLegacyFinalPickMessages(input: BuildLoopMessagesInput): LlmMessage
         `候选池数量达到或超过目标数量时，必须尽量返回 ${targetPickCount} 首。`,
         `如果少于 ${targetPickCount} 首，必须在 rejected 里为每个缺口说明原因；不要为了凑数选择明显不适合当前队列的歌曲。`,
         'reason 要说明为什么这首适合当前时刻、用户偏好或当前队列。',
+        'Each pick reason is user-visible: only describe public musical traits, current-moment fit, or queue flow; never quote user wording, personal data, private context, or system fields.',
         '不要请求更多信息，不要继续规划，不要输出候选池外的歌曲。'
       ].join('\n')
     },
@@ -418,7 +420,8 @@ function buildAssessmentAwareFinalSystem(input: BuildLoopMessagesInput, targetPi
     `picks must select 1 to ${targetPickCount} candidate ids; ids and sources must exactly match candidate_base.`,
     `When at least ${targetPickCount} candidates exist, return ${targetPickCount} picks unless they are clearly unsuitable.`,
     `If fewer than ${targetPickCount} are picked, rejected must explain every missing slot; do not fill slots with clearly unsuitable tracks.`,
-    'Pick reasons must explain fit for the current moment, user preference, or queue. Do not request information, plan another action, or invent a candidate.'
+    'Pick reasons must explain fit for the current moment, user preference, or queue. Do not request information, plan another action, or invent a candidate.',
+    'Each pick reason is user-visible: only describe public musical traits, current-moment fit, or queue flow; never quote user wording, personal data, private context, or system fields.'
   ].join('\n');
 }
 

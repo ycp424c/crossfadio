@@ -102,6 +102,41 @@ describe('player Listening Episode session', () => {
     }, { keepalive: true });
   });
 
+  it('sends integer millisecond checkpoints when the browser clock is fractional', async () => {
+    let now = 1_000.125;
+    const transport = {
+      create: vi.fn(async () => undefined),
+      checkpoint: vi.fn(async () => undefined),
+      finalize: vi.fn(async () => undefined)
+    };
+    const session = createPlayerListeningEpisode({
+      userId: 'user-a',
+      playerInstanceId: 'player-a',
+      createClientEpisodeId: () => 'episode-a',
+      now: () => now,
+      transport
+    });
+    session.prepare({
+      track: { id: '909', name: 'My Cookie Can', artists: ['卫兰'] },
+      deckId: 'main'
+    });
+    session.playing({ positionMs: 0, durationMs: 200_000 });
+    now = 2_000.875;
+    session.pause({ positionMs: 1_000, durationMs: 200_000 });
+    now = 3_001.625;
+    session.playing({ positionMs: 1_000, durationMs: 200_000 });
+    now = 4_002.5;
+    session.finalize('skipped', { positionMs: 2_000, durationMs: 200_000 });
+    await session.settle();
+
+    expect(transport.checkpoint).toHaveBeenCalledWith('episode-a', expect.objectContaining({
+      listenedMs: 1_001
+    }));
+    expect(transport.finalize).toHaveBeenCalledWith('episode-a', expect.objectContaining({
+      listenedMs: 2_002
+    }), { keepalive: true });
+  });
+
   it('checkpoints active playback every fifteen seconds', async () => {
     let now = 1_000;
     const transport = {

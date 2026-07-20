@@ -20,6 +20,7 @@ import { selectDiverseBatch } from './selection-policy/batch.js';
 import type { SelectionDecisionRecorder } from './selection-policy/decision-trace.js';
 import type { MusicAgentProgressStage } from './index.js';
 import {
+  isCurrentExplicitRequest,
   toSelectionPolicyCandidate,
   type SelectionPhaseDecision,
   type SelectionPolicyContext,
@@ -159,6 +160,7 @@ type LyricsAwareRunState = {
   validationProblems: string[];
   promptChars: number;
   persistenceAttempted: boolean;
+  qualityDroppedIds: Set<string>;
 };
 
 const lyricsAwareRunStates = new WeakMap<RunMusicAgentLoopInput, LyricsAwareRunState>();
@@ -238,7 +240,8 @@ export async function runMusicAgentLoop(input: RunMusicAgentLoopInput): Promise<
       coverageValid: false,
       validationProblems: [],
       promptChars: 0,
-      persistenceAttempted: false
+      persistenceAttempted: false,
+      qualityDroppedIds: new Set()
     });
   }
   try {
@@ -1501,7 +1504,7 @@ function withLyricsAwareFinalPickDiagnostics(
     finalPickDiagnostics: {
       ...completed.finalPickDiagnostics,
       semanticConflictDroppedCount: 0,
-      qualityDroppedCount: 0,
+      qualityDroppedCount: state.qualityDroppedIds.size,
       unassessedDroppedCount: 0,
       assessmentValidationFailureCount: state.validationProblems.length > 0 ? 1 : 0
     }
@@ -1851,8 +1854,16 @@ function rebuildLyricsAwareDecisions(input: RunMusicAgentLoopInput): void {
     const quality = evaluateCandidateQuality(candidate, qualityFacts(packetById.get(candidate.id)));
     return [{ candidate, assessment, compatibility, quality }];
   });
+  const hasAcceptableAlternative = preliminary.some(({ quality }) => quality.tier !== 'suspicious');
   state.decisions = new Map(preliminary.map(({ candidate, assessment, compatibility, quality }) => {
-    return [candidate.id, { assessment, compatibility, quality, eligible: true }];
+    const policyCandidate = toSelectionPolicyCandidate(candidate);
+    const externalSuspicious = quality.tier === 'suspicious'
+      && !candidate.sources.includes('liked');
+    const qualityBlocked = input.lyricsSelectionMode === 'enforce_all'
+      && externalSuspicious
+      && hasAcceptableAlternative
+      && !isCurrentExplicitRequest(resolveSelectionPolicyContext(input), policyCandidate);
+    return [candidate.id, { assessment, compatibility, quality, eligible: !qualityBlocked }];
   }));
 }
 
@@ -1884,6 +1895,12 @@ function isCandidateEligible(candidate: MusicCandidate, input: RunMusicAgentLoop
   });
   input.selectionDecisionRecorder?.record({ candidateId: candidate.id, decision: recallDecision });
   if (recallDecision.action === 'suppress') return false;
+  const lyricsAwareState = lyricsAwareRunStates.get(input);
+  const qualityDecision = lyricsAwareState?.decisions.get(candidate.id);
+  if (qualityDecision && !qualityDecision.eligible) {
+    lyricsAwareState?.qualityDroppedIds.add(candidate.id);
+    return false;
+  }
   // Ranked recovery still needs a read-only Final eligibility check (for queue
   // and played-track idempotency), but it is not a queue mutation boundary.
   // Do not record this probe as a public Final selection.

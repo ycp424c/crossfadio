@@ -276,9 +276,9 @@ export function createPlayerListeningEpisode(options: {
     episode.checkpointSeq += 1;
     return {
       checkpointSeq: episode.checkpointSeq,
-      listenedMs: episode.listenedMs,
-      positionMs: input.positionMs,
-      durationMs: input.durationMs
+      listenedMs: protocolMilliseconds(episode.listenedMs),
+      positionMs: protocolMilliseconds(input.positionMs),
+      durationMs: input.durationMs === null ? null : protocolMilliseconds(input.durationMs)
     };
   };
 
@@ -414,6 +414,11 @@ export function createPlayerListeningEpisode(options: {
       }
     }
   };
+}
+
+function protocolMilliseconds(value: number): number {
+  if (!Number.isFinite(value)) return 0;
+  return Math.max(0, Math.round(value));
 }
 
 function listFinalizationOutboxKeys(

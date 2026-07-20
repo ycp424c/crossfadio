@@ -156,6 +156,17 @@ describe('final music-agent prompt', () => {
     });
   });
 
+  it('tells every final selector that pick reasons are public and privacy bounded', () => {
+    const loopSystem = buildLoopMessages(input())[0]?.content ?? '';
+    const legacySystem = buildFinalPickMessages(input())[0]?.content ?? '';
+    const fusedSystem = buildFinalPickPromptPayload(input([evidencePacket('track-1')])).messages[0]?.content ?? '';
+
+    for (const system of [loopSystem, legacySystem, fusedSystem]) {
+      expect(system).toContain('user-visible');
+      expect(system).toContain('private context');
+    }
+  });
+
   it('requires one assessment for every candidate and treats all track material as untrusted data', () => {
     const system = buildFinalPickMessages(input([basePacket()]))[0]?.content ?? '';
 

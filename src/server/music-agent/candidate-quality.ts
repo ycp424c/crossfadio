@@ -1,6 +1,7 @@
 import { hasValidTrackIdentity } from './playback-eligibility.js';
 import { resolveTitlePollution } from './rank.js';
 import type { MusicCandidate } from './schema.js';
+import { hasAutonomousLowQualityTitle } from './title-quality.js';
 
 export type CandidateQualityFacts = {
   lyricStatus: 'available' | 'missing' | 'unknown';
@@ -32,6 +33,7 @@ export function evaluateCandidateQuality(
   const quality = candidate.qualitySignals;
   const albumName = clean(facts.albumName) || clean(quality?.albumName);
   const instrumental = hasInstrumentalQualityEvidence(candidate, facts);
+  const autonomousLowQualityTitle = hasAutonomousLowQualityTitle(candidate.name);
   const addStrongNegative = (signal: string, category: string): void => {
     strongNegativeSignals.push(signal);
     strongNegativeCategories.add(category);
@@ -47,6 +49,9 @@ export function evaluateCandidateQuality(
   }
   if (resolveTitlePollution(candidate) === 'strong') {
     addStrongNegative('strong_title_pollution', 'title');
+  }
+  if (autonomousLowQualityTitle) {
+    addStrongNegative('autonomous_low_quality_title', 'version');
   }
   if (PLACEHOLDER_ARTIST_PATTERN.test(clean(candidate.artist))) {
     addStrongNegative('placeholder_or_collection_artist', 'identity');
@@ -89,7 +94,9 @@ export function evaluateCandidateQuality(
   if (facts.lyricStatus === 'available') positiveSignals.push('lyrics_available');
   if (instrumental) positiveSignals.push('instrumental_evidence');
 
-  const tier = strongNegativeCategories.size > 0 && negativeCategories.size >= 2
+  const tier = autonomousLowQualityTitle
+    ? 'suspicious'
+    : strongNegativeCategories.size > 0 && negativeCategories.size >= 2
     ? 'suspicious'
     : strongNegativeCategories.size === 0
       && supportingNegativeSignals.length === 0

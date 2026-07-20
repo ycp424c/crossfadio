@@ -700,7 +700,7 @@ describe('lyrics-aware music agent loop', () => {
     });
   });
 
-  it('tracks suspicious external quality as soft ranking pressure without hard-dropping it', async () => {
+  it('drops suspicious external quality in enforce-all mode when a clean alternative exists', async () => {
     const spam = candidate('spam', {
       artist: '网络歌手',
       qualitySignals: { popularity: 1, albumName: null, copyright: 1 }
@@ -720,11 +720,11 @@ describe('lyrics-aware music agent loop', () => {
       selectionDecisionRecorder
     });
 
-    expect(result.picks.map((pick) => pick.id)).toEqual(['spam', 'good']);
-    expect(result.finalPickDiagnostics).toMatchObject({ qualityDroppedCount: 0 });
+    expect(result.picks.map((pick) => pick.id)).toEqual(['good']);
+    expect(result.finalPickDiagnostics).toMatchObject({ qualityDroppedCount: 1 });
     expect(result.lyricsAwareDiagnostics?.decisions.find((item) => item.id === 'spam')).toMatchObject({
       quality: 'suspicious',
-      eligible: true,
+      eligible: false,
       qualityNegativeSignals: expect.arrayContaining(['placeholder_or_collection_artist'])
     });
     expect(selectionDecisionRecorder.snapshot()).toEqual(expect.arrayContaining([
@@ -732,6 +732,25 @@ describe('lyrics-aware music agent loop', () => {
         stage: 'ranking', action: 'lowered', reasonCode: 'candidate_quality', candidateId: 'spam'
       })
     ]));
+  });
+
+  it('keeps the only assessed candidate when enforce-all has no clean alternative', async () => {
+    const spam = candidate('spam', {
+      artist: '网络歌手',
+      qualitySignals: { popularity: 1, albumName: null, copyright: 1 }
+    });
+    const pool = new CandidatePool(); pool.upsert(spam);
+    const result = await runMusicAgentLoop({
+      llmClient: llm([
+        finalOutput(['spam'], []),
+        finalOutput(['spam'], [assessment('spam')])
+      ]),
+      context: context(), candidatePool: pool, tools: {}, budget: budget(),
+      lyricsSelectionMode: 'enforce_all', finalShortlistEnricher: enricherFor([spam])
+    });
+
+    expect(result.picks.map((pick) => pick.id)).toEqual(['spam']);
+    expect(result.finalPickDiagnostics).toMatchObject({ qualityDroppedCount: 0 });
   });
 
   it('keeps the exact legacy behavior when lyrics selection is off', async () => {

@@ -228,6 +228,51 @@ describe('Listening Episode HTTP protocol', () => {
     });
   });
 
+  it('normalizes fractional millisecond checkpoints from an already loaded player', async () => {
+    const {
+      createPatchListeningEpisodeHandler,
+      createPutListeningEpisodeHandler
+    } = await import('../../src/server/http/routes/listening-episodes.js');
+    const create = createPutListeningEpisodeHandler();
+    const patch = createPatchListeningEpisodeHandler();
+    const created = makeReqRes({
+      userId: 'route-user',
+      clientEpisodeId: 'episode-fractional',
+      body: {
+        playerInstanceId: 'player-a',
+        deckId: 'main',
+        track: { id: '909', name: 'My Cookie Can', artists: ['卫兰'] },
+        durationMs: 200_000,
+        checkpointSeq: 0
+      }
+    });
+    await create(created.req, created.res, vi.fn());
+
+    const checkpoint = makeReqRes({
+      userId: 'route-user',
+      clientEpisodeId: 'episode-fractional',
+      body: {
+        checkpointSeq: 1,
+        positionMs: 1_000.4,
+        listenedMs: 1_000.75,
+        durationMs: 200_000.4
+      }
+    });
+    await patch(checkpoint.req, checkpoint.res, vi.fn());
+
+    expect(checkpoint.res.status).not.toHaveBeenCalledWith(400);
+    expect(checkpoint.res.json).toHaveBeenCalledWith({
+      ok: true,
+      updated: true,
+      episode: expect.objectContaining({
+        checkpointSeq: 1,
+        positionMs: 1_000,
+        listenedMs: 1_001,
+        durationMs: 200_000
+      })
+    });
+  });
+
   it('creates and checkpoints an episode in one idempotent keepalive request', async () => {
     const { createPatchListeningEpisodeHandler } = await import(
       '../../src/server/http/routes/listening-episodes.js'

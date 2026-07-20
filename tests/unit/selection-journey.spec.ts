@@ -201,4 +201,40 @@ describe('Selection Journey projection', () => {
     expect(journey.selections[0]?.reason).toContain('整体搭配');
     expect(journey.selections[0]?.reason).not.toBe('通过最后校验，加入这一轮选择。');
   });
+
+  it('prefers the fact-bound public LLM reason for the selected track', () => {
+    const journey = buildSelectionJourney({
+      trace,
+      revision: 6,
+      status: 'completed',
+      updatedAt: '2026-07-17T04:00:06.000Z',
+      candidates: [{
+        id: 'song-a',
+        name: 'Plastic Love',
+        artist: '竹内まりや',
+        selectionReason: '夜晚氛围柔和，也能让当前队列自然降速。'
+      }]
+    });
+
+    expect(journey.selections[0]?.reason).toBe('夜晚氛围柔和，也能让当前队列自然降速。');
+  });
+
+  it('falls back to policy copy when an LLM reason repeats private context', () => {
+    const journey = buildSelectionJourney({
+      trace,
+      revision: 7,
+      status: 'completed',
+      updatedAt: '2026-07-17T04:00:07.000Z',
+      candidates: [{
+        id: 'song-a',
+        name: 'Plastic Love',
+        artist: '竹内まりや',
+        selectionReason: '你昨天告诉我真实姓名和住址，所以选择这首。'
+      }]
+    });
+
+    expect(journey.selections[0]?.reason).toContain('整体搭配');
+    expect(JSON.stringify(journey)).not.toContain('真实姓名');
+    expect(JSON.stringify(journey)).not.toContain('住址');
+  });
 });

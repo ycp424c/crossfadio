@@ -348,6 +348,21 @@ describe('music-agent ranking', () => {
     );
   });
 
+  it('surfaces DJ-version pollution for playlist candidates in ranking diagnostics', () => {
+    const djVersion = candidate({
+      id: 'playlist-dj-version',
+      name: '秒针 (Dj版)',
+      artist: '阿梨粤 / DJR7',
+      sources: ['playlist'],
+      qualitySignals: { popularity: 100, copyright: 2 }
+    });
+
+    const score = scoreCandidateForRanking(djVersion);
+
+    expect(score.titlePollutionPenalty).toBeGreaterThan(0);
+    expect(score.adjustedScore).toBeLessThan(score.baseScore);
+  });
+
   it('hard-filters an unplayable candidate regardless of liked provenance', () => {
     const unplayableLiked = candidate({
       id: 'unplayable-liked',

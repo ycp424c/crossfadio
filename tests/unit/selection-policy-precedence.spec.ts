@@ -42,6 +42,50 @@ describe('phase-aware selection policy precedence', () => {
     expect(decision.reasonCodes).toEqual(['explicit_track_exclusion']);
   });
 
+  it('rejects an unsolicited DJ version from autonomous discovery', () => {
+    const decision = evaluateAdmission({
+      candidate: policyCandidate({ name: '傻女 (DJ版)', sources: ['playlist'] }),
+      context: context()
+    });
+
+    expect(decision).toEqual({
+      phase: 'admission',
+      action: 'reject',
+      reasonCodes: ['candidate_quality']
+    });
+  });
+
+  it('keeps a DJ version that already belongs to the listener liked library', () => {
+    const decision = evaluateAdmission({
+      candidate: policyCandidate({ name: '秒针 (Dj版)', sources: ['liked', 'playlist'] }),
+      context: context()
+    });
+
+    expect(decision).toEqual({
+      phase: 'admission',
+      action: 'admit',
+      reasonCodes: ['admission_eligible']
+    });
+  });
+
+  it('keeps a DJ version when the listener explicitly requests it', () => {
+    const requested = policyCandidate({ name: '傻女 (DJ版)', sources: ['search'] });
+    const decision = evaluateAdmission({
+      candidate: requested,
+      context: context({
+        mode: 'explicit_request',
+        explicitlyRequested: true,
+        explicitRequest: { trackIds: new Set([requested.track.id]) }
+      })
+    });
+
+    expect(decision).toEqual({
+      phase: 'admission',
+      action: 'admit',
+      reasonCodes: ['admission_eligible']
+    });
+  });
+
   it('lets an explicit request bypass temporary, retrieval, exposure, and early-skip pressure', () => {
     const candidate = policyCandidate();
     const policyContext = context({

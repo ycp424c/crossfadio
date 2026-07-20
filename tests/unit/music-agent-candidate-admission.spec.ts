@@ -148,6 +148,33 @@ describe('MusicAgent candidate admission helpers', () => {
     expect(pool.count()).toBe(0);
   });
 
+  it('drops unsolicited DJ versions before they enter the autonomous candidate pool', () => {
+    const recorder = createSelectionDecisionRecorder();
+    const pool = new CandidatePool({ selectionDecisionRecorder: recorder });
+    const result = upsertTracks(pool, [{
+      id: 'playlist-dj-version',
+      name: '秒针 (Dj版)',
+      artists: ['阿梨粤', 'DJR7'],
+      qualitySignals: { popularity: 100, copyright: 2 }
+    }], 'playlist', {
+      evidence: 'playlist recall',
+      scores: baseScores()
+    });
+
+    expect(result).toMatchObject({
+      added: 0,
+      ineligible: 1,
+      ineligibleReasons: { candidate_quality: 1 }
+    });
+    expect(pool.count()).toBe(0);
+    expect(recorder.snapshot()).toContainEqual(expect.objectContaining({
+      stage: 'admission',
+      action: 'rejected',
+      reasonCode: 'candidate_quality',
+      candidateId: 'playlist-dj-version'
+    }));
+  });
+
   it('applies the configured explicit exclusion during admission and records the real decision', () => {
     const recorder = createSelectionDecisionRecorder();
     const pool = new CandidatePool({
@@ -323,6 +350,14 @@ describe('MusicAgent candidate admission helpers', () => {
       name: 'External Song',
       artist: 'External Artist',
       sources: ['search', 'trend'],
+      evidence: [],
+      scores: baseScores()
+    })).toBe(true);
+    expect(usesExternalQuality({
+      id: 'playlist-external',
+      name: 'Playlist Song',
+      artist: 'Playlist Artist',
+      sources: ['playlist'],
       evidence: [],
       scores: baseScores()
     })).toBe(true);
