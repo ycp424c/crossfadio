@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { djMemoryProjectionSchema } from '../../shared/dj-memory.js';
 
 // ─── Shared sub-types ────────────────────────────────────────────────────────
 
@@ -69,50 +70,12 @@ export const messageSchema = z.object({
 
 export type AgentMessage = z.infer<typeof messageSchema>;
 
-// ─── Fragments (6 slices) ────────────────────────────────────────────────────
+// ─── Fragments ───────────────────────────────────────────────────────────────
 
 export const fragmentsSchema = z.object({
   mode: z.enum(['segue', 'chat']),
-
-  // ① system prompt (dj-persona.md + mode-specific constraint appended by modes.ts)
   system: z.string(),
-
-  // ② user corpus
-  corpus: z.object({
-    taste: z.string(),
-    routines: z.string(),
-    moodRules: z.string(),
-    playlists: z.array(playlistRefSchema),
-    likedTracks: z.array(trackSchema).default([])
-  }),
-
-  // ③ environment
-  env: z.object({
-    nowIso: z.string(),
-    localTime: z.string(),
-    weather: z.object({ tempC: z.number(), desc: z.string() }).nullable(),
-    nowPlaying: nowPlayingSchema.nullable(),
-    dailyTheme: z.string().optional(),
-  }),
-
-  // ④ memory
-  memory: z.object({
-    recentPlays: z.array(playRecordSchema),
-    recentChat: z.array(messageSchema),
-    recentSegues: z
-      .array(
-        z.object({
-          fromName: z.string(),
-          toName: z.string(),
-          say: z.string(),
-          createdAt: z.string()
-        })
-      )
-      .optional(),
-    extractedPreferences: z.string().optional()
-  }),
-
-  // ⑤ input
+  djMemory: djMemoryProjectionSchema,
   input: z.discriminatedUnion('kind', [
     z.object({ kind: z.literal('chat'), text: z.string() }),
     z.object({
@@ -125,23 +88,25 @@ export const fragmentsSchema = z.object({
           to: segueTrackContextSchema,
           djPickReason: z.string().optional(),
           selectionRationale: z.string().optional(),
-          selectionEventId: z.string().optional(),
-          personalSegueGuidance: z.object({
-            summary: z.string().optional(),
-            tone: z.string().optional(),
-            privacyRule: z.string()
-          }).optional()
+          selectionEventId: z.string().optional()
         })
         .optional()
     }),
     z.object({ kind: z.literal('toolResult'), tool: z.string(), data: z.unknown() })
   ]),
 
-  // ⑥ trace
   trace: z.object({
     triggeredBy: z.enum(['scheduler', 'user', 'segue-hook']),
     lastDecision: z.unknown().nullable()
   })
+}).strict().superRefine((fragments, ctx) => {
+  if (fragments.mode !== fragments.djMemory.purpose) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['djMemory', 'purpose'],
+      message: `DJ Memory purpose ${fragments.djMemory.purpose} does not match mode ${fragments.mode}`
+    });
+  }
 });
 
 export type Fragments = z.infer<typeof fragmentsSchema>;

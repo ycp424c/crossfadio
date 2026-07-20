@@ -869,8 +869,6 @@ function candidate(index: number): MusicCandidate {
       timeFit: 0.6,
       contextFit: 0.5,
       novelty: 0.9,
-      recentPenalty: 0,
-      skipPenalty: 0,
       sourceConfidence: 0.8
     },
     qualitySignals: { instrumental: false }

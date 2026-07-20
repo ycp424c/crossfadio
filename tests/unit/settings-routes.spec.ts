@@ -109,19 +109,22 @@ describe('settings routes', () => {
     });
   });
 
-  it('PUT saves legacy discoveryMode and GET reflects it', () => {
+  it('rejects removed legacy discoveryMode and maps an old stored value to explore', async () => {
     const saveHandler = createSaveSettingsHandler();
     const saveRes = createJsonResponse();
     saveHandler(
       { userId: 'test-user', body: { discoveryMode: 'legacy' } } as never,
       saveRes as never
     );
-    expect(saveRes.statusCode).toBe(200);
+    expect(saveRes.statusCode).toBe(400);
+
+    const { setPref } = await import('../../src/server/store/prefs');
+    setPref('test-user', 'discovery.mode', 'legacy');
 
     const getHandler = createGetSettingsHandler();
     const getRes = createJsonResponse();
     getHandler({ userId: 'test-user' } as never, getRes as never);
-    expect(getRes.body).toMatchObject({ discoveryMode: 'legacy' });
+    expect(getRes.body).toMatchObject({ discoveryMode: 'explore' });
   });
 
   it('rejects autoFillBatchSize outside the supported range', () => {

@@ -18,7 +18,6 @@ describe('MusicAgent semantic recall', () => {
       queryPlan: plan({ styleHints: ['city pop'] }),
       embeddingClient: null,
       embeddingModel: null,
-      avoidArtists: new Set(),
       consumeNcmSearch: vi.fn(() => true),
       consumePlaylistFetch: vi.fn(() => true),
       limit: 3
@@ -57,7 +56,6 @@ describe('MusicAgent semantic recall', () => {
       }),
       embeddingClient,
       embeddingModel: 'test-embedding',
-      avoidArtists: new Set(),
       consumeNcmSearch: vi.fn(() => true),
       consumePlaylistFetch: vi.fn(() => true),
       limit: 3
@@ -117,7 +115,6 @@ function plan(overrides: Partial<QueryPlan>): QueryPlan {
     explorationQueries: [],
     styleHints: [],
     listeningConstraints: [],
-    avoidArtists: [],
     negativeTerms: [],
     rationale: '',
     ...overrides

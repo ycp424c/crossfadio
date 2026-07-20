@@ -13,25 +13,33 @@ type RecommendEvent = { type: string; data: Record<string, unknown> };
 export function App(): JSX.Element {
   const [tab, setTab] = useState<Tab>('player');
   const [recommendEvent, setRecommendEvent] = useState<RecommendEvent | null>(null);
+  const [authToken, setAuthToken] = useState<string | null>(() => getStoredToken());
 
   useEffect(() => {
-    const token = getStoredToken();
-    if (token) {
-      initSseEvents(token);
+    if (authToken) {
+      initSseEvents(authToken);
     }
     // Ping runtime to check service health
     void getRuntimeInfo().catch(() => {});
   }, []);
+
+  useEffect(() => {
+    setRecommendEvent(null);
+  }, [authToken]);
 
   return (
     <div className="flex h-screen supports-[height:100dvh]:h-[100dvh] flex-col bg-zinc-950 pt-[env(safe-area-inset-top)] pr-[env(safe-area-inset-right)] pl-[env(safe-area-inset-left)] text-zinc-100">
       {/* Main content — all views stay mounted so audio and chat history persist */}
       <div className="min-h-0 flex-1 overflow-y-auto">
         <div style={{ display: tab === 'player' ? 'block' : 'none' }}>
-          <PlayerView onNavigate={setTab} />
+          <PlayerView onAuthTokenChange={setAuthToken} onNavigate={setTab} />
         </div>
         <div style={{ display: tab === 'chat' ? 'flex' : 'none' }} className="h-full flex-col">
-          <ChatPanel onRecommendEvent={setRecommendEvent} />
+          <ChatPanel
+            authToken={authToken}
+            key={authToken ?? 'anonymous'}
+            onRecommendEvent={setRecommendEvent}
+          />
         </div>
         <div style={{ display: tab === 'settings' ? 'block' : 'none' }} className="h-full">
           <SettingsView />

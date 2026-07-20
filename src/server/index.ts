@@ -9,12 +9,29 @@ import { NcmProcessManager } from './ncm/spawn.js';
 import { NcmClient } from './ncm/client.js';
 import { NcmAuthService } from './ncm/auth.js';
 import { resolveStaticDir as resolveRuntimeStaticDir } from './runtime.js';
+import { startRetentionMaintenance } from './maintenance/retention.js';
+import {
+  createSelectionNarrationRuntime,
+  type SelectionNarrationRuntime
+} from './jobs/selection-narration-runtime.js';
+import {
+  createPreferenceExtractionRuntime,
+  type PreferenceExtractionRuntime
+} from './jobs/preference-extraction-runtime.js';
+import {
+  createExplicitExclusionResolutionRuntime,
+  type ExplicitExclusionResolutionRuntime
+} from './jobs/explicit-exclusion-resolution-runtime.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 let localServer: LocalServer | null = null;
 let ncm: NcmProcessManager | null = null;
+let retentionMaintenance: ReturnType<typeof startRetentionMaintenance> | null = null;
+let selectionNarrationRuntime: SelectionNarrationRuntime | null = null;
+let preferenceExtractionRuntime: PreferenceExtractionRuntime | null = null;
+let explicitExclusionResolutionRuntime: ExplicitExclusionResolutionRuntime | null = null;
 
 async function bootstrap(): Promise<void> {
   const logger = getLogger();
@@ -23,9 +40,22 @@ async function bootstrap(): Promise<void> {
     loadConfig();
     loadAllowlist();
     initDb();
+    retentionMaintenance = startRetentionMaintenance({
+      onError(error) {
+        logger.warn({ err: error }, 'DJ v2 retention maintenance failed');
+      }
+    });
+    selectionNarrationRuntime = createSelectionNarrationRuntime();
+    selectionNarrationRuntime.start();
+    preferenceExtractionRuntime = createPreferenceExtractionRuntime();
+    preferenceExtractionRuntime.start();
 
     ncm = new NcmProcessManager();
     await ncm.start();
+    explicitExclusionResolutionRuntime = createExplicitExclusionResolutionRuntime({
+      ncmBaseUrl: ncm.getStatus().baseUrl
+    });
+    explicitExclusionResolutionRuntime.start();
 
     const ncmClient = new NcmClient(ncm.getStatus().baseUrl, {
       getCookie: () => null
@@ -53,6 +83,38 @@ async function bootstrap(): Promise<void> {
 async function shutdown(): Promise<void> {
   const logger = getLogger();
 
+  if (explicitExclusionResolutionRuntime) {
+    try {
+      await explicitExclusionResolutionRuntime.stop();
+    } catch (error) {
+      logger.warn({ err: error }, 'Failed to stop Explicit Exclusion resolution cleanly');
+    } finally {
+      explicitExclusionResolutionRuntime = null;
+    }
+  }
+
+  if (preferenceExtractionRuntime) {
+    try {
+      await preferenceExtractionRuntime.stop();
+    } catch (error) {
+      logger.warn({ err: error }, 'Failed to stop Preference Extraction cleanly');
+    } finally {
+      preferenceExtractionRuntime = null;
+    }
+  }
+
+  if (selectionNarrationRuntime) {
+    try {
+      await selectionNarrationRuntime.stop();
+    } catch (error) {
+      logger.warn({ err: error }, 'Failed to stop Selection Journey narration cleanly');
+    } finally {
+      selectionNarrationRuntime = null;
+    }
+  }
+
+  retentionMaintenance?.stop();
+  retentionMaintenance = null;
 
   if (ncm) {
     try {

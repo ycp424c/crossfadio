@@ -3,7 +3,8 @@ import {
   buildFinalPickMessages,
   buildFinalPickPromptPayload,
   buildLoopMessages,
-  FINAL_PICK_RESPONSE_FORMAT
+  FINAL_PICK_RESPONSE_FORMAT,
+  validateMusicAgentPromptJson
 } from '../../src/server/music-agent/prompts.js';
 import type { MusicAgentContextSummary, MusicAgentRuntimeContext } from '../../src/server/music-agent/schema.js';
 import type { ShortlistPromptPacket, TrackAssessment } from '../../src/server/music-agent/track-understanding.js';
@@ -111,6 +112,14 @@ function section(content: string, name: string): unknown {
 }
 
 describe('final music-agent prompt', () => {
+  it('reports actual structured prompt JSON validity', () => {
+    expect(validateMusicAgentPromptJson(buildLoopMessages(input()))).toBe(true);
+    expect(validateMusicAgentPromptJson([{
+      role: 'user',
+      content: 'compact_context:\n{"truncated":'
+    }])).toBe(false);
+  });
+
   it('uses a strict JSON schema for final picks and track assessments', () => {
     expect(FINAL_PICK_RESPONSE_FORMAT.type).toBe('json_schema');
     if (FINAL_PICK_RESPONSE_FORMAT.type !== 'json_schema') return;
@@ -339,6 +348,30 @@ describe('final music-agent prompt', () => {
     expect(user).toContain('candidate_pool:\n');
     expect(user).toContain('legacy-1');
     expect(user).not.toContain('candidate_base:\n');
+  });
+
+  it('projects every loop prompt section as complete JSON under oversized structured input', () => {
+    const messages = buildLoopMessages({
+      ...input(),
+      context: {
+        ...context,
+        currentUserText: `带引号 \" 和反斜杠 \\ ${'🌌安静'.repeat(4_000)}`,
+        actionQueries: Array.from({ length: 200 }, (_, index) => `query-${index}-${'长'.repeat(80)}`)
+      },
+      candidateSummary: JSON.stringify(Array.from({ length: 200 }, (_, index) => ({
+        id: `track-${index}`,
+        name: `Song ${index} ${'很长'.repeat(100)}`
+      }))),
+      observations: Array.from({ length: 100 }, (_, index) => ({
+        summary: `observation-${index}-${'内容'.repeat(200)}`,
+        candidateCount: index
+      }))
+    });
+    const user = messages[1]?.content ?? '';
+
+    expect(() => section(user, 'compact_context')).not.toThrow();
+    expect(() => section(user, 'candidate_pool')).not.toThrow();
+    expect(() => section(user, 'observations')).not.toThrow();
   });
 
   it('keeps server-only ranking track penalties out of every LLM prompt path', () => {

@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import path from 'node:path';
@@ -15,7 +16,11 @@ import {
   createNcmSessionHandler
 } from './routes/ncm-login.js';
 import { createNextHandler, createNowHandler } from './routes/now-next.js';
-import { createStartPlayHandler, createEndPlayHandler } from './routes/plays.js';
+import {
+  createPatchListeningEpisodeHandler,
+  createPutListeningEpisodeHandler
+} from './routes/listening-episodes.js';
+import { createListSelectionJourneysHandler } from './routes/selection-journeys.js';
 import {
   createGetSettingsHandler,
   createPreviewTtsHandler,
@@ -54,6 +59,9 @@ import { userScopeMiddleware } from './middleware/userScope.js';
 import { adminMiddleware } from './middleware/admin.js';
 import { personalDjContextBridgeAuth } from './middleware/personalDjContextBridgeAuth.js';
 import { createSseEventsHandler, createSseChatHandler, createSseCancelRecommendHandler } from './routes/sse-events.js';
+import { safeOperationalError } from '../errors/safe-operational-error.js';
+import { getLogger } from '../logger.js';
+import { handleAsync } from './async-handler.js';
 
 export type LocalServer = {
   port: number;
@@ -89,59 +97,78 @@ export async function startLocalServer(options: StartLocalServerOptions): Promis
   );
   app.use(express.json({ limit: '1mb' }));
 
+  const routes = {
+    get(path: string, ...handlers: express.RequestHandler[]): void {
+      app.get(path, ...handlers.map(handleAsync));
+    },
+    post(path: string, ...handlers: express.RequestHandler[]): void {
+      app.post(path, ...handlers.map(handleAsync));
+    },
+    put(path: string, ...handlers: express.RequestHandler[]): void {
+      app.put(path, ...handlers.map(handleAsync));
+    },
+    patch(path: string, ...handlers: express.RequestHandler[]): void {
+      app.patch(path, ...handlers.map(handleAsync));
+    },
+    delete(path: string, ...handlers: express.RequestHandler[]): void {
+      app.delete(path, ...handlers.map(handleAsync));
+    }
+  };
+
   // ── Public routes ─────────────────────────────────────────────────────────
-  app.get('/api/runtime', createRuntimeHandler());
-  app.get('/api/health', getHealthHandler);
-  app.get('/api/ncm/status', createNcmStatusHandler(options.ncm));
-  app.get('/api/ncm/login/qr', createNcmQrHandler(options.ncmAuth));
-  app.post('/api/ncm/login/qr', createNcmQrHandler(options.ncmAuth));
-  app.get('/api/ncm/login/status', createNcmQrStatusHandler(options.ncmAuth));
-  app.get('/api/segue/audio/*', createSegueAudioHandler());
+  routes.get('/api/runtime', createRuntimeHandler());
+  routes.get('/api/health', getHealthHandler);
+  routes.get('/api/ncm/status', createNcmStatusHandler(options.ncm));
+  routes.get('/api/ncm/login/qr', createNcmQrHandler(options.ncmAuth));
+  routes.post('/api/ncm/login/qr', createNcmQrHandler(options.ncmAuth));
+  routes.get('/api/ncm/login/status', createNcmQrStatusHandler(options.ncmAuth));
+  routes.get('/api/segue/audio/*', createSegueAudioHandler());
 
   // ── Bridge-token routes ─────────────────────────────────────────────────────
-  app.post('/api/personal-dj-context', personalDjContextBridgeAuth, createPostPersonalDjContextHandler());
+  routes.post('/api/personal-dj-context', personalDjContextBridgeAuth, createPostPersonalDjContextHandler());
 
   // ── Protected routes ──────────────────────────────────────────────────────
   const protect = [authMiddleware, userScopeMiddleware];
   const adminProtect = [authMiddleware, userScopeMiddleware, adminMiddleware];
 
-  app.get('/api/ncm/login/session', protect, createNcmSessionHandler());
-  app.post('/api/ncm/login/logout', protect, createNcmLogoutHandler());
-  app.post('/api/ncm/logout', protect, createNcmLogoutHandler());
-  app.get('/api/now', protect, createNowHandler());
-  app.get('/api/next', protect, createNextHandler());
-  app.post('/api/plays', protect, createStartPlayHandler());
-  app.patch('/api/plays/:id', protect, createEndPlayHandler());
-  app.get('/api/settings', protect, createGetSettingsHandler());
-  app.put('/api/settings', protect, createSaveSettingsHandler());
-  app.post('/api/settings/tts-preview', protect, createPreviewTtsHandler());
-  app.post('/api/settings/analyze-taste', protect, createAnalyzeTasteHandler());
-  app.get('/api/settings/player-context', protect, createGetPlayerContextHandler());
-  app.get('/api/settings/personal-dj-context', protect, createGetPersonalDjContextStatusHandler());
-  app.post('/api/settings/personal-dj-context/revoke-current', protect, createRevokeCurrentPersonalDjContextHandler());
-  app.get('/api/settings/personal-dj-context/tokens', protect, createListPersonalDjContextTokensHandler());
-  app.post('/api/settings/personal-dj-context/tokens', protect, createCreatePersonalDjContextTokenHandler());
-  app.delete('/api/settings/personal-dj-context/tokens/:id', protect, createRevokePersonalDjContextTokenHandler());
-  app.get('/api/queue/liked/ids', protect, createGetLikedIdsHandler());
-  app.get('/api/queue/liked', protect, createGetLikedQueueHandler());
-  app.post('/api/queue/like', protect, createLikeTrackHandler());
-  app.put('/api/queue/state', protect, createSetQueueStateHandler());
-  app.post('/api/segue/trigger', protect, createSegueTriggerHandler({ secrets: null as any }));
-  app.post('/api/dj/pick-next', protect, createDjPickNextHandler({ secrets: null as any }));
-  app.get('/api/messages/recent', protect, createGetRecentMessagesHandler());
-  app.post('/api/location', protect, createSetLocationHandler());
-  app.get('/api/whitelist', adminProtect, createGetWhitelistHandler());
-  app.get('/api/whitelist/blocked', adminProtect, createGetBlockedHandler());
-  app.post('/api/whitelist', adminProtect, createAddToWhitelistHandler());
-  app.delete('/api/whitelist/:ncmId', adminProtect, createRemoveFromWhitelistHandler());
-  app.post('/api/whitelist/unblock/:id', adminProtect, createUnblockHandler());
+  routes.get('/api/ncm/login/session', ...protect, createNcmSessionHandler());
+  routes.post('/api/ncm/login/logout', ...protect, createNcmLogoutHandler());
+  routes.post('/api/ncm/logout', ...protect, createNcmLogoutHandler());
+  routes.get('/api/now', ...protect, createNowHandler());
+  routes.get('/api/next', ...protect, createNextHandler());
+  routes.put('/api/listening-episodes/:clientEpisodeId', ...protect, createPutListeningEpisodeHandler());
+  routes.patch('/api/listening-episodes/:clientEpisodeId', ...protect, createPatchListeningEpisodeHandler());
+  routes.get('/api/dj/selection-journeys', ...protect, createListSelectionJourneysHandler());
+  routes.get('/api/settings', ...protect, createGetSettingsHandler());
+  routes.put('/api/settings', ...protect, createSaveSettingsHandler());
+  routes.post('/api/settings/tts-preview', ...protect, createPreviewTtsHandler());
+  routes.post('/api/settings/analyze-taste', ...protect, createAnalyzeTasteHandler());
+  routes.get('/api/settings/player-context', ...protect, createGetPlayerContextHandler());
+  routes.get('/api/settings/personal-dj-context', ...protect, createGetPersonalDjContextStatusHandler());
+  routes.post('/api/settings/personal-dj-context/revoke-current', ...protect, createRevokeCurrentPersonalDjContextHandler());
+  routes.get('/api/settings/personal-dj-context/tokens', ...protect, createListPersonalDjContextTokensHandler());
+  routes.post('/api/settings/personal-dj-context/tokens', ...protect, createCreatePersonalDjContextTokenHandler());
+  routes.delete('/api/settings/personal-dj-context/tokens/:id', ...protect, createRevokePersonalDjContextTokenHandler());
+  routes.get('/api/queue/liked/ids', ...protect, createGetLikedIdsHandler());
+  routes.get('/api/queue/liked', ...protect, createGetLikedQueueHandler());
+  routes.post('/api/queue/like', ...protect, createLikeTrackHandler());
+  routes.put('/api/queue/state', ...protect, createSetQueueStateHandler());
+  routes.post('/api/segue/trigger', ...protect, createSegueTriggerHandler({ secrets: null as any }));
+  routes.post('/api/dj/pick-next', ...protect, createDjPickNextHandler({ secrets: null as any }));
+  routes.get('/api/messages/recent', ...protect, createGetRecentMessagesHandler());
+  routes.post('/api/location', ...protect, createSetLocationHandler());
+  routes.get('/api/whitelist', ...adminProtect, createGetWhitelistHandler());
+  routes.get('/api/whitelist/blocked', ...adminProtect, createGetBlockedHandler());
+  routes.post('/api/whitelist', ...adminProtect, createAddToWhitelistHandler());
+  routes.delete('/api/whitelist/:ncmId', ...adminProtect, createRemoveFromWhitelistHandler());
+  routes.post('/api/whitelist/unblock/:id', ...adminProtect, createUnblockHandler());
 
   // ── SSE routes ───────────────────────────────────────────────────────────
-  app.get('/api/sse/events', protect, createSseEventsHandler());
-  app.post('/api/sse/chat', protect, createSseChatHandler());
-  app.post('/api/sse/chat/cancel', protect, createSseCancelRecommendHandler());
-  app.post('/api/sse/segue', protect, createSseSegueHandler({ secrets: null as any }));
-  app.post('/api/sse/pick-next', protect, createSseDjPickNextHandler({ secrets: null as any }));
+  routes.get('/api/sse/events', ...protect, createSseEventsHandler());
+  routes.post('/api/sse/chat', ...protect, createSseChatHandler());
+  routes.post('/api/sse/chat/cancel', ...protect, createSseCancelRecommendHandler());
+  routes.post('/api/sse/segue', ...protect, createSseSegueHandler({ secrets: null as any }));
+  routes.post('/api/sse/pick-next', ...protect, createSseDjPickNextHandler({ secrets: null as any }));
 
   if (options.staticDir && fs.existsSync(options.staticDir)) {
     app.use(express.static(options.staticDir));
@@ -150,10 +177,7 @@ export async function startLocalServer(options: StartLocalServerOptions): Promis
     });
   }
 
-  app.use((error: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
-    const message = error instanceof Error ? error.message : 'unknown error';
-    res.status(500).json({ ok: false, error: message });
-  });
+  app.use(createGlobalErrorHandler());
 
   const server = createServer(app);
 
@@ -163,6 +187,35 @@ export async function startLocalServer(options: StartLocalServerOptions): Promis
     port,
     baseUrl,
     close: async () => closeServer(server)
+  };
+}
+
+type ErrorLogger = {
+  error(payload: Record<string, unknown>, message: string): void;
+};
+
+export function createGlobalErrorHandler(logger: ErrorLogger = getLogger()) {
+  return (
+    error: unknown,
+    _req: express.Request,
+    res: express.Response,
+    next: express.NextFunction
+  ): void => {
+    const correlationId = randomUUID();
+    logger.error(
+      { correlationId, ...safeOperationalError(error, 'unhandled_http_error') },
+      'Unhandled HTTP request failure'
+    );
+    if (res.headersSent) {
+      next(error);
+      return;
+    }
+    res.status(500).json({
+      ok: false,
+      error: 'internal_error',
+      message: '请求暂时失败，请稍后重试',
+      correlationId
+    });
   };
 }
 

@@ -5,17 +5,11 @@ import { buildSegueTrackContext } from '../agent/segue-context.js';
 import type { LlmConfig } from '../llm/client.js';
 import type { NcmClient } from '../ncm/client.js';
 import { getLogger } from '../logger.js';
-import { loadUserCorpus } from '../user-corpus/loader.js';
-import { loadLikedTracksForAgentContext } from '../user-corpus/ncm-liked.js';
-import { getRecentMessages } from '../store/messages.js';
-import { getRecentPlays } from '../store/plays.js';
-import { getRecentSegues, saveSegue } from '../store/segues.js';
+import { saveSegue } from '../store/segues.js';
 import { appendDjEvent, getRecentTrackSelectedEvent, type DjEventRecord } from '../store/dj-events.js';
-import { getDailyTheme } from '../daily-theme.js';
-import { getPref } from '../store/prefs.js';
-import { fetchWeather } from '../weather.js';
 import type { z } from 'zod';
-import { buildDjContextSnapshot } from './context.js';
+import { buildDjMemorySnapshot } from '../dj-memory/snapshot.js';
+import { projectDjMemoryForSegue } from '../dj-memory/projections.js';
 
 export type GenerateSegueInput = {
   userId: string;
@@ -39,65 +33,23 @@ export type GenerateSegueResult = {
 export async function generateSegue(input: GenerateSegueInput): Promise<GenerateSegueResult | null> {
   const logger = getLogger();
   const now = input.now ?? new Date();
-  const corpus = loadUserCorpus(input.userId);
-  const likedTracks = await loadLikedTracksForAgentContext(input.ncmClient);
-  if (input.signal?.aborted) return null;
 
-  const [trackContext, weather, djSnapshot] = await Promise.all([
+  const [trackContext, memorySnapshot] = await Promise.all([
     loadSegueContext(input.from, input.to, input.ncmClient, logger),
-    fetchWeather(input.userId),
-    buildDjContextSnapshot({
+    buildDjMemorySnapshot({
       userId: input.userId,
-      ncmClient: input.ncmClient,
-      includeDailyTheme: getPref<boolean>(input.userId, 'dailyTheme.enabled') !== false,
-      now,
-      recentEventLimit: 20
+      now
     })
   ]);
   if (input.signal?.aborted) return null;
 
-  const dailyThemeEnabled = getPref<boolean>(input.userId, 'dailyTheme.enabled') !== false;
-  const dailyTheme = dailyThemeEnabled ? getDailyTheme() : null;
-  const dailyThemeStr = dailyTheme
-    ? `今日主题：${dailyTheme.theme}（关键词：${dailyTheme.keywords.join('、')}）`
-    : undefined;
   const selectionEvent = getRecentTrackSelectedEvent(input.userId, input.to.id);
   const selectionRationale = getSelectionRationale(selectionEvent);
-  const personalSegueGuidance = djSnapshot.personalDjContext
-    ? {
-        summary: djSnapshot.personalDjContext.summary,
-        tone: djSnapshot.personalDjContext.segueGuidance.tone,
-        privacyRule: djSnapshot.personalDjContext.segueGuidance.privacyRule
-      }
-    : undefined;
 
   const fragments: Fragments = {
     mode: 'segue',
-    system: buildSystemPrompt(corpus.djPersona || 'You are a DJ.', 'segue'),
-    corpus: {
-      taste: corpus.taste,
-      routines: corpus.routines,
-      moodRules: corpus.moodRules,
-      playlists: corpus.playlists,
-      likedTracks
-    },
-    env: {
-      nowIso: now.toISOString(),
-      localTime: formatLocalTime(now),
-      weather,
-      nowPlaying: {
-        id: input.from.id,
-        name: trackContext.fromTrack.name ?? '',
-        artist: trackContext.fromTrack.artist ?? '',
-        durationMs: null
-      },
-      dailyTheme: dailyThemeStr
-    },
-    memory: {
-      recentPlays: getRecentPlays(input.userId, 50),
-      recentChat: getRecentMessages(input.userId, 20),
-      recentSegues: getRecentSegues(input.userId, 10)
-    },
+    system: buildSystemPrompt('You are a DJ.', 'segue'),
+    djMemory: projectDjMemoryForSegue(memorySnapshot),
     input: {
       kind: 'segueTrigger',
       from: trackContext.fromTrack,
@@ -107,8 +59,7 @@ export async function generateSegue(input: GenerateSegueInput): Promise<Generate
         to: trackContext.toContext,
         ...(input.djPickReasonFallback ? { djPickReason: input.djPickReasonFallback } : {}),
         ...(selectionRationale ? { selectionRationale } : {}),
-        ...(selectionEvent ? { selectionEventId: selectionEvent.id } : {}),
-        ...(personalSegueGuidance ? { personalSegueGuidance } : {})
+        ...(selectionEvent ? { selectionEventId: selectionEvent.id } : {})
       }
     },
     trace: { triggeredBy: 'segue-hook', lastDecision: null }
@@ -226,12 +177,4 @@ async function loadSegueContext(
     fromContext,
     toContext
   };
-}
-
-function formatLocalTime(date: Date): string {
-  const weekdays = ['日', '一', '二', '三', '四', '五', '六'];
-  const day = weekdays[date.getDay()];
-  const hh = String(date.getHours()).padStart(2, '0');
-  const mm = String(date.getMinutes()).padStart(2, '0');
-  return `周${day} ${hh}:${mm}`;
 }

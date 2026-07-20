@@ -1,4 +1,3 @@
-import { artistKeys } from './artists.js';
 import {
   musicEntityHintSchema,
   type MusicAgentContextSummary,
@@ -6,16 +5,12 @@ import {
   type WebMusicDiscoveryInput
 } from './schema.js';
 
-const HARD_MISMATCH_WEB_ARTIST_PATTERN =
-  /\b(slipknot|metallica|megadeth|slayer|korn|limp bizkit|pantera|system of a down)\b/i;
-
 export type ParsedMusicEntityHints = {
   hints: MusicEntityHint[];
   problems: string[];
 };
 
 export type FilterWebDiscoveryHintsInput = {
-  avoidArtists: ReadonlySet<string>;
   expectedStyle?: string;
 };
 
@@ -42,7 +37,7 @@ export function parseMusicEntityHints(value: unknown, limit: number): ParsedMusi
 
 export function filterWebDiscoveryHintsForRecall(
   value: unknown,
-  input: FilterWebDiscoveryHintsInput
+  _input: FilterWebDiscoveryHintsInput
 ): FilteredWebDiscoveryHints {
   const hints: unknown[] = [];
   const problems: string[] = [];
@@ -51,17 +46,6 @@ export function filterWebDiscoveryHintsForRecall(
     const parsed = musicEntityHintSchema.safeParse(rawHint);
     if (!parsed.success) {
       hints.push(rawHint);
-      continue;
-    }
-    const hint = parsed.data;
-    const artist = webHintArtistName(hint);
-    const hintArtistKeys = artistKeys(artist);
-    if (hintArtistKeys.some((artistKey) => input.avoidArtists.has(artistKey))) {
-      problems.push(`web hint skipped: recently repeated artist ${artist}`);
-      continue;
-    }
-    if (artist && isHardMismatchedWebArtist(artist, input.expectedStyle || hint.styles.join(' '))) {
-      problems.push(`web hint skipped: hard style mismatch for ${artist}`);
       continue;
     }
     hints.push(rawHint);
@@ -74,11 +58,6 @@ export function webHintArtistName(hint: MusicEntityHint): string {
   if (hint.kind === 'artist') return hint.name;
   if (hint.kind === 'relationship') return hint.relatedName ?? hint.artist ?? hint.name;
   return hint.artist ?? '';
-}
-
-export function isHardMismatchedWebArtist(artist: string, styleText: string): boolean {
-  if (!styleText || !styleDisallowsHeavyRock(styleText)) return false;
-  return HARD_MISMATCH_WEB_ARTIST_PATTERN.test(artist);
 }
 
 export function defaultWebDiscoveryLocale(context: MusicAgentContextSummary): WebMusicDiscoveryInput['locale'] {
@@ -96,10 +75,6 @@ export function webDiscoveryIntentText(context: MusicAgentContextSummary): strin
     ...(context.actionQueries ?? []),
     context.activeDirective
   ].filter(Boolean).join(' ');
-}
-
-function styleDisallowsHeavyRock(styleText: string): boolean {
-  return /cantopop|c[-\s]*pop|j[-\s]*pop|k[-\s]*pop|city\s*pop|indie\s*folk|folk|dream\s*pop|synth[-\s]*pop|singer[-\s]*songwriter|neo\s*soul|r\s*&?\s*b|jazz|ambient|downtempo/i.test(styleText);
 }
 
 export function objectArrayValue(value: unknown): Array<Record<string, unknown>> {

@@ -185,6 +185,13 @@ export function getRecentTrackSelectedEvent(
   return row ? mapDjEventRow(row) : null;
 }
 
+export function cleanupDjEvents(now: Date = new Date()): number {
+  const cutoff = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1_000).toISOString();
+  return getDb().prepare(
+    `DELETE FROM dj_events WHERE created_at <= ?`
+  ).run(cutoff).changes;
+}
+
 function mapDjEventRow(row: DjEventRow): DjEventRecord {
   return {
     id: row.id,

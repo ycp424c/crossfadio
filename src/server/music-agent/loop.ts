@@ -1,7 +1,8 @@
 import {
   buildFinalPickPromptPayload,
   buildLoopMessages,
-  FINAL_PICK_RESPONSE_FORMAT
+  FINAL_PICK_RESPONSE_FORMAT,
+  validateMusicAgentPromptJson
 } from './prompts.js';
 import { CandidatePool, validateFinalPicks } from './candidates.js';
 import { parseAutoFillBatchSize } from '../../shared/dj.js';
@@ -9,10 +10,21 @@ import {
   buildCandidateScoreTableRows,
   candidateTitleMotifKeys,
   diversifyCandidates,
-  isHardFilteredCandidate,
   rankCandidates,
   rankOptionsFromContext
 } from './rank.js';
+import { evaluateAdmission } from './selection-policy/admission.js';
+import { evaluateRecall } from './selection-policy/recall.js';
+import { evaluateFinal } from './selection-policy/final.js';
+import { selectDiverseBatch } from './selection-policy/batch.js';
+import type { SelectionDecisionRecorder } from './selection-policy/decision-trace.js';
+import type { MusicAgentProgressStage } from './index.js';
+import {
+  toSelectionPolicyCandidate,
+  type SelectionPhaseDecision,
+  type SelectionPolicyContext,
+  type SelectionPressureContribution
+} from './selection-policy/types.js';
 import {
   finalPickSchema,
   musicAgentFinalPickOutputSchema,
@@ -67,6 +79,11 @@ export type RunMusicAgentLoopInput = {
   lyricsSelectionMode?: LyricsSelectionMode;
   persistTrackAssessments?: TrackAssessmentPersister;
   lyricsRequestScope?: string;
+  selectionPolicyContext?: SelectionPolicyContext;
+  selectionPressureForCandidate?: (candidate: MusicCandidate) => SelectionPressureContribution[];
+  selectionDecisionRecorder?: SelectionDecisionRecorder;
+  onProgress?: (stage: MusicAgentProgressStage) => void;
+  onPromptJsonValidation?: (valid: boolean) => void;
 };
 
 export type MusicAgentFallbackReason =
@@ -78,7 +95,6 @@ export type MusicAgentFallbackReason =
   | 'insufficient_pool_after_forced_recall'
   | 'extra_final_returned_tool_call'
   | 'extra_final_rejected'
-  | 'liked_only_final_rejected'
   | 'extra_final_request_failed'
   | 'extra_final_timeout'
   | 'ranked_tool_completed';
@@ -143,10 +159,6 @@ type LyricsAwareRunState = {
   validationProblems: string[];
   promptChars: number;
   persistenceAttempted: boolean;
-  fallbackSuppressed: boolean;
-  semanticDroppedIds: Set<string>;
-  qualityDroppedIds: Set<string>;
-  unassessedDroppedIds: Set<string>;
 };
 
 const lyricsAwareRunStates = new WeakMap<RunMusicAgentLoopInput, LyricsAwareRunState>();
@@ -226,11 +238,7 @@ export async function runMusicAgentLoop(input: RunMusicAgentLoopInput): Promise<
       coverageValid: false,
       validationProblems: [],
       promptChars: 0,
-      persistenceAttempted: false,
-      fallbackSuppressed: false,
-      semanticDroppedIds: new Set(),
-      qualityDroppedIds: new Set(),
-      unassessedDroppedIds: new Set()
+      persistenceAttempted: false
     });
   }
   try {
@@ -262,9 +270,10 @@ async function runMusicAgentLoopInternal(input: RunMusicAgentLoopInput): Promise
     const messages = buildLoopMessages({
       context: input.context,
       observations,
-      candidateSummary: summarizeCandidatePool(input.candidatePool, input.context),
+      candidateSummary: summarizeCandidatePool(input),
       targetPickCount: targetPickCount(input)
     });
+    input.onPromptJsonValidation?.(validateMusicAgentPromptJson(messages));
     const response = await input.llmClient.complete(messages, {
       signal: input.signal,
       temperature: 0.2,
@@ -299,7 +308,9 @@ async function runMusicAgentLoopInternal(input: RunMusicAgentLoopInput): Promise
       try {
         const picks = validateEligibleFinalPicks(output.picks, input);
         await prepareForRanking(input);
+        reportProgress(input, 'balancing');
         const completed = completeFinalPicks(picks, input, output.picks.length, output.rejected?.length ?? 0);
+        reportProgress(input, 'finalizing');
         if (completed.picks.length === 0) {
           return rankedFallback('final_rejected', input, trace, startedAt, step, llmCalls, toolCalls, {
             finalPickDiagnostics: completed.finalPickDiagnostics
@@ -414,6 +425,9 @@ async function runMusicAgentLoopInternal(input: RunMusicAgentLoopInput): Promise
     }
 
     const candidateCountBeforeTool = input.candidatePool.count();
+    if (toolName === 'finalize_pick') reportProgress(input, 'balancing');
+    const progressStage = progressStageForTool(toolName);
+    if (progressStage) reportProgress(input, progressStage);
     const observation = await tool(toolInput, input.signal);
     toolCalls += 1;
     observations.push({ ...observation, tool: toolName });
@@ -510,6 +524,8 @@ async function askExtraFinalPick(
   shadowAuthoritativeOutput?: MusicAgentFinalPickOutput
 ): Promise<MusicAgentRunOutput> {
   await prepareForRanking(input);
+  reportProgress(input, 'balancing');
+  reportProgress(input, 'finalizing');
   if (input.signal?.aborted) {
     return abortedOutput(resolveMode(input), trace);
   }
@@ -541,13 +557,14 @@ async function askExtraFinalPick(
   const promptPayload = buildFinalPickPromptPayload({
     context: input.context,
     observations: finalPickObservations,
-    candidateSummary: summarizeCandidatePool(input.candidatePool, input.context),
+    candidateSummary: summarizeCandidatePool(input),
     targetPickCount: targetPickCount(input),
     ...(enrichment && (input.lyricsSelectionMode !== 'shadow' || isShadowAssessmentCall)
       ? { promptPackets: enrichment.promptPackets }
       : {})
   });
   const messages = promptPayload.messages;
+  input.onPromptJsonValidation?.(validateMusicAgentPromptJson(messages));
   const lyricsState = lyricsAwareRunStates.get(input);
   if (lyricsState && isShadowAssessmentCall) lyricsState.promptChars = promptPayload.promptChars;
 
@@ -726,7 +743,7 @@ async function retryHardFinalOnlyPick(
   const promptPayload = buildFinalPickPromptPayload({
     context: input.context,
     observations: [...observations, retryObservation],
-    candidateSummary: summarizeCandidatePool(input.candidatePool, input.context),
+    candidateSummary: summarizeCandidatePool(input),
     targetPickCount: targetPickCount(input),
     hardFinalOnlyRetry: true,
     ...(enrichment && (input.lyricsSelectionMode !== 'shadow' || isShadowAssessmentCall)
@@ -734,6 +751,7 @@ async function retryHardFinalOnlyPick(
       : {})
   });
   const messages = promptPayload.messages;
+  input.onPromptJsonValidation?.(validateMusicAgentPromptJson(messages));
   const lyricsState = lyricsAwareRunStates.get(input);
   if (lyricsState && isShadowAssessmentCall) lyricsState.promptChars = promptPayload.promptChars;
   const nextLlmCalls = llmCalls + 1;
@@ -873,19 +891,6 @@ async function acceptExtraFinalPick(
         finalPickDiagnostics: completed.finalPickDiagnostics
       });
     }
-    if (shouldRejectLikedOnlyFinalPicks(input)) {
-      trace.push(traceStep(step, startedAt, input.candidatePool.count(), {
-        thoughtSummary: 'extra final rejected because explore auto-fill has only liked candidates',
-        observationSummary: summarizeObservation(observationFromProblem(
-          'extra final rejected: explore auto-fill requires non-liked candidates before accepting a large batch',
-          input.candidatePool.count()
-        ))
-      }));
-      return rankedFallback('liked_only_final_rejected', input, trace, startedAt, step, llmCalls, toolCalls, {
-        extraFinalProblem: 'liked_only_final',
-        finalPickDiagnostics: completed.finalPickDiagnostics
-      });
-    }
     const queryFunnel = recordAndReadQueryFunnel(input, completed.picks);
     const result: MusicAgentRunOutput = {
       status: 'ok',
@@ -947,6 +952,7 @@ async function supplementAutoFillRecallMix(
   step: number,
   toolCalls: number
 ): Promise<number> {
+  reportProgress(input, 'recall');
   const aggregateTool = input.tools[AUTO_FILL_AGGREGATE_TOOL_NAME];
   if (aggregateTool && toolCalls < input.budget.maxToolCalls) {
     const observation = await aggregateTool({}, input.signal);
@@ -1267,19 +1273,20 @@ async function rankedFallback(
   const mode = resolveMode(input);
   await prepareForRanking(input);
   await prepareLyricsAwareShortlist(input);
-  const options = rankOptionsFromContext(input.context);
+  const options = rankOptionsForInput(input);
   const ranked = rankCandidates(input.candidatePool.list(), input.candidatePool.count(), options);
-  const selectable = rankedFallbackSelectableCandidates(ranked, input);
-  const picks = selectRankedPickCandidates(selectable, targetPickCount(input), input).map((candidate) => ({
+  const picks = selectRankedPickCandidates(ranked, targetPickCount(input), input).map((candidate) => ({
     id: candidate.id,
     name: candidate.name,
     artist: candidate.artist,
     reason: 'ranked fallback',
-    source: candidate.sources[0]
+    source: candidate.sources[0],
+    ...(candidate.qualitySignals ? { qualitySignals: { ...candidate.qualitySignals } } : {})
   }));
   const finalPickDiagnostics = extra.finalPickDiagnostics
     ?? lyricsAwareRankedDiagnostics(input, picks);
   const queryFunnel = recordSearchHistoryAndReadQueryFunnel(input);
+  reportProgress(input, 'finalizing');
 
   const output: MusicAgentRunOutput = {
     status: picks.length > 0 ? 'ok' : 'empty_pool',
@@ -1331,16 +1338,18 @@ async function rankedConvergence(
   const mode = resolveMode(input);
   await prepareForRanking(input);
   await prepareLyricsAwareShortlist(input);
-  const options = rankOptionsFromContext(input.context);
+  const options = rankOptionsForInput(input);
   const ranked = rankCandidates(input.candidatePool.list(), input.candidatePool.count(), options);
   const picks = selectRankedPickCandidates(ranked, targetPickCount(input), input).map((candidate) => ({
     id: candidate.id,
     name: candidate.name,
     artist: candidate.artist,
     reason: 'ranked convergence',
-    source: candidate.sources[0]
+    source: candidate.sources[0],
+    ...(candidate.qualitySignals ? { qualitySignals: { ...candidate.qualitySignals } } : {})
   }));
   const finalPickDiagnostics = lyricsAwareRankedDiagnostics(input, picks);
+  reportProgress(input, 'finalizing');
 
   const output: MusicAgentRunOutput = {
     status: picks.length > 0 ? 'ok' : 'empty_pool',
@@ -1429,7 +1438,7 @@ function readQueryFunnel(input: RunMusicAgentLoopInput): QueryFunnelEntry[] {
 }
 
 function createCandidateScoreTable(input: RunMusicAgentLoopInput) {
-  const options = rankOptionsFromContext(input.context);
+  const options = rankOptionsForInput(input);
   const ranked = rankCandidates(input.candidatePool.list(), input.candidatePool.count(), options);
   return buildCandidateScoreTableRows(ranked, options);
 }
@@ -1439,32 +1448,22 @@ function selectRankedPickCandidates(
   target: number,
   input: RunMusicAgentLoopInput
 ): MusicCandidate[] {
+  reportProgress(input, 'balancing');
   const eligible = candidates.filter((candidate) => isCandidateEligible(candidate, input));
-  const diverse = diversifyCandidates(eligible.slice(0, 10), target);
-  if (diverse.length >= target) {
-    recordRankedSelectionRejections(candidates, diverse, target, input);
-    return diverse;
-  }
-
-  const selectedIds = new Set(diverse.map((candidate) => candidate.id));
-  const backfill = eligible
-    .filter((candidate) => !selectedIds.has(candidate.id) && !isHardFilteredCandidate(candidate))
-    .slice(0, target - diverse.length);
-
-  const selected = [...diverse, ...backfill];
-  recordRankedSelectionRejections(candidates, selected, target, input);
-  return selected;
+  const diverse = diversifyCandidates(eligible.slice(0, 10), target, {
+    recordDecision: recordSelectionDecision(input)
+  });
+  return diverse;
 }
 
 function validateEligibleFinalPicks(picks: FinalPick[], input: RunMusicAgentLoopInput): FinalPick[] {
   const eligiblePicks = picks.filter((pick) => {
     const candidate = input.candidatePool.get(pick.id);
-    const accepted = !candidate || isCandidateEligible(candidate, input);
-    if (candidate && !accepted) recordLyricsAwareRejection(candidate, input);
-    return accepted;
+    return !candidate || isCandidateEligible(candidate, input);
   });
   return validateFinalPicks(eligiblePicks, input.candidatePool, {
-    isCandidateEligible: (candidate) => isCandidateEligible(candidate, input)
+    isCandidateEligible: (candidate) => isCandidateEligible(candidate, input),
+    policyContext: resolveSelectionPolicyContext(input)
   }).slice(0, targetPickCount(input));
 }
 
@@ -1501,9 +1500,9 @@ function withLyricsAwareFinalPickDiagnostics(
     ...completed,
     finalPickDiagnostics: {
       ...completed.finalPickDiagnostics,
-      semanticConflictDroppedCount: state.semanticDroppedIds.size,
-      qualityDroppedCount: state.qualityDroppedIds.size,
-      unassessedDroppedCount: state.unassessedDroppedIds.size,
+      semanticConflictDroppedCount: 0,
+      qualityDroppedCount: 0,
+      unassessedDroppedCount: 0,
       assessmentValidationFailureCount: state.validationProblems.length > 0 ? 1 : 0
     }
   };
@@ -1569,27 +1568,21 @@ function rankedBackfillFinalPicks(
 
   const pickedIds = new Set(picks.map((pick) => pick.id));
   const blockedTitleMotifs = titleMotifsFromFinalPicks(diversePicks, input);
-  const options = rankOptionsFromContext(input.context);
+  const options = rankOptionsForInput(input);
   const rankedCandidates = rankCandidates(input.candidatePool.list(), input.candidatePool.count(), options)
     .filter((candidate) => !pickedIds.has(candidate.id));
   const ranked = rankedCandidates.filter((candidate) => isCandidateEligible(candidate, input));
-  const backfill = diversifyCandidates(ranked, target - diversePicks.length, { blockedTitleMotifs }).map((candidate) => ({
+  const backfill = diversifyCandidates(ranked, target - diversePicks.length, {
+    blockedTitleMotifs,
+    recordDecision: recordSelectionDecision(input)
+  }).map((candidate) => ({
     id: candidate.id,
     name: candidate.name,
     artist: candidate.artist,
     reason: 'ranked backfill',
-    source: candidate.sources[0]
+    source: candidate.sources[0],
+    ...(candidate.qualitySignals ? { qualitySignals: { ...candidate.qualitySignals } } : {})
   }));
-  recordRankedSelectionRejections(
-    rankedCandidates,
-    backfill.flatMap((pick) => {
-      const candidate = input.candidatePool.get(pick.id);
-      return candidate ? [candidate] : [];
-    }),
-    target - diversePicks.length,
-    input
-  );
-
   return {
     picks: [...diversePicks, ...backfill],
     finalPickDiagnostics: buildFinalPickDiagnostics({
@@ -1645,22 +1638,17 @@ function rejectedFinalPickDiagnostics(
 }
 
 function diversifyFinalPicksByTitleMotif(picks: FinalPick[], input: RunMusicAgentLoopInput): FinalPick[] {
-  const selected: FinalPick[] = [];
-  const usedTitleMotifs = new Set<string>();
-
-  for (const pick of picks) {
-    const motifs = titleMotifsFromCandidateId(pick.id, input);
-    if (motifs.some((motif) => usedTitleMotifs.has(motif))) {
-      continue;
-    }
-
-    selected.push(pick);
-    for (const motif of motifs) {
-      usedTitleMotifs.add(motif);
-    }
-  }
-
-  return selected;
+  const pickById = new Map(picks.map((pick) => [pick.id, pick]));
+  const candidates = picks.flatMap((pick) => {
+    const candidate = input.candidatePool.get(pick.id);
+    return candidate ? [candidate] : [];
+  });
+  return selectDiverseBatch(candidates, picks.length, {
+    recordDecision: recordSelectionDecision(input)
+  }).flatMap((candidate) => {
+    const pick = pickById.get(candidate.id);
+    return pick ? [pick] : [];
+  });
 }
 
 function titleMotifsFromFinalPicks(picks: FinalPick[], input: RunMusicAgentLoopInput): Set<string> {
@@ -1687,15 +1675,26 @@ function formatPickCount(pickCount: number): string {
 }
 
 async function prepareForRanking(input: RunMusicAgentLoopInput): Promise<void> {
+  if (input.candidatePool.count() > 0) reportProgress(input, 'filtering');
   await input.tools.prepare_for_ranking?.({}, input.signal);
+}
+
+function progressStageForTool(toolName: MusicAgentToolName): MusicAgentProgressStage | undefined {
+  if (RECALL_TOOL_NAMES.has(toolName) || toolName === 'expand_queries' || toolName === 'web_music_discovery') {
+    return 'recall';
+  }
+  if (toolName === 'rank_candidates') return 'filtering';
+  if (toolName === 'diversify_candidates') return 'balancing';
+  if (toolName === 'finalize_pick') return 'finalizing';
+  return undefined;
+}
+
+function reportProgress(input: RunMusicAgentLoopInput, stage: MusicAgentProgressStage): void {
+  input.onProgress?.(stage);
 }
 
 function isLyricsAwareEnabled(input: RunMusicAgentLoopInput): boolean {
   return (input.lyricsSelectionMode ?? 'off') !== 'off' && input.finalShortlistEnricher !== undefined;
-}
-
-function isEnforcementMode(input: RunMusicAgentLoopInput): boolean {
-  return input.lyricsSelectionMode === 'enforce_fit' || input.lyricsSelectionMode === 'enforce_all';
 }
 
 async function prepareLyricsAwareShortlist(
@@ -1707,7 +1706,7 @@ async function prepareLyricsAwareShortlist(
     const ranked = rankCandidates(
       input.candidatePool.list(),
       input.candidatePool.count(),
-      rankOptionsFromContext(input.context)
+      rankOptionsForInput(input)
     );
     state.preparation = input.finalShortlistEnricher(ranked, {
       signal: input.signal,
@@ -1761,7 +1760,7 @@ function prepareSkippedLyricsAwareShortlist(input: RunMusicAgentLoopInput): void
   const shortlist = rankCandidates(
     input.candidatePool.list(),
     input.candidatePool.count(),
-    rankOptionsFromContext(input.context)
+    rankOptionsForInput(input)
   ).slice(0, 12);
   state.enrichment = {
     shortlist,
@@ -1852,17 +1851,8 @@ function rebuildLyricsAwareDecisions(input: RunMusicAgentLoopInput): void {
     const quality = evaluateCandidateQuality(candidate, qualityFacts(packetById.get(candidate.id)));
     return [{ candidate, assessment, compatibility, quality }];
   });
-  const hasAcceptableAlternative = preliminary.some(({ compatibility, quality }) =>
-    compatibility.status !== 'conflict' && quality.tier !== 'suspicious'
-  );
   state.decisions = new Map(preliminary.map(({ candidate, assessment, compatibility, quality }) => {
-    const externalSuspicious = quality.tier === 'suspicious' && !candidate.sources.includes('liked');
-    const eligible = !isEnforcementMode(input)
-      || (compatibility.status !== 'conflict'
-        && (input.lyricsSelectionMode !== 'enforce_all'
-          || !externalSuspicious
-          || !hasAcceptableAlternative));
-    return [candidate.id, { assessment, compatibility, quality, eligible }];
+    return [candidate.id, { assessment, compatibility, quality, eligible: true }];
   }));
 }
 
@@ -1879,49 +1869,32 @@ function qualityFacts(packet: ShortlistPromptPacket | undefined): CandidateQuali
 }
 
 function isCandidateEligible(candidate: MusicCandidate, input: RunMusicAgentLoopInput): boolean {
-  if (isHardFilteredCandidate(candidate)) return false;
-  if (!isEnforcementMode(input)) return true;
-  return lyricsAwareRunStates.get(input)?.decisions.get(candidate.id)?.eligible === true;
+  const policyCandidate = toSelectionPolicyCandidate(candidate);
+  const policyContext = resolveSelectionPolicyContext(input);
+  const admissionDecision = evaluateAdmission({
+    candidate: policyCandidate,
+    context: policyContext
+  });
+  input.selectionDecisionRecorder?.record({ candidateId: candidate.id, decision: admissionDecision });
+  if (admissionDecision.action === 'reject') return false;
+  const recallDecision = evaluateRecall({
+    candidate: policyCandidate,
+    context: policyContext,
+    pressure: input.selectionPressureForCandidate?.(candidate)
+  });
+  input.selectionDecisionRecorder?.record({ candidateId: candidate.id, decision: recallDecision });
+  if (recallDecision.action === 'suppress') return false;
+  // Ranked recovery still needs a read-only Final eligibility check (for queue
+  // and played-track idempotency), but it is not a queue mutation boundary.
+  // Do not record this probe as a public Final selection.
+  return evaluateFinal({ candidate: policyCandidate, context: policyContext }).action === 'select';
 }
 
-function recordLyricsAwareRejection(candidate: MusicCandidate, input: RunMusicAgentLoopInput): void {
-  if (!isEnforcementMode(input) || isHardFilteredCandidate(candidate)) return;
-  const state = lyricsAwareRunStates.get(input);
-  if (!state) return;
-  const decision = state.decisions.get(candidate.id);
-  if (!decision) {
-    state.unassessedDroppedIds.add(candidate.id);
-    return;
-  }
-  if (decision.compatibility.status === 'conflict') {
-    state.semanticDroppedIds.add(candidate.id);
-    return;
-  }
-  if (decision.quality.tier === 'suspicious' && !decision.eligible) {
-    state.qualityDroppedIds.add(candidate.id);
-  }
-}
-
-function recordRankedSelectionRejections(
-  candidates: MusicCandidate[],
-  selected: MusicCandidate[],
-  target: number,
-  input: RunMusicAgentLoopInput
-): void {
-  if (!isEnforcementMode(input) || candidates.length === 0) return;
-  const selectedIds = new Set(selected.map((candidate) => candidate.id));
-  const lastSelectedIndex = candidates.reduce(
-    (last, candidate, index) => selectedIds.has(candidate.id) ? index : last,
-    -1
-  );
-  const cutoff = selected.length >= target && lastSelectedIndex >= 0
-    ? lastSelectedIndex
-    : candidates.length - 1;
-  for (const candidate of candidates.slice(0, cutoff + 1)) {
-    if (!selectedIds.has(candidate.id) && !isCandidateEligible(candidate, input)) {
-      recordLyricsAwareRejection(candidate, input);
-    }
-  }
+function resolveSelectionPolicyContext(input: RunMusicAgentLoopInput): SelectionPolicyContext {
+  return input.selectionPolicyContext ?? {
+    mode: 'autonomous',
+    explicitlyRequested: false
+  };
 }
 
 function lyricsAwareOutputFields(
@@ -1930,9 +1903,6 @@ function lyricsAwareOutputFields(
 ): { lyricsAwareDiagnostics?: LyricsAwareDiagnostics } {
   const state = lyricsAwareRunStates.get(input);
   if (!state?.enrichment) return {};
-  if (isEnforcementMode(input) && picks.length === 0 && input.candidatePool.count() > 0) {
-    state.fallbackSuppressed = true;
-  }
   const decisions: LyricsAwareDecisionSummary[] = state.enrichment.shortlist.flatMap((candidate) => {
     const decision = state.decisions.get(candidate.id);
     return decision ? [{
@@ -1957,16 +1927,14 @@ function lyricsAwareOutputFields(
       assessmentCoverageValid: state.coverageValid,
       assessmentValidationProblems: state.validationProblems,
       decisions,
-      allReturnedPicksAssessed: picks.every((pick) => state.assessments.has(pick.id)),
-      enforcementApplied: isEnforcementMode(input),
-      fallbackSuppressed: state.fallbackSuppressed
+      allReturnedPicksAssessed: picks.every((pick) => state.assessments.has(pick.id))
     }
   };
 }
 
-function summarizeCandidatePool(pool: CandidatePool, context: MusicAgentRuntimeContext): string {
-  const options = rankOptionsFromContext(context);
-  const ranked = rankCandidates(pool.list(), 20, options);
+function summarizeCandidatePool(input: RunMusicAgentLoopInput): string {
+  const options = rankOptionsForInput(input);
+  const ranked = rankCandidates(input.candidatePool.list(), 20, options);
   const scoreRows = buildCandidateScoreTableRows(ranked, options);
   return JSON.stringify(ranked.map((candidate, index) => {
     const row = scoreRows[index];
@@ -1985,6 +1953,56 @@ function summarizeCandidatePool(pool: CandidatePool, context: MusicAgentRuntimeC
       evidence: candidate.evidence.slice(0, 3)
     };
   }));
+}
+
+function rankOptionsForInput(input: RunMusicAgentLoopInput): ReturnType<typeof rankOptionsFromContext> {
+  const pressureForCandidate = (candidate: MusicCandidate): SelectionPressureContribution[] => [
+    ...(input.selectionPressureForCandidate?.(candidate) ?? []),
+    ...lyricsAwareRankingPressure(input, candidate)
+  ];
+  return rankOptionsFromContext(input.context, {
+    pressureForCandidate,
+    ...(input.selectionPolicyContext
+      ? { selectionPolicyContext: input.selectionPolicyContext }
+      : {}),
+    ...(input.selectionDecisionRecorder
+      ? { recordDecision: recordSelectionDecision(input) }
+      : {})
+  });
+}
+
+function lyricsAwareRankingPressure(
+  input: RunMusicAgentLoopInput,
+  candidate: MusicCandidate
+): SelectionPressureContribution[] {
+  const decision = lyricsAwareRunStates.get(input)?.decisions.get(candidate.id);
+  if (!decision) return [];
+  return [
+    ...(decision.compatibility.status === 'conflict' ? [{
+      source: 'candidate_quality' as const,
+      reasonCode: 'semantic_compatibility' as const,
+      direction: 'penalty' as const,
+      amount: 0.18,
+      severity: 'soft' as const
+    }] : []),
+    ...(decision.quality.tier === 'suspicious' ? [{
+      source: 'candidate_quality' as const,
+      reasonCode: 'candidate_quality' as const,
+      direction: 'penalty' as const,
+      amount: 0.16,
+      severity: 'soft' as const
+    }] : [])
+  ];
+}
+
+function recordSelectionDecision(
+  input: Pick<RunMusicAgentLoopInput, 'selectionDecisionRecorder'>
+) {
+  return input.selectionDecisionRecorder
+    ? (candidate: MusicCandidate, decision: SelectionPhaseDecision) => {
+        input.selectionDecisionRecorder?.record({ candidateId: candidate.id, decision });
+      }
+    : undefined;
 }
 
 function traceStep(
@@ -2305,29 +2323,6 @@ function shouldSupplementLikedTailFallback(input: RunMusicAgentLoopInput): boole
   return (
     nonLikedCount >= minExternalCandidatesBeforeLikedTail(explicitTargetPickCount) &&
     input.candidatePool.count() < explicitTargetPickCount
-  );
-}
-
-function rankedFallbackSelectableCandidates(
-  candidates: MusicCandidate[],
-  input: RunMusicAgentLoopInput
-): MusicCandidate[] {
-  if (!shouldBlockLikedOnlyRankedFallback(input) || countNonLikedCandidates(input) > 0) {
-    return candidates;
-  }
-  return [];
-}
-
-function shouldBlockLikedOnlyRankedFallback(input: RunMusicAgentLoopInput): boolean {
-  const explicitTargetPickCount = input.targetPickCount === undefined ? null : targetPickCount(input);
-  return isExploreAutoFill(input) && explicitTargetPickCount !== null && explicitTargetPickCount >= 4;
-}
-
-function shouldRejectLikedOnlyFinalPicks(input: RunMusicAgentLoopInput): boolean {
-  return (
-    shouldBlockLikedOnlyRankedFallback(input) &&
-    countNonLikedCandidates(input) === 0 &&
-    countLikedCandidates(input) > 0
   );
 }
 

@@ -1,5 +1,5 @@
 import { getMusicKnowledgeSlice } from './knowledge.js';
-import { normalizeSearchQuery } from './query-stats.js';
+import { normalizeSearchQuery } from './retrieval-history.js';
 import { filterExactSongSearchQueries } from './recall-query-filtering.js';
 import type { MusicAgentContextSummary, QueryPlan } from './schema.js';
 

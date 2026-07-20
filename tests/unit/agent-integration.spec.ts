@@ -11,19 +11,7 @@ import type { Fragments } from '../../src/server/agent/schema';
 const baseFragments: Fragments = {
   mode: 'chat',
   system: 'You are a DJ.',
-  corpus: {
-    taste: 'Indie Pop',
-    routines: '09:00 通勤',
-    moodRules: '深夜要安静',
-    playlists: [{ id: 'p1', name: '晨间', provider: 'ncm', segments: ['morning'], tags: ['indie'], priority: 1 }]
-  },
-  env: {
-    nowIso: '2026-04-24T09:00:00Z',
-    localTime: '周四 09:00',
-    weather: { tempC: 18, desc: '晴' },
-    nowPlaying: null
-  },
-  memory: { recentPlays: [], recentChat: [] },
+  djMemory: memoryProjection('chat'),
   input: { kind: 'chat', text: '今天来点清新的' },
   trace: { triggeredBy: 'user', lastDecision: null }
 };
@@ -83,14 +71,14 @@ describe('chat mode — minimum chain (computeSync + FakeLlmClient)', () => {
     expect(lastMsg.content).toContain('换首 Rap');
   });
 
-  it('corpus content reaches the LLM messages', async () => {
+  it('purpose-scoped DJ Memory reaches the LLM messages', async () => {
     const fake = new FakeLlmClient().queueResponse(validChat);
     await computeSync(baseFragments, { llmClient: fake });
 
-    const corpusMsg = fake.completeCalls[0].messages[1];
-    expect(corpusMsg.content).toContain('Indie Pop');
-    expect(corpusMsg.content).toContain('晨间');
-    expect(corpusMsg.content).toContain('18°C');
+    const memoryMessage = fake.completeCalls[0].messages[1];
+    expect(memoryMessage.content).toContain('Indie Pop');
+    expect(memoryMessage.content).toContain('18°C 晴');
+    expect(memoryMessage.content).toContain('purpose="chat"');
   });
 
   it('retries once on invalid output and succeeds on second call', async () => {
@@ -146,6 +134,7 @@ describe('segue mode — streaming chain (computeStream + FakeLlmClient)', () =>
     const fragments: Fragments = {
       ...baseFragments,
       mode: 'segue',
+      djMemory: memoryProjection('segue'),
       input: { kind: 'segueTrigger', from: { id: '1', name: '歌A' }, to: { id: '2', name: '歌B' } },
       trace: { triggeredBy: 'segue-hook', lastDecision: null }
     };
@@ -171,6 +160,7 @@ describe('segue mode — streaming chain (computeStream + FakeLlmClient)', () =>
     const fragments: Fragments = {
       ...baseFragments,
       mode: 'segue',
+      djMemory: memoryProjection('segue'),
       input: { kind: 'segueTrigger', from: { id: '1' }, to: { id: '2' } },
       trace: { triggeredBy: 'segue-hook', lastDecision: null }
     };
@@ -187,6 +177,20 @@ describe('segue mode — streaming chain (computeStream + FakeLlmClient)', () =>
     if (done?.type === 'done') expect(done.output.mode).toBe('segue');
   });
 });
+
+function memoryProjection(purpose: 'chat' | 'segue') {
+  return {
+    schemaVersion: 1 as const,
+    snapshotId: 'snapshot-1',
+    assembledAt: '2026-04-24T09:00:00.000Z',
+    sources: [],
+    purpose,
+    facts: [
+      { key: 'taste_profile', value: 'Indie Pop', sourceId: 'taste-1' },
+      { key: 'weather', value: '18°C 晴', sourceId: 'weather' }
+    ]
+  };
+}
 
 describe('FakeTtsClient', () => {
   it('records synthesize calls and returns configured filePath', async () => {

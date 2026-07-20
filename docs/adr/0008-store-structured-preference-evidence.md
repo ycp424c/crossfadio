@@ -1,0 +1,3 @@
+# Store Structured Preference Evidence
+
+Crossfadio will store music Preference Evidence as structured, source-attributed records with confidence, freshness, extraction version, and supersession relationships instead of append-only prose summaries. Only a schema-valid evidence or no-evidence result may complete extraction for its source messages; transport, parsing, and validation failures remain retryable. Explicit Exclusions and Active Directives remain in their own authoritative stores, while DJ consumers receive a bounded projection of currently effective evidence through the DJ Memory Snapshot.

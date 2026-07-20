@@ -183,12 +183,16 @@ export class NcmClient {
     });
   }
 
-  async searchSongs(keywords: string, limit = 20): Promise<NcmSong[]> {
+  async searchSongs(
+    keywords: string,
+    limit = 20,
+    options?: NcmRequestOptions
+  ): Promise<NcmSong[]> {
     const json = await this.getJson('/cloudsearch', {
       keywords,
       type: '1',
       limit: String(limit)
-    });
+    }, options);
 
     const parsed = ncmSearchResponseSchema.safeParse(json);
     if (!parsed.success) {

@@ -2,7 +2,12 @@ import type { LlmConfig } from '../llm/client.js';
 import type { NcmClient } from '../ncm/client.js';
 import type { MusicAgent } from '../music-agent/index.js';
 import type { MusicAgentRunOutput } from '../music-agent/schema.js';
-import { addToQueue, getQueue, type QueueTrack } from '../store/queue.js';
+import {
+  getQueueRevision,
+  prepareQueueAppend,
+  type PreparedQueueAppend,
+  type QueueTrack
+} from '../store/queue.js';
 import type {
   DedupeState,
   DjEventSink,
@@ -16,13 +21,13 @@ export type DJAgentMusicAgent = Pick<MusicAgent, 'pickNext'>;
 export type DJAgentMusicAgentFactory = (llmConfig: LlmConfig) => DJAgentMusicAgent;
 
 export type DJAgentQueuePort = {
-  getQueue(userId: string): QueueTrack[];
-  addToQueue(userId: string, track: QueueTrack, position: 'end' | 'after_current'): void;
+  getRevision(userId: string): number;
+  prepareAppend(userId: string, tracks: QueueTrack[]): PreparedQueueAppend;
 };
 
 export const defaultDJAgentQueuePort: DJAgentQueuePort = {
-  getQueue,
-  addToQueue
+  getRevision: getQueueRevision,
+  prepareAppend: prepareQueueAppend
 };
 
 export type DJAgentLogger = {
@@ -31,7 +36,7 @@ export type DJAgentLogger = {
 
 export type DJAgentBroadcastAppended = (
   userId: string,
-  prevQueueLength: number,
+  tracks: QueueTrack[],
   targetPickCount: number,
   emit: DjEventSink,
   path?: DjPickNextFallbackPath,
@@ -45,6 +50,7 @@ export type DJAgentPickNextInput = {
   includeDailyTheme: boolean;
   excludeState: DedupeState;
   initialQueueLength: number;
+  initialQueueRevision?: number;
   targetPickCount: number;
   startedAt: number;
   discoveryMode: DiscoveryMode;
@@ -61,16 +67,10 @@ export type DJAgentPickNextInput = {
 
 export type DJAgentPickNextHandledResult = {
   status: 'handled';
+  completion: 'applied' | 'superseded';
   debugBroadcastSent: true;
-  output: MusicAgentRunOutput;
-  runId: string;
-  selectionStartedEventId: string;
-};
-
-export type DJAgentPickNextFallbackResult = {
-  status: 'legacy-fallback';
-  legacyFallbackPath: 'music_agent_legacy_fallback';
-  debugBroadcastSent: false;
+  appendedCount: number;
+  appendedTrackIds: string[];
   output: MusicAgentRunOutput;
   runId: string;
   selectionStartedEventId: string;
@@ -86,5 +86,4 @@ export type DJAgentPickNextAbortedResult = {
 
 export type DJAgentPickNextResult =
   | DJAgentPickNextHandledResult
-  | DJAgentPickNextFallbackResult
   | DJAgentPickNextAbortedResult;

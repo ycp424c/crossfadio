@@ -1,0 +1,70 @@
+{
+  "schemaVersion": 1,
+  "now": "2026-07-17T12:00:00.000Z",
+  "listeningBoundary": [
+    {
+      "episodeId": "boundary-below",
+      "track": { "id": "track-below", "name": "Below Half", "artists": ["Boundary Artist"] },
+      "startedAt": "2026-07-17T10:00:00.000Z",
+      "durationMs": 100000,
+      "positionMs": 49999,
+      "listenedMs": 49999,
+      "expectedEarlySkip": true
+    },
+    {
+      "episodeId": "boundary-midpoint",
+      "track": { "id": "track-midpoint", "name": "At Half", "artists": ["Boundary Artist"] },
+      "startedAt": "2026-07-17T10:05:00.000Z",
+      "durationMs": 100000,
+      "positionMs": 50000,
+      "listenedMs": 49999,
+      "expectedEarlySkip": false
+    }
+  ],
+  "explicitRequestGates": [
+    {
+      "kind": "explicit_track_exclusion",
+      "candidate": { "id": "blocked-track", "name": "Blocked Song", "artist": "Allowed Artist" },
+      "expectedReasonCode": "explicit_track_exclusion"
+    },
+    {
+      "kind": "copyright_unavailable",
+      "candidate": {
+        "id": "unplayable-track",
+        "name": "Unavailable Song",
+        "artist": "Allowed Artist",
+        "qualitySignals": { "copyright": 0 }
+      },
+      "expectedReasonCode": "copyright_unavailable"
+    }
+  ],
+  "collaboratorIsolation": {
+    "guestArtist": "Guest Artist",
+    "episodes": [
+      {
+        "episodeId": "collab-1",
+        "track": { "id": "lead-1", "name": "Lead One", "artists": ["Lead One", "Guest Artist"] },
+        "startedAt": "2026-07-17T09:00:00.000Z"
+      },
+      {
+        "episodeId": "collab-2",
+        "track": { "id": "lead-2", "name": "Lead Two", "artists": ["Lead Two", "Guest Artist"] },
+        "startedAt": "2026-07-17T09:10:00.000Z"
+      },
+      {
+        "episodeId": "collab-3",
+        "track": { "id": "lead-3", "name": "Lead Three", "artists": ["Lead Three", "Guest Artist"] },
+        "startedAt": "2026-07-17T09:20:00.000Z"
+      }
+    ]
+  },
+  "journeyLifecycle": {
+    "userId": "journey-user",
+    "runId": "journey-run",
+    "track": { "id": "journey-track", "name": "Plastic Love", "artist": "竹内まりや" },
+    "factsHash": "journey-facts-v1",
+    "pendingRevision": 1,
+    "polishedRevision": 2,
+    "narrationText": "今晚从熟悉的律动出发，也留了一点变化。"
+  }
+}

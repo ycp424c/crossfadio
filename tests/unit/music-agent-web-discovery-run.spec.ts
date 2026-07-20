@@ -141,8 +141,6 @@ function scores(): MusicCandidateScores {
     timeFit: 0.7,
     contextFit: 0.5,
     novelty: 0.5,
-    recentPenalty: 0,
-    skipPenalty: 0,
     sourceConfidence: 0.7
   };
 }

@@ -3,7 +3,8 @@ import {
   buildCandidateScoreTableRows,
   diversifyCandidates,
   rankCandidates,
-  scoreCandidate
+  scoreCandidate,
+  scoreCandidateForRanking
 } from '../../src/server/music-agent/rank.js';
 import type { MusicCandidate } from '../../src/server/music-agent/schema.js';
 
@@ -20,8 +21,6 @@ function candidate(overrides: Partial<MusicCandidate> = {}): MusicCandidate {
       timeFit: 0.5,
       contextFit: 0.5,
       novelty: 0.5,
-      recentPenalty: 0,
-      skipPenalty: 0,
       sourceConfidence: 0.5
     },
     ...overrides
@@ -29,7 +28,7 @@ function candidate(overrides: Partial<MusicCandidate> = {}): MusicCandidate {
 }
 
 describe('music-agent ranking', () => {
-  it('uses the planned score weights exactly and floors negative scores', () => {
+  it('uses only the planned positive score weights', () => {
     expect(scoreCandidate(candidate({
       scores: {
         intentMatch: 0.9,
@@ -38,10 +37,8 @@ describe('music-agent ranking', () => {
         contextFit: 0.6,
         sourceConfidence: 0.5,
         novelty: 0.4,
-        recentPenalty: 0.2,
-        skipPenalty: 0.1
       }
-    }))).toBeCloseTo(0.405, 5);
+    }))).toBeCloseTo(0.705, 5);
 
     expect(scoreCandidate(candidate({
       scores: {
@@ -51,8 +48,6 @@ describe('music-agent ranking', () => {
         contextFit: 0,
         sourceConfidence: 0,
         novelty: 0,
-        recentPenalty: 0.2,
-        skipPenalty: 0.3
       }
     }))).toBe(0);
   });
@@ -67,8 +62,6 @@ describe('music-agent ranking', () => {
         timeFit: 0.8,
         contextFit: 0.9,
         novelty: 0.2,
-        recentPenalty: 0,
-        skipPenalty: 0,
         sourceConfidence: 0.9
       }
     });
@@ -81,8 +74,6 @@ describe('music-agent ranking', () => {
         timeFit: 0.45,
         contextFit: 0.1,
         novelty: 1,
-        recentPenalty: 0,
-        skipPenalty: 0,
         sourceConfidence: 0.5
       }
     });
@@ -90,7 +81,7 @@ describe('music-agent ranking', () => {
     expect(scoreCandidate(directiveMatch)).toBeGreaterThan(scoreCandidate(trendOnlyNovelty));
   });
 
-  it('subtracts recent and skip penalties', () => {
+  it('keeps negative influence out of base scores and applies it as ranking pressure', () => {
     const base = candidate({
       scores: {
         intentMatch: 0.8,
@@ -98,22 +89,18 @@ describe('music-agent ranking', () => {
         timeFit: 0.8,
         contextFit: 0.8,
         novelty: 0.8,
-        recentPenalty: 0,
-        skipPenalty: 0,
         sourceConfidence: 0.8
       }
     });
-    const penalized = candidate({
-      id: 'penalized',
-      scores: {
-        ...base.scores,
-        recentPenalty: 0.4,
-        skipPenalty: 0.3
-      }
+    const pressure = scoreCandidateForRanking(base, {
+      trackPenalties: new Map([['song::artist', 0.3]])
     });
 
-    expect(scoreCandidate(penalized)).toBeLessThan(scoreCandidate(base));
-    expect(scoreCandidate(base) - scoreCandidate(penalized)).toBeCloseTo(0.7, 5);
+    expect(scoreCandidate(base)).toBeCloseTo(0.8, 5);
+    expect(pressure.adjustedScore).toBeCloseTo(0.5, 5);
+    expect(pressure.pressureContributions).toEqual([
+      expect.objectContaining({ source: 'exposure', reasonCode: 'exposure_track', amount: 0.3 })
+    ]);
   });
 
   it('diversifyCandidates spreads artists when possible', () => {
@@ -164,24 +151,24 @@ describe('music-agent ranking', () => {
     expect(diversifyCandidates(candidates, 3).map((item) => item.id)).toEqual(['afternoon-1', 'home', 'evening']);
   });
 
-  it('rankCandidates lowers repeated artist scores when ordering picks', () => {
+  it('keeps repeated-primary-artist handling out of the Ranking phase', () => {
     const candidates = [
       candidate({ id: 'a1', artist: 'Artist A', scores: { ...candidate().scores, intentMatch: 1 } }),
       candidate({ id: 'a2', artist: 'Artist A', scores: { ...candidate().scores, intentMatch: 0.98 } }),
       candidate({ id: 'b1', artist: 'Artist B', scores: { ...candidate().scores, intentMatch: 0.9 } })
     ];
 
-    expect(rankCandidates(candidates, 3).map((item) => item.id)).toEqual(['a1', 'b1', 'a2']);
+    expect(rankCandidates(candidates, 3).map((item) => item.id)).toEqual(['a1', 'a2', 'b1']);
   });
 
-  it('rankCandidates lowers repeated collaborator scores when ordering picks', () => {
+  it('does not turn collaborator overlap into Ranking pressure', () => {
     const candidates = [
       candidate({ id: 'payphone', artist: 'Maroon 5 / Wiz Khalifa', scores: { ...candidate().scores, intentMatch: 1 } }),
       candidate({ id: 'girl-next-door', artist: 'mgk / Wiz Khalifa', scores: { ...candidate().scores, intentMatch: 0.98 } }),
       candidate({ id: 'fresh', artist: 'Fresh Artist', scores: { ...candidate().scores, intentMatch: 0.9 } })
     ];
 
-    expect(rankCandidates(candidates, 3).map((item) => item.id)).toEqual(['payphone', 'fresh', 'girl-next-door']);
+    expect(rankCandidates(candidates, 3).map((item) => item.id)).toEqual(['payphone', 'girl-next-door', 'fresh']);
   });
 
   it('rankCandidates applies artist recency penalties with distance decay', () => {
@@ -319,11 +306,11 @@ describe('music-agent ranking', () => {
       expect.objectContaining({
         rank: 2,
         id: 'a2',
-        repeatPenalty: 0.16
+        repeatPenalty: 0
       })
     ]);
     expect(rows[0].adjustedScore).toBeCloseTo(rows[0].baseScore - 0.12, 5);
-    expect(rows[1].adjustedScore).toBeCloseTo(rows[1].baseScore - 0.12 - 0.16, 5);
+    expect(rows[1].adjustedScore).toBeCloseTo(rows[1].baseScore - 0.12, 5);
   });
 
   it('penalizes weak external quality signals when ranking candidates', () => {
@@ -361,7 +348,18 @@ describe('music-agent ranking', () => {
     );
   });
 
-  it('filters strong title pollution with very low popularity only for purely external candidates', () => {
+  it('hard-filters an unplayable candidate regardless of liked provenance', () => {
+    const unplayableLiked = candidate({
+      id: 'unplayable-liked',
+      sources: ['search', 'liked'],
+      qualitySignals: { copyright: 0 }
+    });
+
+    expect(rankCandidates([unplayableLiked], 1)).toEqual([]);
+    expect(diversifyCandidates([unplayableLiked], 1)).toEqual([]);
+  });
+
+  it('keeps strong title pollution and low popularity as soft quality signals', () => {
     const pollutedExternal = candidate({
       id: 'polluted-external',
       name: "90's Chill Lofi Hip Hop｜勉強・集中・睡眠 深夜のローファイ mix",
@@ -387,9 +385,9 @@ describe('music-agent ranking', () => {
 
     const rankedIds = rankCandidates([pollutedExternal, pollutedTrusted, clean], 5).map((item) => item.id);
 
-    expect(rankedIds).not.toContain('polluted-external');
-    expect(rankedIds).toHaveLength(2);
-    expect(rankedIds).toEqual(expect.arrayContaining(['clean', 'polluted-trusted']));
+    expect(rankedIds).toHaveLength(3);
+    expect(rankedIds).toEqual(expect.arrayContaining(['clean', 'polluted-external', 'polluted-trusted']));
+    expect(rankedIds.indexOf('polluted-external')).toBeGreaterThan(rankedIds.indexOf('polluted-trusted'));
   });
 
   it('diversifyCandidates skips repeated artists instead of filling the limit', () => {
@@ -402,14 +400,14 @@ describe('music-agent ranking', () => {
     expect(diversifyCandidates(candidates, 0)).toEqual([]);
   });
 
-  it('diversifyCandidates skips repeated collaborators', () => {
+  it('diversifyCandidates compares primary artists, not collaborators', () => {
     const candidates = [
       candidate({ id: 'payphone', artist: 'Maroon 5 / Wiz Khalifa', scores: { ...candidate().scores, intentMatch: 1 } }),
       candidate({ id: 'girl-next-door', artist: 'mgk / Wiz Khalifa', scores: { ...candidate().scores, intentMatch: 0.98 } }),
       candidate({ id: 'fresh', artist: 'Fresh Artist', scores: { ...candidate().scores, intentMatch: 0.9 } })
     ];
 
-    expect(diversifyCandidates(candidates, 2).map((item) => item.id)).toEqual(['payphone', 'fresh']);
+    expect(diversifyCandidates(candidates, 2).map((item) => item.id)).toEqual(['payphone', 'girl-next-door']);
   });
 
   it('returns cloned quality signals from ranking helpers', () => {

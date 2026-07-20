@@ -1,0 +1,311 @@
+import { z } from 'zod';
+import type { LlmCompleteOptions, LlmMessage, LlmResponse } from '../llm/client.js';
+import {
+  selectionDecisionTraceSchema,
+  selectionJourneySnapshotSchema,
+  type SelectionDecisionTrace,
+  type SelectionJourneySnapshot
+} from '../../shared/selection.js';
+import {
+  isPublicSelectionReasonCode,
+  publicSelectionReasonCopy
+} from './selection-journey.js';
+import type { SelectionReasonCode } from '../music-agent/selection-policy/types.js';
+
+export const PUBLIC_NARRATION_TONE_TAGS = [
+  'warm',
+  'playful',
+  'calm',
+  'crisp',
+  'reflective',
+  'energetic'
+] as const;
+
+const publicToneTags = new Set<string>(PUBLIC_NARRATION_TONE_TAGS);
+const narrationTextSchema = z.string().trim().min(1).max(1200);
+
+export const SELECTION_NARRATION_TEMPLATES = [
+  'selection_flow',
+  'track_spotlight',
+  'journey_recap'
+] as const;
+
+const narrationPlanSchema = z.object({
+  template: z.enum(SELECTION_NARRATION_TEMPLATES),
+  tone: z.enum(PUBLIC_NARRATION_TONE_TAGS),
+  selections: z.array(z.object({
+    entityId: z.string().trim().min(1).max(300),
+    reasonCodes: z.array(z.string().trim().min(1).max(200)).min(1).max(6)
+  }).strict()).min(1).max(3),
+  runReasonCodes: z.array(z.string().trim().min(1).max(200)).max(4)
+}).strict().superRefine((plan, context) => {
+  if (new Set(plan.selections.map((selection) => selection.entityId)).size !== plan.selections.length) {
+    context.addIssue({ code: 'custom', message: 'duplicate entityIds' });
+  }
+  for (const selection of plan.selections) {
+    if (new Set(selection.reasonCodes).size !== selection.reasonCodes.length) {
+      context.addIssue({ code: 'custom', message: 'duplicate reasonCodes' });
+    }
+  }
+  if (new Set(plan.runReasonCodes).size !== plan.runReasonCodes.length) {
+    context.addIssue({ code: 'custom', message: 'duplicate runReasonCodes' });
+  }
+});
+
+export type SelectionJourneyNarrationPlan = z.infer<typeof narrationPlanSchema>;
+
+export type SelectionNarrationEntity = {
+  id: string;
+  name: string;
+  artist: string;
+};
+
+export type SelectionJourneyNarrationFacts = {
+  runId: string;
+  journeyVersion: number;
+  summary: string;
+  djPersona: string;
+  toneTags: string[];
+  selectionReasonOptions: Array<{ entityId: string; allowedReasonCodes: SelectionReasonCode[] }>;
+  runReasonCodes: SelectionReasonCode[];
+  stages: SelectionJourneySnapshot['stages'];
+  candidates: SelectionJourneySnapshot['candidates'];
+  selections: SelectionJourneySnapshot['selections'];
+};
+
+const NARRATABLE_SELECTION_ACTIONS = new Set([
+  'admitted',
+  'recalled',
+  'promoted',
+  'ranked',
+  'selected'
+]);
+
+// These reasons describe the whole completed batch when the Trace records them
+// without a candidateId. Candidate-scoped occurrences never cross entities.
+const NARRATABLE_RUN_REASON_CODES = new Set<SelectionReasonCode>([
+  'batch_selected',
+  'queue_target_reached'
+]);
+
+export type SelectionJourneyNarrationClient = {
+  complete(messages: LlmMessage[], options?: LlmCompleteOptions): Promise<LlmResponse>;
+};
+
+export function buildSelectionJourneyNarrationFacts(input: {
+  journey: SelectionJourneySnapshot;
+  trace: SelectionDecisionTrace;
+  djPersona: string;
+  toneTags: string[];
+  entityWhitelist: SelectionNarrationEntity[];
+}): SelectionJourneyNarrationFacts {
+  const journey = selectionJourneySnapshotSchema.parse(input.journey);
+  const trace = selectionDecisionTraceSchema.parse(input.trace);
+  if (journey.runId !== trace.runId) throw new Error('narration_trace_run_mismatch');
+
+  const whitelist = new Map(input.entityWhitelist.map((entity) => [entity.id, entity]));
+  for (const candidate of journey.candidates) {
+    assertWhitelistedEntity(candidate.id, candidate.name, candidate.artist, whitelist);
+  }
+  for (const selection of journey.selections) {
+    assertWhitelistedEntity(selection.trackId, selection.trackName, selection.artist, whitelist);
+    if (!trace.decisions.some((decision) => (
+      decision.stage === 'final'
+      && decision.action === 'selected'
+      && decision.candidateId === selection.trackId
+    ))) {
+      throw new Error('narration_selection_not_in_trace');
+    }
+  }
+
+  const traceReasons = new Set(trace.decisions.map((decision) => decision.reasonCode));
+  for (const reasonCode of journey.stages.flatMap((stage) => stage.reasonCodes)) {
+    if (!traceReasons.has(reasonCode)) throw new Error('narration_reason_not_in_trace');
+  }
+
+  const selectionReasonOptions = journey.selections.map((selection) => ({
+    entityId: selection.trackId,
+    allowedReasonCodes: [...new Set(trace.decisions.flatMap((decision) => (
+      decision.candidateId === selection.trackId
+      && NARRATABLE_SELECTION_ACTIONS.has(decision.action)
+      && isPublicSelectionReasonCode(decision.reasonCode)
+        ? [decision.reasonCode]
+        : []
+    )))]
+  }));
+  const runReasonCodes = [...new Set(trace.decisions.flatMap((decision) => (
+    decision.candidateId === undefined
+      && isPublicSelectionReasonCode(decision.reasonCode)
+      && NARRATABLE_RUN_REASON_CODES.has(decision.reasonCode)
+      ? [decision.reasonCode]
+      : []
+  )))];
+
+  return {
+    runId: journey.runId,
+    journeyVersion: journey.journeyVersion,
+    summary: journey.summary,
+    djPersona: input.djPersona.trim().slice(0, 4_000),
+    toneTags: [...new Set(input.toneTags.filter((tag) => publicToneTags.has(tag)))].slice(0, 6),
+    selectionReasonOptions,
+    runReasonCodes,
+    stages: structuredClone(journey.stages),
+    candidates: structuredClone(journey.candidates),
+    selections: structuredClone(journey.selections)
+  };
+}
+
+export async function narrateSelectionJourney(input: {
+  client: SelectionJourneyNarrationClient;
+  journey: SelectionJourneySnapshot;
+  trace: SelectionDecisionTrace;
+  djPersona: string;
+  toneTags: string[];
+  entityWhitelist: SelectionNarrationEntity[];
+  signal?: AbortSignal;
+}): Promise<string> {
+  const facts = buildSelectionJourneyNarrationFacts(input);
+  const response = await input.client.complete(buildNarrationMessages(facts), {
+    temperature: 0.7,
+    maxTokens: 300,
+    responseFormat: { type: 'json_object' },
+    thinking: { type: 'disabled' },
+    signal: input.signal
+  });
+  const plan = parseNarrationPlan(response.content);
+  validateNarrationPlan(plan, facts);
+  const rendered = narrationTextSchema.safeParse(renderNarrationPlan(plan, facts));
+  if (!rendered.success) throw new Error('invalid_narration_plan');
+  return rendered.data;
+}
+
+function buildNarrationMessages(facts: SelectionJourneyNarrationFacts): LlmMessage[] {
+  return [
+    {
+      role: 'system',
+      content: [
+        '你是 Crossfadio 的 DJ 手记编辑。',
+        '你只负责从受控选项中编排一份手记计划，正文由服务端渲染。',
+        `template 只能是：${SELECTION_NARRATION_TEMPLATES.join(', ')}。`,
+        `tone 只能是：${PUBLIC_NARRATION_TONE_TAGS.join(', ')}。`,
+        'selections[].entityId 只能选择 selectionReasonOptions 中真实存在的 entityId。',
+        '每个 selections[].reasonCodes 只能选择同一 entityId 的 allowedReasonCodes，不能跨歌曲借用理由。',
+        'runReasonCodes 只能选择顶层 runReasonCodes 列表中的原值。',
+        '只输出严格 JSON：{"template":"...","tone":"...","selections":[{"entityId":"...","reasonCodes":["..."]}],"runReasonCodes":[]}。',
+        '不得输出自由文本、额外字段、实体名称、生活信息或推理过程。'
+      ].join('\n')
+    },
+    {
+      role: 'user',
+      content: JSON.stringify(facts)
+    }
+  ];
+}
+
+function parseNarrationPlan(content: string): SelectionJourneyNarrationPlan {
+  let decoded: unknown;
+  try {
+    decoded = JSON.parse(content);
+  } catch {
+    throw new Error('invalid_narration_plan');
+  }
+  const parsed = narrationPlanSchema.safeParse(decoded);
+  if (!parsed.success) throw new Error('invalid_narration_plan');
+  return parsed.data;
+}
+
+function validateNarrationPlan(
+  plan: SelectionJourneyNarrationPlan,
+  facts: SelectionJourneyNarrationFacts
+): void {
+  const allowedReasonsByEntity = new Map(facts.selectionReasonOptions.map((option) => (
+    [option.entityId, new Set(option.allowedReasonCodes)]
+  )));
+  for (const selection of plan.selections) {
+    const allowedReasons = allowedReasonsByEntity.get(selection.entityId);
+    if (!allowedReasons) throw new Error('narration_entity_not_whitelisted');
+    if (selection.reasonCodes.some((reasonCode) => (
+      !isPublicSelectionReasonCode(reasonCode) || !allowedReasons.has(reasonCode)
+    ))) {
+      throw new Error('narration_reason_not_allowed_for_entity');
+    }
+  }
+  const allowedRunReasons = new Set(facts.runReasonCodes);
+  if (plan.runReasonCodes.some((reasonCode) => (
+    !isPublicSelectionReasonCode(reasonCode) || !allowedRunReasons.has(reasonCode)
+  ))) {
+    throw new Error('narration_run_reason_not_allowed');
+  }
+}
+
+function renderNarrationPlan(
+  plan: SelectionJourneyNarrationPlan,
+  facts: SelectionJourneyNarrationFacts
+): string {
+  const selectionById = new Map(facts.selections.map((selection) => [selection.trackId, selection]));
+  const selectedFacts = plan.selections.map((plannedSelection) => {
+    const selection = selectionById.get(plannedSelection.entityId)!;
+    return { selection, reasonCodes: plannedSelection.reasonCodes };
+  });
+  const entities = selectedFacts.map(({ selection }) => {
+    return `「${selection.trackName}」${selection.artist ? `— ${selection.artist}` : ''}`;
+  });
+  const entityText = entities.join('、');
+  const reasonText = renderNarrationReasons(selectedFacts, plan.runReasonCodes);
+
+  if (plan.template === 'track_spotlight') {
+    return `${toneLead(plan.tone)}${entities[0]}放到这一轮的中心。${reasonText}，接下来让它带着队列继续往前。`;
+  }
+  if (plan.template === 'journey_recap') {
+    return `从候选一路筛到最后，这轮留下了${entityText}。${reasonText}，这就是这次选择想保留的听感。`;
+  }
+  return `${toneLead(plan.tone)}${entityText}自然地接进队列。${reasonText}，希望这一段既顺耳，也保留一点被认真挑过的惊喜。`;
+}
+
+function renderNarrationReasons(
+  selections: Array<{
+    selection: SelectionJourneySnapshot['selections'][number];
+    reasonCodes: string[];
+  }>,
+  runReasonCodes: string[]
+): string {
+  const selectionText = selections.length === 1
+    ? renderReasonCodes(selections[0]!.reasonCodes)
+    : selections.map(({ selection, reasonCodes }) => (
+      `「${selection.trackName}」是因为${renderReasonCodes(reasonCodes)}`
+    )).join('；');
+  const runText = renderReasonCodes(runReasonCodes);
+  return [selectionText, runText].filter(Boolean).join('，同时');
+}
+
+function toneLead(tone: SelectionJourneyNarrationPlan['tone']): string {
+  return ({
+    warm: '这轮想把',
+    playful: '这轮就把',
+    calm: '这轮会把',
+    crisp: '这轮把',
+    reflective: '回看这一轮，我把',
+    energetic: '这轮先把'
+  } as const)[tone];
+}
+
+function renderReasonCodes(reasonCodes: string[]): string {
+  const phrases = reasonCodes.flatMap((reasonCode) => (
+    isPublicSelectionReasonCode(reasonCode)
+      ? [publicSelectionReasonCopy(reasonCode).replace(/[。！？!?]+$/u, '')]
+      : []
+  ));
+  return [...new Set(phrases)].slice(0, 2).join('，也');
+}
+
+function assertWhitelistedEntity(
+  id: string,
+  name: string,
+  artist: string,
+  whitelist: Map<string, SelectionNarrationEntity>
+): void {
+  const allowed = whitelist.get(id);
+  if (!allowed || allowed.name !== name || allowed.artist !== artist) {
+    throw new Error('narration_entity_not_whitelisted');
+  }
+}

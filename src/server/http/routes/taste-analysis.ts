@@ -1,13 +1,12 @@
-import fs from 'node:fs';
-import path from 'node:path';
+import { createHash } from 'node:crypto';
 import type { Request, Response } from 'express';
-import { resolveUserDir } from '../../app-paths.js';
 import { resolveLlmConfig } from '../../llm/config.js';
 import { LlmClient, type LlmMessage } from '../../llm/client.js';
 import type { NcmClient } from '../../ncm/client.js';
 import { getLogger } from '../../logger.js';
 import { getPref, setPref } from '../../store/prefs.js';
 import { NCM_ERROR_CODE } from '../../../shared/schema.js';
+import { saveTasteProfile } from '../../store/taste-profiles.js';
 
 type AuthedRequest = Request & { userId: string; ncmClient: NcmClient };
 
@@ -15,7 +14,7 @@ const LIKED_DETAIL_BATCH_SIZE = 200;
 const TASTE_ANALYSIS_CHUNK_SIZE = 200;
 const DEFAULT_TASTE_ANALYSIS_TIMEOUT_MS = 60_000;
 
-const SYSTEM_PROMPT = `你是一个音乐品味分析师和 AI DJ 顾问。根据用户的红心（收藏）歌曲列表，分析用户音乐偏好，并输出一份可直接保存到 taste.md、供 DJ 后续选歌使用的结构化品味档案。
+const SYSTEM_PROMPT = `你是一个音乐品味分析师和 AI DJ 顾问。根据用户的红心（收藏）歌曲列表，分析用户音乐偏好，并输出一份供 DJ 后续选歌使用的结构化品味档案。
 
 分析要求：
 - 只基于歌曲名、艺人和可观察到的聚类信号推断，不要编造用户未表现出的偏好。
@@ -101,16 +100,22 @@ export async function runTasteAnalysis(userId: string, ncmClient: NcmClient): Pr
       : await analyzeLargeTasteLibrary(client, ids.length, songs);
     const taste = result.content.trim();
 
-    // 4. Save to user corpus taste.md
-    const userDir = resolveUserDir(userId);
-    if (!fs.existsSync(userDir)) {
-      fs.mkdirSync(userDir, { recursive: true });
-    }
-    fs.writeFileSync(path.join(userDir, 'taste.md'), taste, 'utf-8');
+    saveTasteProfile({
+      userId,
+      profile: {
+        summary: taste,
+        likedCount: ids.length,
+        analyzedCount: songs.length
+      },
+      sourceKind: 'liked_library',
+      sourceLibraryHash: createHash('sha256')
+        .update([...ids].sort().join('\n'))
+        .digest('hex')
+    });
 
     logger.info(
       { userId, likedCount: ids.length, analyzedCount: songs.length, batchSize: LIKED_DETAIL_BATCH_SIZE },
-      'Taste analysis completed and saved'
+      'Taste analysis completed and saved as Taste Profile'
     );
     return taste;
   } catch (err) {

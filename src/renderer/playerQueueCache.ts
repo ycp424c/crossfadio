@@ -1,29 +1,35 @@
 import type { QueueTrackDto } from '@shared/schema';
 
-export const PLAYER_QUEUE_STORAGE_KEY = 'crossfadio.player.queue.v1';
+export const PLAYER_QUEUE_STORAGE_KEY = 'crossfadio.player.queue.v2';
 export const PLAYER_QUEUE_RESTORE_LIMIT = 100;
-export const PLAYER_QUEUE_STORAGE_TTL_MS = 12 * 60 * 60 * 1000;
+export const PLAYER_QUEUE_STORAGE_TTL_MS = 24 * 60 * 60 * 1000;
 
 export type PersistedQueueSnapshot = {
   queue: QueueTrackDto[];
   currentIndex: number;
 };
 
+export function getPlayerQueueStorageKey(userId: string): string {
+  return `${PLAYER_QUEUE_STORAGE_KEY}.${encodeURIComponent(userId)}`;
+}
+
 type StoredQueueSnapshot = Partial<PersistedQueueSnapshot> & {
   savedAt?: unknown;
 };
 
 export function restorePersistedQueueSnapshot(
+  userId: string,
   storage: Storage = localStorage,
   nowMs = Date.now()
 ): PersistedQueueSnapshot | null {
+  const storageKey = getPlayerQueueStorageKey(userId);
   try {
-    const raw = storage.getItem(PLAYER_QUEUE_STORAGE_KEY);
+    const raw = storage.getItem(storageKey);
     if (!raw) return null;
 
     const parsed = JSON.parse(raw) as StoredQueueSnapshot;
     if (isExpiredSnapshot(parsed.savedAt, nowMs)) {
-      storage.removeItem(PLAYER_QUEUE_STORAGE_KEY);
+      storage.removeItem(storageKey);
       return null;
     }
 
@@ -35,32 +41,34 @@ export function restorePersistedQueueSnapshot(
 
     const snapshot = buildRestoreWindow(queue, parsed.currentIndex);
     if (!snapshot) {
-      storage.removeItem(PLAYER_QUEUE_STORAGE_KEY);
+      storage.removeItem(storageKey);
       return null;
     }
 
     return snapshot;
   } catch {
-    storage.removeItem(PLAYER_QUEUE_STORAGE_KEY);
+    storage.removeItem(storageKey);
     return null;
   }
 }
 
 export function persistQueueSnapshot(
+  userId: string,
   queue: QueueTrackDto[],
   currentIndex: number,
   storage: Storage = localStorage,
   nowMs = Date.now()
 ): void {
+  const storageKey = getPlayerQueueStorageKey(userId);
   try {
     const snapshot = buildRestoreWindow(queue, currentIndex);
     if (!snapshot) {
-      storage.removeItem(PLAYER_QUEUE_STORAGE_KEY);
+      storage.removeItem(storageKey);
       return;
     }
 
     storage.setItem(
-      PLAYER_QUEUE_STORAGE_KEY,
+      storageKey,
       JSON.stringify({ ...snapshot, savedAt: nowMs })
     );
   } catch {

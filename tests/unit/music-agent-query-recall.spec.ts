@@ -56,7 +56,6 @@ describe('MusicAgent query recall', () => {
       context: context(),
       queryPlan: null,
       queryState,
-      avoidArtists: new Set(),
       consumeNcmSearch,
       consumePlaylistFetch: vi.fn(() => true),
       limit: 5
@@ -106,7 +105,6 @@ describe('MusicAgent query recall', () => {
       context: context(),
       queryPlan: null,
       queryState,
-      avoidArtists: new Set<string>(),
       consumeNcmSearch: vi.fn(() => true),
       consumePlaylistFetch: vi.fn(() => true),
       limit: 5
@@ -120,7 +118,7 @@ describe('MusicAgent query recall', () => {
     expect(repeated.problems).toContain('skipped 1 repeated search query in this run');
   });
 
-  it('dedupes explore discovery search against liked ids and weakly penalizes liked artists', async () => {
+  it('keeps liked explore search results observable until Selection Policy', async () => {
     const pool = new CandidatePool();
     pool.upsert(candidate({
       id: 'liked-song',
@@ -152,30 +150,28 @@ describe('MusicAgent query recall', () => {
       context: context({ discoveryMode: 'explore' }),
       queryPlan: null,
       queryState,
-      avoidArtists: new Set(),
       consumeNcmSearch: vi.fn(() => true),
       consumePlaylistFetch: vi.fn(() => true),
       limit: 5
     });
 
-    expect(result.summary).toContain('added 2 candidates');
-    expect(result.problems).toContain('skipped 1 liked tracks from discovery search results');
-    expect(result.problems).toContain('applied weak liked-artist penalty to 1 discovery search candidates');
+    expect(result.summary).toContain('added 3 candidates');
+    expect(result.problems).not.toContain('skipped 1 liked tracks from discovery search results');
     expect(pool.list().map((item) => item.id)).toEqual(['liked-song', 'same-artist-search', 'fresh-search']);
-    expect(pool.get('liked-song')?.sources).toEqual(['liked']);
-    expect(pool.get('same-artist-search')?.scores.recentPenalty).toBeCloseTo(0.04, 5);
-    expect(pool.get('fresh-search')?.scores.recentPenalty).toBe(0);
+    expect(pool.get('liked-song')?.sources).toEqual(['liked', 'search']);
+    expect(pool.get('same-artist-search')?.scores).not.toHaveProperty('recentPenalty');
+    expect(pool.get('fresh-search')?.scores).not.toHaveProperty('recentPenalty');
     expect(queryFunnelSnapshot(queryState)).toEqual([
       expect.objectContaining({
         query: 'Known Song Known Artist',
         resultCount: 3,
         uniqueResultCount: 3,
-        addedCount: 2
+        addedCount: 3
       })
     ]);
   });
 
-  it('still uses liked-only raw search results for artist fallback after explore dedupe', async () => {
+  it('does not invent an artist fallback when liked-only search results remain eligible', async () => {
     const pool = new CandidatePool();
     const queryState = state();
     const ncmClient = ncmClientStub({
@@ -203,28 +199,27 @@ describe('MusicAgent query recall', () => {
       context: context({ discoveryMode: 'explore' }),
       queryPlan: null,
       queryState,
-      avoidArtists: new Set(),
       consumeNcmSearch: vi.fn(() => true),
       consumePlaylistFetch: vi.fn(() => true),
       limit: 5
     });
 
-    expect(result.summary).toContain('artist fallback added 1 candidates from Known Artist');
-    expect(result.problems).toContain('skipped 1 liked tracks from discovery search results');
-    expect(pool.list().map((item) => item.id)).toEqual(['fresh-fallback']);
-    expect(ncmClient.searchArtists).toHaveBeenCalledWith('Known Artist', 3);
-    expect(ncmClient.getArtistTopSongs).toHaveBeenCalledWith('artist-1');
+    expect(result.summary).toContain('added 1 candidates');
+    expect(result.problems).not.toContain('skipped 1 liked tracks from discovery search results');
+    expect(pool.list().map((item) => item.id)).toEqual(['liked-song']);
+    expect(ncmClient.searchArtists).not.toHaveBeenCalled();
+    expect(ncmClient.getArtistTopSongs).not.toHaveBeenCalled();
     expect(queryFunnelSnapshot(queryState)).toEqual([
       expect.objectContaining({
         query: 'Only Liked Known Artist',
         resultCount: 1,
         uniqueResultCount: 1,
-        addedCount: 0
+        addedCount: 1
       })
     ]);
   });
 
-  it('falls back to id-only explore liked dedupe when liked detail profile fails', async () => {
+  it('does not load a parallel liked profile before explore search admission', async () => {
     const pool = new CandidatePool();
     const queryState = state();
     const ncmClient = ncmClientStub({
@@ -249,26 +244,24 @@ describe('MusicAgent query recall', () => {
       context: context({ discoveryMode: 'explore' }),
       queryPlan: null,
       queryState,
-      avoidArtists: new Set(),
       consumeNcmSearch: vi.fn(() => true),
       consumePlaylistFetch: vi.fn(() => true),
       limit: 5
     });
 
-    expect(result.summary).toContain('added 1 candidates');
-    expect(result.problems).toContain('liked artist profile unavailable: detail timeout');
-    expect(result.problems).toContain('skipped 1 liked tracks from discovery search results');
-    expect(result.problems).not.toContain('applied weak liked-artist penalty to 1 discovery search candidates');
-    expect(ncmClient.getLikedSongIds).toHaveBeenCalledTimes(1);
-    expect(ncmClient.getSongDetails).toHaveBeenCalledTimes(1);
-    expect(pool.list().map((item) => item.id)).toEqual(['same-artist-search']);
-    expect(pool.get('same-artist-search')?.scores.recentPenalty).toBe(0);
+    expect(result.summary).toContain('added 2 candidates');
+    expect(result.problems).not.toContain('liked artist profile unavailable');
+    expect(result.problems).not.toContain('skipped 1 liked tracks from discovery search results');
+    expect(ncmClient.getLikedSongIds).not.toHaveBeenCalled();
+    expect(ncmClient.getSongDetails).not.toHaveBeenCalled();
+    expect(pool.list().map((item) => item.id)).toEqual(['liked-song', 'same-artist-search']);
+    expect(pool.get('same-artist-search')?.scores).not.toHaveProperty('recentPenalty');
     expect(queryFunnelSnapshot(queryState)).toEqual([
       expect.objectContaining({
         query: 'Liked Song Liked Artist',
         resultCount: 2,
         uniqueResultCount: 2,
-        addedCount: 1
+        addedCount: 2
       })
     ]);
   });
@@ -297,7 +290,6 @@ describe('MusicAgent query recall', () => {
       context: context({ discoveryMode: 'comfort' }),
       queryPlan: null,
       queryState,
-      avoidArtists: new Set(),
       consumeNcmSearch: vi.fn(() => true),
       consumePlaylistFetch: vi.fn(() => true),
       limit: 5
@@ -306,6 +298,45 @@ describe('MusicAgent query recall', () => {
     expect(ncmClient.getLikedSongIds).not.toHaveBeenCalled();
     expect(pool.list().map((item) => item.id)).toEqual(['liked-song']);
     expect(pool.get('liked-song')?.sources).toEqual(['search']);
+  });
+
+  it('returns alternative_query_required when autonomous retrieval history blocks every query', async () => {
+    const { appendRetrievalAttempts } = await import('../../src/server/store/retrieval-attempts.js');
+    appendRetrievalAttempts({
+      userId: 'query-history-user',
+      runId: 'previous-run',
+      requestKind: 'autonomous',
+      attemptedAt: new Date(Date.now() - 10 * 60 * 1_000),
+      entries: [{
+        query: 'Repeat Song Repeat Artist',
+        normalizedQuery: 'repeat song repeat artist',
+        source: 'search',
+        searchedCount: 1,
+        resultCount: 4,
+        addedCount: 1,
+        selectedCount: 0,
+      }],
+    });
+    const searchSongs = vi.fn(async () => []);
+
+    const result = await runRecallFromQueries({
+      queries: ['Repeat Song Repeat Artist'],
+      source: 'search',
+      evidencePrefix: '网易云搜索',
+      scores: scores(),
+      userId: 'query-history-user',
+      ncmClient: ncmClientStub({ searchSongs }),
+      candidatePool: new CandidatePool(),
+      context: context({ request: 'auto-fill' }),
+      queryPlan: null,
+      queryState: state(),
+      consumeNcmSearch: vi.fn(() => true),
+      consumePlaylistFetch: vi.fn(() => true),
+      limit: 5,
+    });
+
+    expect(searchSongs).not.toHaveBeenCalled();
+    expect(result.problems).toContain('alternative_query_required');
   });
 });
 
@@ -349,8 +380,6 @@ function scores(): MusicCandidateScores {
     timeFit: 0.7,
     contextFit: 0.5,
     novelty: 0.5,
-    recentPenalty: 0,
-    skipPenalty: 0,
     sourceConfidence: 0.7
   };
 }

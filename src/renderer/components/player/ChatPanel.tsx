@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Send, Loader2, MessageCircle } from 'lucide-react';
-import { streamChat } from '@renderer/sse/client';
+import { addSseListener, streamChat } from '@renderer/sse/client';
 import { getRecentChatMessages } from '@renderer/api';
 
 type Message = {
@@ -20,17 +20,45 @@ function appendMessages(prev: Message[], next: Message[]): Message[] {
   return combined.length > MAX_MESSAGES ? combined.slice(combined.length - MAX_MESSAGES) : combined;
 }
 
-export function ChatPanel({ onRecommendEvent }: { onRecommendEvent?: (evt: RecommendEvent) => void }): JSX.Element {
+function appendIntentNotice(prev: Message[], data: unknown): Message[] {
+  const payload = data && typeof data === 'object' ? data as Record<string, unknown> : {};
+  const text = typeof payload.message === 'string' ? payload.message.trim() : '';
+  if (!text) return prev;
+  const notice: Message = { id: ++msgId, role: 'dj', text };
+  const last = prev[prev.length - 1];
+  return last?.pending
+    ? [...prev.slice(0, -1), notice, last]
+    : appendMessages(prev, [notice]);
+}
+
+export function ChatPanel({
+  authToken,
+  onRecommendEvent
+}: {
+  authToken: string | null;
+  onRecommendEvent?: (evt: RecommendEvent) => void;
+}): JSX.Element {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [sending, setSending] = useState(false);
   const bottomRef = useRef<HTMLDivElement | null>(null);
-  const historyLoadedRef = useRef(false);
+  const accountGenerationRef = useRef(0);
 
   useEffect(() => {
-    if (historyLoadedRef.current) return;
-    historyLoadedRef.current = true;
-    void getRecentChatMessages(50).then((msgs) => {
+    const generation = ++accountGenerationRef.current;
+    setMessages([]);
+    setInput('');
+    setSending(false);
+    if (!authToken) return;
+
+    const unsubscribe = addSseListener((type, data, eventToken) => {
+      if (accountGenerationRef.current !== generation || eventToken !== authToken) return;
+      if (type === 'chat.intent.notice') {
+        setMessages((prev) => appendIntentNotice(prev, data));
+      }
+    });
+    void getRecentChatMessages(50, { authToken }).then((msgs) => {
+      if (accountGenerationRef.current !== generation) return;
       const historical: Message[] = msgs
         .filter((m) => m.role === 'user' || m.role === 'assistant')
         .map((m) => ({
@@ -44,7 +72,8 @@ export function ChatPanel({ onRecommendEvent }: { onRecommendEvent?: (evt: Recom
     }).catch(() => {
       // History load is best-effort
     });
-  }, []);
+    return unsubscribe;
+  }, [authToken]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -52,7 +81,9 @@ export function ChatPanel({ onRecommendEvent }: { onRecommendEvent?: (evt: Recom
 
   async function handleSend(): Promise<void> {
     const text = input.trim();
-    if (!text || sending) return;
+    if (!text || sending || !authToken) return;
+    const generation = accountGenerationRef.current;
+    const requestToken = authToken;
     const thinkingId = ++msgId;
     setMessages((prev) => appendMessages(prev, [
       { id: ++msgId, role: 'user', text },
@@ -62,7 +93,8 @@ export function ChatPanel({ onRecommendEvent }: { onRecommendEvent?: (evt: Recom
     setSending(true);
 
     try {
-      for await (const { type, data } of streamChat(text)) {
+      for await (const { type, data } of streamChat(text, requestToken)) {
+        if (accountGenerationRef.current !== generation) break;
         if (type === 'chat.delta') {
           const delta = String(data.say ?? '');
           setMessages((prev) => {
@@ -75,6 +107,8 @@ export function ChatPanel({ onRecommendEvent }: { onRecommendEvent?: (evt: Recom
             }
             return [...prev, { id: ++msgId, role: 'dj', text: delta, pending: true, phase: 'streaming' }];
           });
+        } else if (type === 'chat.intent.notice') {
+          setMessages((prev) => appendIntentNotice(prev, data));
         } else if (type === 'chat.done') {
           setMessages((prev) => {
             const last = prev[prev.length - 1];
@@ -108,6 +142,7 @@ export function ChatPanel({ onRecommendEvent }: { onRecommendEvent?: (evt: Recom
         }
       }
     } catch {
+      if (accountGenerationRef.current !== generation) return;
       setMessages((prev) => {
         const last = prev[prev.length - 1];
         if (last?.pending) {
@@ -122,7 +157,7 @@ export function ChatPanel({ onRecommendEvent }: { onRecommendEvent?: (evt: Recom
         ];
       });
     } finally {
-      setSending(false);
+      if (accountGenerationRef.current === generation) setSending(false);
     }
   }
 
@@ -170,11 +205,11 @@ export function ChatPanel({ onRecommendEvent }: { onRecommendEvent?: (evt: Recom
           onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); } }}
           placeholder="告诉 DJ 你的心情…"
           className="flex-1 rounded-lg bg-zinc-800 px-3 py-2 text-sm text-zinc-100 placeholder-zinc-500 outline-none focus:ring-1 focus:ring-indigo-500"
-          disabled={sending}
+          disabled={sending || !authToken}
         />
         <button
           onClick={handleSend}
-          disabled={sending || !input.trim()}
+          disabled={sending || !authToken || !input.trim()}
           className="rounded-lg p-2 text-indigo-400 hover:bg-zinc-800 disabled:opacity-40 transition"
         >
           {sending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}

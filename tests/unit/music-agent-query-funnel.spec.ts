@@ -49,7 +49,12 @@ describe('MusicAgent query funnel', () => {
   });
 
   it('persists selected counts through the provided recorder', () => {
-    const state = createQueryFunnelState();
+    const attemptedAt = new Date('2026-07-17T03:00:00.000Z');
+    const state = createQueryFunnelState({
+      runId: 'run-1',
+      requestKind: 'autonomous',
+      attemptedAt,
+    });
     const recorder = vi.fn();
 
     recordQueryFunnelSearch(state, {
@@ -62,9 +67,13 @@ describe('MusicAgent query funnel', () => {
     });
     recordFinalQueryFunnel('user-1', state, [{ id: 'sky-1' }], recorder);
 
-    expect(recorder).toHaveBeenCalledWith('user-1', [
-      expect.objectContaining({ selectedCount: 1 })
-    ]);
+    expect(recorder).toHaveBeenCalledWith({
+      userId: 'user-1',
+      runId: 'run-1',
+      requestKind: 'autonomous',
+      attemptedAt,
+      entries: [expect.objectContaining({ selectedCount: 1 })],
+    });
   });
 
   it('normalizes search run keys independently of source and falls back for tracks without ids', () => {

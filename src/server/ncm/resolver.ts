@@ -1,5 +1,7 @@
+import { createHash } from 'node:crypto';
 import type { NcmClient } from './client.js';
 import { getLogger } from '../logger.js';
+import { safeOperationalError } from '../errors/safe-operational-error.js';
 
 type CacheEntry = {
   ncmId: string;
@@ -18,6 +20,45 @@ export type ResolvedTrack = {
   name: string;
   artists: string[];
 };
+
+export type TrackIdentityResolution =
+  | { status: 'resolved'; track: ResolvedTrack }
+  | { status: 'ambiguous' | 'not_found' | 'unavailable' };
+
+export async function resolveTrackIdentity(
+  input: { title: string; artist?: string | null },
+  client: NcmClient,
+  signal?: AbortSignal
+): Promise<TrackIdentityResolution> {
+  const title = input.title.trim();
+  const artist = input.artist?.trim() ?? '';
+  const query = [title, artist].filter(Boolean).join(' ');
+  try {
+    const songs = signal
+      ? await client.searchSongs(query, 10, { signal })
+      : await client.searchSongs(query, 10);
+    const expectedTitle = normalizeIdentityText(title);
+    const expectedArtist = normalizeIdentityText(artist);
+    const matches = [...new Map(songs.flatMap((song) => {
+      const id = String(song.id).trim();
+      const name = song.name?.trim() ?? '';
+      const artists = song.artists?.map((item) => item.trim()).filter(Boolean) ?? [];
+      if (!id || !name || normalizeIdentityText(name) !== expectedTitle) return [];
+      if (expectedArtist && !artists.some((item) => normalizeIdentityText(item) === expectedArtist)) {
+        return [];
+      }
+      return [[id, { ncmId: id, name, artists }] as const];
+    })).values()];
+    if (matches.length === 1) return { status: 'resolved', track: matches[0]! };
+    return { status: matches.length > 1 ? 'ambiguous' : 'not_found' };
+  } catch (err) {
+    getLogger().warn({
+      error: safeOperationalError(err, 'track_identity_resolution_failed'),
+      queryHash: hashQuery(query)
+    }, 'Failed to resolve exact track identity');
+    return { status: 'unavailable' };
+  }
+}
 
 /**
  * Resolves a track query string ("歌名 — 艺人名") to NCM song ID + metadata.
@@ -57,7 +98,10 @@ export async function resolveTrackQuery(
     cache.set(key, entry);
     return { ncmId: entry.ncmId, name: entry.name, artists: entry.artists };
   } catch (err) {
-    getLogger().warn({ err, query }, 'Failed to resolve track query');
+    getLogger().warn({
+      error: safeOperationalError(err, 'track_query_resolution_failed'),
+      queryHash: hashQuery(query)
+    }, 'Failed to resolve track query');
     return null;
   }
 }
@@ -65,4 +109,12 @@ export async function resolveTrackQuery(
 /** Visible for testing */
 export function clearResolverCache(): void {
   cache.clear();
+}
+
+function normalizeIdentityText(value: string): string {
+  return value.normalize('NFKC').trim().replace(/\s+/g, ' ').toLocaleLowerCase();
+}
+
+function hashQuery(query: string): string {
+  return createHash('sha256').update(query).digest('hex');
 }

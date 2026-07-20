@@ -23,7 +23,6 @@ describe('MusicAgent web hint recall', () => {
       candidatePool: pool,
       context: context({ currentUserText: '探索 city pop' }),
       queryPlan: null,
-      avoidArtists: new Set(),
       consumeNcmSearch,
       consumePlaylistFetch: vi.fn(() => true),
       limit: 2
@@ -40,28 +39,34 @@ describe('MusicAgent web hint recall', () => {
     ]);
   });
 
-  it('filters avoided artists before entity recall', async () => {
+  it('keeps repeated-artist hints available for downstream Policy evaluation', async () => {
     const ncmClient = ncmClientStub({
-      searchArtists: vi.fn(async () => [{ id: 'artist-1', name: 'Repeated Artist' }])
+      searchArtists: vi.fn(async () => [{ id: 'artist-1', name: 'Repeated Artist' }]),
+      getArtistTopSongs: vi.fn(async () => [{
+        id: 'repeated-track',
+        name: 'Repeated Song',
+        artists: ['Repeated Artist']
+      }])
     });
+    const pool = new CandidatePool();
 
     const result = await recallFromWebDiscoveryHints({
       hints: [sourcedHint({ kind: 'artist', name: 'Repeated Artist' })],
       ncmClient,
-      candidatePool: new CandidatePool(),
+      candidatePool: pool,
       context: context({ currentUserText: '探索 city pop' }),
       queryPlan: null,
-      avoidArtists: new Set(['repeated artist']),
       consumeNcmSearch: vi.fn(() => true),
       consumePlaylistFetch: vi.fn(() => true),
       limit: 2
     });
 
     expect(result).toEqual({
-      summary: 'web hint entity recall added 0 candidates from 0 entities.',
-      problems: ['web hint skipped: recently repeated artist Repeated Artist']
+      summary: 'web hint entity recall added 1 candidates from 1 entities.',
+      problems: []
     });
-    expect(ncmClient.searchArtists).not.toHaveBeenCalled();
+    expect(ncmClient.searchArtists).toHaveBeenCalledWith('Repeated Artist', 3);
+    expect(pool.get('repeated-track')).toBeDefined();
   });
 });
 

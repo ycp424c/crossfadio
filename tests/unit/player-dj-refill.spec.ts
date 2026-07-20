@@ -22,7 +22,7 @@ describe('player DJ refill state', () => {
     expect(AUTO_FILL_LOW_WATER_MARK).toBe(5);
   });
 
-  it('deduplicates queue-appended events from the one-shot and persistent SSE streams', () => {
+  it('deduplicates a replayed local append while rebasing an atomic queue snapshot', () => {
     const first = track('new-1', 'New Song');
     const appended = appendQueueTrackIfMissing([track('current', 'Current'), first], first);
 

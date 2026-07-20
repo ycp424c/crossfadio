@@ -39,24 +39,37 @@ export function createPostPersonalDjContextHandler() {
       return;
     }
 
-    const record = getDb().transaction(() => {
-      const saved = savePersonalDjContext({ userId, payload: parsed.data });
-      appendDjEvent({
-        userId,
-        type: 'personal_context_uploaded',
-        correlationId: saved.id,
-        payload: {
-          contextId: saved.id,
-          generatedAt: saved.payload.generatedAt,
-          uploadedAt: saved.uploadedAt,
-          source: {
-            kind: saved.payload.source.kind
-          },
-          musicHintCount: saved.payload.musicHints.length
-        }
-      });
-      return saved;
-    })();
+    let record: ReturnType<typeof savePersonalDjContext>;
+    try {
+      record = getDb().transaction(() => {
+        const saved = savePersonalDjContext({ userId, payload: parsed.data });
+        appendDjEvent({
+          userId,
+          type: 'personal_context_uploaded',
+          correlationId: saved.id,
+          payload: {
+            contextId: saved.id,
+            generatedAt: saved.payload.generatedAt,
+            uploadedAt: saved.uploadedAt,
+            source: {
+              kind: saved.payload.source.kind
+            },
+            musicHintCount: saved.payload.musicHints.length
+          }
+        });
+        return saved;
+      })();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '';
+      if (
+        message === 'personal_dj_context_generated_in_future' ||
+        message === 'personal_dj_context_expired'
+      ) {
+        res.status(400).json({ ok: false, error: message });
+        return;
+      }
+      throw error;
+    }
 
     const retainedHistoryCount = listPersonalDjContexts(userId, 20)
       .filter((item) => item.id !== record.id)

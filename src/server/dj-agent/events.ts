@@ -1,14 +1,13 @@
 import type { MusicAgentRunOutput } from '../music-agent/schema.js';
 import type { QueueTrack } from '../store/queue.js';
 import { appendDjEvent, type DjEventRecord } from '../store/dj-events.js';
-import type { DjContextSnapshot } from './context.js';
-import { defaultDJAgentQueuePort, type DJAgentQueuePort } from './ports.js';
+import type { DjMemorySnapshot } from '../dj-memory/schema.js';
 
 export function appendSelectionStartedEvent(input: {
   userId: string;
   runId: string;
   targetPickCount: number;
-  snapshot: DjContextSnapshot;
+  snapshot: DjMemorySnapshot;
 }): DjEventRecord {
   return appendDjEvent({
     userId: input.userId,
@@ -18,7 +17,7 @@ export function appendSelectionStartedEvent(input: {
     payload: {
       trigger: 'auto_fill',
       targetCount: input.targetPickCount,
-      activeDirective: truncate(input.snapshot.musicSelectionContext.activeDirective, 800) || undefined
+      activeDirective: truncate(input.snapshot.activeDirective?.text, 800) || undefined
     }
   });
 }
@@ -27,19 +26,14 @@ export function appendMusicAgentSelectionEvents(input: {
   userId: string;
   runId: string;
   output: MusicAgentRunOutput;
-  queueBeforeLength: number;
+  appendedTracks: QueueTrack[];
+  queueAfter: QueueTrack[];
   selectionStartedEventId: string;
-  queuePort?: DJAgentQueuePort;
 }): void {
-  if (input.output.status !== 'ok') return;
-
-  const queuePort = input.queuePort ?? defaultDJAgentQueuePort;
-  const queue = queuePort.getQueue(input.userId);
-  const appendedTracks = queue.slice(input.queueBeforeLength);
-  if (appendedTracks.length === 0) return;
+  if (input.output.status !== 'ok' || input.appendedTracks.length === 0) return;
 
   const picksById = new Map(input.output.picks.map((pick) => [pick.id, pick]));
-  const selectionEvents = appendedTracks.map((track, index) => {
+  const selectionEvents = input.appendedTracks.map((track, index) => {
     const pick = picksById.get(track.ncmId);
     return appendDjEvent({
       userId: input.userId,
@@ -68,9 +62,9 @@ export function appendMusicAgentSelectionEvents(input: {
     runId: input.runId,
     payload: {
       action: 'append',
-      trackIds: appendedTracks.map((track) => track.ncmId),
+      trackIds: input.appendedTracks.map((track) => track.ncmId),
       position: 'end',
-      afterQueuePreview: queue.slice(0, 12).map(toQueuePreview)
+      afterQueuePreview: input.queueAfter.slice(0, 12).map(toQueuePreview)
     }
   });
 }

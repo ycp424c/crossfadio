@@ -5,7 +5,7 @@ import {
   type WebMusicDiscoveryInput,
   webMusicDiscoveryInputSchema
 } from './schema.js';
-import { normalizeSearchQuery } from './query-stats.js';
+import { normalizeSearchQuery } from './retrieval-history.js';
 import { countCandidateArtistKeys } from './candidate-admission.js';
 import {
   DEFAULT_WEB_DISCOVERY_HINT_LIMIT,

@@ -1,9 +1,7 @@
 import { finalPickSchema } from './schema.js';
 import {
   areMusicTrackDedupeKeysSimilar,
-  buildMusicTrackDedupeKey,
-  isMusicTrackDedupeKeyExcluded,
-  normalizeMusicTrackToken
+  buildMusicTrackDedupeKey
 } from './dedupe.js';
 import type {
   FinalPick,
@@ -15,21 +13,23 @@ import {
   cloneCandidateProvenance,
   mergeCandidateProvenance
 } from './candidate-provenance.js';
+import { evaluateAdmission as evaluateAdmissionPolicy } from './selection-policy/admission.js';
+import { evaluateFinal } from './selection-policy/final.js';
+import type { SelectionDecisionRecorder } from './selection-policy/decision-trace.js';
+import {
+  toSelectionPolicyCandidate,
+  type SelectionPhaseDecision,
+  type SelectionPolicyContext
+} from './selection-policy/types.js';
+import { primaryArtistKey } from './artists.js';
 
 export interface CandidatePoolOptions {
   maxCandidates?: number;
-  bannedIds?: Set<string> | string[];
-  bannedArtists?: Set<string> | string[];
-  bannedTrackKeys?: Set<string>;
+  selectionPolicyContext?: SelectionPolicyContext;
+  selectionDecisionRecorder?: SelectionDecisionRecorder;
 }
 
-export type CandidatePoolRejectReason =
-  | 'banned_id'
-  | 'banned_dedupe'
-  | 'banned_artist'
-  | 'pool_full';
-
-export type CandidatePoolBanRejectReason = Exclude<CandidatePoolRejectReason, 'pool_full'>;
+export type CandidatePoolRejectReason = 'pool_full';
 
 export type CandidatePoolUpsertResult =
   | { status: 'inserted' }
@@ -43,10 +43,6 @@ type CandidateDedupeInput = {
   artist?: string | null;
 };
 
-type CandidateRejectInput = CandidateDedupeInput & {
-  id?: string | null;
-};
-
 type CandidatePoolEntry = {
   candidate: MusicCandidate;
   dedupeKeys: Set<string>;
@@ -54,20 +50,8 @@ type CandidatePoolEntry = {
 
 export type FinalPickValidationOptions = {
   isCandidateEligible?: (candidate: MusicCandidate) => boolean;
+  policyContext?: SelectionPolicyContext;
 };
-
-function primaryArtist(artist: string | null | undefined): string {
-  const value = artist ?? '';
-
-  return value.split(/\s*(?:\/|,|，|&| feat\.?| ft\.?| with )\s*/i)[0]?.trim() ?? value.trim();
-}
-
-function artistParts(artist: string): string[] {
-  return artist
-    .split(/\s*(?:\/|,|，|&| feat\.?| ft\.?| with )\s*/i)
-    .map((part) => normalizeMusicTrackToken(part))
-    .filter(Boolean);
-}
 
 function cloneCandidate(candidate: MusicCandidate): MusicCandidate {
   return {
@@ -91,8 +75,6 @@ function mergeScores(left: MusicCandidateScores, right: MusicCandidateScores): M
     timeFit: Math.max(left.timeFit, right.timeFit),
     contextFit: Math.max(left.contextFit, right.contextFit),
     novelty: Math.max(left.novelty, right.novelty),
-    recentPenalty: Math.max(left.recentPenalty, right.recentPenalty),
-    skipPenalty: Math.max(left.skipPenalty, right.skipPenalty),
     sourceConfidence: Math.max(left.sourceConfidence, right.sourceConfidence)
   };
 }
@@ -118,9 +100,19 @@ function mergeCandidateQualitySignals(
   const merged: MusicCandidateQualitySignals = { ...existing, ...incoming };
   if (existing.noCopyrightRcmd || incoming.noCopyrightRcmd) merged.noCopyrightRcmd = true;
   if (existing.privilegeToast || incoming.privilegeToast) merged.privilegeToast = true;
+  merged.copyright = stricterCopyright(existing.copyright, incoming.copyright);
   merged.privilegeSt = stricterPrivilegeSt(existing.privilegeSt, incoming.privilegeSt);
   merged.titlePollution = strongerTitlePollution(existing.titlePollution, incoming.titlePollution);
   return merged;
+}
+
+function stricterCopyright(
+  left: MusicCandidateQualitySignals['copyright'],
+  right: MusicCandidateQualitySignals['copyright']
+): MusicCandidateQualitySignals['copyright'] {
+  if (left === undefined) return right;
+  if (right === undefined) return left;
+  return Math.min(left, right);
 }
 
 function stricterPrivilegeSt(
@@ -149,50 +141,41 @@ function qualitySignalsProperty(
 }
 
 export function buildCandidateDedupeKey(candidate: CandidateDedupeInput): string {
-  return buildMusicTrackDedupeKey({ name: candidate.name, artist: primaryArtist(candidate.artist) });
+  return buildMusicTrackDedupeKey({ name: candidate.name, artist: primaryArtistKey(candidate.artist) });
 }
 
 export class CandidatePool {
   private readonly byId = new Map<string, CandidatePoolEntry>();
+  private readonly replayCandidatesById = new Map<string, MusicCandidate>();
   private readonly idByDedupeKey = new Map<string, string>();
   private readonly canonicalIdByAliasId = new Map<string, string>();
-  private readonly bannedIds: Set<string>;
-  private readonly bannedArtists: Set<string>;
-  private readonly bannedTrackKeys: Set<string>;
   private readonly maxCandidates: number;
+  private readonly selectionPolicyContext: SelectionPolicyContext;
+  private readonly selectionDecisionRecorder: SelectionDecisionRecorder | undefined;
 
   constructor(options: CandidatePoolOptions = {}) {
     this.maxCandidates = options.maxCandidates ?? Number.POSITIVE_INFINITY;
-    this.bannedIds = new Set(options.bannedIds ?? []);
-    this.bannedArtists = new Set(Array.from(options.bannedArtists ?? []).map((artist) => normalizeMusicTrackToken(artist)));
-    this.bannedTrackKeys = new Set(options.bannedTrackKeys ?? []);
+    this.selectionPolicyContext = options.selectionPolicyContext
+      ?? { mode: 'autonomous', explicitlyRequested: false };
+    this.selectionDecisionRecorder = options.selectionDecisionRecorder;
   }
 
-  rejectReasonForTrack(input: CandidateRejectInput): CandidatePoolBanRejectReason | null {
-    const id = input.id === undefined || input.id === null ? '' : String(input.id).trim();
-    if (id && this.bannedIds.has(id)) {
-      return 'banned_id';
-    }
-
-    const name = input.name?.trim() ?? '';
-    const artist = input.artist?.trim() ?? '';
-    const dedupeKey = buildCandidateDedupeKey({ name, artist });
-    if (isMusicTrackDedupeKeyExcluded(dedupeKey, this.bannedTrackKeys)) {
-      return 'banned_dedupe';
-    }
-
-    return artist && artistParts(artist).some((artistPart) => this.bannedArtists.has(artistPart))
-      ? 'banned_artist'
-      : null;
+  evaluateAdmission(candidate: MusicCandidate): SelectionPhaseDecision {
+    const existingReplayCandidate = this.replayCandidatesById.get(candidate.id);
+    this.replayCandidatesById.set(
+      candidate.id,
+      existingReplayCandidate ? mergeCandidate(existingReplayCandidate, candidate) : cloneCandidate(candidate)
+    );
+    const decision = evaluateAdmissionPolicy({
+      candidate: toSelectionPolicyCandidate(candidate),
+      context: this.selectionPolicyContext
+    });
+    this.selectionDecisionRecorder?.record({ candidateId: candidate.id, decision });
+    return decision;
   }
 
   upsert(candidate: MusicCandidate): CandidatePoolUpsertResult {
     const dedupeKey = buildCandidateDedupeKey(candidate);
-    const rejectReason = this.rejectReason(candidate);
-
-    if (rejectReason) {
-      return { status: 'rejected', reason: rejectReason };
-    }
 
     const existingById = this.byId.get(candidate.id);
     const canonicalId = this.resolveCanonicalId(candidate.id);
@@ -257,6 +240,14 @@ export class CandidatePool {
     return [...this.byId.values()].map((entry) => cloneCandidate(entry.candidate));
   }
 
+  replayCandidates(): MusicCandidate[] {
+    const candidates = new Map(
+      [...this.replayCandidatesById.entries()].map(([id, candidate]) => [id, cloneCandidate(candidate)])
+    );
+    for (const candidate of this.list()) candidates.set(candidate.id, candidate);
+    return [...candidates.values()];
+  }
+
   count(): number {
     return this.byId.size;
   }
@@ -303,6 +294,16 @@ export class CandidatePool {
         throw new Error(`Final pick ${parsedPick.id} source mismatch: ${parsedPick.source}`);
       }
 
+      const finalDecision = evaluateFinal({
+        candidate: toSelectionPolicyCandidate(candidate),
+        context: options.policyContext ?? { mode: 'autonomous', explicitlyRequested: false }
+      });
+      if (finalDecision.action === 'reject') {
+        throw new Error(
+          `Final pick ${parsedPick.id} is not policy eligible: ${finalDecision.reasonCodes.join(', ')}`
+        );
+      }
+
       if (options.isCandidateEligible && !options.isCandidateEligible(cloneCandidate(candidate))) {
         throw new Error(`Final pick ${parsedPick.id} is not eligible for final selection`);
       }
@@ -312,7 +313,8 @@ export class CandidatePool {
         id: canonicalId,
         name: candidate.name,
         artist: candidate.artist,
-        reason
+        reason,
+        ...(candidate.qualitySignals ? { qualitySignals: { ...candidate.qualitySignals } } : {})
       };
     });
   }
@@ -349,10 +351,6 @@ export class CandidatePool {
     for (const key of from.dedupeKeys) {
       this.addDedupeKey(to, id, key);
     }
-  }
-
-  private rejectReason(candidate: MusicCandidate): CandidatePoolRejectReason | null {
-    return this.rejectReasonForTrack(candidate);
   }
 
   private findDedupedId(dedupeKey: string): string | undefined {

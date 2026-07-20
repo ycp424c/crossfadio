@@ -27,6 +27,41 @@ class FakeLlmClient implements MusicAgentLlmClient {
   }
 }
 
+async function selectionAdapterFixture(
+  request: 'auto-fill' | 'chat-recommend',
+  tasteSummary = ''
+) {
+  const [{ createMusicAgentSelectionAdapter }, { djMemorySnapshotSchema }] = await Promise.all([
+    import('../../src/server/dj-memory/music-agent-adapter.js'),
+    import('../../src/server/dj-memory/schema.js')
+  ]);
+  const snapshot = djMemorySnapshotSchema.parse({
+    metadata: {
+      schemaVersion: 1,
+      snapshotId: `snapshot-${request}`,
+      userId: 'fixture-user',
+      assembledAt: '2026-07-17T04:00:00.000Z',
+      sources: []
+    },
+    queue: { currentTrack: null, upcoming: [] },
+    listeningEpisodes: [],
+    preferences: [],
+    tasteProfile: tasteSummary
+      ? { id: 'taste-fixture', version: 1, summary: tasteSummary, generatedAt: '2026-07-17T03:00:00.000Z' }
+      : null,
+    activeDirective: null,
+    explicitExclusions: [],
+    temporaryExclusions: [],
+    personalContext: null,
+    retrievalHistory: [],
+    configuration: [],
+    sessionLog: [],
+    currentMoment: { iso: '2026-07-17T04:00:00.000Z', localTime: '12:00', daypart: '中午' },
+    weather: null
+  });
+  return createMusicAgentSelectionAdapter({ snapshot, request });
+}
+
 beforeEach(async () => {
   vi.resetModules();
   dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'crossfadio-music-agent-integration-'));
@@ -45,6 +80,31 @@ afterEach(() => {
 });
 
 describe('MusicAgent facade', () => {
+  it('uses the memory snapshot adapter even when a legacy context is smuggled into the call', async () => {
+    const fake = new FakeLlmClient().queueResponse(JSON.stringify({
+      type: 'final', say: '没有候选', picks: [], rejected: []
+    }));
+    const { MusicAgent } = await import('../../src/server/music-agent/index.js');
+    const agent = new MusicAgent({ llmClient: fake });
+    const selectionAdapter = await selectionAdapterFixture('chat-recommend', 'snapshot-only-taste');
+
+    await agent.recommendFromChat({
+      userId: 'shared-snapshot-chat',
+      ncmClient: {} as any,
+      userText: '来点清新的',
+      selectionAdapter,
+      context: {
+        request: 'chat-recommend', discoveryMode: 'explore', currentUserText: '来点清新的',
+        currentMoment: { localTime: '12:00', daypart: '中午', weather: null },
+        activeDirective: '', tasteSummary: 'legacy-context-must-not-win', recentPreferenceSummary: '',
+        recentPlaySignals: '', queueStateSummary: '', bannedSummary: ''
+      }
+    } as any);
+
+    expect(JSON.stringify(fake.completeCalls[0]?.messages)).toContain('snapshot-only-taste');
+    expect(JSON.stringify(fake.completeCalls[0]?.messages)).not.toContain('legacy-context-must-not-win');
+  });
+
   it('keeps the base LLM budget for small auto-fill batches and raises it for large batches', () => {
     const source = fs.readFileSync(path.join(process.cwd(), 'src/server/music-agent/index.ts'), 'utf8');
     const pickNextBudget = source.slice(source.indexOf('function pickNextBudget'), source.indexOf('function chatRecommendBudget'));
@@ -164,10 +224,83 @@ describe('MusicAgent facade', () => {
 
     expect(musicAgentRunOutputSchema.parse(result).status).toBe('ok');
     expect(result.status).toBe('ok');
+    expect(result.promptJsonStatus).toBe('valid');
     expect(result.picks[0].id).toBe('101');
     expect(result.say).toContain('红心');
+    expect(result.selectionDecisions).toEqual(expect.arrayContaining([
+      expect.objectContaining({ stage: 'admission', candidateId: '101', reasonCode: 'admission_eligible' }),
+      expect.objectContaining({ stage: 'ranking', candidateId: '101', reasonCode: 'ranking_scored' }),
+      expect.objectContaining({ stage: 'recall', candidateId: '101', reasonCode: 'recall_included' }),
+      expect.objectContaining({ stage: 'batch', candidateId: '101', reasonCode: 'batch_selected' })
+    ]));
+    expect(result.selectionDecisions).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ stage: 'final', candidateId: '101' })
+    ]));
     expect(ncmClient.getLikedSongIds).toHaveBeenCalledTimes(1);
     expect(ncmClient.getSongDetails).toHaveBeenCalledWith(['101']);
+  });
+
+  it('persists observed policy cases when the MusicAgent fails after recall', async () => {
+    let callCount = 0;
+    const llmClient: MusicAgentLlmClient = {
+      complete: vi.fn(async () => {
+        callCount += 1;
+        if (callCount === 1) {
+          return {
+            content: JSON.stringify({
+              type: 'tool_call',
+              tool: 'recall_from_liked',
+              input: { limit: 5 }
+            }),
+            model: 'fake-model'
+          };
+        }
+        throw new Error('provider failed after recall');
+      })
+    };
+    const ncmClient = {
+      getLikedSongIds: vi.fn(async () => ['failed-run-candidate']),
+      getSongDetails: vi.fn(async () => [{
+        id: 'failed-run-candidate',
+        name: 'Observed Before Failure',
+        artists: ['Replay Artist']
+      }]),
+      searchSongs: vi.fn(async () => []),
+      getPlaylistDetail: vi.fn(async () => null),
+      getSearchHotDetail: vi.fn(async () => []),
+      getTopSongHints: vi.fn(async () => []),
+      getArtistToplist: vi.fn(async () => [])
+    };
+    const onReplayObservation = vi.fn();
+    const { MusicAgent } = await import('../../src/server/music-agent/index.js');
+    const { getDb } = await import('../../src/server/store/db.js');
+    const agent = new MusicAgent({ llmClient });
+
+    await expect(agent.pickNext({
+      userId: 'failed-replay-user',
+      replayRunId: 'failed-replay-run',
+      ncmClient: ncmClient as any,
+      onReplayObservation
+    })).rejects.toThrow('provider failed after recall');
+
+    expect(onReplayObservation).toHaveBeenLastCalledWith({
+      candidateCount: 1,
+      promptJsonStatus: 'valid'
+    });
+    const row = getDb().prepare(`
+      SELECT candidate_id AS candidateId, expected_json AS expectedJson
+      FROM selection_policy_replay_cases
+      WHERE user_id = ? AND run_id = ?
+    `).get('failed-replay-user', 'failed-replay-run') as {
+      candidateId: string;
+      expectedJson: string;
+    };
+    expect(row.candidateId).toBe('failed-run-candidate');
+    expect(JSON.parse(row.expectedJson)).toMatchObject({
+      admission: { action: 'admit' },
+      final: null,
+      finalContext: null
+    });
   });
 
   it('injects the configured shortlist enricher and assessment persister into pickNext only', async () => {
@@ -296,16 +429,14 @@ describe('MusicAgent facade', () => {
     const { MusicAgent } = await import('../../src/server/music-agent/index.js');
     const firstAgent = new MusicAgent({ llmClient: concurrentLlm, lyricsSelectionMode: 'shadow' });
     const secondAgent = new MusicAgent({ llmClient: concurrentLlm, lyricsSelectionMode: 'shadow' });
-    const sharedContext = {
-      request: 'auto-fill' as const, currentUserText: '', activeDirective: '',
-      currentMoment: { localTime: 'now', daypart: 'evening', weather: null },
-      tasteSummary: '', recentPreferenceSummary: '', recentPlaySignals: '',
-      queueStateSummary: '', bannedSummary: ''
-    };
+    const [firstSelectionAdapter, secondSelectionAdapter] = await Promise.all([
+      selectionAdapterFixture('auto-fill'),
+      selectionAdapterFixture('auto-fill')
+    ]);
 
     const results = await Promise.all([
-      firstAgent.pickNext({ userId: 'same-user', ncmClient: firstNcmClient as any, context: sharedContext }),
-      secondAgent.pickNext({ userId: 'same-user', ncmClient: secondNcmClient as any, context: sharedContext })
+      firstAgent.pickNext({ userId: 'same-user', ncmClient: firstNcmClient as any, selectionAdapter: firstSelectionAdapter }),
+      secondAgent.pickNext({ userId: 'same-user', ncmClient: secondNcmClient as any, selectionAdapter: secondSelectionAdapter })
     ]);
 
     expect(results.every((result) => result.status === 'ok')).toBe(true);
@@ -316,7 +447,7 @@ describe('MusicAgent facade', () => {
     expect(maxActiveNcm).toBeLessThanOrEqual(6);
   });
 
-  it('excludes queued and recently played tracks before ranking MusicAgent candidates', async () => {
+  it('keeps queue and run-local played tracks observable until policy selection rejects them', async () => {
     const ncmClient = {
       getLikedSongIds: vi.fn(async () => ['queued-id', 'duplicate-id', 'fresh-1', 'fresh-2']),
       getSongDetails: vi.fn(async () => [
@@ -337,21 +468,24 @@ describe('MusicAgent facade', () => {
 
     const { MusicAgent } = await import('../../src/server/music-agent/index.js');
     const { buildCandidateDedupeKey } = await import('../../src/server/music-agent/candidates.js');
+    const { setQueueState } = await import('../../src/server/store/queue.js');
+    setQueueState('user-1', [{
+      ncmId: 'queued-id', name: 'Queued Song', artists: ['Queued Artist']
+    }], 0);
     const agent = new MusicAgent({ llmClient: fake });
     const result = await agent.pickNext({
       userId: 'user-1',
       ncmClient: ncmClient as any,
-      excludeTrackIds: new Set(['queued-id']),
       excludeTrackDedupeKeys: new Set([buildCandidateDedupeKey({ name: 'Recent Song', artist: 'Recent Artist' })])
     });
 
     expect(result.status).toBe('ok');
     expect(result.picks.map((pick) => pick.id)).toEqual(['fresh-1', 'fresh-2']);
-    expect(JSON.stringify(result.trace)).not.toContain('queued-id');
-    expect(JSON.stringify(result.trace)).not.toContain('duplicate-id');
+    expect(JSON.stringify(result.trace)).toContain('queued-id');
+    expect(JSON.stringify(result.trace)).toContain('duplicate-id');
   });
 
-  it('excludes active temporary queue bans before ranking MusicAgent candidates', async () => {
+  it('keeps temporary exclusions observable and suppresses them through autonomous policy', async () => {
     const ncmClient = {
       getLikedSongIds: vi.fn(async () => ['blocked-id', 'fresh-1', 'fresh-2']),
       getSongDetails: vi.fn(async () => [
@@ -383,7 +517,7 @@ describe('MusicAgent facade', () => {
 
     expect(result.status).toBe('ok');
     expect(result.picks.map((pick) => pick.id)).toEqual(['fresh-1', 'fresh-2']);
-    expect(JSON.stringify(result.trace)).not.toContain('blocked-id');
+    expect(JSON.stringify(result.trace)).toContain('blocked-id');
   });
 
   it('does not apply temporary queue bans to explicit chat recommendations', async () => {
@@ -417,7 +551,7 @@ describe('MusicAgent facade', () => {
     const result = await agent.recommendFromChat({
       userId: 'user-temp-ban-chat',
       ncmClient: ncmClient as any,
-      userText: '就放 Blocked Song',
+      userText: '放《Blocked Song》 - Blocked Artist',
       now: new Date('2026-06-04T08:00:00+08:00')
     });
 
@@ -425,7 +559,7 @@ describe('MusicAgent facade', () => {
     expect(result.picks.map((pick) => pick.id)).toEqual(['blocked-id']);
   });
 
-  it('prepares external quality signals before the extra final-pick prompt', async () => {
+  it('prepares soft external quality signals before the extra final-pick prompt', async () => {
     const pollutedTitle = "90's Chill Lofi Hip Hop｜勉強・集中・睡眠 深夜のローファイ mix";
     const searchTracks = [
       { id: 'polluted-extra-final', name: pollutedTitle, artists: ['Compilation Artist'] },
@@ -487,10 +621,13 @@ describe('MusicAgent facade', () => {
       'polluted-extra-final',
       ...searchTracks.slice(1).map((track) => track.id)
     ]);
-    expect(JSON.stringify(fake.completeCalls[1].messages)).not.toContain('polluted-extra-final');
+    const finalPrompt = fake.completeCalls[1].messages.map((message) => message.content).join('\n');
+    expect(finalPrompt).toContain('polluted-extra-final');
+    expect(finalPrompt).toContain('"qualityPenalty":0.22');
+    expect(finalPrompt).toContain('"titlePollutionPenalty":0.16');
   });
 
-  it('rejects hard-filtered candidates from extra final-pick output', async () => {
+  it('does not hard-reject soft-quality candidates from extra final-pick output', async () => {
     const pollutedTitle = "90's Chill Lofi Hip Hop｜勉強・集中・睡眠 深夜のローファイ mix";
     const searchTracks = [
       { id: 'polluted-extra-final', name: pollutedTitle, artists: ['Compilation Artist'] },
@@ -540,8 +677,7 @@ describe('MusicAgent facade', () => {
     const result = await agent.pickNext({ userId: 'user-extra-final-reject', ncmClient: ncmClient as any });
 
     expect(result.status).toBe('ok');
-    expect(result.picks.map((pick) => pick.id)).not.toContain('polluted-extra-final');
-    expect(result.picks.every((pick) => pick.id.startsWith('clean-reject-'))).toBe(true);
+    expect(result.picks.map((pick) => pick.id)).toContain('polluted-extra-final');
   });
 
   it('passes chat recommendation text into the tool-loop prompt', async () => {
@@ -727,12 +863,9 @@ describe('createMusicAgentTools', () => {
       getPlaylistDetail: vi.fn(async () => null)
     };
 
-    const { buildCandidateDedupeKey, CandidatePool } = await import('../../src/server/music-agent/candidates.js');
+    const { CandidatePool } = await import('../../src/server/music-agent/candidates.js');
     const { createMusicAgentTools } = await import('../../src/server/music-agent/tools.js');
-    const candidatePool = new CandidatePool({
-      bannedIds: ['banned-id'],
-      bannedTrackKeys: new Set([buildCandidateDedupeKey({ name: 'Blocked', artist: 'Other' })])
-    });
+    const candidatePool = new CandidatePool();
     const tools = createMusicAgentTools({
       userId: 'admission-diagnostics',
       ncmClient: ncmClient as any,
@@ -762,13 +895,13 @@ describe('createMusicAgentTools', () => {
 
     const observation = await tools.recall_from_ncm_search?.({ queries: ['Diagnostic Song Artist'], limit: 20 });
 
-    expect(observation?.candidateCount).toBe(3);
+    expect(observation?.candidateCount).toBe(6);
     expect(observation?.problems).toContain(
-      'candidate admission: inserted=3; mergedByDedupe=1; invalid=1; rejectedByPool=2 (banned_id=1, banned_dedupe=1); skippedArtistCap=1'
+      'candidate admission: inserted=6; mergedByDedupe=1; invalid=1'
     );
   });
 
-  it('applies the per-artist recall cap to collaborators during query recall', async () => {
+  it('keeps collaborator candidates in Recall for Batch diversity', async () => {
     const ncmClient = {
       getLikedSongIds: vi.fn(async () => []),
       getSongDetails: vi.fn(async () => []),
@@ -813,11 +946,12 @@ describe('createMusicAgentTools', () => {
 
     const observation = await tools.recall_from_ncm_search?.({ queries: ['Shared Guest Song Artist'], limit: 10 });
 
-    expect(candidatePool.list().map((candidate) => candidate.id)).toEqual(['shared-guest-1', 'shared-guest-2', 'fresh']);
-    expect(observation?.problems).toContain('skipped 1 tracks after per-artist recall cap');
+    expect(candidatePool.list().map((candidate) => candidate.id)).toEqual([
+      'shared-guest-1', 'shared-guest-2', 'shared-guest-3', 'fresh'
+    ]);
   });
 
-  it('explains why NCM recall has no executable search queries', async () => {
+  it('keeps historical artist pressure out of Recall query filtering', async () => {
     const ncmClient = {
       getLikedSongIds: vi.fn(async () => []),
       getSongDetails: vi.fn(async () => []),
@@ -861,9 +995,10 @@ describe('createMusicAgentTools', () => {
     const semanticOnly = await tools.recall_from_ncm_search?.({ queries: ['粤语流行 女声 工作间隙放松'] });
 
     expect(emptyPlan?.summary).toContain('query plan empty');
-    expect(avoided?.summary).toContain('all queries skipped for recently repeated artists');
+    expect(avoided?.summary).toContain('searched 1 queries');
     expect(semanticOnly?.summary).toContain('all queries skipped as semantic-only');
-    expect(ncmClient.searchSongs).not.toHaveBeenCalled();
+    expect(ncmClient.searchSongs).toHaveBeenCalledTimes(1);
+    expect(ncmClient.searchSongs).toHaveBeenCalledWith('盲婚哑嫁 The Code — 陈奕迅', 8);
   });
 
   it('counts query funnel addedCount as unique admitted candidates instead of merges', async () => {
@@ -919,7 +1054,7 @@ describe('createMusicAgentTools', () => {
     ]);
   });
 
-  it('falls back to artist expansion when exact-track search results are all banned', async () => {
+  it('keeps exact-track recall observable instead of triggering a hidden ban fallback', async () => {
     const ncmClient = {
       getLikedSongIds: vi.fn(async () => []),
       getSongDetails: vi.fn(async () => []),
@@ -935,13 +1070,9 @@ describe('createMusicAgentTools', () => {
       getPlaylistDetail: vi.fn(async () => null)
     };
 
-    const { CandidatePool, buildCandidateDedupeKey } = await import('../../src/server/music-agent/candidates.js');
+    const { CandidatePool } = await import('../../src/server/music-agent/candidates.js');
     const { createMusicAgentTools } = await import('../../src/server/music-agent/tools.js');
-    const candidatePool = new CandidatePool({
-      bannedTrackKeys: new Set([
-        buildCandidateDedupeKey({ name: '日出时让街灯安睡', artist: '李幸倪' })
-      ])
-    });
+    const candidatePool = new CandidatePool();
     const tools = createMusicAgentTools({
       userId: 'artist-fallback-after-banned-exact',
       ncmClient: ncmClient as any,
@@ -972,14 +1103,13 @@ describe('createMusicAgentTools', () => {
 
     const observation = await tools.recall_from_ncm_search?.({ queries: ['日出时让街灯安睡 — 李幸倪'], limit: 8 });
 
-    expect(ncmClient.searchArtists).toHaveBeenCalledWith('李幸倪', 3);
-    expect(ncmClient.getArtistTopSongs).toHaveBeenCalledWith('501');
-    expect(candidatePool.list().map((candidate) => candidate.id)).toEqual(['fresh-gin-1', 'fresh-gin-2']);
-    expect(observation?.summary).toContain('artist fallback added 2 candidates');
-    expect(observation?.problems).toContain('candidate admission: rejectedByPool=2 (banned_dedupe=2)');
+    expect(ncmClient.searchArtists).not.toHaveBeenCalled();
+    expect(ncmClient.getArtistTopSongs).not.toHaveBeenCalled();
+    expect(candidatePool.list().map((candidate) => candidate.id)).toEqual(['blocked-cover']);
+    expect(observation?.summary).toContain('added 2 candidates');
   });
 
-  it('counts multi-artist fallback names as one fallback attempt', async () => {
+  it('does not spend artist-fallback budget when exact-track candidates remain observable', async () => {
     const ncmClient = {
       getLikedSongIds: vi.fn(async () => []),
       getSongDetails: vi.fn(async () => []),
@@ -997,9 +1127,7 @@ describe('createMusicAgentTools', () => {
 
     const { CandidatePool } = await import('../../src/server/music-agent/candidates.js');
     const { createMusicAgentTools } = await import('../../src/server/music-agent/tools.js');
-    const candidatePool = new CandidatePool({
-      bannedIds: ['blocked-one', 'blocked-two']
-    });
+    const candidatePool = new CandidatePool();
     const tools = createMusicAgentTools({
       userId: 'artist-fallback-budget-collaborators',
       ncmClient: ncmClient as any,
@@ -1033,10 +1161,9 @@ describe('createMusicAgentTools', () => {
       limit: 8
     });
 
-    expect(ncmClient.searchArtists).toHaveBeenCalledWith('Alpha / Guest', 3);
-    expect(ncmClient.searchArtists).toHaveBeenCalledWith('Beta', 3);
-    expect(candidatePool.list().map((candidate) => candidate.id)).toEqual(['alpha-fresh', 'beta-fresh']);
-    expect(observation?.summary).toContain('artist fallback added 2 candidates from Alpha / Guest、Beta');
+    expect(ncmClient.searchArtists).not.toHaveBeenCalled();
+    expect(candidatePool.list().map((candidate) => candidate.id)).toEqual(['blocked-one', 'blocked-two']);
+    expect(observation?.summary).toContain('added 2 candidates');
   });
 
   it('accepts lowercase exact track and artist queries for NCM song search', async () => {
@@ -1263,7 +1390,7 @@ describe('createMusicAgentTools', () => {
     expect(candidatePool.list().map((candidate) => candidate.id)).toEqual(['playlist-track-1', 'playlist-track-2']);
   });
 
-  it('filters repeated artists before entity count and backfills rejected artist entities', async () => {
+  it('does not upgrade historical artist pressure into entity Recall filtering', async () => {
     const ncmClient = {
       getLikedSongIds: vi.fn(async () => []),
       getSongDetails: vi.fn(async () => []),
@@ -1324,26 +1451,26 @@ describe('createMusicAgentTools', () => {
       limit: 3
     });
 
-    expect(ncmClient.searchArtists).not.toHaveBeenCalledWith('Repeated Artist', expect.any(Number));
+    expect(ncmClient.searchArtists).toHaveBeenCalledWith('Repeated Artist', 3);
     expect(ncmClient.searchArtists).toHaveBeenCalledWith('Good Artist', 3);
     expect(ncmClient.getArtistTopSongs).toHaveBeenCalledWith('good-artist');
-    expect(observation?.summary).toContain('entity recall attempted 9 entities, produced 1 productive entities, and added 1 candidates');
+    expect(observation?.summary).toContain('entity recall attempted 10 entities, produced 1 productive entities, and added 1 candidates');
     expect(observation?.data).toMatchObject({
-      attemptedEntityCount: 9,
+      attemptedEntityCount: 10,
       productiveEntityCount: 1,
-      scannedEntityCount: 9,
-      prefilteredEntityCount: 1
+      scannedEntityCount: 10,
+      prefilteredEntityCount: 0
     });
-    expect(observation?.problems).toContain('skipped 1 entity queries for recently repeated artists');
+    expect(observation?.problems ?? []).not.toContain('skipped 1 entity queries for recently repeated artists');
     expect(candidatePool.get('good-track')).toBeDefined();
   });
 
-  it('skips candidate-banned track entities before the count and backfills post-search bans', async () => {
+  it('keeps provider and searched entities observable until Selection Policy evaluates them', async () => {
     const ncmClient = {
       getLikedSongIds: vi.fn(async () => []),
-      getSongDetails: vi.fn(async () => {
-        throw new Error('known banned provider ids should be skipped before detail fetch');
-      }),
+      getSongDetails: vi.fn(async () => [{
+        id: 'known-blocked', name: 'Known Blocked', artists: ['Known Artist']
+      }]),
       searchSongs: vi.fn(async (query: string) => {
         const playedMatch = query.match(/^Played Song (\d+)$/);
         if (playedMatch) {
@@ -1360,9 +1487,7 @@ describe('createMusicAgentTools', () => {
 
     const { CandidatePool } = await import('../../src/server/music-agent/candidates.js');
     const { createMusicAgentTools } = await import('../../src/server/music-agent/tools.js');
-    const candidatePool = new CandidatePool({
-      bannedIds: ['known-blocked', ...Array.from({ length: 8 }, (_, index) => `played-${index + 1}`)]
-    });
+    const candidatePool = new CandidatePool();
     const tools = createMusicAgentTools({
       userId: 'entity-banned-backfill',
       ncmClient: ncmClient as any,
@@ -1408,20 +1533,13 @@ describe('createMusicAgentTools', () => {
       limit: 3
     });
 
-    expect(ncmClient.getSongDetails).not.toHaveBeenCalled();
-    expect(ncmClient.searchSongs).toHaveBeenCalledWith('Fresh Song Fresh Artist', 3);
-    expect(observation?.summary).toContain('entity recall attempted 9 entities, produced 1 productive entities, and added 1 candidates');
+    expect(ncmClient.getSongDetails).toHaveBeenCalledWith(['known-blocked']);
+    expect(observation?.summary).toContain('added 8 candidates');
     expect(observation?.data).toMatchObject({
-      attemptedEntityCount: 9,
-      productiveEntityCount: 1,
-      scannedEntityCount: 9,
-      prefilteredEntityCount: 1
+      productiveEntityCount: 8,
+      prefilteredEntityCount: 0
     });
-    expect(observation?.problems).toContain(
-      'skipped 1 entity queries already blocked by candidate bans (banned_id=1)'
-    );
-    expect(observation?.problems).toContain('candidate admission: rejectedByPool=1 (banned_id=1)');
-    expect(candidatePool.get('fresh-track')).toBeDefined();
+    expect(candidatePool.get('known-blocked')).toBeDefined();
   });
 
   it('does not let playlist fetch budget failures consume the productive entity limit', async () => {
@@ -1495,7 +1613,7 @@ describe('createMusicAgentTools', () => {
     expect(candidatePool.get('good-track')).toBeDefined();
   });
 
-  it('does not let admission skips consume the productive entity limit', async () => {
+  it('keeps same-artist entity candidates until the explicit entity scan budget is reached', async () => {
     const ncmClient = {
       getLikedSongIds: vi.fn(async () => []),
       getSongDetails: vi.fn(async () => []),
@@ -1522,8 +1640,6 @@ describe('createMusicAgentTools', () => {
       timeFit: 0.5,
       contextFit: 0.5,
       novelty: 0.5,
-      recentPenalty: 0,
-      skipPenalty: 0,
       sourceConfidence: 0.5
     };
     candidatePool.upsert({
@@ -1581,23 +1697,23 @@ describe('createMusicAgentTools', () => {
       limit: 3
     });
 
-    expect(ncmClient.searchSongs).toHaveBeenCalledWith('Fresh Song Fresh Artist', 3);
-    expect(observation?.summary).toContain('entity recall attempted 9 entities, produced 1 productive entities, and added 1 candidates');
+    expect(ncmClient.searchSongs).not.toHaveBeenCalledWith('Fresh Song Fresh Artist', 3);
+    expect(observation?.summary).toContain('entity recall attempted 8 entities, produced 8 productive entities, and added 8 candidates');
     expect(observation?.data).toMatchObject({
-      attemptedEntityCount: 9,
-      productiveEntityCount: 1,
-      scannedEntityCount: 9
+      attemptedEntityCount: 8,
+      productiveEntityCount: 8,
+      scannedEntityCount: 8
     });
-    expect(observation?.problems).toContain('skipped 1 tracks after per-artist recall cap');
-    expect(candidatePool.get('fresh-track')).toBeDefined();
+    expect(candidatePool.get('capped-8')).toBeDefined();
   });
 
-  it('does not report missing entities when all entity inputs are prefiltered', async () => {
+  it('attempts entity Recall despite historical artist pressure', async () => {
     const ncmClient = {
       getLikedSongIds: vi.fn(async () => []),
       getSongDetails: vi.fn(async () => []),
       searchSongs: vi.fn(async () => []),
       searchArtists: vi.fn(async () => []),
+      getArtistTopSongs: vi.fn(async () => []),
       getPlaylistDetail: vi.fn(async () => null)
     };
 
@@ -1637,11 +1753,10 @@ describe('createMusicAgentTools', () => {
       limit: 3
     });
 
-    expect(ncmClient.searchArtists).not.toHaveBeenCalled();
-    expect(observation?.summary).toContain('entity recall skipped: all entities were filtered before recall');
-    expect(observation?.problems ?? []).not.toContain('no music entities provided');
-    expect(observation?.problems).toContain('skipped 1 entity queries for recently repeated artists');
-    expect(observation?.data).toMatchObject({ prefilteredEntityCount: 1 });
+    expect(ncmClient.searchArtists).toHaveBeenCalledWith('Repeated Artist', 3);
+    expect(observation?.summary).toContain('entity recall attempted 1 entities');
+    expect(observation?.problems ?? []).not.toContain('skipped 1 entity queries for recently repeated artists');
+    expect(observation?.data).toMatchObject({ prefilteredEntityCount: 0 });
   });
 
   it('requires the expected primary artist when verifying multi-artist track entities', async () => {
@@ -1822,8 +1937,6 @@ describe('createMusicAgentTools', () => {
       timeFit: 0.6,
       contextFit: 0.6,
       novelty: 0.6,
-      recentPenalty: 0,
-      skipPenalty: 0,
       sourceConfidence: 0.6
     };
 
@@ -2479,7 +2592,6 @@ describe('createMusicAgentTools', () => {
 
     const { CandidatePool } = await import('../../src/server/music-agent/candidates.js');
     const { createMusicAgentTools } = await import('../../src/server/music-agent/tools.js');
-    const { getUserQueryStats } = await import('../../src/server/store/music-query-stats.js');
     const candidatePool = new CandidatePool();
     const tools = createMusicAgentTools({
       userId: 'entity-track-reject',
@@ -2514,7 +2626,6 @@ describe('createMusicAgentTools', () => {
 
     expect(observation?.candidateCount).toBe(0);
     expect(observation?.problems).toContain('track entity rejected: Candy - 具島直子');
-    expect(getUserQueryStats('entity-track-reject')).toEqual([]);
   });
 
   it('expands artist album and playlist entities only after NCM verification', async () => {
@@ -2593,7 +2704,7 @@ describe('createMusicAgentTools', () => {
     expect(candidatePool.get('802')?.sources).toEqual(['playlist']);
   });
 
-  it('preserves exact search queries, records a run query funnel, and persists selected query stats', async () => {
+  it('preserves exact search queries, records a run query funnel, and persists selected retrieval attempts', async () => {
     const ncmClient = {
       getLikedSongIds: vi.fn(async () => []),
       getSongDetails: vi.fn(async () => []),
@@ -2610,7 +2721,7 @@ describe('createMusicAgentTools', () => {
 
     const { CandidatePool } = await import('../../src/server/music-agent/candidates.js');
     const { createMusicAgentTools } = await import('../../src/server/music-agent/tools.js');
-    const { getUserQueryStats } = await import('../../src/server/store/music-query-stats.js');
+    const { listRecentRetrievalAttempts } = await import('../../src/server/store/retrieval-attempts.js');
     const candidatePool = new CandidatePool();
     const tools = createMusicAgentTools({
       userId: 'user-query-funnel',
@@ -2657,7 +2768,16 @@ describe('createMusicAgentTools', () => {
         selectedCount: 1
       })
     ]);
-    expect(getUserQueryStats('user-query-funnel').map((item) => item.normalized_query)).toContain('ocean one ocean singer');
+    expect(listRecentRetrievalAttempts({
+      userId: 'user-query-funnel',
+      source: 'search',
+    })).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        normalizedQuery: 'ocean one ocean singer',
+        selectedCount: 1,
+        requestKind: 'autonomous',
+      }),
+    ]));
   });
 
   it('skips repeated search queries within the same agent run', async () => {
@@ -2847,12 +2967,8 @@ describe('createMusicAgentTools', () => {
     const { CandidatePool } = await import('../../src/server/music-agent/candidates.js');
     const { runMusicAgentLoop } = await import('../../src/server/music-agent/loop.js');
     const { createMusicAgentTools } = await import('../../src/server/music-agent/tools.js');
-    const {
-      getUserQueryStats
-    } = await import('../../src/server/store/music-query-stats.js');
-    const {
-      prepareSearchQueriesForRecall
-    } = await import('../../src/server/music-agent/query-stats.js');
+    const { listRecentRetrievalAttempts } = await import('../../src/server/store/retrieval-attempts.js');
+    const { prepareRetrievalQueries } = await import('../../src/server/music-agent/retrieval-history.js');
     const candidatePool = new CandidatePool();
     const tools = createMusicAgentTools({
       userId: 'fallback-query-history',
@@ -2910,21 +3026,27 @@ describe('createMusicAgentTools', () => {
       targetPickCount: 2
     });
 
-    expect(getUserQueryStats('fallback-query-history')).toEqual([
+    expect(listRecentRetrievalAttempts({
+      userId: 'fallback-query-history',
+      source: 'search',
+    })).toEqual([
       expect.objectContaining({
-        normalized_query: 'fallback one fallback singer',
-        searched_count: 1,
-        result_count: 2,
-        added_count: 2,
-        selected_count: 0
+        normalizedQuery: 'fallback one fallback singer',
+        searchedCount: 1,
+        resultCount: 2,
+        addedCount: 2,
+        selectedCount: 0,
+        requestKind: 'autonomous',
       })
     ]);
-    expect(prepareSearchQueriesForRecall({
+    expect(prepareRetrievalQueries({
       userId: 'fallback-query-history',
+      runId: 'next-run',
+      requestKind: 'autonomous',
       queries: ['Fallback One Fallback Singer', 'Fresh One Fresh Singer'],
       source: 'search',
       maxQueries: 2
-    }).queries).toEqual(['Fresh One Fresh Singer', 'Fallback One Fallback Singer']);
+    }).queries).toEqual(['Fresh One Fresh Singer']);
   });
 
   it('keeps style seed queries out of NCM song search before semantic discovery resolves entities', async () => {
@@ -3327,8 +3449,9 @@ describe('createMusicAgentTools', () => {
 
     expect(ncmClient.getSongDetails).toHaveBeenCalledWith(['polluted-low-pop', 'fresh-search']);
     expect(rank?.summary).toContain('fresh-search:City Light-Fresh Artist');
-    expect(rank?.summary).not.toContain('polluted-low-pop');
-    expect(rank?.problems).toContain('filtered 1 low-quality external candidates');
+    expect(rank?.summary).toContain('polluted-low-pop');
+    expect(rank?.summary).toContain('qualityPenalty=0.220 titlePollution=strong adjusted=0.282');
+    expect(rank?.problems ?? []).not.toContain('excluded 1 playback-ineligible candidates');
     expect(candidatePool.get('fresh-search')?.qualitySignals?.popularity).toBe(72);
   });
 
@@ -3342,8 +3465,6 @@ describe('createMusicAgentTools', () => {
       timeFit: 0.5,
       contextFit: 0.5,
       novelty: 0.5,
-      recentPenalty: 0,
-      skipPenalty: 0,
       sourceConfidence: 0.5
     };
     for (let index = 1; index <= 85; index += 1) {
@@ -3411,8 +3532,9 @@ describe('createMusicAgentTools', () => {
       'external-84',
       'external-85'
     ]);
-    expect(rank?.summary).not.toContain('external-85');
-    expect(rank?.problems).toContain('filtered 1 low-quality external candidates');
+    expect(rank?.summary).toContain('external-85');
+    expect(rank?.summary).toContain('qualityPenalty=0.220 titlePollution=strong adjusted=0.620');
+    expect(rank?.problems ?? []).not.toContain('excluded 1 playback-ineligible candidates');
   });
 
   it('retries quality signal preparation after a detail request failure', async () => {
@@ -3431,8 +3553,6 @@ describe('createMusicAgentTools', () => {
         timeFit: 1,
         contextFit: 1,
         novelty: 1,
-        recentPenalty: 0,
-        skipPenalty: 0,
         sourceConfidence: 1
       }
     });
@@ -3483,8 +3603,9 @@ describe('createMusicAgentTools', () => {
 
     expect(firstRank?.problems?.[0]).toContain('quality detail failed');
     expect(ncmClient.getSongDetails).toHaveBeenCalledTimes(2);
-    expect(secondRank?.summary).not.toContain('retry-quality');
-    expect(secondRank?.problems).toContain('filtered 1 low-quality external candidates');
+    expect(secondRank?.summary).toContain('retry-quality');
+    expect(secondRank?.summary).toContain('qualityPenalty=0.220 titlePollution=strong adjusted=0.620');
+    expect(secondRank?.problems ?? []).not.toContain('excluded 1 playback-ineligible candidates');
   });
 
   it('caps auto-fill liked recall so liked songs cannot fill the whole candidate pool', async () => {
@@ -3592,9 +3713,8 @@ describe('createMusicAgentTools', () => {
     expect(fetchedIds.some((id) => Number(id.replace('liked-', '')) > 30)).toBe(true);
   });
 
-  it('scans deeper liked ids when the first auto-fill liked window is banned', async () => {
+  it('does not prefilter the first liked window before Selection Policy', async () => {
     const likedIds = Array.from({ length: 30 }, (_, index) => `liked-${index + 1}`);
-    const bannedIds = new Set(likedIds.slice(0, 10));
     const ncmClient = {
       getLikedSongIds: vi.fn(async () => likedIds),
       getSongDetails: vi.fn(async (ids: string[]) => ids.map((id) => ({
@@ -3608,7 +3728,7 @@ describe('createMusicAgentTools', () => {
 
     const { CandidatePool } = await import('../../src/server/music-agent/candidates.js');
     const { createMusicAgentTools } = await import('../../src/server/music-agent/tools.js');
-    const candidatePool = new CandidatePool({ bannedIds });
+    const candidatePool = new CandidatePool();
     const tools = createMusicAgentTools({
       userId: 'deeper-liked-window',
       ncmClient: ncmClient as any,
@@ -3641,7 +3761,7 @@ describe('createMusicAgentTools', () => {
     expect(ncmClient.getSongDetails).toHaveBeenCalledWith(likedIds.slice(0, 30));
     expect(observation?.summary).toContain('liked recall added 10 candidates from 30 ids');
     expect(candidatePool.count()).toBe(10);
-    expect(candidatePool.list().map((candidate) => candidate.id)).toEqual(likedIds.slice(10, 20));
+    expect(candidatePool.list().map((candidate) => candidate.id)).toEqual(likedIds.slice(0, 10));
   });
 
   it('reuses short-lived recall caches for liked, style, and trending recalls', async () => {
@@ -3767,7 +3887,7 @@ describe('createMusicAgentTools', () => {
     ]);
   });
 
-  it('front-loads repeated artist penalties into query recall diversity', async () => {
+  it('keeps repeated artist pressure in Ranking instead of Recall', async () => {
     const ncmClient = {
       getLikedSongIds: vi.fn(async () => []),
       getSongDetails: vi.fn(async () => []),
@@ -3824,18 +3944,18 @@ describe('createMusicAgentTools', () => {
     });
     const rank = await tools.rank_candidates?.({ limit: 5 });
 
-    expect(plan?.summary).toContain('avoidArtists=taylor swift、卫兰');
+    expect(plan?.summary).not.toContain('taylor swift、卫兰');
     expect(ncmClient.searchSongs).toHaveBeenCalledTimes(1);
-    expect(ncmClient.searchSongs.mock.calls[0][0]).toBe('Fresh City Fresh Artist');
-    expect(recall?.problems).toContain('skipped 1 search queries for recently repeated artists');
+    expect(ncmClient.searchSongs.mock.calls[0][0]).toBe('Love Story Taylor Swift');
+    expect(recall?.problems ?? []).not.toContain('skipped 1 search queries for recently repeated artists');
     expect(recall?.problems).toContain('skipped semantic-only queries; use semantic discovery before NCM song search');
-    expect(recall?.problems).toContain('skipped 3 tracks from recently repeated artists');
-    expect(recall?.problems).toContain('skipped 1 tracks after per-artist recall cap');
-    expect(candidatePool.list().map((item) => item.id)).toEqual(['fresh-1', 'fresh-2', 'other-1']);
+    expect(candidatePool.list().map((item) => item.id)).toEqual(expect.arrayContaining([
+      'swift-1', 'swift-2', 'janice-1', 'fresh-1', 'fresh-2', 'fresh-3', 'other-1'
+    ]));
     expect(rank?.summary).toContain('adjusted=');
   });
 
-  it('applies repeated artist avoidance to liked recall backfill', async () => {
+  it('does not turn repeated artist pressure into liked Recall avoidance', async () => {
     const ncmClient = {
       getLikedSongIds: vi.fn(async () => ['tanya-liked', 'fresh-liked']),
       getSongDetails: vi.fn(async (ids: string[]) => ids.map((id) => (
@@ -3881,8 +4001,8 @@ describe('createMusicAgentTools', () => {
 
     const liked = await tools.recall_from_liked?.({ limit: 2 });
 
-    expect(liked?.problems).toContain('skipped 1 tracks from recently repeated artists');
-    expect(candidatePool.list().map((item) => item.id)).toEqual(['fresh-liked']);
+    expect(liked?.problems ?? []).not.toContain('skipped 1 tracks from recently repeated artists');
+    expect(candidatePool.list().map((item) => item.id)).toEqual(['tanya-liked', 'fresh-liked']);
   });
 
   it('scores source candidates differently for explore and comfort discovery modes', async () => {
@@ -3935,9 +4055,7 @@ describe('createMusicAgentTools', () => {
         + candidate.scores.timeFit * 0.15
         + candidate.scores.contextFit * 0.1
         + candidate.scores.sourceConfidence * 0.1
-        + candidate.scores.novelty * 0.15
-        - candidate.scores.recentPenalty
-        - candidate.scores.skipPenalty, 2).map((candidate) => candidate.id);
+        + candidate.scores.novelty * 0.15, 2).map((candidate) => candidate.id);
     }
 
     expect(await rankedIds('explore')).toEqual(['search-1', 'liked-1']);

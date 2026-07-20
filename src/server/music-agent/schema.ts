@@ -2,6 +2,7 @@ import { z } from 'zod';
 import type { LlmCompleteOptions, LlmMessage, LlmResponse } from '../llm/client.js';
 import { ncmTrackQualitySignalsSchema } from '../../shared/schema.js';
 import { AUTO_FILL_BATCH_SIZE_MAX } from '../../shared/dj.js';
+import { selectionDecisionSchema } from '../../shared/selection.js';
 
 export const candidateSourceSchema = z.enum([
   'liked',
@@ -60,10 +61,8 @@ export const musicCandidateScoresSchema = z.object({
   timeFit: z.number().min(0).max(1),
   contextFit: z.number().min(0).max(1),
   novelty: z.number().min(0).max(1),
-  recentPenalty: z.number().min(0),
-  skipPenalty: z.number().min(0),
   sourceConfidence: z.number().min(0).max(1)
-});
+}).strict();
 
 export type MusicCandidateScores = z.infer<typeof musicCandidateScoresSchema>;
 
@@ -99,7 +98,6 @@ export const queryPlanSchema = z.object({
   explorationQueries: z.array(z.string()).default([]),
   styleHints: z.array(z.string()).default([]),
   listeningConstraints: z.array(z.string()).default([]),
-  avoidArtists: z.array(z.string()).default([]),
   negativeTerms: z.array(z.string()).default([]),
   rationale: z.string().default('')
 });
@@ -323,7 +321,8 @@ export const finalPickSchema = z.object({
   name: z.string().optional(),
   artist: z.string().optional(),
   reason: z.string().min(1),
-  source: candidateSourceSchema
+  source: candidateSourceSchema,
+  qualitySignals: musicCandidateQualitySignalsSchema.optional()
 });
 
 export type FinalPick = z.infer<typeof finalPickSchema>;
@@ -371,9 +370,7 @@ export const lyricsAwareDiagnosticsSchema = z.object({
     qualityPositiveSignals: z.array(z.string().max(80)).max(8),
     eligible: z.boolean()
   }).strict()).max(12),
-  allReturnedPicksAssessed: z.boolean(),
-  enforcementApplied: z.boolean(),
-  fallbackSuppressed: z.boolean()
+  allReturnedPicksAssessed: z.boolean()
 }).strict();
 
 export const queryFunnelEntrySchema = z.object({
@@ -471,6 +468,9 @@ export const musicAgentLoopOutputSchema = z.discriminatedUnion('type', [
 
 export type MusicAgentLoopOutput = z.infer<typeof musicAgentLoopOutputSchema>;
 
+export const promptJsonStatusSchema = z.enum(['not_observed', 'valid', 'invalid']);
+export type PromptJsonStatus = z.infer<typeof promptJsonStatusSchema>;
+
 export const musicAgentFinalOutputSchema = z.object({
   mode: z.enum(['pick_next', 'chat_recommend']),
   say: z.string().min(1),
@@ -480,7 +480,9 @@ export const musicAgentFinalOutputSchema = z.object({
   lyricsAwareDiagnostics: lyricsAwareDiagnosticsSchema.optional(),
   queryFunnel: z.array(queryFunnelEntrySchema).default([]),
   trace: z.array(agentTraceStepSchema).default([]),
-  candidateScoreTable: z.array(candidateScoreTableRowSchema).default([])
+  candidateScoreTable: z.array(candidateScoreTableRowSchema).default([]),
+  promptJsonStatus: promptJsonStatusSchema.optional(),
+  selectionDecisions: z.array(selectionDecisionSchema).max(500).optional()
 });
 
 export type MusicAgentFinalOutput = z.infer<typeof musicAgentFinalOutputSchema>;
@@ -499,7 +501,9 @@ export const musicAgentRunOutputSchema = z.discriminatedUnion('status', [
     lyricsAwareDiagnostics: lyricsAwareDiagnosticsSchema.optional(),
     queryFunnel: z.array(queryFunnelEntrySchema).default([]),
     trace: z.array(agentTraceStepSchema).default([]),
-    candidateScoreTable: z.array(candidateScoreTableRowSchema).default([])
+    candidateScoreTable: z.array(candidateScoreTableRowSchema).default([]),
+    promptJsonStatus: promptJsonStatusSchema.optional(),
+    selectionDecisions: z.array(selectionDecisionSchema).max(500).optional()
   })
 ]);
 

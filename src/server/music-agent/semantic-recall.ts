@@ -1,5 +1,4 @@
 import type { CandidatePool } from './candidates.js';
-import { countCandidateArtistKeys } from './candidate-admission.js';
 import { entityFromStoredRecord } from './entity-hypotheses.js';
 import {
   recallFromEntity,
@@ -32,7 +31,6 @@ export type SemanticEntityRecallOptions = {
   queryPlan: QueryPlan | null;
   embeddingClient?: MusicAgentEmbeddingClient | null;
   embeddingModel?: string | null;
-  avoidArtists: ReadonlySet<string>;
   consumeNcmSearch: () => boolean;
   consumePlaylistFetch: () => boolean;
   signal?: AbortSignal;
@@ -96,7 +94,6 @@ export async function recallFromSemanticEntities(
       return { attempted: true, added: 0, matchCount: 0, problems: ['semantic discovery found no indexed entities'] };
     }
 
-    const artistCounts = countCandidateArtistKeys(options.candidatePool.list());
     const problems: string[] = [];
     let added = 0;
 
@@ -118,8 +115,6 @@ export async function recallFromSemanticEntities(
         searchLimit: DEFAULT_ENTITY_SEARCH_LIMIT,
         consumeNcmSearch: options.consumeNcmSearch,
         consumePlaylistFetch: options.consumePlaylistFetch,
-        avoidArtists: options.avoidArtists,
-        artistCounts,
         provenanceKind: 'semantic_discovery',
         signal: options.signal
       });

@@ -1,22 +1,30 @@
 import type { Request, Response, RequestHandler } from 'express';
 import { z } from 'zod';
 import type { NcmClient } from '../../ncm/client.js';
-import { setQueueState } from '../../store/queue.js';
+import {
+  compareAndSetQueueState,
+  getQueueStateSnapshot,
+  type QueueStateSnapshot
+} from '../../store/queue.js';
 import { broadcastToUser } from '../broadcast.js';
 import { getLogger } from '../../logger.js';
 import { initSseRes, writeSseEvent, endSse } from '../sse.js';
 import { createDjPickNextRunner } from '../../dj/pickNextRunner.js';
 import { getAutoFillBatchSize, getJobTimeoutMs, runDjPickNext } from '../../dj/pickNextRun.js';
+import {
+  MAX_QUEUE_TRACK_ARTIST_LENGTH,
+  MAX_QUEUE_TRACK_ARTISTS,
+  MAX_QUEUE_TRACK_COVER_URL_LENGTH,
+  MAX_QUEUE_TRACK_ID_LENGTH,
+  MAX_QUEUE_TRACK_NAME_LENGTH,
+  MAX_QUEUE_TRACKS
+} from '../../../shared/queue.js';
 
 export {
-  buildDiscoveryModePromptParts,
-  buildDjTimeContext,
   buildTrackDedupeKey,
-  getCandidateSourceMix,
   getDjPickReason,
   getMusicAgentCandidateSourceDiagnostics,
   isTrackDedupeKeyExcluded,
-  parseDjCandidatePicks,
   searchCandidates,
   serializeDjPickNextErrorForLog
 } from '../../dj/pickNextRun.js';
@@ -32,14 +40,24 @@ type DjNextOptions = {
 const pickNextBodySchema = z.object({
   queue: z.array(
     z.object({
-      id: z.string().min(1),
-      name: z.string().optional(),
-      artists: z.array(z.string()).optional(),
+      id: z.string().min(1).max(MAX_QUEUE_TRACK_ID_LENGTH),
+      name: z.string().max(MAX_QUEUE_TRACK_NAME_LENGTH).optional(),
+      artists: z.array(z.string().min(1).max(MAX_QUEUE_TRACK_ARTIST_LENGTH))
+        .max(MAX_QUEUE_TRACK_ARTISTS).optional(),
       durationMs: z.number().int().nonnegative().optional(),
-      coverImgUrl: z.string().nullable().optional()
+      coverImgUrl: z.string().max(MAX_QUEUE_TRACK_COVER_URL_LENGTH).nullable().optional()
     })
-  ).optional(),
-  currentIndex: z.number().int().nonnegative().optional()
+  ).max(MAX_QUEUE_TRACKS).optional(),
+  currentIndex: z.number().int().nonnegative().optional(),
+  revision: z.number().int().nonnegative().optional()
+}).superRefine((value, context) => {
+  if (value.queue && value.revision === undefined) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['revision'],
+      message: 'revision is required when queue is present'
+    });
+  }
 }).optional();
 
 const djPickNextRunner = createDjPickNextRunner({
@@ -56,7 +74,15 @@ export function createDjPickNextHandler(opts: DjNextOptions): RequestHandler {
       res.json({ ok: true, running: true });
       return;
     }
-    applyClientQueueSnapshot(req, userId);
+    const queueUpdate = applyClientQueueSnapshot(req, userId);
+    if (queueUpdate.status === 'invalid') {
+      res.status(400).json({ ok: false, error: 'invalid body' });
+      return;
+    }
+    if (!queueUpdate.applied) {
+      res.status(409).json(queueConflictPayload(queueUpdate.snapshot));
+      return;
+    }
     res.json({ ok: true, running: false });
     void djPickNextRunner.run({
       userId,
@@ -69,21 +95,30 @@ export function createDjPickNextHandler(opts: DjNextOptions): RequestHandler {
   };
 }
 
-function applyClientQueueSnapshot(req: Request, userId: string): void {
+function applyClientQueueSnapshot(
+  req: Request,
+  userId: string
+): { status: 'valid'; applied: boolean; snapshot: QueueStateSnapshot } | { status: 'invalid' } {
   const parsed = pickNextBodySchema.safeParse(req.body);
-  if (!parsed.success || !parsed.data?.queue) return;
+  if (!parsed.success) return { status: 'invalid' };
+  if (!parsed.data?.queue) {
+    return { status: 'valid', applied: true, snapshot: getQueueStateSnapshot(userId) };
+  }
 
-  setQueueState(
-    userId,
-    parsed.data.queue.map((track) => ({
+  const queue = parsed.data.queue.map((track) => ({
       ncmId: track.id,
       name: track.name,
       artists: track.artists,
       durationMs: track.durationMs,
       coverImgUrl: track.coverImgUrl
-    })),
+    }));
+  const update = compareAndSetQueueState(
+    userId,
+    parsed.data.revision!,
+    queue,
     parsed.data.currentIndex ?? 0
   );
+  return { status: 'valid', ...update };
 }
 
 export function createSseDjPickNextHandler(opts: DjNextOptions) {
@@ -95,7 +130,17 @@ export function createSseDjPickNextHandler(opts: DjNextOptions) {
       endSse(res, 'dj.pick-next.done', { added: false, running: true, reason: 'already-running' });
       return;
     }
-    applyClientQueueSnapshot(req, userId);
+    const queueUpdate = applyClientQueueSnapshot(req, userId);
+    if (queueUpdate.status === 'invalid') {
+      endSse(res, 'dj.pick-next.done', { added: false, reason: 'invalid-body' });
+      return;
+    }
+    if (!queueUpdate.applied) {
+      const payload = queueConflictPayload(queueUpdate.snapshot);
+      broadcastToUser(userId, payload);
+      endSse(res, 'queue-updated', payload);
+      return;
+    }
     const emit = (payload: Record<string, unknown>): void => {
       const type = typeof payload.type === 'string' ? payload.type : 'message';
       broadcastToUser(userId, payload);
@@ -117,6 +162,17 @@ export function createSseDjPickNextHandler(opts: DjNextOptions) {
       if (!res.writableEnded) endSse(res, 'dj.pick-next.done', { added: false, reason: 'error' });
     });
     req.on('close', () => { if (!res.writableEnded) res.end(); });
+  };
+}
+
+function queueConflictPayload(snapshot: QueueStateSnapshot): Record<string, unknown> {
+  return {
+    ok: false,
+    error: 'queue_revision_conflict',
+    type: 'queue-updated',
+    queue: snapshot.queue,
+    currentIndex: snapshot.currentIndex,
+    revision: snapshot.revision
   };
 }
 

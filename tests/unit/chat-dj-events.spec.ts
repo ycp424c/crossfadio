@@ -6,36 +6,42 @@ import { resetConfigForTest } from '../../src/server/config';
 import { initDb, _resetDbForTest } from '../../src/server/store/db';
 import { getRecentDjEvents } from '../../src/server/store/dj-events';
 import { getQueue, setQueue } from '../../src/server/store/queue';
-import { handleChatMessage } from '../../src/server/http/chat-sse-worker';
+import {
+  createExplicitExclusion,
+  listActiveExplicitExclusions
+} from '../../src/server/store/explicit-exclusions';
+import {
+  extractQueueDirectiveFromText,
+  handleChatMessage
+} from '../../src/server/http/chat-sse-worker';
 import type { NcmClient } from '../../src/server/ncm/client';
+import type { Fragments } from '../../src/server/agent/schema';
+import { createListeningEpisode } from '../../src/server/store/listening-episodes';
+import { getUnextractedMessages } from '../../src/server/store/messages';
+import { getPreferenceExtractionBatchBySource } from '../../src/server/store/preference-extraction-batches';
+import { PREFERENCE_EXTRACTION_VERSION } from '../../src/server/music-agent/preference-extraction';
 
 const mocks = vi.hoisted(() => ({
   computeStream: vi.fn(),
-  loadUserCorpus: vi.fn(),
-  loadLikedTracksForAgentContext: vi.fn(),
+  buildDjMemorySnapshot: vi.fn(),
   fetchWeather: vi.fn(),
-  extractChatPreferencesIfDue: vi.fn(),
   recommendFromChat: vi.fn()
 }));
+
+let capturedFragments: Fragments | null = null;
 
 vi.mock('../../src/server/agent/compute', () => ({
   computeStream: mocks.computeStream
 }));
 
-vi.mock('../../src/server/user-corpus/loader', () => ({
-  loadUserCorpus: mocks.loadUserCorpus
-}));
-
-vi.mock('../../src/server/user-corpus/ncm-liked', () => ({
-  loadLikedTracksForAgentContext: mocks.loadLikedTracksForAgentContext
-}));
+vi.mock('../../src/server/dj-memory/snapshot', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/server/dj-memory/snapshot')>();
+  mocks.buildDjMemorySnapshot.mockImplementation(actual.buildDjMemorySnapshot);
+  return { ...actual, buildDjMemorySnapshot: mocks.buildDjMemorySnapshot };
+});
 
 vi.mock('../../src/server/weather', () => ({
   fetchWeather: mocks.fetchWeather
-}));
-
-vi.mock('../../src/server/music-agent/memory', () => ({
-  extractChatPreferencesIfDue: mocks.extractChatPreferencesIfDue
 }));
 
 vi.mock('../../src/server/music-agent/index', () => ({
@@ -60,7 +66,9 @@ beforeEach(() => {
   initDb();
 
   vi.clearAllMocks();
-  mocks.computeStream.mockImplementation(async function* () {
+  capturedFragments = null;
+  mocks.computeStream.mockImplementation(async function* (fragments: Fragments) {
+    capturedFragments = fragments;
     yield {
       type: 'done',
       output: {
@@ -71,16 +79,7 @@ beforeEach(() => {
       }
     };
   });
-  mocks.loadUserCorpus.mockReturnValue({
-    djPersona: 'You are a DJ.',
-    taste: '',
-    routines: '',
-    moodRules: '',
-    playlists: []
-  });
-  mocks.loadLikedTracksForAgentContext.mockResolvedValue([]);
   mocks.fetchWeather.mockResolvedValue(null);
-  mocks.extractChatPreferencesIfDue.mockResolvedValue({ extracted: false, messageIds: [], summary: '' });
   mocks.recommendFromChat.mockResolvedValue({
     status: 'empty_pool',
     mode: 'chat_recommend',
@@ -100,6 +99,12 @@ afterEach(() => {
 });
 
 describe('chat DJ event integration', () => {
+  it('keeps fallback active directives for 24 hours', () => {
+    const now = new Date('2026-07-17T10:00:00.000Z');
+    expect(extractQueueDirectiveFromText('接下来多放女声', now)?.expiresAt)
+      .toBe('2026-07-18T10:00:00.000Z');
+  });
+
   it('records listener requests and fallback queue directive updates', async () => {
     const userId = 'chat-events-user-1';
     setQueue(userId, []);
@@ -118,6 +123,11 @@ describe('chat DJ event integration', () => {
       source: 'fallback'
     });
     expect(JSON.stringify(directiveEvent?.payload)).toContain('女声');
+    expect(mocks.buildDjMemorySnapshot).toHaveBeenCalledTimes(1);
+    expect(capturedFragments?.djMemory).toMatchObject({ purpose: 'chat' });
+    expect(capturedFragments).not.toHaveProperty('corpus');
+    expect(capturedFragments).not.toHaveProperty('env');
+    expect(capturedFragments).not.toHaveProperty('memory');
   });
 
   it('records chat-authored active directive updates from set_pref actions', async () => {
@@ -148,6 +158,42 @@ describe('chat DJ event integration', () => {
     expect(directiveEvent?.payload).toEqual({
       directive: '下午 city pop，稳定一点',
       source: 'chat'
+    });
+  });
+
+  it('applies structured listener exclusions before building DJ Memory', async () => {
+    const userId = 'chat-events-user-exclusion';
+    setQueue(userId, []);
+
+    await handleChatMessage(userId, mockNcmClient(), '不要再放某乐队', vi.fn());
+
+    expect(listActiveExplicitExclusions(userId)).toEqual([
+      expect.objectContaining({
+        entityType: 'artist',
+        entityKey: '某乐队',
+        sourceKind: 'listener_instruction',
+        sourceRef: { messageId: expect.any(Number) }
+      })
+    ]);
+    expect(mocks.buildDjMemorySnapshot).toHaveBeenCalledTimes(1);
+  });
+
+  it('enqueues arbitrary chat language for durable preference extraction', async () => {
+    const userId = 'chat-events-user-preference-extraction';
+
+    await handleChatMessage(userId, mockNcmClient(), '我最近越来越喜欢 Radiohead', vi.fn());
+
+    const [message] = getUnextractedMessages(userId);
+    expect(message?.content).toBe('我最近越来越喜欢 Radiohead');
+    expect(getPreferenceExtractionBatchBySource(
+      userId,
+      `message:${message?.id}`,
+      PREFERENCE_EXTRACTION_VERSION
+    )).toMatchObject({
+      userId,
+      messageIds: [message?.id],
+      status: 'pending',
+      attemptCount: 0
     });
   });
 
@@ -192,6 +238,17 @@ describe('chat DJ event integration', () => {
 
     await handleChatMessage(userId, mockNcmClient(), '帮我加一首 city pop', vi.fn());
 
+    expect(mocks.buildDjMemorySnapshot).toHaveBeenCalledTimes(1);
+    expect(mocks.recommendFromChat).toHaveBeenCalledWith(expect.objectContaining({
+      selectionAdapter: expect.objectContaining({
+        runtimeContext: expect.objectContaining({
+          request: 'chat-recommend',
+          currentUserText: '帮我加一首 city pop',
+          queueStateSummary: expect.stringContaining('current-track')
+        })
+      })
+    }));
+
     expect(getQueue(userId).map((track) => track.ncmId)).toEqual(['current-track', 'track-1']);
     const events = getRecentDjEvents(userId, 10);
     expect(events.find((event) => event.type === 'selection_started')?.payload).toMatchObject({
@@ -212,6 +269,165 @@ describe('chat DJ event integration', () => {
       trackIds: ['track-1'],
       position: 'end'
     });
+  });
+
+  it('reports recommendation failures with a stable code instead of provider text', async () => {
+    const send = vi.fn();
+    mocks.computeStream.mockImplementation(async function* () {
+      yield {
+        type: 'done',
+        output: {
+          mode: 'chat',
+          say: '我来找一首',
+          intent: 'adjust_queue',
+          actions: [{
+            type: 'add_to_queue',
+            pick: { query: 'city pop' },
+            position: 'end'
+          }]
+        }
+      };
+    });
+    mocks.recommendFromChat.mockRejectedValue(Object.assign(
+      new Error('response body: PRIVATE PDC'),
+      { status: 503, responseBody: '{"echo":"PRIVATE PROMPT"}' }
+    ));
+
+    await handleChatMessage('chat-safe-error', mockNcmClient(), '来点 city pop', send);
+
+    expect(send).toHaveBeenCalledWith('chat.recommend.progress', expect.objectContaining({
+      phase: 'error',
+      reason: 'provider_server_error'
+    }));
+    expect(JSON.stringify(send.mock.calls)).not.toContain('PRIVATE');
+  });
+
+  it('returns a friendly generic chat error without leaking upstream details', async () => {
+    const send = vi.fn();
+    mocks.buildDjMemorySnapshot.mockRejectedValueOnce(Object.assign(
+      new Error('PRIVATE provider response'),
+      { status: 429, responseBody: 'PRIVATE PROMPT' }
+    ));
+
+    await handleChatMessage('chat-safe-outer-error', mockNcmClient(), '你好', send);
+
+    expect(send).toHaveBeenCalledWith('chat.error', {
+      error: 'AI DJ 暂时不可用，请稍后重试。',
+      code: 'provider_rate_limited'
+    });
+    expect(JSON.stringify(send.mock.calls)).not.toContain('PRIVATE');
+  });
+
+  it('keeps a fresh explicit artist exclusion as a hard gate at chat queue apply', async () => {
+    const userId = 'chat-events-user-final-gate';
+    const send = vi.fn();
+    setQueue(userId, [{ ncmId: 'current-track', name: 'Current', artists: ['Current Artist'] }]);
+    createExplicitExclusion({
+      userId,
+      entityType: 'artist',
+      entityKey: 'Blocked Artist',
+      displayName: 'Blocked Artist',
+      sourceKind: 'listener_instruction',
+      sourceRef: { sourceId: 'test-exclusion' }
+    });
+    mocks.computeStream.mockImplementation(async function* () {
+      yield {
+        type: 'done',
+        output: {
+          mode: 'chat',
+          say: '我来挑一首',
+          intent: 'adjust_queue',
+          actions: [{
+            type: 'add_to_queue',
+            pick: { query: 'something fresh' },
+            position: 'end'
+          }]
+        }
+      };
+    });
+    mocks.recommendFromChat.mockResolvedValue({
+      status: 'ok',
+      mode: 'chat_recommend',
+      say: '找到一首',
+      picks: [{
+        id: 'blocked-track',
+        name: 'Blocked Song',
+        artist: 'Blocked Artist',
+        reason: 'matches request',
+        source: 'search'
+      }],
+      rejected: [],
+      queryFunnel: [],
+      trace: [],
+      candidateScoreTable: []
+    });
+
+    await handleChatMessage(userId, mockNcmClient(), '换点新鲜的', send);
+
+    expect(getQueue(userId).map((track) => track.ncmId)).toEqual(['current-track']);
+    expect(mocks.recommendFromChat).toHaveBeenCalledWith(expect.objectContaining({
+      selectionAdapter: expect.objectContaining({
+        policyContext: expect.objectContaining({
+          explicitExclusions: expect.objectContaining({
+            artistKeys: new Set(['blocked artist'])
+          })
+        })
+      })
+    }));
+    expect(send).toHaveBeenCalledWith('chat.recommend.progress', expect.objectContaining({
+      phase: 'skipped',
+      skipped: [expect.objectContaining({
+        id: 'blocked-track',
+        reason: 'explicit_artist_exclusion'
+      })]
+    }));
+  });
+
+  it('allows an explicit chat request to replay a track from listening history', async () => {
+    const userId = 'chat-events-user-explicit-replay';
+    setQueue(userId, [{ ncmId: 'current-track', name: 'Current', artists: ['Current Artist'] }]);
+    createListeningEpisode(userId, 'recent-episode', {
+      playerInstanceId: 'player-1',
+      deckId: 'deck-a',
+      track: { id: 'recent-track', name: 'Recent Song', artists: ['Recent Artist'] },
+      durationMs: 180_000,
+      checkpointSeq: 0
+    });
+    mocks.computeStream.mockImplementation(async function* () {
+      yield {
+        type: 'done',
+        output: {
+          mode: 'chat',
+          say: '再放一次',
+          intent: 'adjust_queue',
+          actions: [{
+            type: 'add_to_queue',
+            pick: { query: 'Recent Song' },
+            position: 'end'
+          }]
+        }
+      };
+    });
+    mocks.recommendFromChat.mockResolvedValue({
+      status: 'ok',
+      mode: 'chat_recommend',
+      say: '按你的要求再来一次',
+      picks: [{
+        id: 'recent-track',
+        name: 'Recent Song',
+        artist: 'Recent Artist',
+        reason: 'explicit replay request',
+        source: 'search'
+      }],
+      rejected: [],
+      queryFunnel: [],
+      trace: [],
+      candidateScoreTable: []
+    });
+
+    await handleChatMessage(userId, mockNcmClient(), '再放一遍 Recent Song', vi.fn());
+
+    expect(getQueue(userId).map((track) => track.ncmId)).toEqual(['current-track', 'recent-track']);
   });
 
   it('limits chat swap_next recommendations to one track so queue order matches DJ events', async () => {

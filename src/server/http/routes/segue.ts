@@ -4,6 +4,7 @@ import type { Request, Response } from 'express';
 import { z } from 'zod';
 import { trackSchema } from '../../agent/schema.js';
 import { resolveLlmConfig } from '../../llm/config.js';
+import { beginForegroundLlmWork } from '../../llm/foreground-activity.js';
 import type { NcmClient } from '../../ncm/client.js';
 import { TtsClient } from '../../tts/client.js';
 import { resolveTtsConfig } from '../../tts/config.js';
@@ -43,6 +44,7 @@ type SegueRouteOptions = {
 };
 
 type ActiveSegueJob = {
+  userId: string;
   requestId: string;
   clientRequestId: string | null;
   fromId: string;
@@ -50,11 +52,11 @@ type ActiveSegueJob = {
   controller: AbortController;
 };
 
-let activeJob: ActiveSegueJob | null = null;
+const activeJobsByUser = new Map<string, ActiveSegueJob>();
 
 export function _resetActiveSegueJobForTests(): void {
-  if (activeJob) activeJob.controller.abort();
-  activeJob = null;
+  for (const job of activeJobsByUser.values()) job.controller.abort();
+  activeJobsByUser.clear();
 }
 
 export function createSegueTriggerHandler(opts: SegueRouteOptions) {
@@ -70,7 +72,9 @@ export function createSegueTriggerHandler(opts: SegueRouteOptions) {
       return;
     }
 
+    const userId = (req as AuthedRequest).userId;
     const clientRequestId = parsed.data.clientRequestId ?? null;
+    const activeJob = activeJobsByUser.get(userId);
 
     // Dedup: if same client request is in flight, return its existing requestId.
     if (
@@ -91,20 +95,20 @@ export function createSegueTriggerHandler(opts: SegueRouteOptions) {
     const requestId = randomBytes(8).toString('hex');
     const controller = new AbortController();
     const job: ActiveSegueJob = {
+      userId,
       requestId,
       clientRequestId,
       fromId: parsed.data.from.id,
       toId: parsed.data.to.id,
       controller
     };
-    activeJob = job;
+    activeJobsByUser.set(userId, job);
 
     res.json({ ok: true, requestId, clientRequestId });
 
-    const userId = (req as AuthedRequest).userId;
     const ncmClient = getScopedNcmClient(req, opts.ncmClient);
     void runSegueJob(job, parsed.data.from, parsed.data.to, opts, userId, ncmClient).finally(() => {
-      if (activeJob === job) activeJob = null;
+      if (activeJobsByUser.get(userId) === job) activeJobsByUser.delete(userId);
     });
   };
 }
@@ -138,16 +142,22 @@ async function runSegueJob(
       return;
     }
 
-    const segueResult = await generateSegue({
-      userId,
-      from,
-      to,
-      ncmClient,
-      llmConfig,
-      signal,
-      djPickReasonFallback: getDjPickReason(to.id),
-      emitDelta: (say) => emit({ type: 'segue.delta', say })
-    });
+    const releaseForegroundLlm = beginForegroundLlmWork();
+    let segueResult: Awaited<ReturnType<typeof generateSegue>>;
+    try {
+      segueResult = await generateSegue({
+        userId,
+        from,
+        to,
+        ncmClient,
+        llmConfig,
+        signal,
+        djPickReasonFallback: getDjPickReason(userId, to.id),
+        emitDelta: (say) => emit({ type: 'segue.delta', say })
+      });
+    } finally {
+      releaseForegroundLlm();
+    }
 
     clearTimeout(llmTimeout);
     if (signal.aborted) return;
@@ -265,6 +275,7 @@ export function createSseSegueHandler(opts: SegueRouteOptions) {
     };
 
     const job: ActiveSegueJob = {
+      userId,
       requestId,
       clientRequestId,
       fromId: parsed.data.from.id,

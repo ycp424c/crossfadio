@@ -57,6 +57,18 @@ export function getUnextractedMessages(userId: string): StoredMessage[] {
     .all(userId);
 }
 
+export function getMessagesByIds(userId: string, ids: number[]): StoredMessage[] {
+  const uniqueIds = [...new Set(ids.filter((id) => Number.isInteger(id) && id > 0))];
+  if (uniqueIds.length === 0) return [];
+  const placeholders = uniqueIds.map(() => '?').join(', ');
+  return getDb().prepare(
+    `SELECT id, role, content, created_at, extracted_at
+     FROM messages
+     WHERE user_id = ? AND id IN (${placeholders})
+     ORDER BY id ASC`
+  ).all(userId, ...uniqueIds) as StoredMessage[];
+}
+
 export function markMessagesExtracted(userId: string, ids: number[]): void {
   if (ids.length === 0) return;
   const db = getDb();

@@ -1,4 +1,4 @@
-type SseEventHandler = (event: string, data: unknown) => void;
+type SseEventHandler = (event: string, data: unknown, authToken: string) => void;
 
 // ── 持久事件流（EventSource，自动重连，仅用于无副作用广播）────────────────────
 
@@ -14,9 +14,14 @@ export function initSseEvents(token: string): void {
   url.searchParams.set('token', token);
   eventsSource = new EventSource(url.toString());
 
-  for (const eventType of ['connected', 'queue-updated', 'queue-appended']) {
+  for (const eventType of [
+    'connected',
+    'queue-updated',
+    'selection.journey',
+    'chat.intent.notice'
+  ]) {
     eventsSource.addEventListener(eventType, (e) => {
-      notifyListeners(eventType, parseSseData((e as MessageEvent).data));
+      notifyListeners(eventType, parseSseData((e as MessageEvent).data), token);
     });
   }
 }
@@ -28,39 +33,44 @@ export function addSseListener(handler: SseEventHandler): () => void {
   return () => listeners.delete(handler);
 }
 
-function notifyListeners(event: string, data: unknown): void {
-  for (const h of listeners) h(event, data);
+function notifyListeners(event: string, data: unknown, authToken: string): void {
+  for (const h of listeners) h(event, data, authToken);
 }
 
 // ── Chat (fetch + ReadableStream，POST body → SSE stream) ─────────────────────
 
 export type SseStreamEvent = { type: string; data: Record<string, unknown> };
 
-export async function* streamChat(text: string): AsyncGenerator<SseStreamEvent> {
-  yield* postSseStream('/api/sse/chat', { text });
+export async function* streamChat(text: string, authToken?: string): AsyncGenerator<SseStreamEvent> {
+  yield* postSseStream('/api/sse/chat', { text }, authToken);
 }
 
 export async function* streamSegue(input: {
   clientRequestId: string;
   from: { id: string; name?: string; artist?: string };
   to: { id: string; name?: string; artist?: string };
+  authToken?: string;
 }): AsyncGenerator<SseStreamEvent> {
-  yield* postSseStream('/api/sse/segue', input);
+  const { authToken, ...body } = input;
+  yield* postSseStream('/api/sse/segue', body, authToken);
 }
 
 export async function* streamPickNext(input: {
   queue: Array<{ id: string; name?: string; artists?: string[]; durationMs?: number; coverImgUrl?: string | null }>;
   currentIndex: number;
+  revision: number;
+  authToken?: string;
 }): AsyncGenerator<SseStreamEvent> {
-  yield* postSseStream('/api/sse/pick-next', input);
+  const { authToken, ...body } = input;
+  yield* postSseStream('/api/sse/pick-next', body, authToken);
 }
 
 export async function cancelRecommend(jobId: string): Promise<void> {
   await postJson('/api/sse/chat/cancel', { jobId });
 }
 
-async function* postSseStream(path: string, body: unknown): AsyncGenerator<SseStreamEvent> {
-  const token = getRequiredToken();
+async function* postSseStream(path: string, body: unknown, authToken?: string): AsyncGenerator<SseStreamEvent> {
+  const token = authToken ?? getRequiredToken();
   const serializedBody = JSON.stringify(body);
   const response = await fetchSseWithRetry(path, token, serializedBody);
 

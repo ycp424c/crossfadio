@@ -11,6 +11,7 @@ import type {
   ShortlistPromptPacket
 } from './track-understanding.js';
 import type { ToolObservation } from './tools.js';
+import { projectPromptJson } from './prompt-projection.js';
 
 type LoopObservation = ToolObservation & {
   tool?: string;
@@ -47,6 +48,15 @@ const MAX_FINAL_CONTEXT_CHARS = 8_000;
 const MAX_FINAL_CANDIDATE_BASE_CHARS = 8_000;
 const MAX_FINAL_LYRIC_EVIDENCE_CHARS = 40_000;
 const MAX_FINAL_PROMPT_CHARS = 48_000;
+const STRUCTURED_PROMPT_SECTIONS = new Set([
+  'compact_context',
+  'candidate_pool',
+  'observations',
+  'candidate_base',
+  'cached_profiles',
+  'untrusted_track_evidence',
+  'selection_notes'
+]);
 
 const TRACK_PROFILE_PROPERTIES = {
   genres: { type: 'array', items: { type: 'string', maxLength: 48 }, maxItems: 8 },
@@ -164,7 +174,7 @@ function serializedFinalPickJsonSchema(): string {
 
 export function buildLoopMessages(input: BuildLoopMessagesInput): LlmMessage[] {
   const context = compactJson(llmSafeContext(input.context), MAX_CONTEXT_CHARS);
-  const candidatePool = truncate(input.candidateSummary || '[]', MAX_CANDIDATE_CHARS);
+  const candidatePool = candidateSummaryJson(input.candidateSummary, MAX_CANDIDATE_CHARS);
   const targetPickCount = input.targetPickCount ?? 2;
   const observations = compactJson(input.observations.map((item) => ({
     tool: item.tool,
@@ -185,8 +195,7 @@ export function buildLoopMessages(input: BuildLoopMessagesInput): LlmMessage[] {
         '输出 final 时格式为 {"type":"final","say":"...","picks":[{"id":"候选池ID","reason":"...","source":"liked|playlist|search|style_expansion|trend"}],"rejected":[]}。',
         'final picks 的 id 必须来自候选池；不能选择候选池外的歌曲。',
         'activeDirective/current chat 必须优先于趋势、榜单、泛化流行度。',
-        'recentArtistPenalties 中 penalty 较高的歌手需要先在 expand_queries 阶段放入 avoidArtists，并用相邻风格、不同艺人或具体曲目实体扩展召回。',
-        'recentTrackPenalties 是同一首歌的长周期重复惩罚；penalty 高的候选除非明显最贴合，否则应优先让位给相邻风格的新候选。',
+        'recentArtistPenalties/recentTrackPenalties 只是 Ranking 阶段的可解释 Selection Pressure，不得在 Recall 阶段升级成硬过滤。',
         'NCM song search 只适合精确召回：recall_from_ncm_search 只能使用具体歌名+艺人、榜单曲目或高置信曲目实体；不要把 mood、场景、风格、人声、能量词直接作为 song search query。',
         'expand_queries 应把具体曲目实体放入 exactTrackQueries，把具体艺人放入 artistAnchors，把具体专辑放入 albumAnchors，把风格/语言/场景适合的歌单搜索入口放入 playlistQueries；不要把这些实体混成一条 song search query。',
         '风格、地区、年代、人声、能量、编曲质感应放入 styleHints/listeningConstraints；这些语义线索用于实体发现和排序，不是直接搜索词。',
@@ -229,7 +238,7 @@ export function buildFinalPickPromptPayload(input: BuildLoopMessagesInput): Fina
       promptChars: measurePromptChars(messages),
       sections: {
         compactContextChars: compactJson(llmSafeContext(input.context), MAX_CONTEXT_CHARS).length,
-        candidateBaseChars: truncate(input.candidateSummary || '[]', MAX_CANDIDATE_CHARS).length,
+        candidateBaseChars: candidateSummaryJson(input.candidateSummary, MAX_CANDIDATE_CHARS).length,
         cachedProfilesChars: 0,
         lyricEvidenceChars: 0,
         selectionNotesChars: compactJson(selectionNotes(input), MAX_OBSERVATION_CHARS).length
@@ -324,9 +333,30 @@ export function measurePromptChars(messages: LlmMessage[]): number {
   return messages.reduce((sum, message) => sum + message.content.length, 0);
 }
 
+export function validateMusicAgentPromptJson(messages: LlmMessage[]): boolean {
+  let validatedSections = 0;
+  for (const message of messages) {
+    if (message.role !== 'user') continue;
+    const lines = message.content.split('\n');
+    for (let index = 0; index < lines.length; index += 1) {
+      const label = lines[index]?.match(/^([a-z_]+):$/)?.[1];
+      if (!label || !STRUCTURED_PROMPT_SECTIONS.has(label)) continue;
+      const serialized = lines[index + 1];
+      if (serialized === undefined) return false;
+      try {
+        JSON.parse(serialized);
+        validatedSections += 1;
+      } catch {
+        return false;
+      }
+    }
+  }
+  return validatedSections > 0;
+}
+
 function buildLegacyFinalPickMessages(input: BuildLoopMessagesInput): LlmMessage[] {
   const context = compactJson(llmSafeContext(input.context), MAX_CONTEXT_CHARS);
-  const candidatePool = truncate(input.candidateSummary || '[]', MAX_CANDIDATE_CHARS);
+  const candidatePool = candidateSummaryJson(input.candidateSummary, MAX_CANDIDATE_CHARS);
   const targetPickCount = input.targetPickCount ?? 2;
   const notes = compactJson(selectionNotes(input), MAX_OBSERVATION_CHARS);
 
@@ -499,10 +529,17 @@ function truncateData(value: string, maxChars: number): string {
 }
 
 function compactJson(value: unknown, maxChars: number): string {
-  return truncate(JSON.stringify(value), maxChars);
+  return projectPromptJson(value, maxChars);
 }
 
-function truncate(value: string, maxChars: number): string {
-  if (value.length <= maxChars) return value;
-  return `${value.slice(0, Math.max(0, maxChars - 15))}...<truncated>`;
+function candidateSummaryJson(value: string, maxChars: number): string {
+  let structured: unknown = [];
+  if (value.trim()) {
+    try {
+      structured = JSON.parse(value);
+    } catch {
+      structured = [{ summary: value }];
+    }
+  }
+  return projectPromptJson(structured, maxChars);
 }

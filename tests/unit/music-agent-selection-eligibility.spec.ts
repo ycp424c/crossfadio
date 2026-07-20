@@ -427,7 +427,7 @@ describe('candidate quality eligibility', () => {
     expect(decision.supportingNegativeSignals).toContain('missing_credits');
   });
 
-  it('records liked provenance as a positive quality signal', () => {
+  it('does not treat liked provenance as a positive quality signal', () => {
     const decision = evaluateCandidateQuality(candidate({
       sources: ['liked'],
       qualitySignals: { popularity: 60, copyright: 2, albumName: 'Real Album' }
@@ -439,7 +439,27 @@ describe('candidate quality eligibility', () => {
     }));
 
     expect(decision.tier).toBe('trusted');
-    expect(decision.positiveSignals).toContain('liked_source');
+    expect(decision.positiveSignals).not.toContain('liked_source');
+  });
+
+  it('treats recommendation copyright hints as soft quality evidence', () => {
+    const decision = evaluateCandidateQuality(candidate({
+      qualitySignals: {
+        popularity: 60,
+        copyright: 2,
+        noCopyrightRcmd: true,
+        albumName: 'Real Album'
+      }
+    }), facts({
+      lyricStatus: 'available',
+      creditRoleCount: 2,
+      wikiTags: ['dream pop'],
+      albumName: 'Real Album'
+    }));
+
+    expect(decision.tier).toBe('acceptable');
+    expect(decision.strongNegativeSignals).not.toContain('copyright_recommendation_blocked');
+    expect(decision.supportingNegativeSignals).toContain('copyright_recommendation_blocked');
   });
 });
 
@@ -456,8 +476,6 @@ function candidate(overrides: Partial<MusicCandidate> = {}): MusicCandidate {
       timeFit: 0.6,
       contextFit: 0.8,
       novelty: 0.7,
-      recentPenalty: 0,
-      skipPenalty: 0,
       sourceConfidence: 0.8
     },
     ...overrides

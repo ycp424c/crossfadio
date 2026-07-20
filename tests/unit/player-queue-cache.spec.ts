@@ -3,6 +3,7 @@ import {
   PLAYER_QUEUE_RESTORE_LIMIT,
   PLAYER_QUEUE_STORAGE_KEY,
   PLAYER_QUEUE_STORAGE_TTL_MS,
+  getPlayerQueueStorageKey,
   persistQueueSnapshot,
   restorePersistedQueueSnapshot
 } from '../../src/renderer/playerQueueCache';
@@ -18,10 +19,10 @@ function makeTrack(id: number): QueueTrackDto {
   };
 }
 
-function makeStorage(initial?: string): Storage {
+function makeStorage(initial?: string, userId = 'user-a'): Storage {
   const data = new Map<string, string>();
   if (initial !== undefined) {
-    data.set(PLAYER_QUEUE_STORAGE_KEY, initial);
+    data.set(getPlayerQueueStorageKey(userId), initial);
   }
 
   return {
@@ -43,9 +44,9 @@ describe('player queue cache', () => {
     const storage = makeStorage();
     const queue = Array.from({ length: 120 }, (_, index) => makeTrack(index + 1));
 
-    persistQueueSnapshot(queue, 7, storage, 1_000);
+    persistQueueSnapshot('user-a', queue, 7, storage, 1_000);
 
-    const raw = storage.getItem(PLAYER_QUEUE_STORAGE_KEY);
+    const raw = storage.getItem(getPlayerQueueStorageKey('user-a'));
     expect(raw).not.toBeNull();
     const saved = JSON.parse(raw ?? '{}') as { queue: QueueTrackDto[]; currentIndex: number; savedAt: number };
     expect(saved.queue[0]?.id).toBe('8');
@@ -59,7 +60,7 @@ describe('player queue cache', () => {
     const queue = Array.from({ length: 150 }, (_, index) => makeTrack(index + 1));
     const storage = makeStorage(JSON.stringify({ queue, currentIndex: 15 }));
 
-    const restored = restorePersistedQueueSnapshot(storage, 2_000);
+    const restored = restorePersistedQueueSnapshot('user-a', storage, 2_000);
 
     expect(restored?.queue[0]?.id).toBe('16');
     expect(restored?.queue.at(-1)?.id).toBe('115');
@@ -72,7 +73,24 @@ describe('player queue cache', () => {
     const savedAt = 2_000;
     const storage = makeStorage(JSON.stringify({ queue, currentIndex: 0, savedAt }));
 
-    expect(restorePersistedQueueSnapshot(storage, savedAt + PLAYER_QUEUE_STORAGE_TTL_MS + 1)).toBeNull();
-    expect(storage.removeItem).toHaveBeenCalledWith(PLAYER_QUEUE_STORAGE_KEY);
+    expect(restorePersistedQueueSnapshot(
+      'user-a', storage, savedAt + PLAYER_QUEUE_STORAGE_TTL_MS
+    )?.queue).toEqual(queue);
+    expect(restorePersistedQueueSnapshot(
+      'user-a', storage, savedAt + PLAYER_QUEUE_STORAGE_TTL_MS + 1
+    )).toBeNull();
+    expect(storage.removeItem).toHaveBeenCalledWith(getPlayerQueueStorageKey('user-a'));
+  });
+
+  it('never restores a queue snapshot owned by another account', () => {
+    const storage = makeStorage();
+    const queue = [makeTrack(1), makeTrack(2)];
+
+    persistQueueSnapshot('user-a', queue, 0, storage, 1_000);
+
+    expect(restorePersistedQueueSnapshot('user-b', storage, 2_000)).toBeNull();
+    expect(restorePersistedQueueSnapshot('user-a', storage, 2_000)?.queue).toEqual(queue);
+    expect(getPlayerQueueStorageKey('user-a')).not.toBe(getPlayerQueueStorageKey('user-b'));
+    expect(getPlayerQueueStorageKey('user-a')).toContain(PLAYER_QUEUE_STORAGE_KEY);
   });
 });

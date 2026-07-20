@@ -6,12 +6,25 @@ import type {
 } from './schema.js';
 import { areMusicTrackDedupeKeysSimilar, buildMusicTrackDedupeKey } from './dedupe.js';
 import { artistKeys } from './artists.js';
+import { evaluatePlaybackEligibility } from './playback-eligibility.js';
 import {
   candidateProvenanceLabels,
   cloneCandidateProvenance
 } from './candidate-provenance.js';
+import {
+  candidateTitleMotifKeys as policyCandidateTitleMotifKeys,
+  selectDiverseBatch
+} from './selection-policy/batch.js';
+import { evaluateRanking } from './selection-policy/ranking.js';
+import {
+  toSelectionPolicyCandidate,
+  type SelectionExclusions,
+  type SelectionPhaseDecision,
+  type SelectionPolicyContext,
+  type SelectionPolicyMode,
+  type SelectionPressureContribution
+} from './selection-policy/types.js';
 
-const REPEATED_ARTIST_PENALTY = 0.16;
 const LOW_POPULARITY_THRESHOLD = 40;
 const VERY_LOW_POPULARITY_THRESHOLD = 15;
 const LOW_POPULARITY_PENALTY = 0.08;
@@ -36,26 +49,38 @@ const TITLE_POLLUTION_TERMS = [
   '深夜',
   'ローファイ'
 ];
-const TITLE_DIVERSITY_MOTIFS = [
-  { key: 'afternoon', pattern: /(?:午後|午后|下午|\bafternoon\b|\bno\s+gogo\b)/i }
-] as const;
-
 export type RankCandidatesOptions = {
   artistPenalties?: ReadonlyMap<string, number>;
   trackPenalties?: ReadonlyMap<string, number>;
+  pressureForCandidate?: (candidate: MusicCandidate) => SelectionPressureContribution[];
+  mode?: SelectionPolicyMode;
+  explicitlyRequested?: boolean;
+  explicitRequest?: SelectionExclusions;
+  recordDecision?: (candidate: MusicCandidate, decision: SelectionPhaseDecision) => void;
 };
 
 export type DiversifyCandidatesOptions = {
   blockedTitleMotifs?: ReadonlySet<string>;
+  recordDecision?: (candidate: MusicCandidate, decision: SelectionPhaseDecision) => void;
 };
 
 export function rankOptionsFromContext(
-  context: Pick<MusicAgentRuntimeContext, 'recentArtistPenalties' | 'recentTrackPenalties' | 'rankingTrackPenalties'>
+  context: Pick<MusicAgentRuntimeContext, 'request' | 'recentArtistPenalties' | 'recentTrackPenalties' | 'rankingTrackPenalties'>,
+  overrides: Pick<RankCandidatesOptions, 'pressureForCandidate' | 'recordDecision'> & {
+    selectionPolicyContext?: SelectionPolicyContext;
+  } = {}
 ): RankCandidatesOptions {
   const trackPenalties = context.rankingTrackPenalties ?? context.recentTrackPenalties ?? [];
+  const { selectionPolicyContext, ...rankOverrides } = overrides;
   return {
     artistPenalties: new Map((context.recentArtistPenalties ?? []).map((item) => [item.artist, item.penalty])),
-    trackPenalties: new Map(trackPenalties.map((item) => [item.trackKey, item.penalty]))
+    trackPenalties: new Map(trackPenalties.map((item) => [item.trackKey, item.penalty])),
+    mode: selectionPolicyContext?.mode ?? 'autonomous',
+    explicitlyRequested: selectionPolicyContext?.explicitlyRequested ?? false,
+    ...(selectionPolicyContext?.explicitRequest
+      ? { explicitRequest: selectionPolicyContext.explicitRequest }
+      : {}),
+    ...rankOverrides
   };
 }
 
@@ -68,9 +93,7 @@ export function scoreCandidate(candidate: MusicCandidate): number {
     scores.timeFit * 0.15 +
     scores.contextFit * 0.1 +
     scores.sourceConfidence * 0.1 +
-    scores.novelty * 0.15 -
-    scores.recentPenalty -
-    scores.skipPenalty
+    scores.novelty * 0.15
   );
 
   return Math.max(0, score);
@@ -84,19 +107,57 @@ export type CandidateScoreBreakdown = {
   qualityPenalty: number;
   titlePollutionPenalty: number;
   adjustedScore: number;
+  pressureContributions: SelectionPressureContribution[];
 };
 
 export function scoreCandidateForRanking(
   candidate: MusicCandidate,
-  options: RankCandidatesOptions = {},
-  repeatCount = 0
+  options: RankCandidatesOptions = {}
 ): CandidateScoreBreakdown {
   const baseScore = scoreCandidate(candidate);
   const artistPenalty = resolveArtistPenalty(candidate, options.artistPenalties);
   const trackPenalty = resolveTrackPenalty(candidate, options.trackPenalties);
-  const repeatPenalty = repeatCount * REPEATED_ARTIST_PENALTY;
+  const repeatPenalty = 0;
   const qualityPenalty = qualitySignalPenalty(candidate);
   const titlePollutionPenalty = titlePollutionSignalPenalty(candidate);
+  const pressureContributions: SelectionPressureContribution[] = [
+    ...(artistPenalty > 0 ? [{
+      source: 'exposure' as const,
+      reasonCode: 'exposure_artist' as const,
+      direction: 'penalty' as const,
+      amount: artistPenalty
+    }] : []),
+    ...(trackPenalty > 0 ? [{
+      source: 'exposure' as const,
+      reasonCode: 'exposure_track' as const,
+      direction: 'penalty' as const,
+      amount: trackPenalty
+    }] : []),
+    ...(qualityPenalty > 0 ? [{
+      source: 'candidate_quality' as const,
+      reasonCode: 'candidate_quality' as const,
+      direction: 'penalty' as const,
+      amount: qualityPenalty
+    }] : []),
+    ...(titlePollutionPenalty > 0 ? [{
+      source: 'candidate_quality' as const,
+      reasonCode: 'candidate_quality' as const,
+      direction: 'penalty' as const,
+      amount: titlePollutionPenalty
+    }] : []),
+    ...(options.pressureForCandidate?.(candidate) ?? [])
+  ];
+  const decision = evaluateRanking({
+    candidate: toSelectionPolicyCandidate(candidate),
+    context: {
+      mode: options.mode ?? 'autonomous',
+      explicitlyRequested: options.explicitlyRequested ?? false,
+      ...(options.explicitRequest ? { explicitRequest: options.explicitRequest } : {})
+    },
+    baseScore,
+    pressure: pressureContributions
+  });
+  options.recordDecision?.(candidate, decision);
   return {
     baseScore,
     artistPenalty,
@@ -104,45 +165,27 @@ export function scoreCandidateForRanking(
     repeatPenalty,
     qualityPenalty,
     titlePollutionPenalty,
-    adjustedScore: Math.max(0, baseScore - artistPenalty - trackPenalty - repeatPenalty - qualityPenalty - titlePollutionPenalty)
+    adjustedScore: decision.adjustedScore,
+    pressureContributions: decision.contributions
   };
 }
 
 export function rankCandidates(candidates: MusicCandidate[], limit: number, options: RankCandidatesOptions = {}): MusicCandidate[] {
   const target = Math.max(0, limit);
-  const remaining = candidates.filter((candidate) => !isHardFilteredCandidate(candidate));
-  const selected: MusicCandidate[] = [];
-  const artistCounts = new Map<string, number>();
-
-  while (selected.length < target && remaining.length > 0) {
-    let bestIndex = 0;
-    let bestScore = repeatedArtistAdjustedScore(remaining[0], artistCounts, options);
-
-    for (let index = 1; index < remaining.length; index += 1) {
-      const score = repeatedArtistAdjustedScore(remaining[index], artistCounts, options);
-      if (score > bestScore) {
-        bestIndex = index;
-        bestScore = score;
-      }
-    }
-
-    const [picked] = remaining.splice(bestIndex, 1);
-    selected.push(cloneCandidate(picked));
-    incrementArtistCounts(artistCounts, picked);
-  }
-
-  return selected;
+  return candidates
+    .filter((candidate) => !isHardFilteredCandidate(candidate))
+    .map((candidate, index) => ({ candidate, index, score: scoreCandidateForRanking(candidate, options).adjustedScore }))
+    .sort((left, right) => right.score - left.score || left.index - right.index)
+    .slice(0, target)
+    .map(({ candidate }) => cloneCandidate(candidate));
 }
 
 export function buildCandidateScoreTableRows(
   candidates: MusicCandidate[],
   options: RankCandidatesOptions = {}
 ): CandidateScoreTableRow[] {
-  const artistCounts = new Map<string, number>();
   return candidates.map((candidate, index) => {
-    const repeatCount = repeatedArtistCount(candidate, artistCounts);
-    const breakdown = scoreCandidateForRanking(candidate, options, repeatCount);
-    incrementArtistCounts(artistCounts, candidate);
+    const breakdown = scoreCandidateForRanking(candidate, options);
     return {
       rank: index + 1,
       id: candidate.id,
@@ -166,65 +209,18 @@ export function diversifyCandidates(
   limit: number,
   options: DiversifyCandidatesOptions = {}
 ): MusicCandidate[] {
-  const sorted = candidates
-    .filter((candidate) => !isHardFilteredCandidate(candidate));
-  const selected: MusicCandidate[] = [];
-  const usedArtists = new Set<string>();
-  const usedTitleMotifs = new Set(options.blockedTitleMotifs ?? []);
-  const target = Math.max(0, limit);
-
-  for (const candidate of sorted) {
-    if (selected.length >= target) {
-      break;
+  return selectDiverseBatch(
+    candidates.filter((candidate) => !isHardFilteredCandidate(candidate)),
+    limit,
+    {
+      blockedTitleMotifs: options.blockedTitleMotifs,
+      recordDecision: options.recordDecision
     }
-
-    const artists = artistKeys(candidate.artist);
-    const titleMotifs = candidateTitleMotifKeys(candidate);
-
-    if (artists.some((artist) => usedArtists.has(artist))) {
-      continue;
-    }
-
-    if (titleMotifs.some((motif) => usedTitleMotifs.has(motif))) {
-      continue;
-    }
-
-    selected.push(cloneCandidate(candidate));
-    for (const artist of artists) {
-      usedArtists.add(artist);
-    }
-    for (const motif of titleMotifs) {
-      usedTitleMotifs.add(motif);
-    }
-  }
-
-  return selected;
+  );
 }
 
 export function candidateTitleMotifKeys(candidate: Pick<MusicCandidate, 'name'>): string[] {
-  const normalized = candidate.name.normalize('NFKC').toLowerCase();
-  return TITLE_DIVERSITY_MOTIFS
-    .filter((motif) => motif.pattern.test(normalized))
-    .map((motif) => motif.key);
-}
-
-function repeatedArtistAdjustedScore(
-  candidate: MusicCandidate,
-  artistCounts: Map<string, number>,
-  options: RankCandidatesOptions = {}
-): number {
-  const repeatCount = repeatedArtistCount(candidate, artistCounts);
-  return scoreCandidateForRanking(candidate, options, repeatCount).adjustedScore;
-}
-
-function repeatedArtistCount(candidate: MusicCandidate, artistCounts: ReadonlyMap<string, number>): number {
-  return Math.max(0, ...artistKeys(candidate.artist).map((artist) => artistCounts.get(artist) ?? 0));
-}
-
-function incrementArtistCounts(artistCounts: Map<string, number>, candidate: MusicCandidate): void {
-  for (const artist of artistKeys(candidate.artist)) {
-    artistCounts.set(artist, (artistCounts.get(artist) ?? 0) + 1);
-  }
+  return policyCandidateTitleMotifKeys(candidate);
 }
 
 function cloneCandidate(candidate: MusicCandidate): MusicCandidate {
@@ -239,13 +235,7 @@ function cloneCandidate(candidate: MusicCandidate): MusicCandidate {
 }
 
 export function isHardFilteredCandidate(candidate: MusicCandidate): boolean {
-  if (!usesExternalQuality(candidate)) return false;
-  const signals = candidate.qualitySignals;
-  if (signals?.privilegeSt !== undefined && signals.privilegeSt < 0) return true;
-  if (signals?.privilegeToast === true) return true;
-  return resolveTitlePollution(candidate) === 'strong'
-    && signals?.popularity !== undefined
-    && signals.popularity < VERY_LOW_POPULARITY_THRESHOLD;
+  return !evaluatePlaybackEligibility(candidate).eligible;
 }
 
 export function resolveTitlePollution(candidate: MusicCandidate): NonNullable<MusicCandidateQualitySignals['titlePollution']> {

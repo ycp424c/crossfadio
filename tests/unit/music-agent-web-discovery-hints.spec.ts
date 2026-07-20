@@ -3,7 +3,6 @@ import {
   defaultWebDiscoveryFreshness,
   defaultWebDiscoveryLocale,
   filterWebDiscoveryHintsForRecall,
-  isHardMismatchedWebArtist,
   objectArrayValue,
   parseMusicEntityHints,
   webDiscoveryIntentText,
@@ -23,7 +22,7 @@ describe('MusicAgent web discovery hints', () => {
     expect(result.problems).toEqual(['web hint skipped: invalid sourced hint']);
   });
 
-  it('filters avoided artists and hard style mismatches while preserving invalid raw hints for later diagnostics', () => {
+  it('keeps every sourced artist hint for Policy evaluation without a local artist blacklist', () => {
     const invalidHint = { kind: 'artist', name: 'Invalid Raw Hint' };
     const result = filterWebDiscoveryHintsForRecall([
       sourcedHint({ kind: 'artist', name: 'Repeated Singer' }),
@@ -31,22 +30,16 @@ describe('MusicAgent web discovery hints', () => {
       sourcedHint({ kind: 'artist', name: 'Slipknot', styles: ['cantopop'] }),
       sourcedHint({ kind: 'track', name: 'Fresh Song', artist: 'Fresh Singer', styles: ['cantopop'] }),
       invalidHint
-    ], {
-      avoidArtists: new Set(['repeated singer', 'ben howard']),
-      expectedStyle: 'cantopop'
-    });
+    ], { expectedStyle: 'cantopop' });
 
     expect(result.hints).toEqual([
+      expect.objectContaining({ name: 'Repeated Singer' }),
+      expect.objectContaining({ name: 'Scene Link' }),
+      expect.objectContaining({ name: 'Slipknot' }),
       expect.objectContaining({ name: 'Fresh Song' }),
       invalidHint
     ]);
-    expect(result.problems).toEqual([
-      'web hint skipped: recently repeated artist Repeated Singer',
-      'web hint skipped: recently repeated artist Ben Howard',
-      'web hint skipped: hard style mismatch for Slipknot'
-    ]);
-    expect(isHardMismatchedWebArtist('Slipknot', 'cantopop')).toBe(true);
-    expect(isHardMismatchedWebArtist('Slipknot', 'heavy metal')).toBe(false);
+    expect(result.problems).toEqual([]);
   });
 
   it('keeps only plain objects when reading raw hint arrays', () => {

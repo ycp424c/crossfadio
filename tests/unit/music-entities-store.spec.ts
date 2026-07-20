@@ -70,7 +70,6 @@ describe('music entity store', () => {
       recordMusicEntityFeedback,
       upsertMusicEntity
     } = await import('../../src/server/store/music-entities.js');
-    const { getUserQueryStats } = await import('../../src/server/store/music-query-stats.js');
 
     upsertMusicEntity({
       userId: 'user-feedback',
@@ -96,7 +95,6 @@ describe('music entity store', () => {
     expect(entity?.selectedCount).toBe(2);
     expect(entity?.skippedCount).toBe(1);
     expect(entity?.lastUsedAt).toBe('2026-06-12T10:00:00.000Z');
-    expect(getUserQueryStats('user-feedback')).toEqual([]);
   });
 
   it('loads similar embedded entities with user and model isolation', async () => {

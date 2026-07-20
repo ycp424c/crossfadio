@@ -20,9 +20,7 @@ const llmConfig = {
 const baseFragments: Fragments = {
   mode: 'chat',
   system: 'You are a DJ.',
-  corpus: { taste: 'indie', routines: 'morning', moodRules: 'chill', playlists: [] },
-  env: { nowIso: '2026-04-24T09:00:00Z', localTime: '周四 09:00', weather: null, nowPlaying: null },
-  memory: { recentPlays: [], recentChat: [] },
+  djMemory: memoryProjection('chat'),
   input: { kind: 'chat', text: 'hi' },
   trace: { triggeredBy: 'user', lastDecision: null }
 };
@@ -175,6 +173,7 @@ describe('computeStream', () => {
     const fragments: Fragments = {
       ...baseFragments,
       mode: 'segue',
+      djMemory: memoryProjection('segue'),
       input: { kind: 'segueTrigger', from: { id: '1' }, to: { id: '2' } },
       trace: { triggeredBy: 'segue-hook', lastDecision: null }
     };
@@ -228,6 +227,7 @@ describe('computeStream', () => {
     const fragments: Fragments = {
       ...baseFragments,
       mode: 'segue',
+      djMemory: memoryProjection('segue'),
       input: { kind: 'segueTrigger', from: { id: '1' }, to: { id: '2' } },
       trace: { triggeredBy: 'segue-hook', lastDecision: null }
     };
@@ -241,6 +241,17 @@ describe('computeStream', () => {
     expect(done).toBeDefined();
   });
 });
+
+function memoryProjection(purpose: 'chat' | 'segue') {
+  return {
+    schemaVersion: 1 as const,
+    snapshotId: 'snapshot-1',
+    assembledAt: '2026-04-24T09:00:00.000Z',
+    sources: [],
+    purpose,
+    facts: []
+  };
+}
 
 describe('AgentError', () => {
   it('has name AgentError and extends Error', () => {

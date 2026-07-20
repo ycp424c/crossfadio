@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { CandidatePool } from '../../src/server/music-agent/candidates.js';
 import { runMusicAgentLoop } from '../../src/server/music-agent/loop.js';
+import { createSelectionDecisionRecorder } from '../../src/server/music-agent/selection-policy/decision-trace.js';
 import type { MusicAgentToolRegistry } from '../../src/server/music-agent/tools.js';
 import { musicAgentRunOutputSchema } from '../../src/server/music-agent/schema.js';
 import type {
@@ -77,8 +78,6 @@ function candidate(overrides: Partial<MusicCandidate> = {}): MusicCandidate {
       timeFit: 0.7,
       contextFit: 0.4,
       novelty: 0.5,
-      recentPenalty: 0,
-      skipPenalty: 0,
       sourceConfidence: 0.8
     },
     ...overrides
@@ -107,6 +106,7 @@ describe('runMusicAgentLoop', () => {
       })
     ]);
     const pool = new CandidatePool();
+    const progress: string[] = [];
     const tools: MusicAgentToolRegistry = {
       recall_from_liked: async () => {
         pool.upsert(candidate());
@@ -119,7 +119,8 @@ describe('runMusicAgentLoop', () => {
       context: context(),
       candidatePool: pool,
       tools,
-      budget: budget()
+      budget: budget(),
+      onProgress: (stage) => progress.push(stage)
     });
 
     expect(musicAgentRunOutputSchema.parse(result).status).toBe('ok');
@@ -142,6 +143,7 @@ describe('runMusicAgentLoop', () => {
       maxTokens: 1400
     });
     expect(llmClient.calls[0].opts).not.toHaveProperty('thinking');
+    expect([...new Set(progress)]).toEqual(['recall', 'filtering', 'balancing', 'finalizing']);
   });
 
   it('keeps structured tool observation diagnostics in trace steps', async () => {
@@ -640,7 +642,7 @@ describe('runMusicAgentLoop', () => {
     expect(prompt).not.toContain('"id":"plastic-love","name":"プラスティック・ラヴ","artist":"竹内まりや","sources":["liked"],"score"');
   });
 
-  it('uses the full runtime track penalties when ranking candidates beyond the LLM summary', async () => {
+  it('keeps runtime pressure visible but lets an explicit request bypass it', async () => {
     const llmClient = new LoopFakeLlmClient([
       JSON.stringify({
         type: 'final',
@@ -676,10 +678,14 @@ describe('runMusicAgentLoop', () => {
       }),
       candidatePool: pool,
       tools: {},
-      budget: budget()
+      budget: budget(),
+      selectionPolicyContext: {
+        mode: 'explicit_request',
+        explicitlyRequested: true
+      }
     });
 
-    expect(result.candidateScoreTable[0]?.id).toBe('fresh-track');
+    expect(result.candidateScoreTable[0]?.id).toBe('penalized-tail-track');
     expect(result.candidateScoreTable.find((row) => row.id === 'penalized-tail-track')).toMatchObject({
       trackPenalty: 0.22
     });
@@ -730,6 +736,76 @@ describe('runMusicAgentLoop', () => {
       ],
       candidateScoreTableCount: 1
     }));
+  });
+
+  it('does not record Final selections while ranked recovery is only building a shortlist', async () => {
+    const selectionDecisionRecorder = createSelectionDecisionRecorder();
+    const pool = new CandidatePool({ selectionDecisionRecorder });
+    pool.upsert(candidate({ id: 'ranked-a', name: 'Ranked A', artist: 'Artist A' }));
+    pool.upsert(candidate({ id: 'ranked-b', name: 'Ranked B', artist: 'Artist B' }));
+    const llmClient = new LoopFakeLlmClient([
+      JSON.stringify({
+        type: 'final',
+        say: '模型返回了候选池外歌曲。',
+        picks: [{ id: 'outside-pool', reason: 'invalid', source: 'liked' }],
+        rejected: []
+      })
+    ]);
+
+    const result = await runMusicAgentLoop({
+      llmClient,
+      context: context({ request: 'auto-fill' }),
+      candidatePool: pool,
+      tools: {},
+      budget: budget(),
+      mode: 'pick_next',
+      targetPickCount: 1,
+      selectionDecisionRecorder
+    });
+
+    expect(result.status).toBe('ok');
+    expect(result.picks.length).toBeGreaterThan(0);
+    expect(selectionDecisionRecorder.snapshot().filter((decision) => (
+      decision.stage === 'final'
+    ))).toEqual([]);
+  });
+
+  it('applies Final queue idempotency to deterministic ranked recovery', async () => {
+    const pool = new CandidatePool();
+    const queued = candidate({ id: 'already-queued', name: 'Already Queued', artist: 'Queue Artist' });
+    pool.upsert(queued);
+    const llmClient = new LoopFakeLlmClient([
+      JSON.stringify({
+        type: 'final',
+        say: '错误地选择了队列中已有歌曲。',
+        picks: [{ id: queued.id, reason: 'duplicate', source: 'liked' }],
+        rejected: []
+      })
+    ]);
+
+    const result = await runMusicAgentLoop({
+      llmClient,
+      context: context(),
+      candidatePool: pool,
+      tools: {},
+      budget: budget(),
+      selectionPolicyContext: {
+        mode: 'explicit_request',
+        explicitlyRequested: true,
+        queue: {
+          currentIndex: 0,
+          tracks: [{
+            id: queued.id,
+            trackKey: 'alreadyqueued::queueartist',
+            primaryArtist: 'queue artist',
+            source: 'liked'
+          }]
+        }
+      }
+    });
+
+    expect(result.status).toBe('empty_pool');
+    expect(result.picks).toEqual([]);
   });
 
   it('does not execute tools when the signal is already aborted', async () => {
@@ -937,7 +1013,7 @@ describe('runMusicAgentLoop', () => {
     }));
   });
 
-  it('rejects liked-only extra final picks for large explore auto-fill batches', async () => {
+  it('keeps liked-only final picks eligible and lets Batch policy balance them', async () => {
     const pool = new CandidatePool();
     for (let index = 1; index <= 5; index += 1) {
       pool.upsert(candidate({
@@ -979,15 +1055,13 @@ describe('runMusicAgentLoop', () => {
       fallbackLogger
     });
 
-    expect(result.status).toBe('empty_pool');
-    expect(result.picks).toEqual([]);
-    expect(result.say).toContain('暂时没有可用候选');
-    expect(fallbackLogger).toHaveBeenCalledWith(expect.objectContaining({
-      reason: 'liked_only_final_rejected',
-      status: 'empty_pool',
-      candidateCount: 5,
-      pickCount: 0,
-      extraFinalProblem: 'liked_only_final'
+    expect(result.status).toBe('ok');
+    expect(result.picks.map((pick) => pick.id)).toEqual([
+      'liked-only-1', 'liked-only-2', 'liked-only-3', 'liked-only-4'
+    ]);
+    expect(result.say).toBe('只从红心里选。');
+    expect(fallbackLogger).not.toHaveBeenCalledWith(expect.objectContaining({
+      reason: expect.stringContaining('liked_only')
     }));
   });
 
@@ -1161,7 +1235,7 @@ describe('runMusicAgentLoop', () => {
     }));
   });
 
-  it('fills ranked fallback picks from scored duplicate-artist candidates when strict diversity is short', async () => {
+  it('does not bypass Batch artist diversity when ranked recovery is short', async () => {
     const pool = new CandidatePool();
     const liveCandidates = [
       ['live-1', '和每天讲再见', '李幸倪'],
@@ -1199,13 +1273,13 @@ describe('runMusicAgentLoop', () => {
     });
 
     expect(result.status).toBe('ok');
-    expect(result.picks).toHaveLength(5);
-    expect(result.picks.map((pick) => pick.id)).toEqual(['live-1', 'live-3', 'live-2', 'live-4', 'live-5']);
+    expect(result.picks).toHaveLength(4);
+    expect(result.picks.map((pick) => pick.id)).toEqual(['live-1', 'live-2', 'live-3', 'live-4']);
     expect(result.picks.every((pick) => pick.reason.startsWith('ranked '))).toBe(true);
     expect(fallbackLogger).toHaveBeenCalledWith(expect.objectContaining({
       status: 'ok',
       candidateCount: 6,
-      pickCount: 5
+      pickCount: 4
     }));
   });
 
@@ -2039,7 +2113,7 @@ describe('runMusicAgentLoop', () => {
     }));
   });
 
-  it('converges after ranking a target-sized non-liked comfort auto-fill pool', async () => {
+  it('does not bypass Batch artist diversity after ranking a target-sized comfort pool', async () => {
     const pool = new CandidatePool();
     const fallbackLogger = vi.fn();
     const llmClient = new LoopFakeLlmClient([
@@ -2077,13 +2151,13 @@ describe('runMusicAgentLoop', () => {
     });
 
     expect(result.status).toBe('ok');
-    expect(result.picks).toHaveLength(5);
+    expect(result.picks).toHaveLength(3);
     expect(calls).toEqual(['recall_auto_fill_mix', 'rank_candidates']);
     expect(llmClient.calls).toHaveLength(3);
     expect(fallbackLogger).toHaveBeenCalledWith(expect.objectContaining({
       status: 'ok',
       candidateCount: 5,
-      pickCount: 5
+      pickCount: 3
     }));
   });
 
@@ -2219,7 +2293,7 @@ describe('runMusicAgentLoop', () => {
     }));
   });
 
-  it('does not emit liked-only ranked fallback for explore auto-fill when tool budget blocks expansion', async () => {
+  it('keeps liked-only ranked recovery eligible when external expansion cannot run', async () => {
     const pool = new CandidatePool();
     const fallbackLogger = vi.fn();
     const llmClient = new LoopFakeLlmClient([
@@ -2251,14 +2325,15 @@ describe('runMusicAgentLoop', () => {
       fallbackLogger
     });
 
-    expect(result.status).toBe('empty_pool');
-    expect(result.picks).toHaveLength(0);
+    expect(result.status).toBe('ok');
+    expect(result.picks).toHaveLength(5);
+    expect(result.picks.every((pick) => pick.source === 'liked')).toBe(true);
     expect(calls).toEqual([]);
     expect(fallbackLogger).toHaveBeenCalledWith(expect.objectContaining({
       reason: 'tool_budget_exhausted',
-      status: 'empty_pool',
+      status: 'ok',
       candidateCount: 10,
-      pickCount: 0,
+      pickCount: 5,
       toolCalls: 0
     }));
   });
@@ -2524,7 +2599,7 @@ describe('runMusicAgentLoop', () => {
     ]));
   });
 
-  it('uses liked only as tail fallback after explore recall finds enough external candidates to anchor a batch', async () => {
+  it('keeps liked available for Batch balancing after explore recall anchors the batch', async () => {
     const pool = new CandidatePool();
     const fallbackLogger = vi.fn();
     const llmClient = new LoopFakeLlmClient([
@@ -2591,8 +2666,8 @@ describe('runMusicAgentLoop', () => {
       'search-1',
       'search-2',
       'search-3',
-      'search-4',
-      'liked-tail'
+      'liked-tail',
+      'search-4'
     ]);
     expect(calls).toEqual([
       'recall_from_ncm_search',

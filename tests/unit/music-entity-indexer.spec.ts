@@ -203,6 +203,34 @@ describe('music entity indexer', () => {
     })[0]?.entity.id).toBe('ncm:track:303');
   });
 
+  it('indexes recent Listening Episodes instead of the legacy plays table', async () => {
+    const { createListeningEpisode } = await import('../../src/server/store/listening-episodes.js');
+    const { runMusicEntityIndex } = await import('../../src/server/music-agent/entity-indexer.js');
+    const { getMusicEntity } = await import('../../src/server/store/music-entities.js');
+    createListeningEpisode('user-listens', 'episode-1', {
+      playerInstanceId: 'player-1',
+      deckId: 'main',
+      track: { id: 'episode-track', name: 'Episode Song', artists: ['Episode Artist'] },
+      durationMs: 180_000
+    });
+
+    const result = await runMusicEntityIndex({
+      userId: 'user-listens',
+      ncmClient: { getLikedSongIds: vi.fn(), getSongDetails: vi.fn() },
+      embeddingClient: null,
+      sources: ['listening_episodes'],
+      limits: { listeningEpisodes: 10 },
+      logger: createLogger()
+    });
+
+    expect(result.sourceCounts).toEqual({ listening_episodes: 1 });
+    expect(getMusicEntity('user-listens', 'ncm:track:episode-track')).toMatchObject({
+      title: 'Episode Song',
+      artist: 'Episode Artist',
+      sourceSignals: ['listening_episode', 'verified_play', 'ncm', 'entity_indexer']
+    });
+  });
+
   it('clears previous embedding errors after embeddings succeed', async () => {
     const { runMusicEntityIndex } = await import('../../src/server/music-agent/entity-indexer.js');
     const { getMusicEntityIndexState } = await import('../../src/server/store/music-entity-index-state.js');
@@ -243,7 +271,7 @@ describe('music entity indexer', () => {
     });
   });
 
-  it('schedules a retry when recent plays has a stale error even if liked is fresh', async () => {
+  it('schedules a retry when Listening Episodes has a stale error even if liked is fresh', async () => {
     const {
       scheduleMusicEntityIndexIfDue,
       _resetMusicEntityIndexSchedulerForTest
@@ -265,8 +293,8 @@ describe('music entity indexer', () => {
     });
     recordMusicEntityIndexError({
       userId: 'user-recent-retry',
-      source: 'recent_plays',
-      error: 'recent plays load failed',
+      source: 'listening_episodes',
+      error: 'listening episodes load failed',
       ranAt: new Date(Date.now() - 31 * 60 * 1000).toISOString()
     });
 
@@ -276,7 +304,7 @@ describe('music entity indexer', () => {
       expect(ncmClient.getLikedSongIds).toHaveBeenCalledTimes(1);
     });
     await vi.waitFor(() => {
-      expect(getMusicEntityIndexState('user-recent-retry', 'recent_plays')).toMatchObject({
+      expect(getMusicEntityIndexState('user-recent-retry', 'listening_episodes')).toMatchObject({
         lastError: null
       });
     });

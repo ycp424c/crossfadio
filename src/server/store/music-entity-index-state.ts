@@ -1,6 +1,6 @@
 import { getDb } from './db.js';
 
-export type MusicEntityIndexSource = 'liked' | 'recent_plays' | 'play_start' | 'embedding';
+export type MusicEntityIndexSource = 'liked' | 'listening_episodes' | 'play_start' | 'embedding';
 
 export type MusicEntityIndexStateRecord = {
   userId: string;

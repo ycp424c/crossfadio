@@ -1,7 +1,10 @@
+import { randomUUID } from 'node:crypto';
+
 import type { FinalPick } from './schema.js';
 import type { CandidateSource, QueryFunnelEntry } from './schema.js';
 import type { NcmTrackLike } from './liked-recall.js';
-import { normalizeSearchQuery } from './query-stats.js';
+import { normalizeSearchQuery } from './retrieval-history.js';
+import type { RetrievalRequestKind } from '../store/retrieval-attempts.js';
 
 export type QueryFunnelAccumulator = QueryFunnelEntry & {
   candidateIds: Set<string>;
@@ -11,16 +14,34 @@ export type QueryFunnelAccumulator = QueryFunnelEntry & {
 
 export type QueryFunnelState = {
   queryFunnel: Map<string, QueryFunnelAccumulator>;
+  retrievalRunId?: string;
+  retrievalRequestKind?: RetrievalRequestKind;
+  retrievalAttemptedAt?: Date;
 };
 
 export type QueryFunnelPool = {
   has: (id: string) => boolean;
 };
 
-export type QueryFunnelRecorder = (userId: string, entries: QueryFunnelEntry[]) => void;
+export type QueryFunnelRecorder = (input: {
+  userId: string;
+  runId: string;
+  requestKind: RetrievalRequestKind;
+  attemptedAt: Date;
+  entries: QueryFunnelEntry[];
+}) => void;
 
-export function createQueryFunnelState(): QueryFunnelState {
-  return { queryFunnel: new Map() };
+export function createQueryFunnelState(input: {
+  runId?: string;
+  requestKind?: RetrievalRequestKind;
+  attemptedAt?: Date;
+} = {}): QueryFunnelState {
+  return {
+    queryFunnel: new Map(),
+    retrievalRunId: input.runId ?? randomUUID(),
+    retrievalRequestKind: input.requestKind ?? 'autonomous',
+    retrievalAttemptedAt: input.attemptedAt ?? new Date(),
+  };
 }
 
 export function recordQueryFunnelSearch(
@@ -94,7 +115,7 @@ export function recordQueryFunnelSnapshot(
   state: QueryFunnelState,
   recorder: QueryFunnelRecorder
 ): void {
-  recorder(userId, queryFunnelSnapshot(state));
+  recorderInput(userId, state, queryFunnelSnapshot(state), recorder);
 }
 
 export function recordFinalQueryFunnel(
@@ -107,7 +128,25 @@ export function recordFinalQueryFunnel(
   for (const entry of state.queryFunnel.values()) {
     entry.selectedCount = [...entry.candidateIds].filter((id) => pickedIds.has(id)).length;
   }
-  recorder(userId, queryFunnelSnapshot(state));
+  recorderInput(userId, state, queryFunnelSnapshot(state), recorder);
+}
+
+function recorderInput(
+  userId: string,
+  state: QueryFunnelState,
+  entries: QueryFunnelEntry[],
+  recorder: QueryFunnelRecorder,
+): void {
+  state.retrievalRunId ??= randomUUID();
+  state.retrievalRequestKind ??= 'autonomous';
+  state.retrievalAttemptedAt ??= new Date();
+  recorder({
+    userId,
+    runId: state.retrievalRunId,
+    requestKind: state.retrievalRequestKind,
+    attemptedAt: state.retrievalAttemptedAt,
+    entries,
+  });
 }
 
 export function queryFunnelKey(source: CandidateSource, normalizedQuery: string): string {

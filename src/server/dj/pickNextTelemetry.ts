@@ -1,5 +1,10 @@
 import { getLogger } from '../logger.js';
-import { getQueue } from '../store/queue.js';
+import {
+  getCurrentIndex,
+  getQueue,
+  getQueueStateRevision,
+  type QueueTrack
+} from '../store/queue.js';
 import type {
   DjEventSink,
   DjPickNextFallbackPath,
@@ -27,7 +32,7 @@ export type DjPickNextTelemetry = {
   recordFallbackStats(path: DjPickNextFallbackPath): DjPickNextFallbackStats;
   broadcastAppended(
     userId: string,
-    prevQueueLength: number,
+    tracks: QueueTrack[],
     targetPickCount: number,
     emit: DjEventSink,
     path?: DjPickNextFallbackPath,
@@ -45,17 +50,20 @@ export function createDjPickNextTelemetry(input: { logger?: Logger } = {}): DjPi
 
   function broadcastAppended(
     userId: string,
-    prevQueueLength: number,
+    tracks: QueueTrack[],
     targetPickCount: number,
     emit: DjEventSink,
     path?: DjPickNextFallbackPath,
     metrics: DjPickNextRunMetrics = {}
   ): void {
-    const q = getQueue(userId);
-    const newTracks = q.slice(prevQueueLength);
-    for (const track of newTracks) {
-      emit({ type: 'queue-appended', track });
-    }
+    const newTracks = tracks;
+    const queueRevision = getQueueStateRevision(userId);
+    emit({
+      type: 'queue-updated',
+      queue: getQueue(userId),
+      currentIndex: getCurrentIndex(userId),
+      revision: queueRevision
+    });
     const names = newTracks.map((t) => t.name).filter((n): n is string => Boolean(n));
     const currentFallbackStats = path ? recordFallbackStats(path) : fallbackStats.snapshot();
     (logger ?? getLogger()).info(
@@ -65,7 +73,7 @@ export function createDjPickNextTelemetry(input: { logger?: Logger } = {}): DjPi
         agentPickCount: metrics.agentPickCount,
         rankedBackfillCount: metrics.rankedBackfillCount,
         finalPickDiagnostics: metrics.finalPickDiagnostics,
-        queryFunnel: metrics.queryFunnel,
+        queryCount: metrics.queryFunnel?.length ?? 0,
         candidateCount: metrics.candidateCount,
         nonLikedCandidateCount: metrics.nonLikedCandidateCount,
         candidateSourceCounts: metrics.candidateSourceCounts,
@@ -73,8 +81,6 @@ export function createDjPickNextTelemetry(input: { logger?: Logger } = {}): DjPi
         elapsedMs: metrics.elapsedMs,
         fallbackPath: path ?? metrics.fallbackPath,
         discoveryMode: metrics.discoveryMode,
-        trackIds: newTracks.map((track) => track.ncmId),
-        trackNames: names,
         fallbackStats: currentFallbackStats
       },
       'DJ pick-next: broadcast appended tracks'
@@ -126,9 +132,7 @@ function cloneDjPickNextFallbackStats(stats: DjPickNextFallbackStats): DjPickNex
 }
 
 function isDjPickNextFallbackPath(path: DjPickNextFallbackPath): boolean {
-  return path !== 'music_agent_success'
-    && path !== 'music_agent_safety_block'
-    && path !== 'legacy_llm_success';
+  return path !== 'music_agent_success';
 }
 
 function roundRate(value: number): number {

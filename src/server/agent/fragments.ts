@@ -2,105 +2,25 @@ import type { LlmMessage } from '../llm/client.js';
 import type { Fragments } from './schema.js';
 
 /**
- * Assembles 6 Fragments slices into an LLM message array.
+ * Assembles purpose-scoped DJ Memory and the current input into messages.
  *
  * Message layout (per §6.5 of architecture doc):
  *   1. system  → system message  (dj-persona + mode constraint)
- *   2. user    → <corpus> + <env>
- *   3. user    → <memory>
- *   4. user    → input + trace
+ *   2. user    → one shared DJ Memory purpose projection
+ *   3. user    → input + trace
  */
 export function assembleMessages(fragments: Fragments): LlmMessage[] {
   return [
     { role: 'system', content: fragments.system },
-    { role: 'user', content: buildCorpusEnvSlice(fragments) },
-    { role: 'user', content: buildMemorySlice(fragments) },
+    { role: 'user', content: buildDjMemorySlice(fragments) },
     { role: 'user', content: buildInputSlice(fragments) }
   ];
 }
 
-function buildCorpusEnvSlice(f: Fragments): string {
-  const playlists = f.corpus.playlists
-    .map((p) => {
-      const tags = p.tags.length ? ` [${p.tags.join(', ')}]` : '';
-      const segments = p.segments.length ? ` 时段:${p.segments.join('/')}` : '';
-      return `- ${p.name}${tags}${segments}`;
-    })
-    .join('\n');
-
-  const likedTracks = (f.corpus.likedTracks ?? [])
-    .slice(0, 50)
-    .map((track) => `- ${track.name ?? track.id}${track.artist ? ` — ${track.artist}` : ''}`)
-    .join('\n');
-
-  const weather = f.env.weather
-    ? `${f.env.weather.tempC}°C，${f.env.weather.desc}`
-    : '未知';
-
-  const nowPlaying = f.env.nowPlaying
-    ? `${f.env.nowPlaying.name} — ${f.env.nowPlaying.artist}`
-    : '无';
-
-  return `<corpus>
-<taste>
-${f.corpus.taste}
-</taste>
-<routines>
-${f.corpus.routines}
-</routines>
-<mood_rules>
-${f.corpus.moodRules}
-</mood_rules>
-<playlists>
-${playlists || '（无歌单）'}
-</playlists>
-<liked_tracks>
-${likedTracks || '（暂无红心歌曲）'}
-</liked_tracks>
-</corpus>
-<env>
-当前时间：${f.env.localTime}（${f.env.nowIso}）
-天气：${weather}
-正在播放：${nowPlaying}
-${f.env.dailyTheme ? `<daily_theme>${f.env.dailyTheme}</daily_theme>\n` : ''}
-</env>`;
-}
-
-function buildMemorySlice(f: Fragments): string {
-  const recentPlays = f.memory.recentPlays
-    .slice(0, 50)
-    .map((p) => `- ${p.song_name ?? '?'} — ${p.artist_name ?? '?'} (${p.started_at})`)
-    .join('\n');
-
-  const recentChat = f.memory.recentChat
-    .slice(0, 20)
-    .map((m) => {
-      const prefix = m.created_at ? `[${m.created_at.slice(11, 16)}] ` : '';
-      return `${prefix}${m.role === 'user' ? '用户' : 'DJ'}：${m.content}`;
-    })
-    .join('\n');
-
-  const recentSegues = (f.memory.recentSegues ?? [])
-    .slice(0, 10)
-    .map((s) => `- [${s.createdAt.slice(11, 16)}] ${s.fromName} → ${s.toName}：${s.say}`)
-    .join('\n');
-
-  const extractedPreferences = f.memory.extractedPreferences ?? '';
-
-  return `<memory>
-<extracted_preferences>
-${extractedPreferences || '（暂无提取的偏好记忆）'}
-</extracted_preferences>
-<recent_plays>
-${recentPlays || '（暂无播放记录）'}
-</recent_plays>
-<recent_chat>
-${recentChat || '（暂无聊天记录）'}
-</recent_chat>
-<recent_segues>
-${recentSegues || '（暂无过渡语记录）'}
-</recent_segues>
-</memory>`;
+function buildDjMemorySlice(f: Fragments): string {
+  return `<dj_memory purpose="${f.djMemory.purpose}">
+${JSON.stringify(f.djMemory)}
+</dj_memory>`;
 }
 
 function buildInputSlice(f: Fragments): string {
@@ -137,7 +57,6 @@ function renderSegueContext(f: Fragments): string {
 
   const djPickReason = f.input.context.djPickReason;
   const selectionRationale = f.input.context.selectionRationale;
-  const personalSegueGuidance = f.input.context.personalSegueGuidance;
 
   return `
 <segue_context>
@@ -154,9 +73,6 @@ function renderSegueContext(f: Fragments): string {
 标签：${to.tags.join(' / ') || '无'}
 歌词片段：${to.lyricExcerpt || '无'}
 歌词关键词：${to.lyricKeywords.join(' / ') || '无'}
-</to_track>${djPickReason ? `\n<dj_pick_reason>${djPickReason}</dj_pick_reason>` : ''}${selectionRationale ? `\n<selection_rationale>${selectionRationale}</selection_rationale>` : ''}${personalSegueGuidance ? `
-<personal_segue_guidance>
-${personalSegueGuidance.summary ? `当前状态摘要：${personalSegueGuidance.summary}\n` : ''}${personalSegueGuidance.tone ? `口吻：${personalSegueGuidance.tone}\n` : ''}隐私规则：${personalSegueGuidance.privacyRule}
-</personal_segue_guidance>` : ''}
+</to_track>${djPickReason ? `\n<dj_pick_reason>${djPickReason}</dj_pick_reason>` : ''}${selectionRationale ? `\n<selection_rationale>${selectionRationale}</selection_rationale>` : ''}
 </segue_context>`;
 }

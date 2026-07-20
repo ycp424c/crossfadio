@@ -3,11 +3,23 @@ import {
   likedQueueResponseSchema,
   nextTrackResponseSchema,
   nowPlayingResponseSchema,
+  queueTrackSchema,
   type LikedQueueResponse,
   type NextTrackResponse,
-  type NowPlayingResponse
+  type NowPlayingResponse,
+  type QueueTrackDto
 } from '@shared/schema';
 import type { AutoFillBatchSize, DiscoveryMode } from '@shared/dj';
+import type {
+  ListeningEpisodeCheckpoint,
+  ListeningEpisodeCreate,
+  ListeningEpisodeFinalize,
+  ListeningEpisodeKeepaliveCheckpoint
+} from '@shared/listening';
+import {
+  selectionJourneySnapshotSchema,
+  type SelectionJourneySnapshot
+} from '@shared/selection';
 
 type RuntimeConfig = {
   baseUrl: string;
@@ -15,6 +27,10 @@ type RuntimeConfig = {
 
 type RuntimeInfo = {
   ok: boolean;
+};
+
+type RequestJsonOptions = {
+  authToken?: string;
 };
 
 // ── JWT storage ────────────────────────────────────────────────────────────────
@@ -45,9 +61,13 @@ type NcmSession = {
   profile: unknown | null;
 };
 
-async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
+async function requestJson<T>(
+  path: string,
+  init?: RequestInit,
+  requestOptions?: RequestJsonOptions
+): Promise<T> {
   const runtime = resolveRuntimeConfig();
-  const token = getStoredToken();
+  const token = requestOptions?.authToken ?? getStoredToken();
 
   let response: Response;
   try {
@@ -72,7 +92,7 @@ async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
       : typeof json?.error === 'string'
         ? json.error
         : `Request failed: ${path}`;
-    throw new Error(message);
+    throw new HttpJsonError(response.status, message, json);
   }
 
   if (!json || typeof json !== 'object') {
@@ -80,6 +100,16 @@ async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
   }
 
   return json as T;
+}
+
+class HttpJsonError extends Error {
+  constructor(
+    readonly status: number,
+    message: string,
+    readonly payload: Record<string, unknown> | null
+  ) {
+    super(message);
+  }
 }
 
 export async function getNcmSession(): Promise<NcmSession> {
@@ -113,28 +143,80 @@ export async function logoutNcm(): Promise<void> {
 
 export async function getNowPlaying(
   ncmId: string,
-  meta?: { name?: string; artist?: string }
+  requestOptions?: RequestJsonOptions
 ): Promise<NowPlayingResponse> {
-  let query = `ncmId=${encodeURIComponent(ncmId)}`;
-  if (meta?.name) query += `&name=${encodeURIComponent(meta.name)}`;
-  if (meta?.artist) query += `&artist=${encodeURIComponent(meta.artist)}`;
-  const payload = await requestJson<unknown>(`/api/now?${query}`);
+  const query = `ncmId=${encodeURIComponent(ncmId)}`;
+  const payload = await requestJson<unknown>(`/api/now?${query}`, undefined, requestOptions);
   return nowPlayingResponseSchema.parse(payload);
 }
 
-export async function getNextTrack(queueIds: string[], currentId: string): Promise<NextTrackResponse> {
+export async function putListeningEpisode(
+  clientEpisodeId: string,
+  input: ListeningEpisodeCreate,
+  options?: { keepalive?: boolean; authToken?: string }
+): Promise<void> {
+  await requestJson(`/api/listening-episodes/${encodeURIComponent(clientEpisodeId)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+    keepalive: options?.keepalive
+  }, { authToken: options?.authToken });
+}
+
+export async function patchListeningEpisode(
+  clientEpisodeId: string,
+  input: ListeningEpisodeCheckpoint | ListeningEpisodeFinalize,
+  options?: { keepalive?: boolean; authToken?: string }
+): Promise<void> {
+  await requestJson(`/api/listening-episodes/${encodeURIComponent(clientEpisodeId)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+    keepalive: options?.keepalive
+  }, { authToken: options?.authToken });
+}
+
+export async function patchListeningEpisodeKeepalive(
+  clientEpisodeId: string,
+  input: ListeningEpisodeKeepaliveCheckpoint,
+  options?: { authToken?: string }
+): Promise<void> {
+  await requestJson(`/api/listening-episodes/${encodeURIComponent(clientEpisodeId)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(input),
+    keepalive: true
+  }, { authToken: options?.authToken });
+}
+
+export async function getNextTrack(
+  queueIds: string[],
+  currentId: string,
+  requestOptions?: RequestJsonOptions
+): Promise<NextTrackResponse> {
   const query = `queue=${encodeURIComponent(queueIds.join(','))}&current=${encodeURIComponent(currentId)}`;
-  const payload = await requestJson<unknown>(`/api/next?${query}`);
+  const payload = await requestJson<unknown>(`/api/next?${query}`, undefined, requestOptions);
   return nextTrackResponseSchema.parse(payload);
 }
 
-export async function getLikedQueue(limit = 100): Promise<LikedQueueResponse> {
-  const payload = await requestJson<unknown>(`/api/queue/liked?limit=${encodeURIComponent(String(limit))}`);
+export async function getLikedQueue(
+  limit = 100,
+  requestOptions?: RequestJsonOptions
+): Promise<LikedQueueResponse> {
+  const payload = await requestJson<unknown>(
+    `/api/queue/liked?limit=${encodeURIComponent(String(limit))}`,
+    undefined,
+    requestOptions
+  );
   return likedQueueResponseSchema.parse(payload);
 }
 
-export async function getLikedTrackIds(): Promise<string[]> {
-  const payload = await requestJson<{ ok: boolean; ids: string[] }>('/api/queue/liked/ids');
+export async function getLikedTrackIds(requestOptions?: RequestJsonOptions): Promise<string[]> {
+  const payload = await requestJson<{ ok: boolean; ids: string[] }>(
+    '/api/queue/liked/ids',
+    undefined,
+    requestOptions
+  );
   return payload.ids ?? [];
 }
 
@@ -150,33 +232,110 @@ export async function toggleLikeTrack(id: string, like: boolean): Promise<void> 
 export async function saveQueueState(
   queue: Array<string | { id: string; name?: string; artists?: string[]; durationMs?: number; coverImgUrl?: string | null }>,
   currentIndex: number,
-  temporaryBanTracks: Array<{ id: string; name?: string; artists?: string[] }> = []
-): Promise<void> {
-  const result = await requestJson<{ ok: boolean }>('/api/queue/state', {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ queue, currentIndex, temporaryBanTracks })
-  });
-  if (!result.ok) throw new Error('Failed to save queue state');
+  temporaryBanTracks: Array<{ id: string; name?: string; artists?: string[] }>,
+  revision: number,
+  mutationId: string,
+  options?: RequestJsonOptions
+): Promise<QueueStateSaveResult> {
+  const body = JSON.stringify({ queue, currentIndex, temporaryBanTracks, revision, mutationId });
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const result = await requestJson<{
+        ok: boolean;
+        queue: unknown;
+        currentIndex: unknown;
+        revision: unknown;
+      }>('/api/queue/state', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body
+      }, options);
+      if (!result.ok) throw new Error('Failed to save queue state');
+      const authoritativeQueue = queueTrackSchema.array().safeParse(result.queue);
+      const authoritativeRevision = Number(result.revision);
+      const authoritativeIndex = Number(result.currentIndex);
+      if (!authoritativeQueue.success || !Number.isInteger(authoritativeRevision) || authoritativeRevision < 0
+        || !Number.isInteger(authoritativeIndex) || authoritativeIndex < 0) {
+        throw new Error('Queue save returned an invalid authoritative snapshot');
+      }
+      return {
+        ok: true,
+        queue: authoritativeQueue.data,
+        currentIndex: authoritativeIndex,
+        revision: authoritativeRevision
+      };
+    } catch (error) {
+      if (error instanceof HttpJsonError) {
+        if (error.status !== 409 || !error.payload) throw error;
+        const authoritativeQueue = queueTrackSchema.array().safeParse(error.payload.queue);
+        const authoritativeRevision = Number(error.payload.revision);
+        const authoritativeIndex = Number(error.payload.currentIndex);
+        if (!authoritativeQueue.success || !Number.isInteger(authoritativeRevision) || authoritativeRevision < 0
+          || !Number.isInteger(authoritativeIndex) || authoritativeIndex < 0) throw error;
+        return {
+          ok: false,
+          error: 'queue_revision_conflict',
+          queue: authoritativeQueue.data,
+          currentIndex: authoritativeIndex,
+          revision: authoritativeRevision
+        };
+      }
+      if (attempt === 1) throw error;
+    }
+  }
+  throw new Error('Queue state retry exhausted');
 }
 
+export type QueueStateSaveResult =
+  | {
+      ok: true;
+      queue: QueueTrackDto[];
+      currentIndex: number;
+      revision: number;
+    }
+  | {
+      ok: false;
+      error: 'queue_revision_conflict';
+      queue: QueueTrackDto[];
+      currentIndex: number;
+      revision: number;
+    };
+
 export async function pickNextTrack(
-  queue: Array<{ id: string; name?: string; artists?: string[]; durationMs?: number; coverImgUrl?: string | null }> = [],
-  currentIndex = 0
+  queue: Array<{ id: string; name?: string; artists?: string[]; durationMs?: number; coverImgUrl?: string | null }>,
+  currentIndex: number,
+  revision: number
 ): Promise<{ ok: boolean }> {
   return requestJson<{ ok: boolean }>('/api/dj/pick-next', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ queue, currentIndex })
+    body: JSON.stringify({ queue, currentIndex, revision })
   });
 }
 
-export async function updateLocation(lat: number, lon: number): Promise<void> {
+export async function getSelectionJourneyHistory(
+  limit = 20,
+  requestOptions?: RequestJsonOptions
+): Promise<SelectionJourneySnapshot[]> {
+  const safeLimit = Math.max(1, Math.min(Math.trunc(limit), 100));
+  const payload = await requestJson<{ ok: boolean; journeys: unknown[] }>(
+    `/api/dj/selection-journeys?limit=${encodeURIComponent(String(safeLimit))}`,
+    undefined,
+    requestOptions
+  );
+  return selectionJourneySnapshotSchema.array().parse(payload.journeys ?? []);
+}
+
+export async function updateLocation(
+  lat: number,
+  lon: number,
+  requestOptions?: RequestJsonOptions
+): Promise<void> {
   await requestJson<{ ok: boolean }>('/api/location', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ lat, lon })
-  });
+  }, requestOptions);
 }
 
 export type RecentMessage = {
@@ -184,9 +343,14 @@ export type RecentMessage = {
   content: string;
 };
 
-export async function getRecentChatMessages(limit = 50): Promise<RecentMessage[]> {
+export async function getRecentChatMessages(
+  limit = 50,
+  requestOptions?: RequestJsonOptions
+): Promise<RecentMessage[]> {
   const payload = await requestJson<{ ok: boolean; messages: RecentMessage[] }>(
-    `/api/messages/recent?limit=${encodeURIComponent(String(limit))}`
+    `/api/messages/recent?limit=${encodeURIComponent(String(limit))}`,
+    undefined,
+    requestOptions
   );
   return payload.messages ?? [];
 }
@@ -301,8 +465,8 @@ export type PlayerContextResponse = {
   discoveryMode: DiscoveryMode;
 };
 
-export async function getPlayerContext(): Promise<PlayerContextResponse> {
-  return requestJson<PlayerContextResponse>('/api/settings/player-context');
+export async function getPlayerContext(requestOptions?: RequestJsonOptions): Promise<PlayerContextResponse> {
+  return requestJson<PlayerContextResponse>('/api/settings/player-context', undefined, requestOptions);
 }
 
 // ── Personal DJ Context ────────────────────────────────────────────────────────

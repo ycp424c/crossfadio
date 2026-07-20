@@ -1,4 +1,4 @@
-import { sanitizeSearchQuery } from './query-stats.js';
+import { sanitizeSearchQuery } from './retrieval-history.js';
 
 export const SEMANTIC_ONLY_QUERY_PROBLEM = 'skipped semantic-only queries; use semantic discovery before NCM song search';
 
@@ -13,50 +13,25 @@ const SEMANTIC_SONG_SEARCH_PATTERNS = [
 
 export type RecallQueryEligibility = {
   sanitizedQueries: string[];
-  artistFilteredQueries: string[];
   exactTrackQueries: string[];
-  skippedAvoidedQueries: number;
   skippedSemanticQueries: number;
 };
 
 export type NoExecutableQueryReasonInput = {
   inputQueryCount: number;
   sanitizedQueryCount: number;
-  artistFilteredQueryCount: number;
-  skippedAvoidedQueries: number;
   skippedSemanticQueries: number;
 };
 
-export function prepareRecallQueryEligibility(
-  queries: string[],
-  avoidArtists: ReadonlySet<string>
-): RecallQueryEligibility {
+export function prepareRecallQueryEligibility(queries: string[]): RecallQueryEligibility {
   const sanitizedQueries = uniqueStrings(queries.map(sanitizeSearchQuery).filter(Boolean));
-  const { queries: artistFilteredQueries, skipped: skippedAvoidedQueries } = filterAvoidedQueries(sanitizedQueries, avoidArtists);
-  const { queries: exactTrackQueries, skipped: skippedSemanticQueries } = filterExactSongSearchQueries(artistFilteredQueries);
+  const { queries: exactTrackQueries, skipped: skippedSemanticQueries } = filterExactSongSearchQueries(sanitizedQueries);
 
   return {
     sanitizedQueries,
-    artistFilteredQueries,
     exactTrackQueries,
-    skippedAvoidedQueries,
     skippedSemanticQueries
   };
-}
-
-export function filterAvoidedQueries(queries: string[], avoidArtists: ReadonlySet<string>): { queries: string[]; skipped: number } {
-  if (avoidArtists.size === 0) return { queries, skipped: 0 };
-  const kept: string[] = [];
-  let skipped = 0;
-  for (const query of queries) {
-    const normalized = query.toLowerCase();
-    if ([...avoidArtists].some((artist) => artist && normalized.includes(artist))) {
-      skipped += 1;
-      continue;
-    }
-    kept.push(query);
-  }
-  return { queries: kept, skipped };
 }
 
 export function filterExactSongSearchQueries(queries: string[]): { queries: string[]; skipped: number } {
@@ -91,11 +66,8 @@ export function formatNoExecutableQueryReason(input: NoExecutableQueryReasonInpu
   const reasons: string[] = [];
   if (input.inputQueryCount === 0) reasons.push('query plan empty');
   if (input.inputQueryCount > 0 && input.sanitizedQueryCount === 0) reasons.push('queries sanitized to empty');
-  if (input.skippedAvoidedQueries > 0 && input.artistFilteredQueryCount === 0) {
-    reasons.push('all queries skipped for recently repeated artists');
-  }
   if (input.skippedSemanticQueries > 0) {
-    reasons.push(input.artistFilteredQueryCount === input.skippedSemanticQueries
+    reasons.push(input.sanitizedQueryCount === input.skippedSemanticQueries
       ? 'all queries skipped as semantic-only'
       : `${input.skippedSemanticQueries} semantic-only queries skipped`);
   }

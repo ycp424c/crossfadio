@@ -39,7 +39,6 @@ function queryPlan(overrides: Partial<QueryPlan> = {}): QueryPlan {
     explorationQueries: ['explore'],
     styleHints: [],
     listeningConstraints: [],
-    avoidArtists: [],
     negativeTerms: [],
     rationale: '',
     ...overrides

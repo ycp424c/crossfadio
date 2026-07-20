@@ -10,9 +10,7 @@ import {
 const baseFragments = {
   mode: 'chat' as const,
   system: 'You are a DJ.',
-  corpus: { taste: 'indie', routines: 'morning work', moodRules: 'chill', playlists: [] },
-  env: { nowIso: '2026-04-24T09:00:00Z', localTime: '周四 09:00', weather: null, nowPlaying: null },
-  memory: { recentPlays: [], recentChat: [] },
+  djMemory: memoryProjection('chat'),
   input: { kind: 'chat' as const, text: 'Hello' },
   trace: { triggeredBy: 'user' as const, lastDecision: null }
 };
@@ -31,6 +29,7 @@ describe('fragmentsSchema', () => {
     const f = {
       ...baseFragments,
       mode: 'segue' as const,
+      djMemory: memoryProjection('segue'),
       input: { kind: 'segueTrigger' as const, from: { id: '1' }, to: { id: '2' } }
     };
     expect(fragmentsSchema.safeParse(f).success).toBe(true);
@@ -45,6 +44,17 @@ describe('fragmentsSchema', () => {
     expect(fragmentsSchema.safeParse(noSystem).success).toBe(false);
   });
 });
+
+function memoryProjection(purpose: 'chat' | 'segue') {
+  return {
+    schemaVersion: 1 as const,
+    snapshotId: 'snapshot-1',
+    assembledAt: '2026-04-24T09:00:00.000Z',
+    sources: [],
+    purpose,
+    facts: []
+  };
+}
 
 describe('segueOutputSchema', () => {
   const validSegue = {

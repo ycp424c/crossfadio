@@ -1,19 +1,232 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   handleMusicAgentPickNextOutput,
-  isLyricsAwareSafetyBlock
+  publishCommittedMusicAgentPickNextSuccess
 } from '../../src/server/dj/musicAgentPickNextResult';
-import { getQueue, setQueueState } from '../../src/server/store/queue';
-import { createDjPickNextFallbackStatsTracker } from '../../src/server/dj/pickNextTelemetry';
 import type { MusicAgentRunOutput } from '../../src/server/music-agent/schema';
+import { getQueue, getQueueRevision, setQueueState } from '../../src/server/store/queue';
 
-type LyricsAwareDiagnostics = NonNullable<MusicAgentRunOutput['lyricsAwareDiagnostics']>;
+describe('MusicAgent pick-next result handling v2', () => {
+  beforeEach(() => {
+    setQueueState('music-agent-result-user', [], 0);
+  });
 
-function makeLyricsAwareDiagnostics(
-  overrides: Partial<LyricsAwareDiagnostics> = {}
-): LyricsAwareDiagnostics {
+  it('appends ordinary policy-approved picks and reports the success route', () => {
+    const broadcastAppended = vi.fn();
+    const setPickReason = vi.fn();
+    const excludeState = { ids: new Set<string>(), dedupeKeys: new Set<string>() };
+    const result = handle(makeOutput([
+      pick('101', 'First Song', 'First Artist', 'balanced fit'),
+      pick('102', 'Second Song', 'Second Artist', 'queue variety')
+    ]), { targetPickCount: 2, excludeState });
+
+    expect(result).toMatchObject({ status: 'handled', appendedCount: 2 });
+    expect(result.finalQueueDecisions).toMatchObject([
+      { candidateId: '101', decision: { phase: 'final', action: 'select', reasonCodes: ['final_eligible'] } },
+      { candidateId: '102', decision: { phase: 'final', action: 'select', reasonCodes: ['final_eligible'] } }
+    ]);
+    expect(getQueue('music-agent-result-user')).toEqual([]);
+    expect(broadcastAppended).not.toHaveBeenCalled();
+    expect(setPickReason).not.toHaveBeenCalled();
+    expect(excludeState.ids).toEqual(new Set());
+    expect(excludeState.dedupeKeys).toEqual(new Set());
+    expect(result.successPublication).toBeDefined();
+
+    setQueueState('music-agent-result-user', result.appendedTracks, 0);
+    publishCommittedMusicAgentPickNextSuccess({
+      userId: 'music-agent-result-user',
+      publication: result.successPublication!,
+      excludeState,
+      targetPickCount: 2,
+      emit: vi.fn(),
+      broadcastAppended,
+      logger: { warn: vi.fn() },
+      setPickReason
+    });
+
+    expect(getQueue('music-agent-result-user').map((track) => track.ncmId)).toEqual(['101', '102']);
+    expect(broadcastAppended).toHaveBeenCalledWith(
+      'music-agent-result-user', [
+        { ncmId: '101', name: 'First Song', artists: ['First Artist'] },
+        { ncmId: '102', name: 'Second Song', artists: ['Second Artist'] }
+      ], 2, expect.any(Function), 'music_agent_success', expect.any(Object)
+    );
+    expect(setPickReason).toHaveBeenCalledTimes(2);
+  });
+
+  it('accepts policy-governed ranked recovery without any legacy selection path', () => {
+    const logger = { warn: vi.fn() };
+    const result = handle(makeOutput([
+      pick('201', 'Recovery Song', 'Recovery Artist', 'ranked fallback')
+    ]), { logger });
+
+    expect(result).toMatchObject({ status: 'handled' });
+    expect(result.successPublication).toMatchObject({ path: 'music_agent_ranked_recovery' });
+    expect(getQueue('music-agent-result-user')).toEqual([]);
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ fallbackPath: 'music_agent_ranked_recovery' }),
+      'DJ pick-next: accepting policy-governed ranked recovery picks'
+    );
+  });
+
+  it('treats an empty lyrics-assessed result like every other no-candidate result', () => {
+    const output = makeOutput([], {
+      status: 'empty_pool',
+      lyricsAwareDiagnostics: lyricsDiagnostics({ assessmentCoverageValid: false })
+    });
+    const emit = vi.fn();
+    const recordRouteOutcome = vi.fn();
+
+    expect(handle(output, { emit, recordRouteOutcome })).toMatchObject({
+      status: 'handled'
+    });
+    expect(emit).toHaveBeenCalledWith({
+      type: 'dj.pick-next.done', added: false, addedCount: 0,
+      reason: 'empty_pool', targetCount: 1
+    });
+    expect(recordRouteOutcome).toHaveBeenCalledWith('no_candidates');
+  });
+
+  it('returns an explicit no-selection result for MusicAgent errors', () => {
+    const emit = vi.fn();
+    const recordRouteOutcome = vi.fn();
+    const output = makeOutput([], { status: 'error' });
+
+    expect(handle(output, { emit, recordRouteOutcome })).toMatchObject({
+      status: 'handled'
+    });
+    expect(emit).toHaveBeenCalledWith({
+      type: 'dj.pick-next.done', added: false, addedCount: 0,
+      reason: 'error', targetCount: 1
+    });
+    expect(recordRouteOutcome).toHaveBeenCalledWith('no_candidates');
+  });
+
+  it('does not append run-local duplicates and does not invoke another selector', () => {
+    const emit = vi.fn();
+    const recordRouteOutcome = vi.fn();
+    const result = handle(makeOutput([
+      pick('401', 'Queued Song', 'Queued Artist', 'balanced fit')
+    ]), {
+      emit,
+      recordRouteOutcome,
+      excludeState: { ids: new Set(['401']), dedupeKeys: new Set() }
+    });
+
+    expect(result).toMatchObject({ status: 'handled', appendedCount: 0 });
+    expect(result.finalQueueDecisions.at(-1)).toMatchObject({
+      candidateId: '401',
+      decision: { phase: 'final', action: 'reject', reasonCodes: ['queue_track_idempotency'] }
+    });
+    expect(getQueue('music-agent-result-user')).toEqual([]);
+    expect(emit).toHaveBeenCalledWith(expect.objectContaining({
+      type: 'dj.debug', selectedTracks: []
+    }));
+    expect(emit).toHaveBeenCalledWith({
+      type: 'dj.pick-next.done', added: false, addedCount: 0,
+      reason: 'no-candidates', targetCount: 1
+    });
+    expect(recordRouteOutcome).toHaveBeenCalledWith('no_candidates');
+  });
+
+  it('supersedes a stale run when the user changed the queue meanwhile', () => {
+    const initialQueueRevision = getQueueRevision('music-agent-result-user');
+    setQueueState('music-agent-result-user', [
+      { ncmId: 'user-added', name: 'User Added', artists: ['Listener Pick'] }
+    ], 0);
+    const recordRouteOutcome = vi.fn();
+
+    const result = handle(makeOutput([
+      pick('dj-owned', 'DJ Pick', 'DJ Artist', 'balanced fit')
+    ]), {
+      initialQueueRevision,
+      targetPickCount: 1,
+      recordRouteOutcome
+    });
+
+    expect(result).toMatchObject({ completion: 'superseded', appendedCount: 0 });
+    expect(getQueue('music-agent-result-user').map((track) => track.ncmId))
+      .toEqual(['user-added']);
+    expect(result.successPublication).toBeUndefined();
+    expect(recordRouteOutcome).not.toHaveBeenCalled();
+  });
+});
+
+function handle(
+  output: MusicAgentRunOutput,
+  overrides: Partial<Parameters<typeof handleMusicAgentPickNextOutput>[0]> = {}
+) {
+  return handleMusicAgentPickNextOutput({
+    userId: 'music-agent-result-user',
+    output,
+    excludeState: { ids: new Set(), dedupeKeys: new Set() },
+    targetPickCount: 1,
+    startedAt: Date.now() - 5,
+    discoveryMode: 'explore',
+    emit: vi.fn(),
+    logger: { warn: vi.fn() },
+    fallbackStatsSnapshot: () => ({ totalRuns: 0, fallbackRuns: 0, fallbackRate: 0, fallbackPaths: {} }),
+    evaluateFinalQueuePick: () => ({ phase: 'final', action: 'select', reasonCodes: ['final_eligible'] }),
+    ...overrides
+  });
+}
+
+function pick(id: string, name: string, artist: string, reason: string) {
+  return { id, name, artist, reason, source: 'search' } as const;
+}
+
+function makeOutput(
+  picks: MusicAgentRunOutput['picks'],
+  overrides: Partial<MusicAgentRunOutput> = {}
+): MusicAgentRunOutput {
   return {
-    mode: 'enforce_fit',
+    status: 'ok',
+    mode: 'pick_next',
+    say: '顺着当前的氛围往前推。',
+    picks,
+    rejected: [],
+    trace: [{ step: 1, thoughtSummary: 'done', candidateCount: picks.length, elapsedMs: 10 }],
+    fallbackReason: null,
+    step: 1,
+    llmCalls: 1,
+    toolCalls: 1,
+    elapsedMs: 10,
+    queryFunnel: [],
+    candidateScoreTable: picks.map((item, index) => ({
+      rank: index + 1,
+      id: item.id,
+      song: item.name ?? item.id,
+      artist: item.artist ?? '未知艺人',
+      sources: item.source,
+      baseScore: 1,
+      artistPenalty: 0,
+      trackPenalty: 0,
+      repeatPenalty: 0,
+      qualityPenalty: 0,
+      titlePollutionPenalty: 0,
+      adjustedScore: 1
+    })),
+    finalPickDiagnostics: {
+      targetPickCount: picks.length,
+      rawPickCount: picks.length,
+      eligiblePickCount: picks.length,
+      acceptedPickCount: picks.length,
+      droppedPickCount: 0,
+      titleMotifDroppedCount: 0,
+      rankedBackfillCount: 0,
+      fallbackCount: 0,
+      acceptedDedupeKeys: [],
+      droppedDedupeKeys: [],
+      acceptedArtistKeys: [],
+      droppedArtistKeys: []
+    },
+    ...overrides
+  };
+}
+
+function lyricsDiagnostics(overrides: Record<string, unknown> = {}) {
+  return {
+    mode: 'enforce_fit' as const,
     enrichment: {
       shortlistCount: 1,
       cacheHits: 0,
@@ -39,824 +252,6 @@ function makeLyricsAwareDiagnostics(
     assessmentValidationProblems: [],
     decisions: [],
     allReturnedPicksAssessed: true,
-    enforcementApplied: true,
-    fallbackSuppressed: false,
     ...overrides
   };
 }
-
-function makeOutput(
-  picks: MusicAgentRunOutput['picks'],
-  lyricsAwareDiagnostics?: LyricsAwareDiagnostics
-): MusicAgentRunOutput {
-  return {
-    status: 'ok',
-    mode: 'pick_next',
-    say: '顺着今天的氛围往前推一首。',
-    picks,
-    rejected: [],
-    trace: [{ step: 1, thoughtSummary: 'done', candidateCount: picks.length, elapsedMs: 10 }],
-    fallbackReason: null,
-    step: 1,
-    llmCalls: 1,
-    toolCalls: 1,
-    elapsedMs: 10,
-    queryFunnel: [],
-    candidateScoreTable: picks.map((pick, index) => ({
-      rank: index + 1,
-      id: pick.id,
-      song: pick.name ?? pick.id,
-      artist: pick.artist ?? '未知艺人',
-      sources: pick.source,
-      baseScore: 1,
-      artistPenalty: 0,
-      trackPenalty: 0,
-      repeatPenalty: 0,
-      qualityPenalty: 0,
-      titlePollutionPenalty: 0,
-      adjustedScore: 1
-    })),
-    finalPickDiagnostics: {
-      targetPickCount: picks.length,
-      rawPickCount: picks.length,
-      eligiblePickCount: picks.length,
-      acceptedPickCount: picks.length,
-      droppedPickCount: 0,
-      titleMotifDroppedCount: 0,
-      rankedBackfillCount: 0,
-      fallbackCount: 0,
-      acceptedDedupeKeys: [],
-      droppedDedupeKeys: [],
-      acceptedArtistKeys: [],
-      droppedArtistKeys: []
-    },
-    ...(lyricsAwareDiagnostics ? { lyricsAwareDiagnostics } : {})
-  };
-}
-
-describe('MusicAgent pick-next result handling', () => {
-  beforeEach(() => {
-    setQueueState('music-agent-result-user', [], 0);
-  });
-
-  it('routes unassessed ranked fallback picks to legacy fallback without appending them', () => {
-    const emit = vi.fn();
-    const broadcastAppended = vi.fn();
-    const logger = { warn: vi.fn() };
-
-    const result = handleMusicAgentPickNextOutput({
-      userId: 'music-agent-result-user',
-      output: makeOutput([
-        { id: '101', name: 'Fallback Song', artist: 'Fallback Artist', reason: 'ranked fallback', source: 'liked' }
-      ]),
-      excludeState: { ids: new Set(), dedupeKeys: new Set() },
-      initialQueueLength: 0,
-      targetPickCount: 1,
-      startedAt: Date.now(),
-      discoveryMode: 'explore',
-      emit,
-      broadcastAppended,
-      logger,
-      setPickReason: vi.fn(),
-      fallbackStatsSnapshot: () => ({ totalRuns: 0, fallbackRuns: 0, fallbackRate: 0, fallbackPaths: {} })
-    });
-
-    expect(result).toEqual({
-      status: 'legacy-fallback',
-      legacyFallbackPath: 'music_agent_legacy_fallback',
-      debugBroadcastSent: false
-    });
-    expect(getQueue('music-agent-result-user')).toEqual([]);
-    expect(emit).not.toHaveBeenCalled();
-    expect(broadcastAppended).not.toHaveBeenCalled();
-    expect(logger.warn).toHaveBeenCalledWith(
-      expect.objectContaining({
-        fallbackPath: 'music_agent_legacy_fallback',
-        requestedPickCount: 1
-      }),
-      'DJ pick-next: MusicAgent returned ranked fallback picks, using legacy fallback'
-    );
-  });
-
-  it('accepts ranked fallback picks when enforcement diagnostics prove they are assessed and eligible', () => {
-    const emit = vi.fn();
-    const broadcastAppended = vi.fn();
-    const logger = { warn: vi.fn() };
-    const pick = {
-      id: '111',
-      name: 'Safe Fallback',
-      artist: 'Known Artist',
-      reason: 'ranked fallback',
-      source: 'search'
-    } as const;
-    const output = makeOutput([pick], makeLyricsAwareDiagnostics({
-      decisions: [{
-        id: pick.id,
-        compatibility: 'compatible',
-        compatibilityConfidence: 'high',
-        compatibilityReasons: ['matches calm listening constraint'],
-        quality: 'acceptable',
-        qualityNegativeSignals: [],
-        qualityPositiveSignals: ['complete credits'],
-        eligible: true
-      }]
-    }));
-
-    const result = handleMusicAgentPickNextOutput({
-      userId: 'music-agent-result-user',
-      output,
-      excludeState: { ids: new Set(), dedupeKeys: new Set() },
-      initialQueueLength: 0,
-      targetPickCount: 1,
-      startedAt: Date.now(),
-      discoveryMode: 'explore',
-      emit,
-      broadcastAppended,
-      logger,
-      setPickReason: vi.fn(),
-      fallbackStatsSnapshot: () => ({ totalRuns: 0, fallbackRuns: 0, fallbackRate: 0, fallbackPaths: {} })
-    });
-
-    expect(result).toEqual({ status: 'handled', debugBroadcastSent: true });
-    expect(getQueue('music-agent-result-user')).toMatchObject([{ ncmId: '111' }]);
-    expect(broadcastAppended).toHaveBeenCalledWith(
-      'music-agent-result-user',
-      0,
-      1,
-      emit,
-      'music_agent_ranked_fallback',
-      expect.objectContaining({ agentPickCount: 1 })
-    );
-    expect(logger.warn).toHaveBeenCalledWith(
-      expect.objectContaining({
-        routeOutcome: 'accepted_assessed_ranked',
-        lyricsAwareDiagnostics: expect.objectContaining({ mode: 'enforce_fit' })
-      }),
-      'DJ pick-next: accepting assessed and eligible MusicAgent ranked picks'
-    );
-  });
-
-  it('accepts a real ranked recovery when the entire shortlist is covered by trusted cache profiles', async () => {
-    const { CandidatePool } = await import('../../src/server/music-agent/candidates');
-    const { runMusicAgentLoop } = await import('../../src/server/music-agent/loop');
-    const pool = new CandidatePool();
-    pool.upsert({
-      id: 'cached-safe', name: 'Cached Safe', artist: 'Known Artist', sources: ['search'], evidence: [],
-      scores: {
-        intentMatch: 0.9, tasteMatch: 0.8, timeFit: 0.8, contextFit: 0.8,
-        novelty: 0.5, recentPenalty: 0, skipPenalty: 0, sourceConfidence: 0.8
-      }
-    });
-    const cachedAssessment = {
-      id: 'cached-safe',
-      profile: {
-        genres: ['ambient'], moods: ['calm'], energy: 'low' as const,
-        aggression: 'low' as const, vocalIntensity: 'low' as const,
-        lyricThemes: [], language: 'unknown'
-      },
-      confidence: {
-        genres: 0.9, moods: 0.9, energy: 0.9, aggression: 0.9,
-        vocalIntensity: 0.9, lyricThemes: 0.2, language: 0.2
-      },
-      evidence: [{ claim: 'mood=calm', source: 'lyric_analysis' as const }]
-    };
-    const output = await runMusicAgentLoop({
-      llmClient: { async complete() { throw new Error('LLM must not run'); } },
-      context: {
-        request: 'auto-fill', currentUserText: '安静舒缓', activeDirective: '',
-        currentMoment: { localTime: 'now', daypart: 'evening', weather: null },
-        tasteSummary: '', recentPreferenceSummary: '', recentPlaySignals: '',
-        queueStateSummary: '', bannedSummary: ''
-      },
-      candidatePool: pool,
-      tools: {},
-      budget: {
-        maxMs: 10_000, maxSteps: 0, maxLlmCalls: 1, maxToolCalls: 0,
-        maxNcmSearches: 0, maxPlaylistFetches: 0, maxTrendFetchMs: 0, maxCandidates: 20
-      },
-      lyricsSelectionMode: 'enforce_fit',
-      finalShortlistEnricher: async () => ({
-        shortlist: pool.list(),
-        expectedLyricVersions: [],
-        promptPackets: [{
-          id: 'cached-safe', name: 'Cached Safe', artist: 'Known Artist', sources: ['search'],
-          kind: 'profile', assessment: cachedAssessment
-        }],
-        diagnostics: {
-          shortlistCount: 1, cacheHits: 1, cacheMisses: 0,
-          lyricAttempted: 0, lyricSuccess: 0, lyricMissing: 0, lyricFail: 0,
-          lyricTimeout: 0, lyricCancelled: 0, wikiAttempted: 0, wikiSuccess: 0,
-          wikiFail: 0, wikiTimeout: 0, wikiCancelled: 0, cacheWriteFailed: 0,
-          sampledChars: 0, elapsedMs: 0, deadlineReached: false
-        }
-      })
-    });
-
-    expect(output.lyricsAwareDiagnostics).toMatchObject({
-      assessmentCoverageValid: true, allReturnedPicksAssessed: true
-    });
-    const result = handleMusicAgentPickNextOutput({
-      userId: 'music-agent-result-user', output,
-      excludeState: { ids: new Set(), dedupeKeys: new Set() },
-      initialQueueLength: 0, targetPickCount: 1, startedAt: Date.now(), discoveryMode: 'explore',
-      emit: vi.fn(), broadcastAppended: vi.fn(), logger: { warn: vi.fn() },
-      setPickReason: vi.fn(),
-      fallbackStatsSnapshot: () => ({ totalRuns: 0, fallbackRuns: 0, fallbackRate: 0, fallbackPaths: {} })
-    });
-
-    expect(result.status).toBe('handled');
-    expect(getQueue('music-agent-result-user')).toMatchObject([{ ncmId: 'cached-safe' }]);
-  });
-
-  it('does not trust ranked convergence picks when enforcement diagnostics are incomplete', () => {
-    const output = makeOutput([
-      { id: '112', name: 'Unchecked Convergence', artist: 'Unknown', reason: 'ranked convergence', source: 'search' }
-    ], makeLyricsAwareDiagnostics({
-      assessmentCoverageValid: false,
-      assessmentValidationProblems: ['missing assessment for 112'],
-      allReturnedPicksAssessed: false
-    }));
-
-    const result = handleMusicAgentPickNextOutput({
-      userId: 'music-agent-result-user',
-      output,
-      excludeState: { ids: new Set(), dedupeKeys: new Set() },
-      initialQueueLength: 0,
-      targetPickCount: 1,
-      startedAt: Date.now(),
-      discoveryMode: 'explore',
-      emit: vi.fn(),
-      broadcastAppended: vi.fn(),
-      logger: { warn: vi.fn() },
-      setPickReason: vi.fn(),
-      fallbackStatsSnapshot: () => ({ totalRuns: 0, fallbackRuns: 0, fallbackRate: 0, fallbackPaths: {} })
-    });
-
-    expect(result.status).toBe('legacy-fallback');
-    expect(getQueue('music-agent-result-user')).toEqual([]);
-  });
-
-  it('preserves legacy off-mode behavior by directly appending ranked convergence', () => {
-    const logger = { warn: vi.fn() };
-    const broadcastAppended = vi.fn();
-    const output = makeOutput([
-      { id: '113', name: 'Legacy Convergence', artist: 'Known', reason: 'ranked convergence', source: 'liked' }
-    ]);
-
-    const result = handleMusicAgentPickNextOutput({
-      userId: 'music-agent-result-user',
-      output,
-      excludeState: { ids: new Set(), dedupeKeys: new Set() },
-      initialQueueLength: 0,
-      targetPickCount: 1,
-      startedAt: Date.now(),
-      discoveryMode: 'comfort',
-      emit: vi.fn(),
-      broadcastAppended,
-      logger,
-      setPickReason: vi.fn(),
-      fallbackStatsSnapshot: () => ({ totalRuns: 0, fallbackRuns: 0, fallbackRate: 0, fallbackPaths: {} })
-    });
-
-    expect(result.status).toBe('handled');
-    expect(getQueue('music-agent-result-user')).toMatchObject([{ ncmId: '113' }]);
-    expect(broadcastAppended).toHaveBeenCalledWith(
-      'music-agent-result-user',
-      0,
-      1,
-      expect.any(Function),
-      'music_agent_success',
-      expect.any(Object)
-    );
-    expect(logger.warn).not.toHaveBeenCalledWith(
-      expect.anything(),
-      'DJ pick-next: accepting assessed and eligible MusicAgent ranked picks'
-    );
-  });
-
-  it('preserves shadow picks by directly appending ranked convergence', () => {
-    const output = makeOutput([
-      { id: '113-shadow', name: 'Shadow Convergence', artist: 'Known', reason: 'ranked convergence', source: 'liked' }
-    ], makeLyricsAwareDiagnostics({
-      mode: 'shadow',
-      enforcementApplied: false,
-      allReturnedPicksAssessed: false,
-      assessmentCoverageValid: false,
-      assessmentValidationProblems: ['shadow observation incomplete']
-    }));
-
-    const result = handleMusicAgentPickNextOutput({
-      userId: 'music-agent-result-user',
-      output,
-      excludeState: { ids: new Set(), dedupeKeys: new Set() },
-      initialQueueLength: 0,
-      targetPickCount: 1,
-      startedAt: Date.now(),
-      discoveryMode: 'explore',
-      emit: vi.fn(),
-      broadcastAppended: vi.fn(),
-      logger: { warn: vi.fn() },
-      setPickReason: vi.fn(),
-      fallbackStatsSnapshot: () => ({ totalRuns: 0, fallbackRuns: 0, fallbackRate: 0, fallbackPaths: {} })
-    });
-
-    expect(result.status).toBe('handled');
-    expect(getQueue('music-agent-result-user')).toMatchObject([{ ncmId: '113-shadow' }]);
-  });
-
-  it('accepts safely assessed ranked convergence as MusicAgent success telemetry', () => {
-    const emit = vi.fn();
-    const broadcastAppended = vi.fn();
-    const pick = {
-      id: '114',
-      name: 'Safe Convergence',
-      artist: 'Known Artist',
-      reason: 'ranked convergence',
-      source: 'search'
-    } as const;
-    const output = makeOutput([pick], makeLyricsAwareDiagnostics({
-      decisions: [{
-        id: pick.id,
-        compatibility: 'compatible',
-        compatibilityConfidence: 'high',
-        compatibilityReasons: ['fits the requested scene'],
-        quality: 'acceptable',
-        qualityNegativeSignals: [],
-        qualityPositiveSignals: ['supported by credits'],
-        eligible: true
-      }]
-    }));
-
-    const result = handleMusicAgentPickNextOutput({
-      userId: 'music-agent-result-user',
-      output,
-      excludeState: { ids: new Set(), dedupeKeys: new Set() },
-      initialQueueLength: 0,
-      targetPickCount: 1,
-      startedAt: Date.now(),
-      discoveryMode: 'explore',
-      emit,
-      broadcastAppended,
-      logger: { warn: vi.fn() },
-      setPickReason: vi.fn(),
-      fallbackStatsSnapshot: () => ({ totalRuns: 0, fallbackRuns: 0, fallbackRate: 0, fallbackPaths: {} })
-    });
-
-    expect(result.status).toBe('handled');
-    expect(broadcastAppended).toHaveBeenCalledWith(
-      'music-agent-result-user',
-      0,
-      1,
-      emit,
-      'music_agent_success',
-      expect.any(Object)
-    );
-  });
-
-  it.each(['enforce_fit', 'enforce_all'] as const)(
-    'suppresses legacy fallback for a defensively proven %s safety block',
-    (mode) => {
-      const emit = vi.fn();
-      const logger = { warn: vi.fn() };
-      const routeStats = createDjPickNextFallbackStatsTracker();
-      const output = {
-        ...makeOutput([], makeLyricsAwareDiagnostics({
-          mode,
-          fallbackSuppressed: true,
-          allReturnedPicksAssessed: true
-        })),
-        status: 'empty_pool' as const,
-        say: '没有通过安全筛选的候选。'
-      } satisfies MusicAgentRunOutput;
-
-      const result = handleMusicAgentPickNextOutput({
-        userId: 'music-agent-result-user',
-        output,
-        excludeState: { ids: new Set(), dedupeKeys: new Set() },
-        initialQueueLength: 0,
-        targetPickCount: 1,
-        startedAt: Date.now(),
-        discoveryMode: 'explore',
-        emit,
-        broadcastAppended: vi.fn(),
-        logger,
-        recordRouteOutcome: (path) => routeStats.record({ path }),
-        setPickReason: vi.fn(),
-        fallbackStatsSnapshot: () => ({ totalRuns: 0, fallbackRuns: 0, fallbackRate: 0, fallbackPaths: {} })
-      });
-
-      expect(result).toEqual({ status: 'handled', debugBroadcastSent: true });
-      expect(getQueue('music-agent-result-user')).toEqual([]);
-      expect(emit).toHaveBeenCalledWith(expect.objectContaining({
-        type: 'dj.debug',
-        routeOutcome: 'lyrics_safety_block',
-        legacyFallbackSuppressed: true
-      }));
-      expect(emit).toHaveBeenCalledWith({
-        type: 'dj.pick-next.done',
-        added: false,
-        addedCount: 0,
-        reason: 'lyrics-safety-block',
-        targetCount: 1
-      });
-      expect(logger.warn).toHaveBeenCalledWith(
-        expect.objectContaining({
-          routeOutcome: 'lyrics_safety_block',
-          fallbackPath: 'music_agent_safety_block',
-          lyricsAwareDiagnostics: expect.objectContaining({ mode })
-        }),
-        'DJ pick-next: lyrics-aware safety block suppressed legacy fallback'
-      );
-      expect(routeStats.snapshot()).toMatchObject({
-        totalRuns: 1,
-        fallbackRuns: 0,
-        fallbackRate: 0
-      });
-    }
-  );
-
-  it.each(['off', 'shadow'] as const)(
-    'keeps legacy fallback for empty %s output even when fallbackSuppressed is set',
-    (mode) => {
-      const output = {
-        ...makeOutput([], makeLyricsAwareDiagnostics({ mode, fallbackSuppressed: true })),
-        status: 'empty_pool' as const
-      } satisfies MusicAgentRunOutput;
-
-      const result = handleMusicAgentPickNextOutput({
-        userId: 'music-agent-result-user',
-        output,
-        excludeState: { ids: new Set(), dedupeKeys: new Set() },
-        initialQueueLength: 0,
-        targetPickCount: 1,
-        startedAt: Date.now(),
-        discoveryMode: 'explore',
-        emit: vi.fn(),
-        broadcastAppended: vi.fn(),
-        logger: { warn: vi.fn() },
-        setPickReason: vi.fn(),
-        fallbackStatsSnapshot: () => ({ totalRuns: 0, fallbackRuns: 0, fallbackRate: 0, fallbackPaths: {} })
-      });
-
-      expect(result.status).toBe('legacy-fallback');
-    }
-  );
-
-  it('rejects forged safety diagnostics with an incomplete enrichment payload and keeps Legacy', () => {
-    const output = {
-      ...makeOutput([], makeLyricsAwareDiagnostics({ fallbackSuppressed: true })),
-      status: 'empty_pool' as const,
-      lyricsAwareDiagnostics: {
-        ...makeLyricsAwareDiagnostics({ fallbackSuppressed: true }),
-        enrichment: {}
-      }
-    } as unknown as MusicAgentRunOutput;
-    const emit = vi.fn();
-
-    expect(isLyricsAwareSafetyBlock(output)).toBe(false);
-    const result = handleMusicAgentPickNextOutput({
-      userId: 'music-agent-result-user',
-      output,
-      excludeState: { ids: new Set(), dedupeKeys: new Set() },
-      initialQueueLength: 0,
-      targetPickCount: 1,
-      startedAt: Date.now(),
-      discoveryMode: 'explore',
-      emit,
-      broadcastAppended: vi.fn(),
-      logger: { warn: vi.fn() },
-      setPickReason: vi.fn(),
-      fallbackStatsSnapshot: () => ({ totalRuns: 0, fallbackRuns: 0, fallbackRate: 0, fallbackPaths: {} })
-    });
-
-    expect(result.status).toBe('legacy-fallback');
-    expect(emit).not.toHaveBeenCalledWith(expect.objectContaining({
-      type: 'dj.pick-next.done',
-      reason: 'lyrics-safety-block'
-    }));
-  });
-
-  it('does not treat aborted output with otherwise valid safety diagnostics as a terminal safety block', () => {
-    const output = {
-      ...makeOutput([], makeLyricsAwareDiagnostics({ fallbackSuppressed: true })),
-      status: 'aborted' as const
-    } satisfies MusicAgentRunOutput;
-    const emit = vi.fn();
-
-    expect(isLyricsAwareSafetyBlock(output)).toBe(false);
-    const result = handleMusicAgentPickNextOutput({
-      userId: 'music-agent-result-user',
-      output,
-      excludeState: { ids: new Set(), dedupeKeys: new Set() },
-      initialQueueLength: 0,
-      targetPickCount: 1,
-      startedAt: Date.now(),
-      discoveryMode: 'explore',
-      emit,
-      broadcastAppended: vi.fn(),
-      logger: { warn: vi.fn() },
-      setPickReason: vi.fn(),
-      fallbackStatsSnapshot: () => ({ totalRuns: 0, fallbackRuns: 0, fallbackRate: 0, fallbackPaths: {} })
-    });
-
-    expect(result.status).toBe('legacy-fallback');
-    expect(emit).not.toHaveBeenCalled();
-  });
-
-  it('appends a successful ordinary pick even when lyrics diagnostics are malformed', () => {
-    const output = {
-      ...makeOutput([
-        { id: 'malformed-safe', name: 'Still Safe', artist: 'Known', reason: 'fits', source: 'liked' }
-      ]),
-      lyricsAwareDiagnostics: { mode: 'enforce_fit', enrichment: {} }
-    } as unknown as MusicAgentRunOutput;
-    const emit = vi.fn();
-
-    expect(() => handleMusicAgentPickNextOutput({
-      userId: 'music-agent-result-user',
-      output,
-      excludeState: { ids: new Set(), dedupeKeys: new Set() },
-      initialQueueLength: 0,
-      targetPickCount: 1,
-      startedAt: Date.now(),
-      discoveryMode: 'explore',
-      emit,
-      broadcastAppended: vi.fn(),
-      logger: { warn: vi.fn() },
-      setPickReason: vi.fn(),
-      fallbackStatsSnapshot: () => ({ totalRuns: 0, fallbackRuns: 0, fallbackRate: 0, fallbackPaths: {} })
-    })).not.toThrow();
-
-    expect(getQueue('music-agent-result-user')).toMatchObject([{ ncmId: 'malformed-safe' }]);
-    expect(emit).toHaveBeenCalledWith(expect.not.objectContaining({ lyricsAwareDiagnostics: expect.anything() }));
-  });
-
-  it('keeps legacy fallback for an ordinary MusicAgent error', () => {
-    const output = {
-      ...makeOutput([]),
-      status: 'aborted' as const
-    } satisfies MusicAgentRunOutput;
-
-    const result = handleMusicAgentPickNextOutput({
-      userId: 'music-agent-result-user',
-      output,
-      excludeState: { ids: new Set(), dedupeKeys: new Set() },
-      initialQueueLength: 0,
-      targetPickCount: 1,
-      startedAt: Date.now(),
-      discoveryMode: 'explore',
-      emit: vi.fn(),
-      broadcastAppended: vi.fn(),
-      logger: { warn: vi.fn() },
-      setPickReason: vi.fn(),
-      fallbackStatsSnapshot: () => ({ totalRuns: 0, fallbackRuns: 0, fallbackRate: 0, fallbackPaths: {} })
-    });
-
-    expect(result.status).toBe('legacy-fallback');
-  });
-
-  it('appends MusicAgent picks, emits debug details, and broadcasts completion', () => {
-    const emit = vi.fn();
-    const setPickReason = vi.fn();
-    const broadcastAppended = vi.fn();
-
-    const result = handleMusicAgentPickNextOutput({
-      userId: 'music-agent-result-user',
-      output: makeOutput([
-        { id: '201', name: 'First Song', artist: 'First Artist', reason: 'fits', source: 'search' },
-        { id: '202', name: 'Second Song', artist: 'Second Artist', reason: 'continues', source: 'liked' }
-      ]),
-      excludeState: { ids: new Set(), dedupeKeys: new Set() },
-      initialQueueLength: 0,
-      targetPickCount: 2,
-      startedAt: Date.now() - 50,
-      discoveryMode: 'comfort',
-      emit,
-      broadcastAppended,
-      logger: { warn: vi.fn() },
-      setPickReason,
-      fallbackStatsSnapshot: () => ({ totalRuns: 0, fallbackRuns: 0, fallbackRate: 0, fallbackPaths: {} })
-    });
-
-    expect(result).toEqual({ status: 'handled', debugBroadcastSent: true });
-    expect(getQueue('music-agent-result-user')).toMatchObject([
-      { ncmId: '201', name: 'First Song', artists: ['First Artist'] },
-      { ncmId: '202', name: 'Second Song', artists: ['Second Artist'] }
-    ]);
-    expect(emit).toHaveBeenCalledWith(expect.objectContaining({
-      type: 'dj.debug',
-      selectedSay: '顺着今天的氛围往前推一首。',
-      selectedTracks: [
-        expect.objectContaining({ id: '201', reason: 'fits', source: 'search' }),
-        expect.objectContaining({ id: '202', reason: 'continues', source: 'liked' })
-      ]
-    }));
-    expect(setPickReason).toHaveBeenCalledWith('201', '顺着今天的氛围往前推一首。');
-    expect(setPickReason).toHaveBeenCalledWith('202', '顺着今天的氛围往前推一首。');
-    expect(broadcastAppended).toHaveBeenCalledWith(
-      'music-agent-result-user',
-      0,
-      2,
-      emit,
-      'music_agent_success',
-      expect.objectContaining({
-        agentPickCount: 2,
-        rankedBackfillCount: 0,
-        candidateCount: 2,
-        discoveryMode: 'comfort'
-      })
-    );
-  });
-
-  it('applies MusicAgent queue mutations through an injected queue port', () => {
-    const queue: ReturnType<typeof getQueue> = [];
-    const queuePort = {
-      getQueue: vi.fn(() => [...queue]),
-      addToQueue: vi.fn((_userId: string, track: typeof queue[number]) => {
-        queue.push(track);
-      })
-    };
-
-    const result = handleMusicAgentPickNextOutput({
-      userId: 'music-agent-result-user',
-      output: makeOutput([
-        { id: '211', name: 'Port Song', artist: 'Port Artist', reason: 'port fit', source: 'search' }
-      ]),
-      excludeState: { ids: new Set(), dedupeKeys: new Set() },
-      initialQueueLength: 0,
-      targetPickCount: 1,
-      startedAt: Date.now() - 50,
-      discoveryMode: 'explore',
-      emit: vi.fn(),
-      broadcastAppended: vi.fn(),
-      logger: { warn: vi.fn() },
-      queuePort,
-      setPickReason: vi.fn(),
-      fallbackStatsSnapshot: () => ({ totalRuns: 0, fallbackRuns: 0, fallbackRate: 0, fallbackPaths: {} })
-    });
-
-    expect(result).toEqual({ status: 'handled', debugBroadcastSent: true });
-    expect(queuePort.addToQueue).toHaveBeenCalledWith(
-      'music-agent-result-user',
-      { ncmId: '211', name: 'Port Song', artists: ['Port Artist'] },
-      'end'
-    );
-    expect(queue).toMatchObject([{ ncmId: '211', name: 'Port Song' }]);
-    expect(getQueue('music-agent-result-user')).toEqual([]);
-  });
-
-  it('broadcasts partial success when only part of the target can be appended', () => {
-    const emit = vi.fn();
-    const setPickReason = vi.fn();
-    const broadcastAppended = vi.fn();
-    const logger = { warn: vi.fn() };
-    const fallbackStatsSnapshot = vi.fn(() => ({ totalRuns: 3, fallbackRuns: 1, fallbackRate: 0.333, fallbackPaths: {} }));
-
-    const result = handleMusicAgentPickNextOutput({
-      userId: 'music-agent-result-user',
-      output: makeOutput([
-        { id: '301', name: 'Fresh Song', artist: 'Fresh Artist', reason: 'fits', source: 'search' },
-        { id: '302', name: 'Already Played', artist: 'Played Artist', reason: 'also fits', source: 'search' }
-      ]),
-      excludeState: { ids: new Set(['302']), dedupeKeys: new Set() },
-      initialQueueLength: 0,
-      targetPickCount: 2,
-      startedAt: Date.now() - 50,
-      discoveryMode: 'explore',
-      emit,
-      broadcastAppended,
-      logger,
-      setPickReason,
-      fallbackStatsSnapshot
-    });
-
-    expect(result).toEqual({ status: 'handled', debugBroadcastSent: true });
-    expect(getQueue('music-agent-result-user')).toMatchObject([
-      { ncmId: '301', name: 'Fresh Song', artists: ['Fresh Artist'] }
-    ]);
-    expect(setPickReason).toHaveBeenCalledTimes(1);
-    expect(setPickReason).toHaveBeenCalledWith('301', '顺着今天的氛围往前推一首。');
-    expect(emit).toHaveBeenCalledWith(expect.objectContaining({
-      type: 'dj.debug',
-      partial: true,
-      targetCount: 2,
-      appendedCount: 1,
-      requestedPickCount: 2,
-      selectedSay: '本次实际选入 1 首：Fresh Song。',
-      skippedPicks: [expect.objectContaining({ id: '302', reason: 'id_excluded' })]
-    }));
-    expect(logger.warn).toHaveBeenCalledWith(
-      expect.objectContaining({
-        appendedCount: 1,
-        skippedPicks: [expect.objectContaining({ id: '302', reason: 'id_excluded' })],
-        fallbackPath: 'music_agent_success',
-        fallbackStats: expect.objectContaining({ totalRuns: 3 })
-      }),
-      'DJ pick-next: MusicAgent appended fewer than target'
-    );
-    expect(fallbackStatsSnapshot).toHaveBeenCalled();
-    expect(broadcastAppended).toHaveBeenCalledWith(
-      'music-agent-result-user',
-      0,
-      2,
-      emit,
-      'music_agent_success',
-      expect.objectContaining({
-        agentPickCount: 1,
-        rankedBackfillCount: 0,
-        candidateCount: 2,
-        discoveryMode: 'explore'
-      })
-    );
-  });
-
-  it('shows a summary based on the actual appended tracks after final picks are filtered', () => {
-    const emit = vi.fn();
-    const output = makeOutput([
-      { id: '501', name: '关于我爱你', artist: '张悬', reason: '温柔承接', source: 'search' },
-      { id: '502', name: '喜帖街', artist: '谢安琪', reason: '低压恢复', source: 'search' },
-      { id: '503', name: '宝贝 (In a Day)', artist: '张悬', reason: '轻快安抚', source: 'search' }
-    ]);
-    output.say = '为你挑了五首轻压力恢复的人声故事歌。';
-    output.finalPickDiagnostics = {
-      ...output.finalPickDiagnostics,
-      targetPickCount: 5,
-      rawPickCount: 5,
-      eligiblePickCount: 3,
-      acceptedPickCount: 3,
-      droppedPickCount: 2,
-      qualityDroppedCount: 2
-    };
-
-    handleMusicAgentPickNextOutput({
-      userId: 'music-agent-result-user',
-      output,
-      excludeState: { ids: new Set(), dedupeKeys: new Set() },
-      initialQueueLength: 0,
-      targetPickCount: 5,
-      startedAt: Date.now() - 50,
-      discoveryMode: 'explore',
-      emit,
-      broadcastAppended: vi.fn(),
-      logger: { warn: vi.fn() },
-      setPickReason: vi.fn(),
-      fallbackStatsSnapshot: () => ({ totalRuns: 0, fallbackRuns: 0, fallbackRate: 0, fallbackPaths: {} })
-    });
-
-    expect(emit).toHaveBeenCalledWith(expect.objectContaining({
-      type: 'dj.debug',
-      selectedSay: '本次实际选入 3 首：关于我爱你、喜帖街、宝贝 (In a Day)。',
-      selectedTracks: [
-        expect.objectContaining({ id: '501' }),
-        expect.objectContaining({ id: '502' }),
-        expect.objectContaining({ id: '503' })
-      ]
-    }));
-  });
-
-  it('returns legacy fallback when all MusicAgent picks are skipped', () => {
-    const emit = vi.fn();
-    const setPickReason = vi.fn();
-    const broadcastAppended = vi.fn();
-    const logger = { warn: vi.fn() };
-    const fallbackStatsSnapshot = vi.fn(() => ({ totalRuns: 4, fallbackRuns: 2, fallbackRate: 0.5, fallbackPaths: {} }));
-
-    const result = handleMusicAgentPickNextOutput({
-      userId: 'music-agent-result-user',
-      output: makeOutput([
-        { id: '401', name: 'Queued Song', artist: 'Queued Artist', reason: 'fits', source: 'liked' }
-      ]),
-      excludeState: { ids: new Set(['401']), dedupeKeys: new Set() },
-      initialQueueLength: 0,
-      targetPickCount: 1,
-      startedAt: Date.now() - 50,
-      discoveryMode: 'comfort',
-      emit,
-      broadcastAppended,
-      logger,
-      setPickReason,
-      fallbackStatsSnapshot
-    });
-
-    expect(result).toEqual({
-      status: 'legacy-fallback',
-      legacyFallbackPath: 'music_agent_legacy_fallback',
-      debugBroadcastSent: false
-    });
-    expect(getQueue('music-agent-result-user')).toEqual([]);
-    expect(setPickReason).not.toHaveBeenCalled();
-    expect(emit).not.toHaveBeenCalled();
-    expect(broadcastAppended).not.toHaveBeenCalled();
-    expect(logger.warn).toHaveBeenCalledWith(
-      expect.objectContaining({
-        appendedCount: 0,
-        requestedPickCount: 1,
-        skippedPicks: [expect.objectContaining({ id: '401', reason: 'id_excluded' })],
-        fallbackPath: 'music_agent_legacy_fallback',
-        fallbackStats: expect.objectContaining({ fallbackRuns: 2 })
-      }),
-      'DJ pick-next: MusicAgent picks did not change queue, using legacy fallback'
-    );
-    expect(fallbackStatsSnapshot).toHaveBeenCalled();
-  });
-});

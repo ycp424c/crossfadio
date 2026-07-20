@@ -31,7 +31,7 @@ DJ 自动选歌排查常用过滤：
 ```bash
 LOG="REDACTED_DATA_DIR/logs/app-$(date +%F).log"
 tail -n 1200 "$LOG" | grep -E \
-  'MusicAgent ranked convergence|MusicAgent ranked fallback|DJ pick-next: broadcast appended tracks|appended fewer than target|fallback: appended tracks|LLM returned whitelisted'
+  'MusicAgent ranked convergence|MusicAgent ranked fallback|DJ pick-next: broadcast appended tracks|MusicAgent appended fewer than target|accepting policy-governed ranked recovery picks|no policy-eligible picks changed the queue'
 ```
 
 注意：主应用 pino 日志里的 `time` 是 epoch 毫秒数字；按最近 N 小时聚合时要按数字时间戳解析，不要只按 ISO 字符串解析，否则会误判为没有日志。

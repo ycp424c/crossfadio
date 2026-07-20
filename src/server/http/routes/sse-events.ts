@@ -3,6 +3,8 @@ import { z } from 'zod';
 import { initSseRes, writeSseEvent, writeSseComment } from '../sse.js';
 import { getLogger } from '../../logger.js';
 import type { NcmClient } from '../../ncm/client.js';
+import { getQueueStateSnapshot } from '../../store/queue.js';
+import { listRecentSelectionJourneys } from '../../store/selection-journeys.js';
 import { handleChatMessage, cancelActiveRecommend } from '../chat-sse-worker.js';
 
 type AuthedRequest = Request & { userId: string; ncmClient: NcmClient };
@@ -48,14 +50,15 @@ export function createSseEventsHandler() {
     const userId = (req as AuthedRequest).userId;
     initSseRes(res);
 
-    writeSseEvent(res, 'connected', { userId });
+    const queue = getQueueStateSnapshot(userId);
+    const journeys = listRecentSelectionJourneys(userId).map((record) => record.snapshot);
+    addEventClient(userId, res);
+    writeSseEvent(res, 'connected', { userId, ...queue, journeys });
 
     // 心跳（每 30s）
     const heartbeat = setInterval(() => {
       try { writeSseComment(res, 'ping'); } catch { clearInterval(heartbeat); }
     }, 30_000);
-
-    addEventClient(userId, res);
 
     res.on('close', () => {
       clearInterval(heartbeat);

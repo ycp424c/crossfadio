@@ -1,6 +1,5 @@
 import { getOrGenerateDailyThemeWithin } from '../../daily-theme.js';
 import { fetchWeather } from '../../weather.js';
-import { loadCorpusFile } from '../../user-corpus/loader.js';
 import type { Request, Response } from 'express';
 import { z } from 'zod';
 import type { NcmClient } from '../../ncm/client.js';
@@ -19,6 +18,7 @@ import {
   parseAutoFillBatchSize
 } from '../../../shared/dj.js';
 import type { DiscoveryMode } from '../../../shared/dj.js';
+import { getCurrentTasteProfile } from '../../store/taste-profiles.js';
 
 type AuthedRequest = Request & { userId: string; ncmClient: NcmClient };
 
@@ -148,7 +148,7 @@ export function createGetPlayerContextHandler() {
       enabled ? getOrGenerateDailyThemeWithin(3_000) : Promise.resolve(null),
       fetchWeather(userId)
     ]);
-    const taste = loadCorpusFile(userId, 'taste.md');
+    const taste = getCurrentTasteProfile(userId)?.profile.summary ?? '';
 
     res.json({
       ok: true,

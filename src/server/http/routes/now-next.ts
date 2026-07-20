@@ -7,7 +7,6 @@ import {
   nowPlayingResponseSchema,
   type NcmErrorCode
 } from '../../../shared/schema.js';
-import { startPlay } from '../../store/plays.js';
 
 type AuthedRequest = Request & { userId: string; ncmClient: NcmClient };
 
@@ -16,10 +15,8 @@ const DEFAULT_CROSSFADE_SEC = 8;
 const DEFAULT_SEGUE_LEAD_SEC = 24;
 
 const nowQuerySchema = z.object({
-  ncmId: z.string().min(1),
-  name: z.string().optional(),
-  artist: z.string().optional()
-});
+  ncmId: z.string().min(1)
+}).strict();
 
 const nextQuerySchema = z.object({
   queue: z.string().min(1),
@@ -65,12 +62,6 @@ export function createNowHandler(fallbackNcmClient?: NcmClient): RequestHandler 
       });
 
       res.json(payload);
-
-      // Record play for dedup (best-effort, don't block the response)
-      const name = parsed.data.name?.trim();
-      if (name) {
-        try { startPlay((req as AuthedRequest).userId, { songId: ncmId, songName: name, artistName: parsed.data.artist?.trim() ?? '' }); } catch { /* ignore */ }
-      }
     } catch (error) {
       sendNcmError(res, error);
     }

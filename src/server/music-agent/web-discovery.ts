@@ -6,9 +6,6 @@ import {
   type WebMusicDiscoveryInput
 } from './schema.js';
 
-const HARD_MISMATCH_ARTIST_PATTERN =
-  /\b(slipknot|metallica|megadeth|slayer|korn|limp bizkit|pantera|system of a down)\b/i;
-
 export type WebMusicDiscoveryProvider = {
   discover: (
     input: WebMusicDiscoveryInput,
@@ -37,7 +34,6 @@ async function discoverPublicMusicHints(
 
   const observedAt = new Date().toISOString();
   return artists
-    .filter((artist) => !isHardMismatchedArtistForStyle(artist, styleQuery))
     .slice(0, input.maxHints)
     .map((artist) => musicEntityHintSchema.parse({
     kind: 'artist',
@@ -101,13 +97,4 @@ function normalizeStyleQuery(value: string): string {
     .replace(/\s+/g, ' ')
     .trim()
     .slice(0, 80);
-}
-
-function isHardMismatchedArtistForStyle(artist: string, styleQuery: string): boolean {
-  if (!styleDisallowsHeavyRock(styleQuery)) return false;
-  return HARD_MISMATCH_ARTIST_PATTERN.test(artist);
-}
-
-function styleDisallowsHeavyRock(styleQuery: string): boolean {
-  return /cantopop|c[-\s]*pop|j[-\s]*pop|k[-\s]*pop|city\s*pop|indie\s*folk|folk|dream\s*pop|synth[-\s]*pop|singer[-\s]*songwriter|neo\s*soul|r\s*&?\s*b|jazz|ambient|downtempo/i.test(styleQuery);
 }

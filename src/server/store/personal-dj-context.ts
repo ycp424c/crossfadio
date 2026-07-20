@@ -13,7 +13,8 @@ const sourceSliceRefSchema = z.object({
 
 export const personalDjContextPayloadSchema = z.object({
   schemaVersion: z.literal(1),
-  generatedAt: shortString(80),
+  generatedAt: z.string().datetime({ offset: true }),
+  validUntil: z.string().datetime({ offset: true }).optional(),
   summary: shortString(1200),
   currentState: z.object({
     activity: optionalShortString(120),
@@ -56,6 +57,8 @@ export type PersonalDjContextRow = {
   source_bundle_id: string | null;
   slice_count: number;
   uploaded_at: string;
+  generated_at: string;
+  expires_at: string;
   revoked_at: string | null;
 };
 
@@ -68,6 +71,8 @@ export type PersonalDjContextRecord = {
   sourceBundleId: string | null;
   sliceCount: number;
   uploadedAt: string;
+  generatedAt: string;
+  expiresAt: string;
   revokedAt: string | null;
 };
 
@@ -80,18 +85,41 @@ export function savePersonalDjContext(input: {
   userId: string;
   payload: unknown;
   uploadedAt?: string;
+  now?: Date;
 }): PersonalDjContextRecord {
   const payload = personalDjContextPayloadSchema.parse(input.payload);
   const id = randomUUID();
-  const uploadedAt = input.uploadedAt ?? new Date().toISOString();
+  const now = input.now ?? new Date();
+  const uploadedAt = input.uploadedAt ?? now.toISOString();
+  const generatedAtMs = Date.parse(payload.generatedAt);
+  if (generatedAtMs > now.getTime() + 5 * 60 * 1000) {
+    throw new Error('personal_dj_context_generated_in_future');
+  }
+  const maximumExpiresAtMs = generatedAtMs + 24 * 60 * 60 * 1000;
+  const declaredExpiresAtMs = payload.validUntil
+    ? Date.parse(payload.validUntil)
+    : Number.POSITIVE_INFINITY;
+  const expiresAtMs = Math.min(maximumExpiresAtMs, declaredExpiresAtMs);
+  if (expiresAtMs <= now.getTime()) {
+    throw new Error('personal_dj_context_expired');
+  }
+  const generatedAt = new Date(generatedAtMs).toISOString();
+  const expiresAt = new Date(expiresAtMs).toISOString();
   const payloadJson = JSON.stringify(payload);
   const payloadHash = createHash('sha256').update(payloadJson).digest('hex');
+
+  getDb().prepare(
+    `UPDATE personal_dj_contexts
+     SET revoked_at = ?
+     WHERE user_id = ? AND revoked_at IS NULL`
+  ).run(uploadedAt, input.userId);
 
   getDb()
     .prepare(
       `INSERT INTO personal_dj_contexts (
-        id, user_id, payload_json, payload_hash, source_kind, source_bundle_id, slice_count, uploaded_at, revoked_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)`
+        id, user_id, payload_json, payload_hash, source_kind, source_bundle_id,
+        slice_count, uploaded_at, generated_at, expires_at, revoked_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`
     )
     .run(
       id,
@@ -101,10 +129,12 @@ export function savePersonalDjContext(input: {
       payload.source.kind,
       payload.source.bundleId,
       payload.source.sliceRefs.length,
-      uploadedAt
+      uploadedAt,
+      generatedAt,
+      expiresAt
     );
 
-  cleanupExpiredPersonalDjContexts(input.userId);
+  cleanupExpiredPersonalDjContexts(input.userId, now);
   return getPersonalDjContextById(input.userId, id)!;
 }
 
@@ -113,26 +143,23 @@ export function getPersonalDjContextSnapshot(
   now: Date = new Date()
 ): PersonalDjContextSnapshot {
   cleanupExpiredPersonalDjContexts(userId, now);
-  const current = getCurrentPersonalDjContext(userId);
+  const current = getCurrentPersonalDjContext(userId, now);
   if (!current) return { current: null, trend: [] };
-
-  const cutoff = now.getTime() - 24 * 60 * 60 * 1000;
-  const trend = listPersonalDjContexts(userId, 20)
-    .filter((record) => record.id !== current.id && record.revokedAt === null)
-    .filter((record) => Date.parse(record.uploadedAt) >= cutoff);
-
-  return { current, trend };
+  return { current, trend: [] };
 }
 
-export function getCurrentPersonalDjContext(userId: string): PersonalDjContextRecord | null {
+export function getCurrentPersonalDjContext(
+  userId: string,
+  now: Date = new Date()
+): PersonalDjContextRecord | null {
   const row = getDb()
-    .prepare<[string], PersonalDjContextRow>(
+    .prepare<[string, string], PersonalDjContextRow>(
       `SELECT * FROM personal_dj_contexts
-       WHERE user_id = ? AND revoked_at IS NULL
+       WHERE user_id = ? AND revoked_at IS NULL AND expires_at > ?
        ORDER BY uploaded_at DESC, rowid DESC
        LIMIT 1`
     )
-    .get(userId);
+    .get(userId, now.toISOString());
   return row ? mapPersonalDjContextRow(row) : null;
 }
 
@@ -161,16 +188,22 @@ export function revokeCurrentPersonalDjContext(userId: string, revokedAt = new D
 }
 
 export function cleanupExpiredPersonalDjContexts(userId: string, now: Date = new Date()): number {
-  const current = getCurrentPersonalDjContext(userId);
-  const cutoff = new Date(now.getTime() - 24 * 60 * 60 * 1000).toISOString();
-  const currentId = current?.id ?? '';
   const result = getDb()
-    .prepare<[string, string, string]>(
+    .prepare<[string, string]>(
       `DELETE FROM personal_dj_contexts
-       WHERE user_id = ? AND uploaded_at < ? AND id != ?`
+       WHERE user_id = ? AND expires_at <= ?`
     )
-    .run(userId, cutoff, currentId);
+    .run(userId, now.toISOString());
   return result.changes;
+}
+
+export function cleanupAllExpiredPersonalDjContexts(now: Date = new Date()): number {
+  return getDb()
+    .prepare<[string]>(
+      `DELETE FROM personal_dj_contexts
+       WHERE expires_at IS NOT NULL AND expires_at <= ?`
+    )
+    .run(now.toISOString()).changes;
 }
 
 function getPersonalDjContextById(userId: string, id: string): PersonalDjContextRecord | null {
@@ -192,6 +225,8 @@ function mapPersonalDjContextRow(row: PersonalDjContextRow): PersonalDjContextRe
     sourceBundleId: row.source_bundle_id,
     sliceCount: row.slice_count,
     uploadedAt: row.uploaded_at,
+    generatedAt: row.generated_at,
+    expiresAt: row.expires_at,
     revokedAt: row.revoked_at
   };
 }

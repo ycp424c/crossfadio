@@ -7,6 +7,7 @@ import {
   musicAgentToolNameSchema,
   musicEntityHintSchema,
   musicCandidateSchema,
+  musicCandidateScoresSchema,
   musicAgentFinalOutputSchema,
   musicAgentFinalPickOutputSchema,
   musicAgentRunOutputSchema,
@@ -66,8 +67,6 @@ describe('music-agent schema', () => {
         timeFit: 0.6,
         contextFit: 0.5,
         novelty: 0.4,
-        recentPenalty: 0,
-        skipPenalty: 0,
         sourceConfidence: 0.7
       }
     });
@@ -75,6 +74,18 @@ describe('music-agent schema', () => {
     expect(candidate.id).toBe('101');
     expect(candidate.sources).toContain('trend');
     expect(candidate.provenance?.map((item) => item.kind)).toEqual(['liked', 'trend_recall']);
+  });
+
+  it('rejects removed universal penalty fields in candidate scores', () => {
+    expect(musicCandidateScoresSchema.safeParse({
+      intentMatch: 0.8,
+      tasteMatch: 0.7,
+      timeFit: 0.6,
+      contextFit: 0.5,
+      novelty: 0.4,
+      sourceConfidence: 0.7,
+      recentPenalty: 0.2
+    }).success).toBe(false);
   });
 
   it('validates tool_call and final loop outputs', () => {

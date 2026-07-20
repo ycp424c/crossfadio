@@ -19,8 +19,6 @@ function candidate(overrides: Partial<MusicCandidate> = {}): MusicCandidate {
       timeFit: 0.5,
       contextFit: 0.5,
       novelty: 0.5,
-      recentPenalty: 0,
-      skipPenalty: 0,
       sourceConfidence: 0.5
     },
     ...overrides
@@ -36,7 +34,7 @@ describe('CandidatePool', () => {
       sources: ['liked'],
       provenance: [{ kind: 'liked', source: 'liked' }],
       evidence: ['liked evidence'],
-      scores: { ...candidate().scores, intentMatch: 0.4, recentPenalty: 0.1 }
+      scores: { ...candidate().scores, intentMatch: 0.4, novelty: 0.1 }
     }))).toEqual({ status: 'inserted' });
     expect(pool.upsert(candidate({
       id: 'same',
@@ -46,7 +44,7 @@ describe('CandidatePool', () => {
         { kind: 'liked', source: 'liked' }
       ],
       evidence: ['trend evidence', 'liked evidence'],
-      scores: { ...candidate().scores, intentMatch: 0.9, tasteMatch: 0.8, recentPenalty: 0.3 }
+      scores: { ...candidate().scores, intentMatch: 0.9, tasteMatch: 0.8, novelty: 0.3 }
     }))).toEqual({ status: 'merged_by_id' });
 
     const merged = pool.get('same');
@@ -60,7 +58,7 @@ describe('CandidatePool', () => {
     expect(merged?.evidence).toEqual(['liked evidence', 'trend evidence']);
     expect(merged?.scores.intentMatch).toBe(0.9);
     expect(merged?.scores.tasteMatch).toBe(0.8);
-    expect(merged?.scores.recentPenalty).toBe(0.3);
+    expect(merged?.scores.novelty).toBe(0.3);
   });
 
   it('merges candidate quality signals through dedupe aliases without weakening strong flags', () => {
@@ -143,50 +141,60 @@ describe('CandidatePool', () => {
     }))).toBe('song::artist');
   });
 
-  it('deduplicates exact normalized titles even when artists differ', () => {
+  it('uses the shared structured artist identity for slashes, punctuation, and NFKC', () => {
+    expect(buildCandidateDedupeKey({ name: 'Thunderstruck', artist: 'ＡＣ/DC' }))
+      .toBe('thunderstruck::acdc');
+    expect(buildCandidateDedupeKey({ name: 'September', artist: 'Earth, Wind & Fire' }))
+      .toBe('september::earthwindfire');
+  });
+
+  it('keeps exact normalized titles when primary artists differ', () => {
     const pool = new CandidatePool();
 
-    pool.upsert(candidate({ id: 'track-1', name: '关于小熊（Cover 蛋堡）', artist: '', sources: ['search'] }));
-    pool.upsert(candidate({ id: 'track-2', name: '关于小熊（Cover 蛋堡）', artist: '雅雅Celia', sources: ['liked'] }));
+    pool.upsert(candidate({ id: 'track-1', name: 'Hello', artist: 'Adele', sources: ['search'] }));
+    pool.upsert(candidate({ id: 'track-2', name: 'Hello', artist: 'Lionel Richie', sources: ['liked'] }));
 
     expect(buildCandidateDedupeKey(candidate({
-      name: '关于小熊（Cover 蛋堡）',
-      artist: ''
-    }))).toBe('关于小熊::');
-    expect(pool.count()).toBe(1);
+      name: 'Hello',
+      artist: 'Adele'
+    }))).toBe('hello::adele');
+    expect(pool.count()).toBe(2);
+    expect(pool.get('track-1')?.artist).toBe('Adele');
+    expect(pool.get('track-2')?.artist).toBe('Lionel Richie');
     expect(pool.has('track-2')).toBe(true);
   });
 
-  it('filters banned artists and banned tracks by normalized track key', () => {
+  it('evaluates explicit exclusions through Admission while keeping the pool free of parallel bans', () => {
     const pool = new CandidatePool({
-      bannedArtists: new Set(['Blocked Artist']),
-      bannedTrackKeys: new Set([buildCandidateDedupeKey({ name: 'Blocked', artist: 'Other' })])
+      selectionPolicyContext: {
+        mode: 'autonomous',
+        explicitlyRequested: false,
+        explicitExclusions: {
+          trackKeys: new Set([buildCandidateDedupeKey({ name: 'Blocked', artist: 'Other' })]),
+          primaryArtists: new Set(['blocked artist'])
+        }
+      }
     });
 
-    expect(pool.upsert(candidate({ id: 'different-id', name: 'Blocked', artist: 'Other / Guest' }))).toEqual({
-      status: 'rejected',
-      reason: 'banned_dedupe'
+    expect(pool.evaluateAdmission(candidate({ id: 'different-id', name: 'Blocked', artist: 'Other / Guest' }))).toEqual({
+      phase: 'admission', action: 'reject', reasonCodes: ['explicit_track_exclusion']
     });
-    expect(pool.upsert(candidate({ id: 'artist-track', artist: 'Blocked Artist / Guest' }))).toEqual({
-      status: 'rejected',
-      reason: 'banned_artist'
+    expect(pool.evaluateAdmission(candidate({ id: 'artist-track', artist: 'Blocked Artist / Guest' }))).toEqual({
+      phase: 'admission', action: 'reject', reasonCodes: ['explicit_artist_exclusion']
     });
-    expect(pool.upsert(candidate({ id: 'allowed-track', artist: 'Allowed Artist' }))).toEqual({ status: 'inserted' });
-
-    expect(pool.list().map((item) => item.id)).toEqual(['allowed-track']);
+    expect(pool.evaluateAdmission(candidate({ id: 'allowed-track', artist: 'Allowed Artist' }))).toEqual({
+      phase: 'admission', action: 'admit', reasonCodes: ['admission_eligible']
+    });
   });
 
-  it('exposes candidate ban reasons before upsert when ids or dedupe keys are known', () => {
-    const pool = new CandidatePool({
-      bannedIds: ['blocked-id'],
-      bannedArtists: new Set(['Blocked Artist']),
-      bannedTrackKeys: new Set([buildCandidateDedupeKey({ name: 'Blocked', artist: 'Other' })])
+  it('uses CandidatePool rejection only for its explicit capacity boundary', () => {
+    const pool = new CandidatePool({ maxCandidates: 1 });
+    expect(pool.upsert(candidate({ id: 'first' }))).toEqual({ status: 'inserted' });
+    expect(pool.upsert(candidate({
+      id: 'overflow', name: 'Completely Unrelated Zeta', artist: 'Another Artist'
+    }))).toEqual({
+      status: 'rejected', reason: 'pool_full'
     });
-
-    expect(pool.rejectReasonForTrack({ id: 'blocked-id', name: 'Other', artist: 'Allowed Artist' })).toBe('banned_id');
-    expect(pool.rejectReasonForTrack({ name: 'Blocked (Live)', artist: 'Other / Guest' })).toBe('banned_dedupe');
-    expect(pool.rejectReasonForTrack({ name: 'Allowed', artist: 'Blocked Artist / Guest' })).toBe('banned_artist');
-    expect(pool.rejectReasonForTrack({ name: 'Allowed', artist: 'Allowed Artist' })).toBeNull();
   });
 
   it('merges id and dedupe conflicts into the existing id entry', () => {
@@ -317,6 +325,21 @@ describe('CandidatePool', () => {
 
     expect(() => pool.validateFinalPicks([{ id: 'known', reason: '   ', source: 'liked' }]))
       .toThrow(/reason/i);
+  });
+
+  it('validateFinalPicks always rechecks playback eligibility', () => {
+    const pool = new CandidatePool();
+    pool.upsert(candidate({
+      id: 'unplayable-liked',
+      sources: ['liked'],
+      qualitySignals: { copyright: 0 }
+    }));
+
+    expect(() => pool.validateFinalPicks([{
+      id: 'unplayable-liked',
+      reason: 'explicit request',
+      source: 'liked'
+    }])).toThrow(/copyright_unavailable/i);
   });
 
   it('returns cloned list entries and respects maxCandidates for new candidates', () => {

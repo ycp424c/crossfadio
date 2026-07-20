@@ -140,9 +140,7 @@ export const lyricsAwareDiagnosticsSchema = z.object({
   assessmentCoverageValid: z.boolean(),
   assessmentValidationProblems: z.array(z.string().max(160)).max(24),
   decisions: z.array(lyricsAwareDecisionSummarySchema).max(12),
-  allReturnedPicksAssessed: z.boolean(),
-  enforcementApplied: z.boolean(),
-  fallbackSuppressed: z.boolean()
+  allReturnedPicksAssessed: z.boolean()
 }).strict();
 
 export type SemanticLevel = z.infer<typeof semanticLevelSchema>;

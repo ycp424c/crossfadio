@@ -23,10 +23,6 @@ vi.mock('../../src/server/agent/compute', () => ({
   })
 }));
 
-vi.mock('../../src/server/user-corpus/ncm-liked', () => ({
-  loadLikedTracksForAgentContext: async () => []
-}));
-
 vi.mock('../../src/server/weather', () => ({
   fetchWeather: async () => null
 }));
@@ -55,6 +51,7 @@ afterEach(() => {
 
 describe('DJAgent segue orchestration', () => {
   it('uses selection rationale and safe Personal DJ Context guidance, then records segue_generated', async () => {
+    const now = new Date(Date.now() + 1_000);
     savePersonalDjContext({
       userId: 'segue-user',
       payload: createPersonalContextPayload('secret-bundle')
@@ -91,21 +88,22 @@ describe('DJAgent segue orchestration', () => {
       } as never,
       llmConfig: { baseUrl: 'https://llm.example/v1', apiKey: 'sk-test', model: 'test-model' },
       emitDelta: (say) => deltas.push(say),
-      now: new Date('2026-07-08T12:00:00.000Z')
+      now
     });
 
     expect(result?.segue.say).toContain('低干扰');
     expect(result?.selectionEvent?.id).toBe(selection.id);
     expect(deltas).toEqual(['接上这一首']);
 
+    expect(capturedFragments?.djMemory.purpose).toBe('segue');
+    expect(capturedFragments?.djMemory.facts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ key: 'segue_privacy_rule', value: '只提宽泛状态，不暴露原始记录。' }),
+      expect.objectContaining({ key: 'session_continuity', value: expect.stringContaining('低干扰') })
+    ]));
     expect(capturedFragments?.input.kind).toBe('segueTrigger');
     if (capturedFragments?.input.kind !== 'segueTrigger') throw new Error('expected segueTrigger');
     expect(capturedFragments.input.context?.selectionRationale).toBe('它能延续低干扰节奏，并给一点轻微上扬。');
-    expect(capturedFragments.input.context?.personalSegueGuidance).toEqual({
-      summary: '正在写代码，适合稳定、低干扰的音乐。',
-      tone: '熟悉但克制',
-      privacyRule: '只提宽泛状态，不暴露原始记录。'
-    });
+    expect(capturedFragments.input.context).not.toHaveProperty('personalSegueGuidance');
     expect(JSON.stringify(capturedFragments.input.context)).not.toContain('secret-bundle');
     expect(JSON.stringify(capturedFragments.input.context)).not.toContain('sliceRefs');
     expect(JSON.stringify(capturedFragments.input.context)).not.toContain('citationLabel');
@@ -130,7 +128,7 @@ describe('DJAgent segue orchestration', () => {
 function createPersonalContextPayload(bundleId: string) {
   return {
     schemaVersion: 1,
-    generatedAt: '2026-07-08T10:00:00+08:00',
+    generatedAt: new Date().toISOString(),
     summary: '正在写代码，适合稳定、低干扰的音乐。',
     currentState: {
       activity: 'coding',

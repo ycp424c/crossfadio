@@ -14,7 +14,7 @@ describe('default web music discovery provider', () => {
     mocks.searchArtistsForStyle.mockReset();
   });
 
-  it('uses explicit style anchors and filters hard mismatched public artist hints', async () => {
+  it('uses explicit style anchors and keeps public artist hints for Policy evaluation', async () => {
     mocks.searchArtistsForStyle.mockResolvedValue([
       'Slipknot',
       'Madness',
@@ -37,7 +37,7 @@ describe('default web music discovery provider', () => {
 
     expect(mocks.searchArtistsForStyle).toHaveBeenCalledWith('cantopop');
     expect(hints).toHaveLength(3);
-    expect(hints.map((hint) => hint.name)).not.toContain('Slipknot');
+    expect(hints.map((hint) => hint.name)).toContain('Slipknot');
     expect(hints.every((hint) => hint.kind === 'artist')).toBe(true);
     expect(hints.every((hint) => hint.styles.includes('cantopop'))).toBe(true);
     expect(hints.every((hint) => hint.confidence >= 0.7)).toBe(true);

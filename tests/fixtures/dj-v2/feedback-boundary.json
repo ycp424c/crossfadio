@@ -1,0 +1,34 @@
+{
+  "schemaVersion": 2,
+  "episodes": [
+    {
+      "episodeId": "h_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "userId": "h_11111111111111111111111111111111",
+      "trackId": "h_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "primaryArtistId": "h_cccccccccccccccccccccccccccccccc",
+      "startedAt": 1700086400000,
+      "endedAt": 1700086450000,
+      "durationMs": 100000,
+      "positionMs": 49999,
+      "listenedMs": 49999,
+      "outcome": "skipped",
+      "protocolVersion": 2
+    },
+    {
+      "episodeId": "h_dddddddddddddddddddddddddddddddd",
+      "userId": "h_11111111111111111111111111111111",
+      "trackId": "h_eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "primaryArtistId": "h_ffffffffffffffffffffffffffffffff",
+      "startedAt": 1700086500000,
+      "endedAt": 1700086550000,
+      "durationMs": 100000,
+      "positionMs": 50000,
+      "listenedMs": 49999,
+      "outcome": "skipped",
+      "protocolVersion": 2
+    }
+  ],
+  "selectionRuns": [],
+  "retrievalAttempts": [],
+  "policyCases": []
+}

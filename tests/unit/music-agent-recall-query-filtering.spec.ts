@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
 import {
-  filterAvoidedQueries,
   filterExactSongSearchQueries,
   formatNoExecutableQueryReason,
   isExactSongSearchQuery,
@@ -9,23 +8,12 @@ import {
 } from '../../src/server/music-agent/recall-query-filtering';
 
 describe('MusicAgent recall query filtering', () => {
-  it('filters recently avoided artists before exact-track eligibility', () => {
-    expect(filterAvoidedQueries(
-      ['Love Story Taylor Swift', 'Fresh City Fresh Artist', '生涯规划 — 卫兰'],
-      new Set(['taylor swift', '卫兰'])
-    )).toEqual({
-      queries: ['Fresh City Fresh Artist'],
-      skipped: 2
-    });
-
+  it('keeps artist-bearing exact-track queries for phase-aware Policy evaluation', () => {
     expect(prepareRecallQueryEligibility(
-      [' Love   Story Taylor Swift ', '午后流行女声', 'Fresh City Fresh Artist'],
-      new Set(['taylor swift'])
+      [' Love   Story Taylor Swift ', '午后流行女声', 'Fresh City Fresh Artist']
     )).toEqual({
       sanitizedQueries: ['Love Story Taylor Swift', '午后流行女声', 'Fresh City Fresh Artist'],
-      artistFilteredQueries: ['午后流行女声', 'Fresh City Fresh Artist'],
-      exactTrackQueries: ['Fresh City Fresh Artist'],
-      skippedAvoidedQueries: 1,
+      exactTrackQueries: ['Love Story Taylor Swift', 'Fresh City Fresh Artist'],
       skippedSemanticQueries: 1
     });
   });
@@ -55,43 +43,26 @@ describe('MusicAgent recall query filtering', () => {
     expect(formatNoExecutableQueryReason({
       inputQueryCount: 0,
       sanitizedQueryCount: 0,
-      artistFilteredQueryCount: 0,
-      skippedAvoidedQueries: 0,
       skippedSemanticQueries: 0
     })).toBe('query plan empty');
     expect(formatNoExecutableQueryReason({
       inputQueryCount: 2,
       sanitizedQueryCount: 0,
-      artistFilteredQueryCount: 0,
-      skippedAvoidedQueries: 0,
       skippedSemanticQueries: 0
     })).toBe('queries sanitized to empty');
     expect(formatNoExecutableQueryReason({
-      inputQueryCount: 1,
-      sanitizedQueryCount: 1,
-      artistFilteredQueryCount: 0,
-      skippedAvoidedQueries: 1,
-      skippedSemanticQueries: 0
-    })).toBe('all queries skipped for recently repeated artists');
-    expect(formatNoExecutableQueryReason({
       inputQueryCount: 2,
       sanitizedQueryCount: 2,
-      artistFilteredQueryCount: 2,
-      skippedAvoidedQueries: 0,
       skippedSemanticQueries: 2
     })).toBe('all queries skipped as semantic-only');
     expect(formatNoExecutableQueryReason({
       inputQueryCount: 3,
       sanitizedQueryCount: 3,
-      artistFilteredQueryCount: 3,
-      skippedAvoidedQueries: 0,
       skippedSemanticQueries: 1
     })).toBe('1 semantic-only queries skipped');
     expect(formatNoExecutableQueryReason({
       inputQueryCount: 2,
       sanitizedQueryCount: 2,
-      artistFilteredQueryCount: 2,
-      skippedAvoidedQueries: 0,
       skippedSemanticQueries: 0
     })).toBe('no exact-track search queries available');
   });

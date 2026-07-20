@@ -1,14 +1,24 @@
 import { getLogger } from '../logger.js';
 import { deletePref, setPref } from '../store/prefs.js';
-import { swapNext, addToQueue, skipCurrent, banNcmId } from '../store/queue.js';
-import { getRecentPlays } from '../store/plays.js';
-import { resolveTrackQuery } from '../ncm/resolver.js';
+import { swapNext, addToQueue, skipCurrent, banNcmId, getQueue } from '../store/queue.js';
+import {
+  buildTrackExclusionAliases,
+  buildTrackExclusionKey,
+  createExplicitExclusion,
+  findMatchingExplicitExclusion,
+  type ExclusionSourceRef
+} from '../store/explicit-exclusions.js';
+import { createPendingExplicitTrackExclusion } from '../store/explicit-exclusion-resolutions.js';
+import { resolveTrackIdentity, resolveTrackQuery } from '../ncm/resolver.js';
 import type { NcmClient } from '../ncm/client.js';
+import { evaluatePlaybackEligibility } from '../music-agent/playback-eligibility.js';
 import type { Action } from './schema.js';
 
 export type ActionContext = {
   userId: string;
   ncmClient: NcmClient;
+  sourceRef?: ExclusionSourceRef;
+  logger?: Pick<ReturnType<typeof getLogger>, 'info' | 'warn'>;
   onQueueActiveDirectiveUpdated?: (directive: { text: string; expiresAt: string } | null) => void;
 };
 
@@ -24,35 +34,28 @@ export async function executeActions(
   actions: Action[],
   ctx: ActionContext
 ): Promise<ActionResult> {
-  const logger = getLogger();
+  const logger = ctx.logger ?? getLogger();
   let queueChanged = false;
+  const queuedIds = new Set(getQueue(ctx.userId).map((track) => track.ncmId));
 
-  const recentPlayIds = new Set(
-    getRecentPlays(ctx.userId, 50)
-      .map((p) => p.song_id)
-      .filter((id): id is string => id !== null)
-  );
-
-  for (const action of actions) {
+  for (const [actionIndex, action] of actions.entries()) {
     try {
       switch (action.type) {
         case 'swap_next': {
-          const resolved = await resolveTrackQuery(action.pick.query, ctx.ncmClient);
-          if (resolved && !recentPlayIds.has(resolved.ncmId)) {
+          const resolved = await resolveDirectTrack(action.pick.query, ctx, queuedIds);
+          if (resolved) {
             swapNext(ctx.userId, { ncmId: resolved.ncmId, name: resolved.name, artists: resolved.artists });
+            queuedIds.add(resolved.ncmId);
             queueChanged = true;
-          } else if (resolved) {
-            logger.info({ ncmId: resolved.ncmId, query: action.pick.query }, 'swap_next skipped: track recently played');
           }
           break;
         }
         case 'add_to_queue': {
-          const resolved = await resolveTrackQuery(action.pick.query, ctx.ncmClient);
-          if (resolved && !recentPlayIds.has(resolved.ncmId)) {
-            addToQueue(ctx.userId, { ncmId: resolved.ncmId, name: resolved.name, artists: resolved.artists }, 'end');
+          const resolved = await resolveDirectTrack(action.pick.query, ctx, queuedIds);
+          if (resolved) {
+            addToQueue(ctx.userId, { ncmId: resolved.ncmId, name: resolved.name, artists: resolved.artists }, action.position);
+            queuedIds.add(resolved.ncmId);
             queueChanged = true;
-          } else if (resolved) {
-            logger.info({ ncmId: resolved.ncmId, query: action.pick.query }, 'add_to_queue skipped: track recently played');
           }
           break;
         }
@@ -62,17 +65,64 @@ export async function executeActions(
           break;
         }
         case 'ban_artist':
-          // Artist bans are advisory for future picks.
-          setPref(ctx.userId, `ban.artist.${action.artist}`, true);
+          createExplicitExclusion({
+            userId: ctx.userId,
+            entityType: 'artist',
+            entityKey: action.artist,
+            displayName: action.artist,
+            sourceKind: 'agent_action',
+            sourceRef: actionSourceRef(ctx, actionIndex)
+          });
           break;
         case 'ban_track': {
-          const key = `${action.title}___${action.artist}`.toLowerCase();
-          const resolved = await resolveTrackQuery(`${action.title} ${action.artist}`, ctx.ncmClient);
+          const resolution = await resolveTrackIdentity({
+            title: action.title,
+            artist: action.artist
+          }, ctx.ncmClient);
+          const resolved = resolution.status === 'resolved' ? resolution.track : null;
+          const identity = {
+            entityKey: buildTrackExclusionKey({
+              provider: resolved ? 'ncm' : null,
+              providerId: resolved?.ncmId ?? null,
+              title: action.title,
+              primaryArtist: action.artist
+            }),
+            aliases: buildTrackExclusionAliases({
+              provider: resolved ? 'ncm' : null,
+              providerId: resolved?.ncmId ?? null,
+              title: action.title,
+              primaryArtist: action.artist
+            })
+          };
+          const sourceRef = actionSourceRef(ctx, actionIndex);
+          if (resolved) {
+            createExplicitExclusion({
+              userId: ctx.userId,
+              entityType: 'track',
+              ...identity,
+              provider: 'ncm',
+              providerId: resolved.ncmId,
+              displayName: action.title,
+              sourceKind: 'agent_action',
+              sourceRef
+            });
+          } else {
+            createPendingExplicitTrackExclusion({
+              userId: ctx.userId,
+              ...identity,
+              entityKey: `unresolved:${identity.entityKey}`,
+              displayName: action.title,
+              sourceKind: 'agent_action',
+              sourceRef,
+              queryTitle: action.title,
+              queryArtist: action.artist
+            });
+          }
           if (resolved) {
             banNcmId(ctx.userId, resolved.ncmId);
+            queuedIds.delete(resolved.ncmId);
             queueChanged = true;
           }
-          setPref(ctx.userId, `ban.track.${key}`, true);
           break;
         }
         case 'adjust_mood':
@@ -91,6 +141,49 @@ export async function executeActions(
   }
 
   return { queueChanged };
+}
+
+async function resolveDirectTrack(
+  query: string,
+  ctx: ActionContext,
+  queuedIds: ReadonlySet<string>
+): Promise<{ ncmId: string; name: string; artists: string[] } | null> {
+  const resolved = await resolveTrackQuery(query, ctx.ncmClient);
+  if (!resolved || queuedIds.has(resolved.ncmId)) return null;
+
+  const details = await ctx.ncmClient.getSongDetails([resolved.ncmId]).catch(() => []);
+  const detail = details.find((track) => String(track.id) === resolved.ncmId) ?? details[0];
+  const name = detail?.name?.trim() || resolved.name;
+  const artists = detail?.artists?.map((artist) => artist.trim()).filter(Boolean) ?? resolved.artists;
+  const artist = artists.join(' / ');
+  const eligibility = evaluatePlaybackEligibility({
+    id: resolved.ncmId,
+    name,
+    artist,
+    ...(detail?.qualitySignals ? { qualitySignals: detail.qualitySignals } : {})
+  });
+  if (!eligibility.eligible) {
+    ctx.logger?.info({ query, trackId: resolved.ncmId, reasons: eligibility.reasons },
+      'Direct track action blocked by playback eligibility');
+    return null;
+  }
+
+  const excluded = findMatchingExplicitExclusion(ctx.userId, {
+    id: resolved.ncmId,
+    name,
+    artists
+  });
+  if (excluded) {
+    ctx.logger?.info({ query, trackId: resolved.ncmId },
+      'Direct track action blocked by explicit exclusion');
+    return null;
+  }
+
+  return { ncmId: resolved.ncmId, name, artists };
+}
+
+function actionSourceRef(ctx: ActionContext, actionIndex: number): ExclusionSourceRef {
+  return ctx.sourceRef ?? { sourceId: `agent_action:${Date.now()}:${actionIndex}` };
 }
 
 function applySetPrefAction(
@@ -124,7 +217,7 @@ function normalizeQueueActiveDirective(value: unknown): { text: string; expiresA
 
   const ttlHours = typeof obj.ttlHours === 'number' && Number.isFinite(obj.ttlHours)
     ? Math.min(Math.max(obj.ttlHours, 0.25), 24)
-    : 6;
+    : 24;
   const expiresAt = typeof obj.expiresAt === 'string' && Number.isFinite(Date.parse(obj.expiresAt))
     ? obj.expiresAt
     : new Date(Date.now() + ttlHours * 60 * 60 * 1000).toISOString();

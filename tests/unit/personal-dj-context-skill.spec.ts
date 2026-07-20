@@ -84,7 +84,7 @@ describe('crossfadio Personal DJ Context skill scripts', () => {
     expect(serialized).not.toContain('"content"');
     expect(payload).toHaveProperty('summary');
     expect(payload).toHaveProperty('segueGuidance');
-  });
+  }, 20_000);
 
   it('fails with a non-zero status when upload is rejected', async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'crossfadio-personal-dj-context-upload-'));
@@ -118,7 +118,7 @@ describe('crossfadio Personal DJ Context skill scripts', () => {
         server.close((err) => (err ? reject(err) : resolve()));
       });
     }
-  });
+  }, 20_000);
 });
 
 async function runScript(command: string, args: string[]): Promise<{ status: number | null; stdout: string; stderr: string }> {

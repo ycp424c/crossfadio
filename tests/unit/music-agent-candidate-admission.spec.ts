@@ -4,7 +4,6 @@ import {
   countCandidateArtistKeys,
   emptyUpsertTracksResult,
   mergeUpsertTracksResult,
-  skippedRecallProblems,
   sourceScores,
   summarizeCandidateAdmission,
   upsertTracks,
@@ -12,6 +11,8 @@ import {
 } from '../../src/server/music-agent/candidate-admission';
 import { CandidatePool } from '../../src/server/music-agent/candidates';
 import type { MusicAgentContextSummary, MusicCandidate, MusicCandidateScores } from '../../src/server/music-agent/schema';
+import { createSelectionDecisionRecorder } from '../../src/server/music-agent/selection-policy/decision-trace';
+import { buildSelectionPolicyReplayCases } from '../../src/server/music-agent/selection-policy/replay-case';
 
 describe('MusicAgent candidate admission helpers', () => {
   it('converts NCM tracks into candidates and clones score and quality signal objects', () => {
@@ -69,8 +70,7 @@ describe('MusicAgent candidate admission helpers', () => {
       inserted: 1,
       mergedById: 1,
       rejectedByPool: 2,
-      rejectedReasons: { banned_id: 1, pool_full: 1 },
-      skippedAvoidedArtists: 1
+      rejectedReasons: { pool_full: 2 }
     });
     mergeUpsertTracksResult(result, {
       ...emptyUpsertTracksResult(),
@@ -79,8 +79,7 @@ describe('MusicAgent candidate admission helpers', () => {
       mergedByIdAndDedupe: 1,
       invalid: 1,
       rejectedByPool: 1,
-      rejectedReasons: { banned_id: 1 },
-      skippedArtistCap: 1
+      rejectedReasons: { pool_full: 1 }
     });
 
     expect(result).toMatchObject({
@@ -91,19 +90,16 @@ describe('MusicAgent candidate admission helpers', () => {
       mergedByIdAndDedupe: 1,
       invalid: 1,
       rejectedByPool: 3,
-      rejectedReasons: { banned_id: 2, pool_full: 1 },
-      skippedAvoidedArtists: 1,
-      skippedArtistCap: 1
+      rejectedReasons: { pool_full: 3 }
     });
     expect(summarizeCandidateAdmission(result)).toBe(
-      'candidate admission: inserted=1; mergedById=1; mergedByDedupe=1; mergedByIdAndDedupe=1; invalid=1; rejectedByPool=3 (banned_id=2, pool_full=1); skippedAvoidedArtists=1; skippedArtistCap=1'
+      'candidate admission: inserted=1; mergedById=1; mergedByDedupe=1; mergedByIdAndDedupe=1; invalid=1; rejectedByPool=3 (pool_full=3)'
     );
     expect(summarizeCandidateAdmission(emptyUpsertTracksResult())).toBeNull();
   });
 
   it('upserts tracks through the candidate pool and reports admission outcomes', () => {
-    const pool = new CandidatePool({ bannedIds: ['banned'], maxCandidates: 2 });
-    const artistCounts = new Map([['cap artist', 2]]);
+    const pool = new CandidatePool({ maxCandidates: 3 });
     const result = upsertTracks(pool, [
       { id: 'inserted', name: 'First Song', artists: ['Fresh Artist'] },
       { id: 'second', name: 'Second Song', artists: ['Second Artist'] },
@@ -114,28 +110,67 @@ describe('MusicAgent candidate admission helpers', () => {
       { id: 'overflow', name: 'Overflow Song', artists: ['Overflow Artist'] }
     ], 'search', {
       evidence: '网易云搜索',
-      scores: baseScores(),
-      avoidArtists: new Set(['avoid artist']),
-      artistCounts
+      scores: baseScores()
     });
 
     expect(result).toMatchObject({
-      added: 2,
-      inserted: 2,
+      added: 3,
+      inserted: 3,
       mergedById: 0,
       mergedByDedupe: 0,
       invalid: 1,
-      rejectedByPool: 2,
-      rejectedReasons: { banned_id: 1, pool_full: 1 },
-      skippedAvoidedArtists: 1,
-      skippedArtistCap: 1
+      rejectedByPool: 3,
+      rejectedReasons: { pool_full: 3 }
     });
-    expect(pool.count()).toBe(2);
+    expect(pool.count()).toBe(3);
+    expect(pool.get('avoided')?.artist).toBe('Avoid Artist');
     expect(pool.get('inserted')?.sources).toEqual(['search']);
     expect(pool.get('inserted')?.provenance).toEqual([{ kind: 'exact_recall', source: 'search' }]);
-    expect(artistCounts.get('fresh artist')).toBe(1);
-    expect(artistCounts.get('second artist')).toBe(1);
-    expect(artistCounts.get('cap artist')).toBe(2);
+  });
+
+  it('rejects hard-ineligible tracks before admission regardless of liked provenance', () => {
+    const pool = new CandidatePool();
+    const result = upsertTracks(pool, [{
+      id: 'unplayable-liked',
+      name: 'Unavailable Song',
+      artists: ['Valid Artist'],
+      qualitySignals: { copyright: 0 }
+    }], 'liked', {
+      evidence: 'liked recall',
+      scores: baseScores()
+    });
+
+    expect(result).toMatchObject({
+      added: 0,
+      ineligible: 1,
+      ineligibleReasons: { copyright_unavailable: 1 }
+    });
+    expect(pool.count()).toBe(0);
+  });
+
+  it('applies the configured explicit exclusion during admission and records the real decision', () => {
+    const recorder = createSelectionDecisionRecorder();
+    const pool = new CandidatePool({
+      selectionPolicyContext: {
+        mode: 'explicit_request',
+        explicitlyRequested: true,
+        explicitExclusions: { primaryArtists: new Set(['blocked artist']) }
+      },
+      selectionDecisionRecorder: recorder
+    });
+
+    const result = upsertTracks(pool, [{
+      id: 'blocked-track', name: 'Blocked Song', artists: ['Blocked Artist']
+    }], 'search', { evidence: 'chat recall', scores: baseScores() });
+
+    expect(result).toMatchObject({ added: 0, ineligible: 1 });
+    expect(pool.count()).toBe(0);
+    expect(recorder.snapshot()).toEqual([expect.objectContaining({
+      stage: 'admission',
+      action: 'rejected',
+      reasonCode: 'explicit_artist_exclusion',
+      candidateId: 'blocked-track'
+    })]);
   });
 
   it('reports candidate pool id and dedupe merges as accepted admissions', () => {
@@ -155,7 +190,6 @@ describe('MusicAgent candidate admission helpers', () => {
       inserted: 2,
       mergedById: 1,
       mergedByDedupe: 1,
-      skippedArtistCap: 0,
       rejectedByPool: 0
     });
     expect(pool.count()).toBe(2);
@@ -163,25 +197,23 @@ describe('MusicAgent candidate admission helpers', () => {
     expect(pool.get('dedupe-a')?.sources).toEqual(['playlist']);
   });
 
-  it('applies the per-artist cap to collaborator artist keys', () => {
+  it('keeps collaborator candidates for Batch diversity instead of silently capping Recall', () => {
     const pool = new CandidatePool();
     const result = upsertTracks(pool, [
       { id: 'collab', name: 'Collab Song', artists: ['Lead Artist', 'Guest Artist'] }
     ], 'style_expansion', {
       evidence: '风格扩展',
-      scores: baseScores(),
-      artistCounts: new Map([['guest artist', 2]])
+      scores: baseScores()
     });
 
     expect(result).toMatchObject({
-      added: 0,
-      inserted: 0,
-      skippedArtistCap: 1
+      added: 1,
+      inserted: 1
     });
-    expect(pool.count()).toBe(0);
+    expect(pool.count()).toBe(1);
   });
 
-  it('counts candidate artist keys and formats skipped recall problems', () => {
+  it('counts candidate artist keys for discovery-gap diagnostics', () => {
     expect(Object.fromEntries(countCandidateArtistKeys([
       candidate({ id: 'lead', artist: 'Lead Artist / Guest Artist' }),
       candidate({ id: 'guest', artist: 'Guest Artist' })
@@ -189,15 +221,6 @@ describe('MusicAgent candidate admission helpers', () => {
       'lead artist': 1,
       'guest artist': 2
     });
-
-    expect(skippedRecallProblems({
-      skippedAvoidedArtists: 2,
-      skippedArtistCap: 1
-    })).toEqual([
-      'skipped 2 tracks from recently repeated artists',
-      'skipped 1 tracks after per-artist recall cap'
-    ]);
-    expect(skippedRecallProblems(emptyUpsertTracksResult())).toEqual([]);
   });
 
   it('stops upserting after the max accepted admission count', () => {
@@ -217,7 +240,53 @@ describe('MusicAgent candidate admission helpers', () => {
     expect(pool.get('two')).toBeUndefined();
   });
 
-  it('can adjust scores per admitted track without mutating the base score object', () => {
+  it('records malformed NCM identities as unique admission-rejected replay cases', () => {
+    const context = { mode: 'autonomous' as const, explicitlyRequested: false };
+    const recorder = createSelectionDecisionRecorder();
+    const pool = new CandidatePool({
+      selectionPolicyContext: context,
+      selectionDecisionRecorder: recorder
+    });
+
+    const result = upsertTracks(pool, [
+      { id: 'malformed', name: 'Missing Artist', artists: [] },
+      { id: 'malformed', name: '', artists: ['Missing Name Artist'] }
+    ], 'search', {
+      evidence: 'search recall',
+      scores: baseScores()
+    });
+    const replayCandidates = pool.replayCandidates();
+    const replayCases = buildSelectionPolicyReplayCases({
+      candidates: replayCandidates,
+      context,
+      batchLimit: 1
+    });
+
+    expect(result).toMatchObject({ invalid: 2, added: 0 });
+    expect(replayCandidates.map((candidate) => candidate.id)).toHaveLength(2);
+    expect(new Set(replayCandidates.map((candidate) => candidate.id)).size).toBe(2);
+    expect(replayCases).toHaveLength(2);
+    expect(replayCases.map((item) => item.expected)).toEqual([
+      expect.objectContaining({
+        admission: { action: 'reject', reasonCodes: ['invalid_track_identity'] },
+        recall: null,
+        ranking: null,
+        batch: null,
+        final: null,
+        finalContext: null
+      }),
+      expect.objectContaining({
+        admission: { action: 'reject', reasonCodes: ['invalid_track_identity'] },
+        final: null,
+        finalContext: null
+      })
+    ]);
+    expect(recorder.snapshot().filter((decision) => (
+      decision.stage === 'admission' && decision.reasonCode === 'invalid_track_identity'
+    ))).toHaveLength(2);
+  });
+
+  it('can adjust positive scores per admitted track without mutating the base score object', () => {
     const pool = new CandidatePool();
     const base = baseScores();
     const result = upsertTracks(pool, [
@@ -227,14 +296,14 @@ describe('MusicAgent candidate admission helpers', () => {
       evidence: '网易云搜索',
       scores: base,
       scoreForTrack: (track) => track.id === 'liked-artist'
-        ? { ...base, recentPenalty: base.recentPenalty + 0.04 }
+        ? { ...base, contextFit: base.contextFit + 0.04 }
         : base
     });
 
     expect(result).toMatchObject({ added: 2, inserted: 2 });
-    expect(pool.get('liked-artist')?.scores.recentPenalty).toBe(0.04);
-    expect(pool.get('fresh')?.scores.recentPenalty).toBe(0);
-    expect(base.recentPenalty).toBe(0);
+    expect(pool.get('liked-artist')?.scores.contextFit).toBeCloseTo(base.contextFit + 0.04, 5);
+    expect(pool.get('fresh')?.scores.contextFit).toBe(base.contextFit);
+    expect(base.contextFit).toBe(0.5);
   });
 
   it('keeps source score mapping and external quality eligibility stable', () => {
@@ -275,8 +344,6 @@ function baseScores(): MusicCandidateScores {
     timeFit: 0.5,
     contextFit: 0.5,
     novelty: 0.5,
-    recentPenalty: 0,
-    skipPenalty: 0,
     sourceConfidence: 0.5
   };
 }

@@ -1,33 +1,48 @@
 import type { Request, Response } from 'express';
 import { z } from 'zod';
 import type { NcmClient } from '../../ncm/client.js';
-import { setQueueState } from '../../store/queue.js';
-import { recordTemporaryQueueBans } from '../../store/temporary-bans.js';
+import { broadcastToUser } from '../broadcast.js';
+import {
+  compareAndSetQueueStateWithTemporaryBans
+} from '../../store/queue.js';
 import { likedQueueResponseSchema } from '../../../shared/schema.js';
+import {
+  MAX_QUEUE_TRACK_ARTIST_LENGTH,
+  MAX_QUEUE_TRACK_ARTISTS,
+  MAX_QUEUE_TRACK_COVER_URL_LENGTH,
+  MAX_QUEUE_TRACK_ID_LENGTH,
+  MAX_QUEUE_TRACK_NAME_LENGTH,
+  MAX_QUEUE_TRACKS,
+  MAX_TEMPORARY_QUEUE_BANS_PER_MUTATION
+} from '../../../shared/queue.js';
 
 type AuthedRequest = Request & { userId: string; ncmClient: NcmClient };
 
 const queueStateBodySchema = z.object({
   queue: z.array(
     z.union([
-      z.string().min(1),
+      z.string().min(1).max(MAX_QUEUE_TRACK_ID_LENGTH),
       z.object({
-        id: z.string().min(1),
-        name: z.string().optional(),
-        artists: z.array(z.string()).optional(),
+        id: z.string().min(1).max(MAX_QUEUE_TRACK_ID_LENGTH),
+        name: z.string().max(MAX_QUEUE_TRACK_NAME_LENGTH).optional(),
+        artists: z.array(z.string().min(1).max(MAX_QUEUE_TRACK_ARTIST_LENGTH))
+          .max(MAX_QUEUE_TRACK_ARTISTS).optional(),
         durationMs: z.number().int().nonnegative().optional(),
-        coverImgUrl: z.string().nullable().optional()
+        coverImgUrl: z.string().max(MAX_QUEUE_TRACK_COVER_URL_LENGTH).nullable().optional()
       })
     ])
-  ),
+  ).max(MAX_QUEUE_TRACKS),
   currentIndex: z.number().int().nonnegative().default(0),
+  revision: z.number().int().nonnegative(),
+  mutationId: z.string().uuid(),
   temporaryBanTracks: z.array(
     z.object({
-      id: z.string().min(1),
-      name: z.string().optional(),
-      artists: z.array(z.string()).optional()
+      id: z.string().min(1).max(MAX_QUEUE_TRACK_ID_LENGTH),
+      name: z.string().max(MAX_QUEUE_TRACK_NAME_LENGTH).optional(),
+      artists: z.array(z.string().min(1).max(MAX_QUEUE_TRACK_ARTIST_LENGTH))
+        .max(MAX_QUEUE_TRACK_ARTISTS).optional()
     })
-  ).optional()
+  ).max(MAX_TEMPORARY_QUEUE_BANS_PER_MUTATION).optional()
 });
 
 const likeBodySchema = z.object({
@@ -48,13 +63,7 @@ export function createSetQueueStateHandler() {
       return;
     }
 
-    if (parsed.data.temporaryBanTracks && parsed.data.temporaryBanTracks.length > 0) {
-      recordTemporaryQueueBans(userId, parsed.data.temporaryBanTracks);
-    }
-
-    setQueueState(
-      userId,
-      parsed.data.queue.map((track) =>
+    const tracks = parsed.data.queue.map((track) =>
         typeof track === 'string'
           ? { ncmId: track }
           : {
@@ -64,10 +73,55 @@ export function createSetQueueStateHandler() {
               durationMs: track.durationMs,
               coverImgUrl: track.coverImgUrl
             }
-      ),
-      parsed.data.currentIndex
-    );
-    res.json({ ok: true });
+      );
+    const update = compareAndSetQueueStateWithTemporaryBans({
+      userId,
+      mutationId: parsed.data.mutationId,
+      expectedRevision: parsed.data.revision,
+      tracks,
+      nextCurrentIndex: parsed.data.currentIndex,
+      temporaryBanTracks: parsed.data.temporaryBanTracks
+    });
+    if (!update.applied) {
+      res.status(409).json({
+        ok: false,
+        error: update.reason,
+        queue: update.snapshot.queue.map((track) => ({
+          id: track.ncmId,
+          name: track.name ?? `Track ${track.ncmId}`,
+          artists: track.artists ?? [],
+          durationMs: track.durationMs ?? 0,
+          coverImgUrl: track.coverImgUrl ?? null
+        })),
+        currentIndex: update.snapshot.currentIndex,
+        revision: update.snapshot.revision
+      });
+      return;
+    }
+    const authoritativePayload = {
+      ok: true,
+      queue: update.snapshot.queue.map(toQueueTrackDto),
+      currentIndex: update.snapshot.currentIndex,
+      revision: update.snapshot.revision
+    };
+    res.json(authoritativePayload);
+    broadcastToUser(userId, { type: 'queue-updated', ...authoritativePayload });
+  };
+}
+
+function toQueueTrackDto(track: {
+  ncmId: string;
+  name?: string;
+  artists?: string[];
+  durationMs?: number;
+  coverImgUrl?: string | null;
+}) {
+  return {
+    id: track.ncmId,
+    name: track.name ?? `Track ${track.ncmId}`,
+    artists: track.artists ?? [],
+    durationMs: track.durationMs ?? 0,
+    coverImgUrl: track.coverImgUrl ?? null
   };
 }
 

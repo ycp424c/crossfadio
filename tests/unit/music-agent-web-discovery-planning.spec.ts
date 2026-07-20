@@ -112,7 +112,6 @@ function plan(overrides: Partial<QueryPlan>): QueryPlan {
     explorationQueries: [],
     styleHints: [],
     listeningConstraints: [],
-    avoidArtists: [],
     negativeTerms: [],
     rationale: '',
     ...overrides

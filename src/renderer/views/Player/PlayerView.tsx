@@ -16,7 +16,6 @@ import {
   ScanSearch,
   Settings2,
   ShieldCheck,
-  SlidersHorizontal,
   Sparkles,
   Volume2,
   X
@@ -29,9 +28,13 @@ import {
   getNcmSession,
   getNextTrack,
   getNowPlaying,
+  getSelectionJourneyHistory,
+  patchListeningEpisode,
+  patchListeningEpisodeKeepalive,
   getPlayerContext,
   getSettings,
   logoutNcm,
+  putListeningEpisode,
   getStoredToken,
   saveSettings,
   saveQueueState,
@@ -47,6 +50,7 @@ import {
 import { NowPlayingHero } from '@renderer/components/player/NowPlayingHero';
 import { PlaybackTimeline } from '@renderer/components/player/PlaybackTimeline';
 import { QueuePanel } from '@renderer/components/player/QueuePanel';
+import { SelectionJourneyCard } from '@renderer/components/player/SelectionJourneyCard';
 import { TransportControls } from '@renderer/components/player/TransportControls';
 import { initSseEvents, addSseListener, closeSseEvents, streamSegue } from '@renderer/sse/client';
 import { useMediaQuery } from '@renderer/lib-hooks';
@@ -56,12 +60,16 @@ import {
   shouldTriggerDjRefill
 } from '@renderer/playerDjRefill';
 import {
-  buildDjPickDebugLog,
-  formatDjPickElapsed,
-  mergeDjPickDoneLog,
-  type DjPickLog
-} from '@renderer/playerDjPickLog';
-import { consumePlayerPickNextStream } from '@renderer/playerDjPickNextStream';
+  consumePlayerPickNextStream,
+  createPlayerAccountScope,
+  type PlayerAccountCapture
+} from '@renderer/playerDjPickNextStream';
+import {
+  applyPlayerSelectionJourneySnapshot,
+  mergePlayerSelectionJourneyHistoryRestore,
+  restorePlayerSelectionJourneyRecoverySnapshot,
+  type PlayerSelectionJourneyState
+} from '@renderer/playerSelectionJourney';
 import {
   prepareSegueAudioRoute,
   settleSegueAudioPlay,
@@ -87,23 +95,43 @@ import {
   type WakeLockStatus
 } from '@renderer/playbackSession';
 import {
+  createPlayerListeningEpisode,
+  getOrCreatePlayerInstanceId,
+  listeningUserIdFromToken,
+  type PlayerFinalizationStorage,
+  type PlayerListeningEpisode,
+  type PlayerListeningOutcome,
+  type PlayerListeningPosition
+} from '@renderer/playerListeningEpisode';
+import {
   parsePlayerPersistentSseEvent
 } from '@renderer/playerSseEvents';
 import {
   advanceQueueAfterEnded,
-  appendQueueTrackIfMissing,
   deleteQueueTrackAt,
   getCurrentQueueTrack,
   getCurrentQueueTrackId,
+  getQueueAutoplayTargetAfterRebase,
+  getQueueAutoplayTargetForTransition,
   getQueueTrackIds,
+  reconcileAcknowledgedQueueMutation,
+  replayQueueOperations,
+  replayQueueTrackRemovals,
+  replayUncommittedQueueOperations,
   selectQueueTrackAt,
+  shouldApplyAuthoritativeQueueRevision,
+  shouldConsumeQueueAutoplayTarget,
   skipCurrentQueueTrack,
-  type PlayerQueueSnapshot
+  type PlayerAuthoritativeQueueSnapshot,
+  type PlayerQueueOperation,
+  type PlayerQueueSnapshot,
+  type SequencedPlayerQueueOperation
 } from '@renderer/playerQueueRuntime';
 import { persistQueueSnapshot, restorePersistedQueueSnapshot } from '@renderer/playerQueueCache';
 import { mergeQueueTracksById } from '@renderer/playerTemporaryBans';
 import { AUTO_FILL_LOW_WATER_MARK, type DiscoveryMode } from '@shared/dj';
 import type { NcmQrStatus, NextTrackResponse, NowPlayingResponse, QueueTrackDto } from '@shared/schema';
+import type { SelectionJourneySnapshot } from '@shared/selection';
 import appMark from '@renderer/assets/image2/crossfadio-mark.svg';
 
 
@@ -113,6 +141,7 @@ type NcmSessionState = {
 };
 
 type PlayerViewProps = {
+  onAuthTokenChange?: (token: string | null) => void;
   onNavigate?: (tab: 'settings') => void;
 };
 
@@ -125,6 +154,8 @@ const SEGUE_RETRY_COOLDOWN_MS = 6000; // min ms between segue trigger retries wi
 const TRACK_MEDIA_ERROR_MAX_RETRIES = 3;
 const TRACK_MEDIA_RETRY_STABLE_PLAYBACK_SEC = 10;
 const QR_LOGIN_POLL_INTERVAL_MS = 2000;
+const QUEUE_SAVE_RETRY_DELAY_MS = 2000;
+const SELECTION_JOURNEY_EXPANDED_KEY = 'crossfadio_selection_journey_expanded';
 
 type ModeVisualConfig = {
   page: string;
@@ -157,6 +188,20 @@ function newClientRequestId(): string {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
+function resolvePlayerInstanceId(): string {
+  if (typeof sessionStorage === 'undefined') return newClientRequestId();
+  try {
+    return getOrCreatePlayerInstanceId(sessionStorage, newClientRequestId);
+  } catch {
+    return newClientRequestId();
+  }
+}
+
+function resolvePlayerFinalizationStorage(): PlayerFinalizationStorage | undefined {
+  if (typeof localStorage === 'undefined') return undefined;
+  return localStorage;
+}
+
 function isActiveSegueMessage(
   msg: Record<string, unknown>,
   activeId: string | null
@@ -181,7 +226,7 @@ type PendingSegueAudio = {
   nativeOnly: boolean;
 };
 
-export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
+export function PlayerView({ onAuthTokenChange, onNavigate }: PlayerViewProps): JSX.Element {
   const [queue, setQueue] = useState<QueueTrackDto[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [nowPlaying, setNowPlaying] = useState<NowPlayingResponse | null>(null);
@@ -196,8 +241,23 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
   const [segueStatusText, setSegueStatusText] = useState('');
   const [segueScriptText, setSegueScriptText] = useState('');
   const [segueScriptExpanded, setSegueScriptExpanded] = useState(false);
-  const [djPickLog, setDjPickLog] = useState<DjPickLog | null>(null);
-  const [djPickLogExpanded, setDjPickLogExpanded] = useState(false);
+  const [selectionJourneyState, setSelectionJourneyState] = useState<PlayerSelectionJourneyState>({
+    journeys: [],
+    selectedRunId: null
+  });
+  const selectionJourneys = selectionJourneyState.journeys;
+  const selectedSelectionJourneyRunId = selectionJourneyState.selectedRunId;
+  const selectionJourney = useMemo(() => (
+    selectionJourneys.find((journey) => journey.runId === selectedSelectionJourneyRunId)
+      ?? selectionJourneys[0]
+      ?? null
+  ), [selectedSelectionJourneyRunId, selectionJourneys]);
+  const selectionJourneyPosition = selectionJourney
+    ? selectionJourneys.findIndex((journey) => journey.runId === selectionJourney.runId)
+    : -1;
+  const [selectionJourneyExpanded, setSelectionJourneyExpanded] = useState(() => {
+    try { return localStorage.getItem(SELECTION_JOURNEY_EXPANDED_KEY) !== 'false'; } catch { return true; }
+  });
   const isDesktop = useMediaQuery('(min-width: 768px)');
   const [statusExpanded, setStatusExpanded] = useState(isDesktop);
   useEffect(() => { setStatusExpanded(isDesktop); }, [isDesktop]);
@@ -216,6 +276,11 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
   const [userTaste, setUserTaste] = useState('');
   const [tasteExpanded, setTasteExpanded] = useState(false);
   const [historyVersion, setHistoryVersion] = useState(0);
+  const [queueSaveRetryNonce, setQueueSaveRetryNonce] = useState(0);
+
+  useEffect(() => {
+    onAuthTokenChange?.(sseToken);
+  }, [onAuthTokenChange, sseToken]);
 
   // Body scroll lock when mobile NCM sheet is open
   useEffect(() => {
@@ -241,7 +306,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
   const activeSegueAudiosRef = useRef<Set<HTMLAudioElement>>(new Set());
   const segueVoiceGainControllerRef = useRef<SegueVoiceGainController | null>(null);
   const playerMountedRef = useRef(false);
-  const shouldAutoplayNextRef = useRef(false);
+  const queueAutoplayTargetRef = useRef<string | null>(null);
   const playbackHistoryRef = useRef(createPlaybackHistory());
   const prefetchTriggeredRef = useRef(false);
   const segueClientRequestIdRef = useRef<string | null>(null);
@@ -251,21 +316,129 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
   const djPickNextLastCallRef = useRef<number>(0);
   const djPickNextBackoffUntilRef = useRef<number>(0);
   const djPickNextInFlightRef = useRef(false);
+  const playerAccountScopeRef = useRef<ReturnType<typeof createPlayerAccountScope> | null>(null);
   const queueRef = useRef<QueueTrackDto[]>([]);
   const currentIndexRef = useRef(0);
+  const queueRevisionRef = useRef(0);
+  const queueAuthoritativeSnapshotRef = useRef<PlayerAuthoritativeQueueSnapshot>({
+    queue: [],
+    currentIndex: 0,
+    revision: 0
+  });
+  const queueRemoteEpochRef = useRef(0);
+  const queueSaveChainRef = useRef<Promise<void>>(Promise.resolve());
+  const queueSaveRetryTimerRef = useRef<number | null>(null);
   const applyingRemoteQueueRef = useRef(false);
   const skipNextQueuePersistRef = useRef(true);
+  const pendingQueueOperationsRef = useRef<PlayerQueueOperation[]>([]);
+  const queueOperationSequenceRef = useRef(0);
+  const uncommittedQueueOperationsRef = useRef<SequencedPlayerQueueOperation[]>([]);
   const pendingTemporaryBanTracksRef = useRef<QueueTrackDto[]>([]);
+  const selectionJourneyHistoryGenerationRef = useRef(0);
+  const nowPlayingRequestSequenceRef = useRef(0);
+  const nextTrackRequestSequenceRef = useRef(0);
+  const geolocationRequestSequenceRef = useRef(0);
+  const playerContextRequestSequenceRef = useRef(0);
   const trackMediaRetryAttemptsRef = useRef(0);
   const trackMediaRetryWindowStartedAtSecRef = useRef<number | null>(null);
   const trackMediaRetryRequestIdRef = useRef(0);
   const pendingTrackMediaRetryRef = useRef<PendingTrackMediaRetry | null>(null);
   const trackMediaManualResumeRequiredRef = useRef(false);
   const playbackSessionRef = useRef<PlaybackSession | null>(null);
+  const playerInstanceIdRef = useRef<string | null>(null);
+  const listeningEpisodeRef = useRef<PlayerListeningEpisode | null>(null);
+  const listeningEpisodeUserIdRef = useRef<string | null>(null);
+  const listeningEpisodeTokenRef = useRef<string | null>(null);
+  const listeningTrackIdRef = useRef<string | null>(null);
   const requestTrackPlayRef = useRef<() => Promise<void>>(async () => {});
   const handlePrevRef = useRef<() => void>(() => {});
   const handleSkipRef = useRef<() => void>(() => {});
   const wakeLockNoticeShownRef = useRef(false);
+
+  if (!playerAccountScopeRef.current) {
+    playerAccountScopeRef.current = createPlayerAccountScope(sseToken);
+  } else if (playerAccountScopeRef.current.updateToken(sseToken)) {
+    djPickNextInFlightRef.current = false;
+    djPickNextLastCallRef.current = 0;
+    djPickNextBackoffUntilRef.current = 0;
+    pendingQueueOperationsRef.current = [];
+    uncommittedQueueOperationsRef.current = [];
+    pendingTemporaryBanTracksRef.current = [];
+    queueOperationSequenceRef.current = 0;
+    queueSaveChainRef.current = Promise.resolve();
+    applyingRemoteQueueRef.current = false;
+    skipNextQueuePersistRef.current = true;
+    queueAutoplayTargetRef.current = null;
+    queueRevisionRef.current = 0;
+    queueAuthoritativeSnapshotRef.current = { queue: [], currentIndex: 0, revision: 0 };
+    queueRemoteEpochRef.current += 1;
+    nowPlayingRequestSequenceRef.current += 1;
+    nextTrackRequestSequenceRef.current += 1;
+    geolocationRequestSequenceRef.current += 1;
+    playerContextRequestSequenceRef.current += 1;
+  }
+
+  if (!playerInstanceIdRef.current) {
+    playerInstanceIdRef.current = resolvePlayerInstanceId();
+  }
+  const listeningUserId = listeningUserIdFromToken(sseToken);
+  useEffect(() => {
+    if (
+      listeningEpisodeUserIdRef.current === listeningUserId &&
+      listeningEpisodeTokenRef.current === sseToken
+    ) return;
+    const previousEpisode = listeningEpisodeRef.current;
+    previousEpisode?.finalize('interrupted', currentListeningPosition());
+    listeningEpisodeRef.current = null;
+    listeningEpisodeUserIdRef.current = null;
+    listeningEpisodeTokenRef.current = null;
+    listeningTrackIdRef.current = null;
+    const listeningAuthToken = sseToken;
+    if (!listeningUserId || !listeningAuthToken) return;
+
+    const nextEpisode = createPlayerListeningEpisode({
+      userId: listeningUserId,
+      playerInstanceId: playerInstanceIdRef.current!,
+      createClientEpisodeId: newClientRequestId,
+      now: () => performance.now(),
+      finalizationStorage: resolvePlayerFinalizationStorage(),
+      transport: {
+        create: (clientEpisodeId, input, options) =>
+          putListeningEpisode(clientEpisodeId, input, { ...options, authToken: listeningAuthToken }),
+        checkpoint: (clientEpisodeId, input, options) =>
+          patchListeningEpisode(clientEpisodeId, input, { ...options, authToken: listeningAuthToken }),
+        checkpointKeepalive: (clientEpisodeId, input) =>
+          patchListeningEpisodeKeepalive(clientEpisodeId, input, { authToken: listeningAuthToken }),
+        finalize: (clientEpisodeId, input, options) =>
+          patchListeningEpisode(clientEpisodeId, input, { ...options, authToken: listeningAuthToken })
+      }
+    });
+    listeningEpisodeRef.current = nextEpisode;
+    listeningEpisodeUserIdRef.current = listeningUserId;
+    listeningEpisodeTokenRef.current = listeningAuthToken;
+
+    const currentTrackId = currentTrackIdRef.current;
+    const currentTrack = queueRef.current[currentIndexRef.current];
+    if (!currentTrackId) return;
+    nextEpisode.prepare({
+      deckId: 'main',
+      track: {
+        id: currentTrackId,
+        name: currentTrack?.name?.trim() || currentTrackId,
+        artists: currentTrack?.artists?.filter((artist) => artist.trim().length > 0) ?? []
+      }
+    });
+    listeningTrackIdRef.current = currentTrackId;
+    if (audioRef.current && !audioRef.current.paused) {
+      nextEpisode.playing(currentListeningPosition());
+    }
+  }, [listeningUserId, sseToken]);
+
+  useEffect(() => {
+    const retry = () => listeningEpisodeRef.current?.retryPendingFinalizations();
+    window.addEventListener('online', retry);
+    return () => window.removeEventListener('online', retry);
+  }, []);
 
   useEffect(() => {
     if (!showNcmDropdown) return;
@@ -295,13 +468,50 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
     setCurrentIndex(snapshot.currentIndex);
   }, []);
 
-  const appendRemoteQueueTrack = useCallback((track: QueueTrackDto) => {
-    const nextQueue = appendQueueTrackIfMissing(queueRef.current, track);
-    if (nextQueue === queueRef.current) {
-      return;
+  const restoreAutoplayAfterQueueRebase = useCallback((
+    snapshot: PlayerQueueSnapshot,
+    operations: readonly PlayerQueueOperation[]
+  ): void => {
+    const targetTrackId = getQueueAutoplayTargetAfterRebase(
+      snapshot,
+      operations,
+      currentTrackIdRef.current
+    );
+    if (targetTrackId) {
+      queueAutoplayTargetRef.current = targetTrackId;
     }
-    applyQueueSnapshot({ queue: nextQueue, currentIndex: currentIndexRef.current });
-  }, [applyQueueSnapshot]);
+  }, []);
+
+  const retryPendingQueueSave = useCallback((): void => {
+    if (
+      pendingQueueOperationsRef.current.length === 0
+      && pendingTemporaryBanTracksRef.current.length === 0
+    ) return;
+    if (queueSaveRetryTimerRef.current !== null) {
+      window.clearTimeout(queueSaveRetryTimerRef.current);
+      queueSaveRetryTimerRef.current = null;
+    }
+    setQueueSaveRetryNonce((nonce) => nonce + 1);
+  }, []);
+
+  const scheduleQueueSaveRetry = useCallback((): void => {
+    if (queueSaveRetryTimerRef.current !== null) return;
+    queueSaveRetryTimerRef.current = window.setTimeout(() => {
+      queueSaveRetryTimerRef.current = null;
+      retryPendingQueueSave();
+    }, QUEUE_SAVE_RETRY_DELAY_MS);
+  }, [retryPendingQueueSave]);
+
+  useEffect(() => {
+    window.addEventListener('online', retryPendingQueueSave);
+    return () => {
+      window.removeEventListener('online', retryPendingQueueSave);
+      if (queueSaveRetryTimerRef.current !== null) {
+        window.clearTimeout(queueSaveRetryTimerRef.current);
+        queueSaveRetryTimerRef.current = null;
+      }
+    };
+  }, [retryPendingQueueSave]);
 
   const restoreTrackVolume = useCallback(() => {
     if (audioRef.current) {
@@ -410,6 +620,15 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
     segueAudioRef.current = null;
     restoreTrackVolume();
   }, [restoreTrackVolume]);
+
+  useEffect(() => {
+    segueClientRequestIdRef.current = null;
+    segueExpectedFromTrackIdRef.current = null;
+    segueSatisfiedForTrackIdRef.current = null;
+    setSegueStatusText('');
+    setSegueScriptText('');
+    disposeAllSegueAudio();
+  }, [disposeAllSegueAudio, sseToken]);
 
   const resolveSegueDurationSec = useCallback((pending: PendingSegueAudio): number => {
     if (Number.isFinite(pending.actualDurationSec) && (pending.actualDurationSec ?? 0) > 0) {
@@ -535,17 +754,33 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
 
   useEffect(() => {
     void refreshSession();
+  }, []);
 
-    const restoredQueue = restorePersistedQueueSnapshot();
+  useEffect(() => {
+    const accountCapture = playerAccountScopeRef.current!.capture();
+    skipNextQueuePersistRef.current = true;
+    playbackHistoryRef.current.clear();
+    setHistoryVersion((version) => version + 1);
+    queueAutoplayTargetRef.current = null;
+    setNowPlaying(null);
+    setNextTrack(null);
+
+    if (!listeningUserId || !accountCapture.token) {
+      applyQueueSnapshot({ queue: [], currentIndex: 0 });
+      return;
+    }
+
+    const restoredQueue = restorePersistedQueueSnapshot(listeningUserId);
     if (restoredQueue) {
       applyQueueSnapshot(restoredQueue);
       setTrackStatusText('已恢复上次播放列表');
       setDjStatusText('播放列表已从本机恢复');
-      void refreshLikedTrackIds();
+      void refreshLikedTrackIds(accountCapture);
     } else {
-      void loadLikedQueue();
+      applyQueueSnapshot({ queue: [], currentIndex: 0 });
+      void loadLikedQueue(accountCapture);
     }
-  }, []);
+  }, [applyQueueSnapshot, listeningUserId, sseToken]);
 
   useEffect(() => {
     if (!sseToken) {
@@ -557,10 +792,16 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
       return;
     }
 
-    void refreshLikedTrackIds();
-    void Promise.all([getPlayerContext(), getSettings()])
+    const accountCapture = playerAccountScopeRef.current!.capture();
+    const requestSequence = ++playerContextRequestSequenceRef.current;
+    void refreshLikedTrackIds(accountCapture);
+    void Promise.all([
+      getPlayerContext({ authToken: accountCapture.token ?? undefined }),
+      getSettings()
+    ])
       .then(([ctx, settings]) => {
-        if (ctx.ok) {
+        if (!accountCapture.isActive()) return;
+        if (playerContextRequestSequenceRef.current === requestSequence && ctx.ok) {
           setDailyTheme(ctx.theme);
           setWeatherContext(ctx.weather);
           console.info('[Crossfadio] player context weather', { weather: ctx.weather });
@@ -577,6 +818,10 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
     if (!sseToken) {
       return;
     }
+    const accountCapture = playerAccountScopeRef.current!.capture();
+    const requestSequence = ++geolocationRequestSequenceRef.current;
+    const accountToken = accountCapture.token;
+    if (!accountToken || !accountCapture.isActive()) return;
     if (!('geolocation' in navigator)) {
       setGeolocationIssue({ kind: 'other', message: '当前浏览器不支持定位，天气会使用 auto。' });
       console.warn('[Crossfadio] weather geolocation unavailable', {
@@ -592,20 +837,30 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
     });
     navigator.geolocation.getCurrentPosition(
       (pos) => {
+        if (!accountCapture.isActive()
+          || geolocationRequestSequenceRef.current !== requestSequence) return;
         const lat = pos.coords.latitude.toFixed(4);
         const lon = pos.coords.longitude.toFixed(4);
         setGeolocationIssue(null);
         console.info('[Crossfadio] weather geolocation resolved', { lat, lon });
-        void updateLocation(pos.coords.latitude, pos.coords.longitude)
+        void updateLocation(pos.coords.latitude, pos.coords.longitude, {
+          authToken: accountToken
+        })
           .then(() => {
+            if (!accountCapture.isActive()
+              || geolocationRequestSequenceRef.current !== requestSequence) return;
             console.info('[Crossfadio] weather location updated', { lat, lon });
-            void refreshPlayerContext().catch(() => {});
+            void refreshPlayerContext(accountCapture).catch(() => {});
           })
           .catch((err) => {
+            if (!accountCapture.isActive()
+              || geolocationRequestSequenceRef.current !== requestSequence) return;
             console.warn('[Crossfadio] weather location update failed', { err });
           });
       },
       (err) => {
+        if (!accountCapture.isActive()
+          || geolocationRequestSequenceRef.current !== requestSequence) return;
         const insecureOriginBlocked =
           err.code === 1 && (!window.isSecureContext || err.message.includes('Only secure origins are allowed'));
         const origin = window.location.origin;
@@ -643,44 +898,242 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
     return () => window.clearTimeout(timer);
   }, [geolocationSetupNotice]);
 
+  const applySelectionJourney = useCallback((snapshot: SelectionJourneySnapshot): void => {
+    setSelectionJourneyState((current) => applyPlayerSelectionJourneySnapshot(current, snapshot));
+  }, []);
+
+  const toggleSelectionJourney = useCallback((): void => {
+    setSelectionJourneyExpanded((current) => {
+      const next = !current;
+      try { localStorage.setItem(SELECTION_JOURNEY_EXPANDED_KEY, String(next)); } catch { /* best effort */ }
+      return next;
+    });
+  }, []);
+
+  useEffect(() => {
+    const generation = ++selectionJourneyHistoryGenerationRef.current;
+    let cancelled = false;
+    setSelectionJourneyState({ journeys: [], selectedRunId: null });
+    if (sseToken) {
+      void getSelectionJourneyHistory(20, { authToken: sseToken })
+        .then((journeys) => {
+          if (cancelled) return;
+          if (selectionJourneyHistoryGenerationRef.current !== generation) return;
+          setSelectionJourneyState((current) => (
+            mergePlayerSelectionJourneyHistoryRestore(current, journeys)
+          ));
+        })
+        .catch(() => {
+          // History restore is best effort; live SSE remains authoritative.
+        });
+    }
+    return () => {
+      cancelled = true;
+      if (selectionJourneyHistoryGenerationRef.current === generation) {
+        selectionJourneyHistoryGenerationRef.current += 1;
+      }
+    };
+  }, [applySelectionJourney, sseToken]);
+
   useEffect(() => {
     if (!sseToken) return;
+    const accountCapture = playerAccountScopeRef.current!.capture();
     initSseEvents(sseToken);
     const unsub = addSseListener((event, data) => {
+      if (!accountCapture.isActive()) return;
       const playerEvent = parsePlayerPersistentSseEvent(event, data);
       if (!playerEvent) return;
-      if (playerEvent.type === 'queue-updated') {
+      if (playerEvent.type === 'connected') {
         applyingRemoteQueueRef.current = true;
         djPickNextBackoffUntilRef.current = 0;
-        applyQueueSnapshot({ queue: playerEvent.queue, currentIndex: playerEvent.currentIndex });
-      } else if (playerEvent.type === 'queue-appended') {
+        queueRevisionRef.current = playerEvent.revision;
+        queueAuthoritativeSnapshotRef.current = {
+          queue: playerEvent.queue,
+          currentIndex: playerEvent.currentIndex,
+          revision: playerEvent.revision
+        };
+        queueRemoteEpochRef.current += 1;
+        const recoveredSnapshot = replayUncommittedQueueOperations({
+          queue: playerEvent.queue,
+          currentIndex: playerEvent.currentIndex
+        }, uncommittedQueueOperationsRef.current);
+        restoreAutoplayAfterQueueRebase(
+          recoveredSnapshot,
+          uncommittedQueueOperationsRef.current.map((entry) => entry.operation)
+        );
+        applyQueueSnapshot(recoveredSnapshot);
+        selectionJourneyHistoryGenerationRef.current += 1;
+        setSelectionJourneyState((current) => (
+          restorePlayerSelectionJourneyRecoverySnapshot(current, playerEvent.journeys)
+        ));
+      } else if (playerEvent.type === 'queue-updated') {
+        if (!shouldApplyAuthoritativeQueueRevision(
+          queueRevisionRef.current,
+          playerEvent.revision
+        )) return;
+        applyingRemoteQueueRef.current = true;
         djPickNextBackoffUntilRef.current = 0;
-        appendRemoteQueueTrack(playerEvent.track);
+        queueRevisionRef.current = playerEvent.revision;
+        queueAuthoritativeSnapshotRef.current = {
+          queue: playerEvent.queue,
+          currentIndex: playerEvent.currentIndex,
+          revision: playerEvent.revision
+        };
+        queueRemoteEpochRef.current += 1;
+        const authoritativeSnapshot = replayUncommittedQueueOperations({
+          queue: playerEvent.queue,
+          currentIndex: playerEvent.currentIndex
+        }, uncommittedQueueOperationsRef.current);
+        restoreAutoplayAfterQueueRebase(
+          authoritativeSnapshot,
+          uncommittedQueueOperationsRef.current.map((entry) => entry.operation)
+        );
+        applyQueueSnapshot(authoritativeSnapshot);
+      } else if (playerEvent.type === 'selection.journey') {
+        applySelectionJourney(playerEvent.snapshot);
       }
     });
     return () => { unsub(); closeSseEvents(); };
-  }, [appendRemoteQueueTrack, applyQueueSnapshot, sseToken]);
+  }, [applyQueueSnapshot, applySelectionJourney, restoreAutoplayAfterQueueRebase, sseToken]);
 
   useEffect(() => {
     if (skipNextQueuePersistRef.current) {
       skipNextQueuePersistRef.current = false;
       return;
     }
-    persistQueueSnapshot(queue, currentIndex);
-    if (applyingRemoteQueueRef.current) {
-      applyingRemoteQueueRef.current = false;
-      return;
-    }
+    if (!listeningUserId) return;
+    persistQueueSnapshot(listeningUserId, queue, currentIndex);
+    const receivedAuthoritativeSnapshot = applyingRemoteQueueRef.current;
+    applyingRemoteQueueRef.current = false;
+    const queueOperations = pendingQueueOperationsRef.current;
+    pendingQueueOperationsRef.current = [];
+    const scheduledOperationSequence = queueOperationSequenceRef.current;
     const temporaryBanTracks = pendingTemporaryBanTracksRef.current;
     pendingTemporaryBanTracksRef.current = [];
-    void saveQueueState(queue, currentIndex, temporaryBanTracks).catch(() => {
-      pendingTemporaryBanTracksRef.current = mergeQueueTracksById([
-        ...temporaryBanTracks,
-        ...pendingTemporaryBanTracksRef.current
-      ]);
-      // Queue sync is best effort; playback should keep running locally.
-    });
-  }, [currentIndex, queue]);
+    if (queueOperations.length === 0 && temporaryBanTracks.length === 0) return;
+    const accountCapture = playerAccountScopeRef.current!.capture();
+    const scheduledRemoteEpoch = queueRemoteEpochRef.current;
+    queueSaveChainRef.current = queueSaveChainRef.current
+      .catch(() => undefined)
+      .then(async () => {
+        if (!accountCapture.token || !accountCapture.isActive()) return;
+        let desiredSnapshot = { queue, currentIndex };
+        let expectedRevision = queueRevisionRef.current;
+        const mutationId = globalThis.crypto.randomUUID();
+        const replayOperations = (snapshot: PlayerQueueSnapshot): PlayerQueueSnapshot => (
+          replayQueueTrackRemovals(
+            replayQueueOperations(snapshot, queueOperations),
+            temporaryBanTracks
+          )
+        );
+        if (receivedAuthoritativeSnapshot || scheduledRemoteEpoch !== queueRemoteEpochRef.current) {
+          desiredSnapshot = replayOperations({
+            queue: queueRef.current,
+            currentIndex: currentIndexRef.current
+          });
+          expectedRevision = queueRevisionRef.current;
+        }
+
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+          const result = await saveQueueState(
+            desiredSnapshot.queue,
+            desiredSnapshot.currentIndex,
+            temporaryBanTracks,
+            expectedRevision,
+            mutationId,
+            { authToken: accountCapture.token }
+          );
+          if (!accountCapture.isActive()) return;
+          if (result.ok) {
+            if (result.revision > queueAuthoritativeSnapshotRef.current.revision) {
+              queueAuthoritativeSnapshotRef.current = {
+                queue: result.queue,
+                currentIndex: result.currentIndex,
+                revision: result.revision
+              };
+            }
+            const reconciliation = reconcileAcknowledgedQueueMutation({
+              acknowledgement: result,
+              latestAuthoritative: queueAuthoritativeSnapshotRef.current,
+              uncommitted: uncommittedQueueOperationsRef.current,
+              acknowledgedThroughSequence: scheduledOperationSequence,
+              pending: pendingQueueOperationsRef.current
+            });
+            queueRevisionRef.current = reconciliation.revision;
+            uncommittedQueueOperationsRef.current = reconciliation.uncommitted;
+            pendingQueueOperationsRef.current = reconciliation.pending;
+            queueRemoteEpochRef.current += 1;
+            applyingRemoteQueueRef.current = true;
+            restoreAutoplayAfterQueueRebase(
+              reconciliation.snapshot,
+              reconciliation.uncommitted.map((entry) => entry.operation)
+            );
+            applyQueueSnapshot(reconciliation.snapshot);
+            return;
+          }
+          if (result.revision > queueAuthoritativeSnapshotRef.current.revision) {
+            queueAuthoritativeSnapshotRef.current = {
+              queue: result.queue,
+              currentIndex: result.currentIndex,
+              revision: result.revision
+            };
+          }
+          queueRevisionRef.current = queueAuthoritativeSnapshotRef.current.revision;
+          expectedRevision = queueAuthoritativeSnapshotRef.current.revision;
+          desiredSnapshot = replayOperations({
+            queue: queueAuthoritativeSnapshotRef.current.queue,
+            currentIndex: queueAuthoritativeSnapshotRef.current.currentIndex
+          });
+        }
+
+        pendingQueueOperationsRef.current = [
+          ...queueOperations,
+          ...pendingQueueOperationsRef.current
+        ];
+        pendingTemporaryBanTracksRef.current = mergeQueueTracksById([
+          ...temporaryBanTracks,
+          ...pendingTemporaryBanTracksRef.current
+        ]);
+        queueRemoteEpochRef.current += 1;
+        const exhaustedSnapshot = {
+          queue: [...desiredSnapshot.queue],
+          currentIndex: desiredSnapshot.currentIndex
+        };
+        const localSnapshot = replayUncommittedQueueOperations(
+          exhaustedSnapshot,
+          uncommittedQueueOperationsRef.current,
+          scheduledOperationSequence
+        );
+        restoreAutoplayAfterQueueRebase(localSnapshot, [
+          ...queueOperations,
+          ...uncommittedQueueOperationsRef.current
+            .filter((entry) => entry.sequence > scheduledOperationSequence)
+            .map((entry) => entry.operation)
+        ]);
+        applyQueueSnapshot(localSnapshot);
+        scheduleQueueSaveRetry();
+      })
+      .catch(() => {
+        if (!accountCapture.isActive()) return;
+        pendingQueueOperationsRef.current = [
+          ...queueOperations,
+          ...pendingQueueOperationsRef.current
+        ];
+        pendingTemporaryBanTracksRef.current = mergeQueueTracksById([
+          ...temporaryBanTracks,
+          ...pendingTemporaryBanTracksRef.current
+        ]);
+        scheduleQueueSaveRetry();
+        // Queue sync is best effort; playback should keep running locally.
+      });
+  }, [
+    currentIndex,
+    listeningUserId,
+    queue,
+    queueSaveRetryNonce,
+    restoreAutoplayAfterQueueRebase,
+    scheduleQueueSaveRetry
+  ]);
 
   // When the queue gains a new song while currentTrackId hasn't changed,
   // nextTrack may still be null — refresh it so segue can fire promptly.
@@ -693,6 +1146,10 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
   }, [queueIds.length]);
 
   useEffect(() => {
+    if (listeningTrackIdRef.current && listeningTrackIdRef.current !== currentTrackId) {
+      finalizeCurrentListeningEpisode('interrupted');
+      listeningTrackIdRef.current = null;
+    }
     if (!currentTrackId) {
       disposeAllSegueAudio();
       setNowPlaying(null);
@@ -704,6 +1161,17 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
       trackMediaManualResumeRequiredRef.current = false;
       return;
     }
+
+    const listeningTrack = queueRef.current[currentIndexRef.current];
+    listeningEpisodeRef.current?.prepare({
+      deckId: 'main',
+      track: {
+        id: currentTrackId,
+        name: listeningTrack?.name?.trim() || currentTrackId,
+        artists: listeningTrack?.artists?.filter((artist) => artist.trim().length > 0) ?? []
+      }
+    });
+    listeningTrackIdRef.current = currentTrackId;
 
     disposeSegueAudio();
     resetTrackMedia();
@@ -724,14 +1192,23 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
 
     void loadNowPlaying(currentTrackId);
     void refreshNextTrack(currentTrackId);
-  }, [currentTrackId, disposeAllSegueAudio, disposeSegueAudio]);
+  }, [currentTrackId, disposeAllSegueAudio, disposeSegueAudio, sseToken]);
 
   useEffect(
     () => () => {
+      finalizeCurrentListeningEpisode('interrupted');
       disposeAllSegueAudio();
     },
     [disposeAllSegueAudio]
   );
+
+  useEffect(() => {
+    const onPageHide = () => {
+      listeningEpisodeRef.current?.checkpoint(currentListeningPosition(), { keepalive: true });
+    };
+    window.addEventListener('pagehide', onPageHide);
+    return () => window.removeEventListener('pagehide', onPageHide);
+  }, []);
 
   useEffect(() => {
     playerMountedRef.current = true;
@@ -825,6 +1302,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
 
   async function handleNcmLogout(): Promise<void> {
     try {
+      finalizeCurrentListeningEpisode('interrupted');
       await logoutNcm();
       setSseToken(null);
       resetNcmAuthState();
@@ -864,8 +1342,14 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
     };
   }, [qrPayload?.key]);
 
-  async function refreshPlayerContext(): Promise<void> {
-    const ctx = await getPlayerContext();
+  async function refreshPlayerContext(
+    accountCapture: PlayerAccountCapture = playerAccountScopeRef.current!.capture()
+  ): Promise<void> {
+    const requestSequence = ++playerContextRequestSequenceRef.current;
+    if (!accountCapture.token || !accountCapture.isActive()) return;
+    const ctx = await getPlayerContext({ authToken: accountCapture.token });
+    if (!accountCapture.isActive()
+      || playerContextRequestSequenceRef.current !== requestSequence) return;
     if (ctx.ok) {
       setDailyTheme(ctx.theme);
       setWeatherContext(ctx.weather);
@@ -875,11 +1359,16 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
     }
   }
 
-  async function refreshLikedTrackIds(): Promise<void> {
+  async function refreshLikedTrackIds(
+    accountCapture: PlayerAccountCapture = playerAccountScopeRef.current!.capture()
+  ): Promise<void> {
+    if (!accountCapture.token || !accountCapture.isActive()) return;
     try {
-      const ids = await getLikedTrackIds();
+      const ids = await getLikedTrackIds({ authToken: accountCapture.token });
+      if (!accountCapture.isActive()) return;
       setLikedTrackIds(ids);
     } catch {
+      if (!accountCapture.isActive()) return;
       setLikedTrackIds([]);
     }
   }
@@ -912,11 +1401,9 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
     const prev = discoveryMode;
     setDiscoveryMode(next);
     setDjStatusText(
-      next === 'legacy'
-        ? 'Legacy LLM 模式：跳过 MusicAgent'
-        : next === 'explore'
-          ? '探索模式：放宽个人品味权重'
-          : '舒适区模式：提高个人品味匹配'
+      next === 'explore'
+        ? '探索模式：放宽个人品味权重'
+        : '舒适区模式：提高个人品味匹配'
     );
     try {
       await saveSettings({ discoveryMode: next });
@@ -926,12 +1413,16 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
     }
   }
 
-  async function loadLikedQueue(): Promise<void> {
+  async function loadLikedQueue(
+    accountCapture: PlayerAccountCapture = playerAccountScopeRef.current!.capture()
+  ): Promise<void> {
+    if (!accountCapture.token || !accountCapture.isActive()) return;
     try {
       const [payload, likedIds] = await Promise.all([
-        getLikedQueue(50),
-        getLikedTrackIds()
+        getLikedQueue(50, { authToken: accountCapture.token }),
+        getLikedTrackIds({ authToken: accountCapture.token })
       ]);
+      if (!accountCapture.isActive()) return;
       setLikedTrackIds(likedIds);
       if (payload.tracks.length === 0) {
         setError('红心歌单为空，请先在网易云收藏歌曲');
@@ -943,22 +1434,26 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
       djPickNextInFlightRef.current = false;
       playbackHistoryRef.current.clear();
       setHistoryVersion((version) => version + 1);
-      applyQueueSnapshot({ queue: [startTrack], currentIndex: 0 });
+      const startSnapshot = { queue: [startTrack], currentIndex: 0 };
+      rememberQueueOperation({ type: 'replace_queue', snapshot: startSnapshot });
+      applyQueueSnapshot(startSnapshot);
       setTrackStatusText(`DJ 模式启动：随机选中「${startTrack.name ?? startTrack.id}」`);
       setDjStatusText('正在补充队列…');
     } catch (err) {
+      if (!accountCapture.isActive()) return;
       setError(err instanceof Error ? err.message : '红心歌单加载失败');
     }
   }
 
   async function loadNowPlaying(trackId: string): Promise<void> {
+    const accountCapture = playerAccountScopeRef.current!.capture();
+    const requestSequence = ++nowPlayingRequestSequenceRef.current;
+    if (!accountCapture.token || !accountCapture.isActive()) return;
     try {
-      const trackMeta = queue[currentIndex];
-      const payload = await getNowPlaying(trackId, {
-        name: trackMeta?.name,
-        artist: trackMeta?.artists?.join(' / ')
-      });
-      if (currentTrackIdRef.current !== trackId) {
+      const payload = await getNowPlaying(trackId, { authToken: accountCapture.token });
+      if (!accountCapture.isActive()
+        || nowPlayingRequestSequenceRef.current !== requestSequence
+        || currentTrackIdRef.current !== trackId) {
         return;
       }
       setNowPlaying(payload);
@@ -968,15 +1463,20 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
       if (audioRef.current) {
         audioRef.current.src = payload.url;
         audioRef.current.load();
-        if (shouldAutoplayNextRef.current) {
-          shouldAutoplayNextRef.current = false;
+        const autoplayTargetTrackId = queueAutoplayTargetRef.current;
+        if (shouldConsumeQueueAutoplayTarget(autoplayTargetTrackId, trackId)) {
+          queueAutoplayTargetRef.current = null;
           void audioRef.current.play().catch(handleContinuationPlayRejection);
+        } else if (autoplayTargetTrackId !== null) {
+          queueAutoplayTargetRef.current = null;
         }
       }
 
       setTrackStatusText(`已加载 ${trackId}`);
     } catch (err) {
-      if (currentTrackIdRef.current !== trackId) {
+      if (!accountCapture.isActive()
+        || nowPlayingRequestSequenceRef.current !== requestSequence
+        || currentTrackIdRef.current !== trackId) {
         return;
       }
       setNowPlaying(null);
@@ -991,9 +1491,13 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
     requestId: number,
     shouldPlay: boolean
   ): Promise<void> {
+    const accountCapture = playerAccountScopeRef.current!.capture();
+    if (!accountCapture.token || !accountCapture.isActive()) return;
     try {
-      const payload = await getNowPlaying(trackId);
-      if (currentTrackIdRef.current !== trackId || trackMediaRetryRequestIdRef.current !== requestId) {
+      const payload = await getNowPlaying(trackId, { authToken: accountCapture.token });
+      if (!accountCapture.isActive()
+        || currentTrackIdRef.current !== trackId
+        || trackMediaRetryRequestIdRef.current !== requestId) {
         return;
       }
       setNowPlaying(payload);
@@ -1015,12 +1519,14 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
       audio.load();
       setTrackStatusText(`已刷新音频流，准备从 ${Math.round(resumeAtSec)} 秒继续`);
     } catch (err) {
-      if (currentTrackIdRef.current !== trackId || trackMediaRetryRequestIdRef.current !== requestId) {
+      if (!accountCapture.isActive()
+        || currentTrackIdRef.current !== trackId
+        || trackMediaRetryRequestIdRef.current !== requestId) {
         return;
       }
       setIsPlaying(false);
       trackMediaManualResumeRequiredRef.current = true;
-      shouldAutoplayNextRef.current = false;
+      queueAutoplayTargetRef.current = null;
       setTrackStatusText('播放流中断');
       setError(err instanceof Error ? `音频资源重试失败：${err.message}` : '音频资源重试失败，请稍后重试或切换下一首');
     }
@@ -1028,7 +1534,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
 
   const handleContinuationPlayRejection = useCallback((): void => {
     setIsPlaying(false);
-    shouldAutoplayNextRef.current = false;
+    queueAutoplayTargetRef.current = null;
     playbackSessionRef.current?.setPlaying(false);
     setTrackStatusText('下一首已就绪，点击 Play 继续播放');
   }, []);
@@ -1049,22 +1555,37 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
   }
 
   async function refreshNextTrack(trackId: string): Promise<void> {
-    if (queueIds.length === 0) {
+    const accountCapture = playerAccountScopeRef.current!.capture();
+    const requestSequence = ++nextTrackRequestSequenceRef.current;
+    const requestedQueueIds = queueRef.current.map((track) => track.id);
+    if (!accountCapture.token || !accountCapture.isActive()) return;
+    if (requestedQueueIds.length === 0) {
       setNextTrack(null);
       return;
     }
 
     // If current track is the last in the queue, there's no next track — skip the request.
-    const idx = queueIds.indexOf(trackId);
-    if (idx !== -1 && idx >= queueIds.length - 1) {
+    const idx = requestedQueueIds.indexOf(trackId);
+    const expectedNextTrackId = idx >= 0 ? requestedQueueIds[idx + 1] ?? null : null;
+    if (!expectedNextTrackId) {
       setNextTrack(null);
       return;
     }
 
     try {
-      const payload = await getNextTrack(queueIds, trackId);
+      const payload = await getNextTrack(requestedQueueIds, trackId, {
+        authToken: accountCapture.token
+      });
+      if (!accountCapture.isActive()
+        || nextTrackRequestSequenceRef.current !== requestSequence
+        || currentTrackIdRef.current !== trackId
+        || queueRef.current[currentIndexRef.current + 1]?.id !== expectedNextTrackId
+        || payload.track.id !== expectedNextTrackId) return;
       setNextTrack(payload);
     } catch {
+      if (!accountCapture.isActive()
+        || nextTrackRequestSequenceRef.current !== requestSequence
+        || currentTrackIdRef.current !== trackId) return;
       setNextTrack(null);
     }
   }
@@ -1087,6 +1608,9 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
     if (!decision.shouldRequest || !currentTrackId || !nextTrackId) {
       return;
     }
+    const accountCapture = playerAccountScopeRef.current!.capture();
+    const accountToken = accountCapture.token;
+    if (!accountToken) return;
 
     const clientRequestId = newClientRequestId();
     const nextQueueTrack = queue.find((track) => track.id === nextTrackId) ?? null;
@@ -1099,8 +1623,10 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
         for await (const { type, data } of streamSegue({
           clientRequestId,
           from: { id: currentTrackId, name: currentTrack?.name, artist: currentTrack?.artists?.[0] },
-          to: { id: nextTrackId, name: nextQueueTrack?.name ?? nextTrack?.track.name, artist: nextQueueTrack?.artists?.[0] ?? nextTrack?.track.artists?.[0] }
+          to: { id: nextTrackId, name: nextQueueTrack?.name ?? nextTrack?.track.name, artist: nextQueueTrack?.artists?.[0] ?? nextTrack?.track.artists?.[0] },
+          authToken: accountToken
         })) {
+          if (!accountCapture.isActive()) break;
           if (type === 'segue.delta') {
             if (!isActiveSegueMessage(data, segueClientRequestIdRef.current)) continue;
             const say = String(data.say ?? '').trim();
@@ -1161,6 +1687,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
           }
         }
       } catch (err) {
+        if (!accountCapture.isActive()) return;
         if (segueClientRequestIdRef.current === clientRequestId) {
           segueClientRequestIdRef.current = null;
         }
@@ -1231,17 +1758,26 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
   function handlePrev(): void {
     const restored = playbackHistoryRef.current.restore(queue);
     if (restored === queue) return;
-    shouldAutoplayNextRef.current = isPlaying;
+    finalizeCurrentListeningEpisode('skipped');
+    queueAutoplayTargetRef.current = getQueueAutoplayTargetForTransition(
+      { queue: restored, currentIndex: 0 },
+      isPlaying
+    );
     setHistoryVersion((version) => version + 1);
+    rememberQueueOperation({ type: 'restore_previous', track: restored[0]!, autoplay: isPlaying });
     applyQueueSnapshot({ queue: restored, currentIndex: 0 });
   }
 
   function handleSkip(): void {
     const transition = skipCurrentQueueTrack({ queue, currentIndex });
     if (!transition.changed) return;
+    finalizeCurrentListeningEpisode('skipped');
     recordPlaybackHistory(transition.removedTracks);
-    rememberTemporaryBans(transition.removedTracks);
-    if (isPlaying && transition.shouldAutoplayNext) shouldAutoplayNextRef.current = true;
+    queueAutoplayTargetRef.current = getQueueAutoplayTargetForTransition(
+      transition,
+      isPlaying && transition.shouldAutoplayNext
+    );
+    rememberQueueOperation({ type: 'manual_skip', trackId: transition.removedTracks[0]!.id, autoplay: isPlaying });
     applyQueueSnapshot(transition);
   }
 
@@ -1287,9 +1823,13 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
   function handleSelectIndex(index: number): void {
     const transition = selectQueueTrackAt({ queue, currentIndex }, index);
     if (!transition.changed) return;
+    finalizeCurrentListeningEpisode('skipped');
     recordPlaybackHistory(transition.removedTracks);
-    rememberTemporaryBans(transition.removedTracks);
-    if (isPlaying && transition.shouldAutoplayNext) shouldAutoplayNextRef.current = true;
+    queueAutoplayTargetRef.current = getQueueAutoplayTargetForTransition(
+      transition,
+      isPlaying && transition.shouldAutoplayNext
+    );
+    rememberQueueOperation({ type: 'select_track', trackId: transition.queue[0]!.id, autoplay: isPlaying });
     applyQueueSnapshot(transition);
   }
 
@@ -1297,6 +1837,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
     const transition = deleteQueueTrackAt({ queue, currentIndex }, index);
     if (!transition.changed) return;
     rememberTemporaryBans(transition.removedTracks);
+    rememberQueueOperation({ type: 'delete_track', trackId: transition.removedTracks[0]!.id });
     const deletedId = transition.removedTracks[0]?.id ?? null;
     const isNext = deletedId !== null && deletedId === (nextTrack?.track.id ?? null);
 
@@ -1317,6 +1858,15 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
       ...pendingTemporaryBanTracksRef.current,
       ...tracks
     ]);
+  }
+
+  function rememberQueueOperation(operation: PlayerQueueOperation): void {
+    pendingQueueOperationsRef.current.push(operation);
+    queueOperationSequenceRef.current += 1;
+    uncommittedQueueOperationsRef.current.push({
+      sequence: queueOperationSequenceRef.current,
+      operation
+    });
   }
 
   function recordPlaybackHistory(removedTracks: QueueTrackDto[]): void {
@@ -1353,6 +1903,24 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
     }
   }
 
+  function currentListeningPosition(positionOverrideSec?: number): PlayerListeningPosition {
+    const audio = audioRef.current;
+    const rawPositionSec = positionOverrideSec ?? audio?.currentTime ?? positionSec;
+    const rawDurationSec = audio?.duration ?? durationSec;
+    return {
+      positionMs: Number.isFinite(rawPositionSec) && rawPositionSec > 0
+        ? Math.round(rawPositionSec * 1000)
+        : 0,
+      durationMs: Number.isFinite(rawDurationSec) && rawDurationSec > 0
+        ? Math.round(rawDurationSec * 1000)
+        : nowPlayingRef.current?.durationMs ?? null
+    };
+  }
+
+  function finalizeCurrentListeningEpisode(outcome: PlayerListeningOutcome): void {
+    listeningEpisodeRef.current?.finalize(outcome, currentListeningPosition());
+  }
+
   function onTimeUpdate(): void {
     const audio = audioRef.current;
     if (!audio || !nowPlaying) {
@@ -1361,6 +1929,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
 
     setPositionSec(audio.currentTime);
     setDurationSec(audio.duration || 0);
+    listeningEpisodeRef.current?.progress(currentListeningPosition());
     if (!audio.paused && shouldResetTrackMediaRetryWindow({
       retryWindowStartedAtSec: trackMediaRetryWindowStartedAtSecRef.current,
       currentTimeSec: audio.currentTime,
@@ -1420,12 +1989,38 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
         djPickNextLastCallRef.current = now;
         djPickNextInFlightRef.current = true;
         setDjStatusText('正在挑选下一首…');
+        const accountCapture = playerAccountScopeRef.current!.capture();
         void (async () => {
           try {
             await consumePlayerPickNextStream({
               queue: latestQueue,
               currentIndex: latestCurrentIndex,
-              onQueueAppended: appendRemoteQueueTrack,
+              revision: queueRevisionRef.current,
+              ...(accountCapture.token ? { authToken: accountCapture.token } : {}),
+              isActive: accountCapture.isActive,
+              onQueueReplaced(nextQueue, nextIndex, revision) {
+                if (!shouldApplyAuthoritativeQueueRevision(
+                  queueRevisionRef.current,
+                  revision
+                )) return;
+                queueRevisionRef.current = revision;
+                queueAuthoritativeSnapshotRef.current = {
+                  queue: nextQueue,
+                  currentIndex: nextIndex,
+                  revision
+                };
+                queueRemoteEpochRef.current += 1;
+                applyingRemoteQueueRef.current = true;
+                const authoritativeSnapshot = replayUncommittedQueueOperations({
+                  queue: nextQueue,
+                  currentIndex: nextIndex
+                }, uncommittedQueueOperationsRef.current);
+                restoreAutoplayAfterQueueRebase(
+                  authoritativeSnapshot,
+                  uncommittedQueueOperationsRef.current.map((entry) => entry.operation)
+                );
+                applyQueueSnapshot(authoritativeSnapshot);
+              },
               onDebug(playerEvent) {
                 const { excludedIds, excludedDedupeKeys, candidateScoreTable } = playerEvent;
                 console.info('[Crossfadio] DJ pick-next exclusion list', {
@@ -1438,15 +2033,14 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
                   console.info('[Crossfadio] DJ pick-next candidate scores');
                   console.table(candidateScoreTable);
                 }
-                setDjPickLog(buildDjPickDebugLog(playerEvent.data));
               },
+              onJourney: applySelectionJourney,
               onDone(playerEvent) {
                 console.info('[Crossfadio] DJ pick-next done', playerEvent.data);
                 if (playerEvent.added) {
                   djPickNextBackoffUntilRef.current = 0;
                   djPickNextLastCallRef.current = Date.now();
                   setDjStatusText(formatDjPickDoneStatus(playerEvent.data));
-                  setDjPickLog((prev) => mergeDjPickDoneLog(prev, playerEvent.data));
                 } else {
                   const reason = playerEvent.reason ?? '稍后重试';
                   if (reason === 'already-running') {
@@ -1462,11 +2056,14 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
               }
             });
           } catch {
+            if (!accountCapture.isActive()) return;
             djPickNextBackoffUntilRef.current = 0;
             djPickNextLastCallRef.current = 0;
             setDjStatusText('补歌请求失败');
           } finally {
-            djPickNextInFlightRef.current = false;
+            if (accountCapture.isActive()) {
+              djPickNextInFlightRef.current = false;
+            }
           }
         })();
     }
@@ -1519,27 +2116,49 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
     }
   }
 
-  function onNativePlay(): void {
+  function onNativePlaying(): void {
     setIsPlaying(true);
     playbackSessionRef.current?.setPlaying(true);
+    listeningEpisodeRef.current?.playing(currentListeningPosition());
   }
 
   function onNativePause(): void {
     setIsPlaying(false);
     playbackSessionRef.current?.setPlaying(false);
+    listeningEpisodeRef.current?.pause(currentListeningPosition());
+  }
+
+  function onNativePlaybackSuspended(): void {
+    listeningEpisodeRef.current?.pause(currentListeningPosition());
+  }
+
+  function onNativeSeeking(): void {
+    listeningEpisodeRef.current?.pause(currentListeningPosition());
+  }
+
+  function onNativeSeeked(): void {
+    const audio = audioRef.current;
+    if (audio && !audio.paused) {
+      listeningEpisodeRef.current?.playing(currentListeningPosition());
+    }
   }
 
   function onEnded(): void {
+    finalizeCurrentListeningEpisode('completed');
     setIsPlaying(false);
     playbackSessionRef.current?.setPlaying(false);
     const transition = advanceQueueAfterEnded({ queue, currentIndex });
     recordPlaybackHistory(transition.removedTracks);
+    const completedTrack = transition.removedTracks[0];
+    if (completedTrack) {
+      rememberQueueOperation({ type: 'natural_ended', trackId: completedTrack.id });
+    }
     if (transition.shouldAutoplayNext) {
-      shouldAutoplayNextRef.current = true;
+      queueAutoplayTargetRef.current = getQueueAutoplayTargetForTransition(transition, true);
       applyQueueSnapshot(transition);
       return;
     }
-    shouldAutoplayNextRef.current = false;
+    queueAutoplayTargetRef.current = null;
     trackMediaManualResumeRequiredRef.current = false;
     applyQueueSnapshot(transition);
     setTrackStatusText('播放完成');
@@ -1550,6 +2169,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
     if (!audio) {
       return;
     }
+    listeningEpisodeRef.current?.pause(currentListeningPosition());
     pendingTrackMediaRetryRef.current = null;
 
     const trackId = currentTrackIdRef.current;
@@ -1585,8 +2205,9 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
 
     setIsPlaying(false);
     audio.pause();
+    finalizeCurrentListeningEpisode('failed');
     trackMediaManualResumeRequiredRef.current = Boolean(trackId);
-    shouldAutoplayNextRef.current = false;
+    queueAutoplayTargetRef.current = null;
     setTrackStatusText('播放流中断');
     setError('音频资源加载中断，请稍后重试或切换下一首');
   }
@@ -1611,21 +2232,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
         caption: '一起探索更多未知的好歌',
         taste: '开放探索 · 风格扩展'
       }
-    : discoveryMode === 'legacy'
-      ? {
-          page: 'bg-[radial-gradient(circle_at_12%_0%,rgba(16,185,129,0.18)_0%,transparent_30%),radial-gradient(circle_at_82%_15%,rgba(148,163,184,0.14)_0%,transparent_28%),linear-gradient(135deg,#06110d_0%,#0d1117_48%,#040505_100%)]',
-          shell: 'border-emerald-200/18 bg-black/45 shadow-[0_0_42px_rgba(16,185,129,0.10)]',
-          panel: 'border-emerald-200/14 bg-zinc-950/50',
-          soft: 'border-emerald-300/20 bg-emerald-400/10 text-emerald-100',
-          accent: 'text-emerald-200',
-          active: 'border-emerald-300/75 bg-emerald-400/16 text-emerald-50 shadow-[0_0_24px_rgba(16,185,129,0.24)]',
-          inactive: 'border-white/10 bg-white/[0.04] text-zinc-300 hover:border-emerald-300/40 hover:text-emerald-100',
-          wave: 'bg-emerald-300',
-          title: 'Legacy LLM 模式',
-          caption: '跳过 MusicAgent，使用旧版 LLM 选曲链路',
-          taste: '旧版 LLM · 直接候选'
-        }
-      : {
+    : {
           page: 'bg-[radial-gradient(circle_at_15%_0%,rgba(251,146,60,0.18)_0%,transparent_31%),radial-gradient(circle_at_78%_13%,rgba(244,63,94,0.13)_0%,transparent_29%),linear-gradient(135deg,#130d09_0%,#100f10_48%,#050505_100%)]',
           shell: 'border-orange-200/20 bg-black/44 shadow-[0_0_42px_rgba(251,146,60,0.10)]',
           panel: 'border-orange-200/14 bg-zinc-950/52',
@@ -1664,6 +2271,27 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
       value: modeConfig.taste
     }
   ];
+  const selectionJourneyCard = selectionJourney ? (
+    <SelectionJourneyCard
+      expanded={selectionJourneyExpanded}
+      historyPosition={selectionJourneyPosition}
+      historyTotal={selectionJourneys.length}
+      journey={selectionJourney}
+      onNewer={() => {
+        const newer = selectionJourneys[selectionJourneyPosition - 1];
+        if (newer) {
+          setSelectionJourneyState((current) => ({ ...current, selectedRunId: newer.runId }));
+        }
+      }}
+      onOlder={() => {
+        const older = selectionJourneys[selectionJourneyPosition + 1];
+        if (older) {
+          setSelectionJourneyState((current) => ({ ...current, selectedRunId: older.runId }));
+        }
+      }}
+      onToggle={toggleSelectionJourney}
+    />
+  ) : null;
 
   return (
     <main className={`${modeConfig.page} min-h-screen p-2 text-zinc-100 transition-colors duration-500 md:p-4`}>
@@ -1882,15 +2510,17 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
           </div>
 
           <div className="xl:hidden">
+            {!isDesktop && selectionJourneyCard ? (
+              <div className="mb-4">
+                {selectionJourneyCard}
+              </div>
+            ) : null}
             <DjStatusDock
-              djPickLog={djPickLog}
-              djPickLogExpanded={djPickLogExpanded}
               djStatusText={djStatusText}
               error={error}
               isDesktop={isDesktop}
               modeConfig={modeConfig}
               onRestart={() => void loadLikedQueue()}
-              onToggleDjPickLog={() => setDjPickLogExpanded((v) => !v)}
               onToggleSegueScript={() => setSegueScriptExpanded((v) => !v)}
               segueScriptExpanded={segueScriptExpanded}
               segueScriptText={segueScriptText}
@@ -1907,8 +2537,12 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
             onError={onTrackMediaError}
             onLoadedMetadata={onLoadedMetadata}
             onPause={onNativePause}
-            onPlay={onNativePlay}
+            onPlaying={onNativePlaying}
+            onSeeked={onNativeSeeked}
+            onSeeking={onNativeSeeking}
+            onStalled={onNativePlaybackSuspended}
             onTimeUpdate={onTimeUpdate}
+            onWaiting={onNativePlaybackSuspended}
             ref={audioRef}
           />
           {wakeLockStatus === 'active' ? (
@@ -1926,7 +2560,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
               <p className="mt-2 text-sm text-zinc-400">{modeConfig.caption}</p>
             </div>
             <div className="flex flex-col gap-4 md:flex-row md:items-center">
-              <div className="inline-grid w-full grid-cols-3 gap-1 rounded-xl border border-white/10 bg-black/25 p-1 md:w-[420px]">
+              <div className="inline-grid w-full grid-cols-2 gap-1 rounded-xl border border-white/10 bg-black/25 p-1 md:w-[320px]">
                 <button
                   className={`inline-flex items-center justify-center gap-2 rounded-lg border px-4 py-2.5 text-sm font-medium transition ${
                     discoveryMode === 'explore' ? modeConfig.active : modeConfig.inactive
@@ -1946,17 +2580,6 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
                 >
                   <Home className="h-4 w-4" />
                   舒适区
-                </button>
-                <button
-                  className={`inline-flex items-center justify-center gap-2 rounded-lg border px-4 py-2.5 text-sm font-medium transition ${
-                    discoveryMode === 'legacy' ? modeConfig.active : modeConfig.inactive
-                  }`}
-                  onClick={() => void handleDiscoveryModeChange('legacy')}
-                  title="跳过 MusicAgent，使用旧版 LLM 选曲链路"
-                  type="button"
-                >
-                  <RefreshCw className="h-4 w-4" />
-                  Legacy
                 </button>
               </div>
               <SignalBars colorClass={modeConfig.wave} />
@@ -1978,6 +2601,7 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
 
         {/* Right column — queue + status */}
         <section className="col-span-1 md:order-3 flex flex-col gap-4 md:col-span-12 xl:col-span-4">
+          {isDesktop ? selectionJourneyCard : null}
           <QueuePanel
             currentIndex={currentIndex}
             mode={discoveryMode}
@@ -1998,14 +2622,11 @@ export function PlayerView({ onNavigate }: PlayerViewProps): JSX.Element {
           ) : null}
 
           <DjStatusDock
-            djPickLog={djPickLog}
-            djPickLogExpanded={djPickLogExpanded}
             djStatusText={djStatusText}
             error={error}
             isDesktop={isDesktop}
             modeConfig={modeConfig}
             onRestart={() => void loadLikedQueue()}
-            onToggleDjPickLog={() => setDjPickLogExpanded((v) => !v)}
             onToggleSegueScript={() => setSegueScriptExpanded((v) => !v)}
             segueScriptExpanded={segueScriptExpanded}
             segueScriptText={segueScriptText}
@@ -2085,9 +2706,7 @@ function TodayThemePanel({
             dailyThemeEnabled
               ? discoveryMode === 'explore'
                 ? 'bg-cyan-300'
-                : discoveryMode === 'legacy'
-                  ? 'bg-emerald-300'
-                  : 'bg-orange-300'
+                : 'bg-orange-300'
               : 'bg-zinc-700'
           }`}
           onClick={onToggle}
@@ -2176,14 +2795,11 @@ function TastePanel({
 }
 
 function DjStatusDock({
-  djPickLog,
-  djPickLogExpanded,
   djStatusText,
   error,
   isDesktop,
   modeConfig,
   onRestart,
-  onToggleDjPickLog,
   onToggleSegueScript,
   segueScriptExpanded,
   segueScriptText,
@@ -2192,14 +2808,11 @@ function DjStatusDock({
   statusExpanded,
   trackStatusText
 }: {
-  djPickLog: DjPickLog | null;
-  djPickLogExpanded: boolean;
   djStatusText: string;
   error: string;
   isDesktop: boolean;
   modeConfig: ModeVisualConfig;
   onRestart: () => void;
-  onToggleDjPickLog: () => void;
   onToggleSegueScript: () => void;
   segueScriptExpanded: boolean;
   segueScriptText: string;
@@ -2219,16 +2832,6 @@ function DjStatusDock({
             </span>
             <StatusChip label="曲目" text={trackStatusText || '—'} />
             <StatusChip color="cyan" label="DJ选歌" text={djStatusText || '空闲'} />
-            {djPickLog ? (
-              <button
-                className="inline-flex items-center gap-1 text-xs text-cyan-300/80 transition hover:text-cyan-100"
-                onClick={onToggleDjPickLog}
-                type="button"
-              >
-                <SlidersHorizontal className="h-3.5 w-3.5" />
-                {djPickLogExpanded ? '收起' : '日志'}
-              </button>
-            ) : null}
             <StatusChip color="violet" label="过渡语音" text={segueStatusText || '空闲'} />
             {segueScriptText ? (
               <button
@@ -2254,49 +2857,6 @@ function DjStatusDock({
           {segueScriptText && segueScriptExpanded ? (
             <div className="mt-3 rounded-lg border border-violet-300/15 bg-violet-950/20 px-3 py-2">
               <p className="whitespace-pre-wrap text-xs leading-relaxed text-violet-100/80">{segueScriptText}</p>
-            </div>
-          ) : null}
-          {djPickLog && djPickLogExpanded ? (
-            <div className="mt-3 space-y-2 rounded-lg border border-cyan-300/15 bg-cyan-950/10 px-3 py-2">
-              {djPickLog.selectedSay ? (
-                <p className="text-xs leading-relaxed text-cyan-100/80">{djPickLog.selectedSay}</p>
-              ) : null}
-              {djPickLog.selectedTracks.length > 0 ? (
-                <div className="space-y-1">
-                  {djPickLog.selectedTracks.map((track) => (
-                    <div
-                      className="rounded-md border border-cyan-300/10 bg-cyan-950/20 px-2 py-1.5 text-xs"
-                      key={track.id}
-                    >
-                      <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                        <span className="font-medium text-cyan-100">{track.name || track.id}</span>
-                        <span className="text-[10px] text-zinc-500">{track.artist || '未知艺人'}</span>
-                        <span className="text-[10px] uppercase tracking-wide text-cyan-300/60">{track.source}</span>
-                      </div>
-                      {track.reason ? (
-                        <p className="mt-1 leading-relaxed text-cyan-100/70">{track.reason}</p>
-                      ) : null}
-                    </div>
-                  ))}
-                </div>
-              ) : null}
-              {djPickLog.searchQueries.length > 0 ? (
-                <p className="text-xs text-zinc-400">
-                  搜索词：<span className="text-cyan-200">{djPickLog.searchQueries.join('、')}</span>
-                </p>
-              ) : null}
-              <div className="flex flex-wrap gap-x-4 gap-y-1 text-[10px] text-zinc-500">
-                <span>红心采样 <span className="text-zinc-300">{djPickLog.likedSample.length}</span> 首</span>
-                <span>搜索返回 <span className="text-zinc-300">{djPickLog.searchResultCount}</span> 首</span>
-                {djPickLog.searchRepeatedCount > 0 ? (
-                  <span>重复搜索 <span className="text-zinc-300">{djPickLog.searchRepeatedCount}</span> 次</span>
-                ) : null}
-                <span>搜索入池 <span className="text-zinc-300">{djPickLog.searchAddedCount}</span> 首</span>
-                <span>候选池 <span className="text-cyan-300">{djPickLog.totalCandidates}</span> 首</span>
-                {djPickLog.elapsedMs !== null ? (
-                  <span>选歌总耗时 <span className="text-cyan-300">{formatDjPickElapsed(djPickLog.elapsedMs)}</span></span>
-                ) : null}
-              </div>
             </div>
           ) : null}
           <button

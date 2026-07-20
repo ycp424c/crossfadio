@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { artistKeys } from './artists.js';
 import type { CandidatePool, CandidatePoolRejectReason } from './candidates.js';
 import type { NcmTrackLike } from './liked-recall.js';
@@ -14,9 +15,9 @@ import {
   cloneCandidateProvenance,
   provenanceForSource
 } from './candidate-provenance.js';
+import type { PlaybackEligibilityReason } from './playback-eligibility.js';
 
 const QUALITY_SOURCES = new Set<CandidateSource>(['search', 'style_expansion', 'trend']);
-const MAX_QUERY_RECALL_PER_ARTIST_KEY = 2;
 
 export type UpsertTracksResult = {
   added: number;
@@ -25,18 +26,16 @@ export type UpsertTracksResult = {
   mergedByDedupe: number;
   mergedByIdAndDedupe: number;
   invalid: number;
+  ineligible: number;
+  ineligibleReasons: Partial<Record<PlaybackEligibilityReason, number>>;
   rejectedByPool: number;
   rejectedReasons: Partial<Record<CandidatePoolRejectReason, number>>;
-  skippedAvoidedArtists: number;
-  skippedArtistCap: number;
 };
 
 export type UpsertTracksOptions = {
   evidence: string;
   scores: MusicCandidateScores;
   scoreForTrack?: (track: NcmTrackLike) => MusicCandidateScores;
-  avoidArtists?: ReadonlySet<string>;
-  artistCounts?: Map<string, number>;
   maxAccepted?: number;
   provenance?: CandidateProvenance | CandidateProvenance[];
   provenanceKind?: CandidateProvenanceKind;
@@ -51,10 +50,10 @@ export function emptyUpsertTracksResult(): UpsertTracksResult {
     mergedByDedupe: 0,
     mergedByIdAndDedupe: 0,
     invalid: 0,
+    ineligible: 0,
+    ineligibleReasons: {},
     rejectedByPool: 0,
-    rejectedReasons: {},
-    skippedAvoidedArtists: 0,
-    skippedArtistCap: 0
+    rejectedReasons: {}
   };
 }
 
@@ -65,50 +64,76 @@ export function upsertTracks(
   options: UpsertTracksOptions
 ): UpsertTracksResult {
   const result = emptyUpsertTracksResult();
-  const artistCounts = options.artistCounts ?? new Map<string, number>();
   const maxAccepted = options.maxAccepted ?? Number.POSITIVE_INFINITY;
-  for (const track of tracks) {
+  for (const [trackIndex, track] of tracks.entries()) {
     if (result.added >= maxAccepted) break;
     const candidate = candidateFromTrack(track, source, {
       ...options,
       scores: options.scoreForTrack?.(track) ?? options.scores
     });
     if (!candidate) {
+      pool.evaluateAdmission(replayCandidateFromMalformedTrack(
+        track,
+        source,
+        options,
+        trackIndex
+      ));
       result.invalid += 1;
       continue;
     }
-    const artists = artistKeys(candidate.artist);
-    if (artists.some((artist) => options.avoidArtists?.has(artist))) {
-      result.skippedAvoidedArtists += 1;
-      continue;
-    }
-    if (artists.some((artist) => (artistCounts.get(artist) ?? 0) >= MAX_QUERY_RECALL_PER_ARTIST_KEY)) {
-      result.skippedArtistCap += 1;
+    const admission = pool.evaluateAdmission(candidate);
+    if (admission.action === 'reject') {
+      result.ineligible += 1;
+      for (const reason of admission.reasonCodes) {
+        if (!isPlaybackEligibilityReason(reason)) continue;
+        result.ineligibleReasons[reason] = (result.ineligibleReasons[reason] ?? 0) + 1;
+      }
       continue;
     }
     const upsertResult = pool.upsert(candidate);
     if (upsertResult.status === 'inserted') {
       result.added += 1;
       result.inserted += 1;
-      incrementArtistCounts(artistCounts, artists);
     } else if (upsertResult.status === 'merged_by_id') {
       result.added += 1;
       result.mergedById += 1;
-      incrementArtistCounts(artistCounts, artists);
     } else if (upsertResult.status === 'merged_by_dedupe') {
       result.added += 1;
       result.mergedByDedupe += 1;
-      incrementArtistCounts(artistCounts, artists);
     } else if (upsertResult.status === 'merged_by_id_and_dedupe') {
       result.added += 1;
       result.mergedByIdAndDedupe += 1;
-      incrementArtistCounts(artistCounts, artists);
     } else {
       result.rejectedByPool += 1;
       result.rejectedReasons[upsertResult.reason] = (result.rejectedReasons[upsertResult.reason] ?? 0) + 1;
     }
   }
   return result;
+}
+
+function replayCandidateFromMalformedTrack(
+  track: NcmTrackLike,
+  source: CandidateSource,
+  options: UpsertTracksOptions,
+  trackIndex: number
+): MusicCandidate {
+  const rawId = track.id === undefined || track.id === null ? '' : String(track.id).trim();
+  const name = track.name?.trim() ?? '';
+  const artist = (track.artists ?? []).map((item) => item.trim()).filter(Boolean).join(' / ');
+  const fingerprint = createHash('sha256')
+    .update(JSON.stringify({ source, trackIndex, rawId, name, artist }))
+    .digest('hex')
+    .slice(0, 20);
+  return {
+    id: `invalid-${source}-${fingerprint}`,
+    name,
+    artist,
+    sources: [source],
+    provenance: candidateProvenanceFromOptions(source, options),
+    evidence: [options.evidence],
+    scores: { ...(options.scoreForTrack?.(track) ?? options.scores) },
+    ...qualitySignalsProperty(track.qualitySignals ?? undefined)
+  };
 }
 
 export function mergeUpsertTracksResult(target: UpsertTracksResult, source: UpsertTracksResult): void {
@@ -118,13 +143,17 @@ export function mergeUpsertTracksResult(target: UpsertTracksResult, source: Upse
   target.mergedByDedupe += source.mergedByDedupe;
   target.mergedByIdAndDedupe += source.mergedByIdAndDedupe;
   target.invalid += source.invalid;
+  target.ineligible += source.ineligible;
   target.rejectedByPool += source.rejectedByPool;
-  target.skippedAvoidedArtists += source.skippedAvoidedArtists;
-  target.skippedArtistCap += source.skippedArtistCap;
   for (const [reason, count] of Object.entries(source.rejectedReasons)) {
     if (!count) continue;
     const key = reason as CandidatePoolRejectReason;
     target.rejectedReasons[key] = (target.rejectedReasons[key] ?? 0) + count;
+  }
+  for (const [reason, count] of Object.entries(source.ineligibleReasons)) {
+    if (!count) continue;
+    const key = reason as PlaybackEligibilityReason;
+    target.ineligibleReasons[key] = (target.ineligibleReasons[key] ?? 0) + count;
   }
 }
 
@@ -145,19 +174,11 @@ export function summarizeCandidateAdmission(result: UpsertTracksResult): string 
     result.mergedByDedupe > 0 ? `mergedByDedupe=${result.mergedByDedupe}` : '',
     result.mergedByIdAndDedupe > 0 ? `mergedByIdAndDedupe=${result.mergedByIdAndDedupe}` : '',
     result.invalid > 0 ? `invalid=${result.invalid}` : '',
-    rejectedByPoolSummary(result),
-    result.skippedAvoidedArtists > 0 ? `skippedAvoidedArtists=${result.skippedAvoidedArtists}` : '',
-    result.skippedArtistCap > 0 ? `skippedArtistCap=${result.skippedArtistCap}` : ''
+    ineligibleSummary(result),
+    rejectedByPoolSummary(result)
   ].filter(Boolean);
 
   return parts.length > 0 ? `candidate admission: ${parts.join('; ')}` : null;
-}
-
-export function skippedRecallProblems(result: Pick<UpsertTracksResult, 'skippedAvoidedArtists' | 'skippedArtistCap'>): string[] {
-  return [
-    ...(result.skippedAvoidedArtists > 0 ? [`skipped ${result.skippedAvoidedArtists} tracks from recently repeated artists`] : []),
-    ...(result.skippedArtistCap > 0 ? [`skipped ${result.skippedArtistCap} tracks after per-artist recall cap`] : [])
-  ];
 }
 
 export function rejectedPoolRecallProblems(
@@ -225,8 +246,6 @@ export function sourceScores(source: CandidateSource, context: MusicAgentContext
     timeFit: 0.55,
     contextFit: 0.35,
     novelty: 0.45,
-    recentPenalty: 0,
-    skipPenalty: 0,
     sourceConfidence: 0.58
   };
 
@@ -266,14 +285,26 @@ function rejectedByPoolSummary(result: Pick<UpsertTracksResult, 'rejectedByPool'
     : `rejectedByPool=${result.rejectedByPool}`;
 }
 
-function incrementArtistCounts(counts: Map<string, number>, artists: string[]): void {
-  for (const artist of artists) {
-    counts.set(artist, (counts.get(artist) ?? 0) + 1);
-  }
+function ineligibleSummary(result: Pick<UpsertTracksResult, 'ineligible' | 'ineligibleReasons'>): string {
+  if (result.ineligible === 0) return '';
+  const reasons = Object.entries(result.ineligibleReasons)
+    .filter(([, count]) => count > 0)
+    .map(([reason, count]) => `${reason}=${count}`)
+    .join(', ');
+  return reasons
+    ? `ineligible=${result.ineligible} (${reasons})`
+    : `ineligible=${result.ineligible}`;
 }
 
 function qualitySignalsProperty(
   qualitySignals: MusicCandidateQualitySignals | undefined
 ): { qualitySignals?: MusicCandidateQualitySignals } {
   return qualitySignals ? { qualitySignals: { ...qualitySignals } } : {};
+}
+
+function isPlaybackEligibilityReason(reason: string): reason is PlaybackEligibilityReason {
+  return reason === 'invalid_track_identity'
+    || reason === 'copyright_unavailable'
+    || reason === 'privilege_unavailable'
+    || reason === 'privilege_notice';
 }

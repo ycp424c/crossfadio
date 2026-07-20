@@ -5,6 +5,7 @@ dist
 *.log
 coverage
 playwright-report
+test-results
 
 # Electron user data local debug artifacts
 .user-data
@@ -18,3 +19,6 @@ playwright-report
 
 # Local visual brainstorming artifacts
 .superpowers/
+
+# Sanitized DJ v2 replay exports (real samples are local-only)
+.local/dj-v2-replay/

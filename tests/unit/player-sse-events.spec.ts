@@ -23,17 +23,15 @@ describe('player SSE event parsing', () => {
         { id: 'ui-2', name: 'Second', artists: ['B'], durationMs: 0, coverImgUrl: null }
       ],
       currentIndex: 1,
+      revision: null,
       data: expect.any(Object)
     });
   });
 
-  it('parses queue-appended events and ignores malformed tracks', () => {
+  it('rejects removed per-track queue events and ignores malformed tracks', () => {
     expect(parsePlayerPersistentSseEvent('queue-appended', {
       track: { ncmId: 'ncm-1', name: 'Appended' }
-    })).toMatchObject({
-      type: 'queue-appended',
-      track: { id: 'ncm-1', name: 'Appended', artists: [], durationMs: 0, coverImgUrl: null }
-    });
+    })).toBeNull();
 
     expect(parsePlayerPickNextSseEvent('queue-appended', { track: { name: 'missing id' } })).toBeNull();
     expect(queueTrackFromSsePayload('not-an-object')).toBeNull();
@@ -45,14 +43,29 @@ describe('player SSE event parsing', () => {
       excludedDedupeKeys: ['a'],
       candidateScoreTable: [
         { rank: 1, id: '11', song: 'Song', artist: 'Artist', sources: 'semantic', adjustedScore: 4.2 }
-      ]
+      ],
+      selectionTrace: {
+        schemaVersion: 1,
+        runId: 'run-1',
+        mode: 'autonomous',
+        createdAt: '2026-07-17T10:00:00.000Z',
+        decisions: [{
+          stage: 'final', action: 'selected', reasonCode: 'final_eligible',
+          candidateId: '11', provenance: { source: 'playback_eligibility' }, evidenceRefs: []
+        }]
+      }
     });
     expect(debug).toMatchObject({
       type: 'dj.debug',
       excludedIds: ['1', '3'],
       excludedDedupeKeys: ['a'],
-      candidateScoreTable: [{ rank: 1, id: '11', song: 'Song', artist: 'Artist', sources: 'semantic', adjustedScore: 4.2 }]
+      candidateScoreTable: [{ rank: 1, id: '11', song: 'Song', artist: 'Artist', sources: 'semantic', adjustedScore: 4.2 }],
+      selectionTrace: expect.objectContaining({ runId: 'run-1', schemaVersion: 1 })
     });
+
+    expect(parsePlayerPickNextSseEvent('dj.debug', {
+      selectionTrace: { schemaVersion: 999 }
+    })).toMatchObject({ type: 'dj.debug', selectionTrace: null });
 
     expect(parsePlayerPickNextSseEvent('dj.pick-next.done', {
       added: false,
@@ -64,9 +77,49 @@ describe('player SSE event parsing', () => {
     });
   });
 
-  it('returns null for unknown or non-object player SSE payloads', () => {
-    expect(parsePlayerPersistentSseEvent('connected', { userId: 'u1' })).toBeNull();
+  it('parses a connected recovery snapshot and rejects unknown or non-object payloads', () => {
+    expect(parsePlayerPersistentSseEvent('connected', {
+      userId: 'u1',
+      queue: [{ ncmId: 'recovered', name: 'Recovered' }],
+      currentIndex: 0,
+      revision: 4,
+      journeys: [journeySnapshot()]
+    })).toMatchObject({
+      type: 'connected',
+      queue: [{ id: 'recovered', name: 'Recovered' }],
+      currentIndex: 0,
+      revision: 4,
+      journeys: [{ runId: 'run-sse' }]
+    });
+    expect(parsePlayerPersistentSseEvent('unknown', { userId: 'u1' })).toBeNull();
     expect(parsePlayerPersistentSseEvent('queue-updated', 'bad')).toBeNull();
     expect(parsePlayerPickNextSseEvent('dj.pick-next.done', null)).toBeNull();
   });
+
+  it('parses the shared Selection Journey event for persistent and direct streams', () => {
+    const snapshot = journeySnapshot();
+    expect(parsePlayerPersistentSseEvent('selection.journey', {
+      type: 'selection.journey', snapshot
+    })).toMatchObject({ type: 'selection.journey', snapshot });
+    expect(parsePlayerPickNextSseEvent('selection.journey', {
+      type: 'selection.journey', snapshot
+    })).toMatchObject({ type: 'selection.journey', snapshot });
+  });
 });
+
+function journeySnapshot() {
+  return {
+    schemaVersion: 1,
+    runId: 'run-sse',
+    journeyVersion: 1,
+    revision: 1,
+    status: 'running',
+    summary: '正在选歌。',
+    startedAt: '2026-07-17T04:00:00.000Z',
+    updatedAt: '2026-07-17T04:00:01.000Z',
+    stages: [],
+    candidates: [],
+    selections: [],
+    narration: { status: 'pending' }
+  };
+}

@@ -35,29 +35,66 @@ afterEach(() => {
 });
 
 describe('personal DJ context store', () => {
-  it('keeps latest as current and recent prior records as trend signals', () => {
+  it('deletes an expired current context without falling back to an older one', () => {
+    const now = new Date('2026-07-17T04:00:00.000Z');
+    const older = savePersonalDjContext({
+      userId: 'user-1',
+      uploadedAt: '2026-07-17T03:00:00.000Z',
+      now,
+      payload: createPayload('older', {
+        generatedAt: '2026-07-17T03:00:00.000Z'
+      })
+    });
+    const current = savePersonalDjContext({
+      userId: 'user-1',
+      uploadedAt: '2026-07-17T03:30:00.000Z',
+      now,
+      payload: createPayload('current', {
+        generatedAt: '2026-07-17T03:30:00.000Z',
+        validUntil: '2026-07-17T04:01:00.000Z'
+      })
+    });
+
+    const snapshot = getPersonalDjContextSnapshot(
+      'user-1',
+      new Date('2026-07-17T04:02:00.000Z')
+    );
+
+    expect(snapshot.current).toBeNull();
+    expect(snapshot.trend).toEqual([]);
+    expect(listPersonalDjContexts('user-1').map((record) => record.id)).toContain(older.id);
+    expect(listPersonalDjContexts('user-1').map((record) => record.id)).not.toContain(current.id);
+  });
+
+  it('keeps only the latest context active and does not project superseded trends', () => {
     const now = new Date();
+    const oldGeneratedAt = hoursBefore(now, 26);
     const old = savePersonalDjContext({
       userId: 'user-1',
-      uploadedAt: hoursBefore(now, 26),
-      payload: createPayload('old bundle')
+      uploadedAt: oldGeneratedAt,
+      now: new Date(oldGeneratedAt),
+      payload: createPayload('old bundle', { generatedAt: oldGeneratedAt })
     });
     const trend = savePersonalDjContext({
       userId: 'user-1',
       uploadedAt: hoursBefore(now, 4),
-      payload: createPayload('morning bundle')
+      now,
+      payload: createPayload('morning bundle', { generatedAt: hoursBefore(now, 4) })
     });
     const current = savePersonalDjContext({
       userId: 'user-1',
       uploadedAt: hoursBefore(now, 1),
-      payload: createPayload('current bundle')
+      now,
+      payload: createPayload('current bundle', { generatedAt: hoursBefore(now, 1) })
     });
 
     cleanupExpiredPersonalDjContexts('user-1', now);
     const snapshot = getPersonalDjContextSnapshot('user-1', now);
 
     expect(snapshot.current?.id).toBe(current.id);
-    expect(snapshot.trend.map((item) => item.id)).toEqual([trend.id]);
+    expect(snapshot.trend).toEqual([]);
+    expect(listPersonalDjContexts('user-1').find((item) => item.id === trend.id)?.revokedAt)
+      .not.toBeNull();
     expect(listPersonalDjContexts('user-1').map((item) => item.id)).not.toContain(old.id);
   });
 
@@ -105,10 +142,14 @@ describe('personal DJ context tokens store', () => {
   });
 });
 
-function createPayload(bundleId: string) {
+function createPayload(
+  bundleId: string,
+  overrides: { generatedAt?: string; validUntil?: string } = {}
+) {
   return {
     schemaVersion: 1,
-    generatedAt: '2026-07-08T10:00:00+08:00',
+    generatedAt: overrides.generatedAt ?? new Date().toISOString(),
+    ...(overrides.validUntil ? { validUntil: overrides.validUntil } : {}),
     summary: '最近在密集写代码，适合低干扰、稳定节奏的音乐。',
     currentState: {
       activity: 'coding',

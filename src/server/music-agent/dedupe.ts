@@ -1,3 +1,5 @@
+import { primaryArtistKey } from './artists.js';
+
 type TrackDedupeInput = {
   name?: string | null;
   artist?: string | null;
@@ -44,7 +46,7 @@ export function areMusicTrackDedupeKeysSimilar(leftKey: string, rightKey: string
   const left = parseDedupeKey(leftKey);
   const right = parseDedupeKey(rightKey);
   if (!left || !right) return false;
-  if (left.title === right.title) return true;
+  if (left.title === right.title) return left.artist === right.artist;
   if (!left.artist || !right.artist || left.artist !== right.artist) return false;
 
   return areTitlesSimilar(left.title, right.title);
@@ -56,7 +58,7 @@ function normalizeTrackTitle(value: string): string {
 
 function primaryArtist(track: TrackDedupeInput): string {
   const artist = track.artist ?? track.artists?.join(' / ') ?? '';
-  return artist.split(/\s*(?:\/|,|，|、|&|feat\.?|ft\.?|with)\s*/i)[0]?.trim() ?? '';
+  return primaryArtistKey(artist);
 }
 
 function parseDedupeKey(key: string): { title: string; artist: string } | null {

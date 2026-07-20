@@ -105,7 +105,7 @@ describe('personal DJ context upload route', () => {
     });
     expect(event.payload).toEqual({
       contextId: body.contextId,
-      generatedAt: '2026-07-08T10:00:00+08:00',
+      generatedAt: (req.body as { generatedAt: string }).generatedAt,
       uploadedAt: expect.any(String),
       source: { kind: 'lifemesh_bundle' },
       musicHintCount: 1
@@ -131,6 +131,26 @@ describe('personal DJ context upload route', () => {
 
     expect(res.statusCode).toBe(400);
     expect(res.body).toMatchObject({ ok: false, error: 'invalid body' });
+  });
+
+  it('rejects a context generated more than five minutes in the future', () => {
+    const req = {
+      userId: 'user-1',
+      body: {
+        ...createPayload('future-bundle'),
+        generatedAt: new Date(Date.now() + 5 * 60 * 1000 + 1_000).toISOString()
+      }
+    } as unknown as Request;
+    const handler = createPostPersonalDjContextHandler();
+    const res = createJsonResponse();
+
+    handler(req, res as unknown as Response);
+
+    expect(res.statusCode).toBe(400);
+    expect(res.body).toEqual({
+      ok: false,
+      error: 'personal_dj_context_generated_in_future'
+    });
   });
 
   it('rejects oversized uploads before schema validation', () => {
@@ -217,7 +237,7 @@ function createJsonResponse() {
 function createPayload(bundleId: string) {
   return {
     schemaVersion: 1,
-    generatedAt: '2026-07-08T10:00:00+08:00',
+    generatedAt: new Date().toISOString(),
     summary: '最近在密集写代码，适合低干扰、稳定节奏的音乐。',
     currentState: {
       activity: 'coding',

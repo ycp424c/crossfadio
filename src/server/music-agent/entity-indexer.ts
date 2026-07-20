@@ -1,6 +1,5 @@
 import type { NcmClient } from '../ncm/client.js';
-import type { StartPlayInput } from '../store/plays.js';
-import { getRecentPlays } from '../store/plays.js';
+import { listRecentListeningEpisodes } from '../store/listening-episodes.js';
 import {
   upsertMusicEntity,
   upsertMusicEntityEmbedding,
@@ -15,7 +14,13 @@ import { getLogger } from '../logger.js';
 import { getConfig } from '../config.js';
 import { EmbeddingClient, type EmbeddingResponse } from '../embedding/client.js';
 
-export type EntityIndexSource = 'liked' | 'recent_plays';
+export type EntityIndexSource = 'liked' | 'listening_episodes';
+
+export type PlayedTrackInput = {
+  songId: string;
+  songName: string;
+  artistName: string;
+};
 
 export type EntityIndexEmbeddingClient = {
   embed(input: string | string[], opts?: { signal?: AbortSignal }): Promise<EmbeddingResponse>;
@@ -58,31 +63,31 @@ type RunOptions = {
   sources?: EntityIndexSource[];
   limits?: {
     liked?: number;
-    recentPlays?: number;
+    listeningEpisodes?: number;
   };
   logger?: LoggerLike;
 };
 
 type PlayedTrackOptions = {
   userId: string;
-  track: StartPlayInput;
+  track: PlayedTrackInput;
   embeddingClient?: EntityIndexEmbeddingClient | null;
   logger?: LoggerLike;
 };
 
 const DEFAULT_LIKED_LIMIT = 300;
-const DEFAULT_RECENT_PLAYS_LIMIT = 80;
+const DEFAULT_LISTENING_EPISODES_LIMIT = 80;
 const DEFAULT_INDEX_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_INDEX_ERROR_RETRY_MS = 30 * 60 * 1000;
 const EMBEDDING_TIMEOUT_MS = 45_000;
-const SCHEDULED_INDEX_SOURCES: EntityIndexSource[] = ['liked', 'recent_plays'];
+const SCHEDULED_INDEX_SOURCES: EntityIndexSource[] = ['liked', 'listening_episodes'];
 
 const inFlightIndex = new Set<string>();
 
 export async function runMusicEntityIndex(options: RunOptions): Promise<MusicEntityIndexRunResult> {
   const logger = options.logger ?? getLogger();
   const userId = options.userId.trim();
-  const sources = uniqueSources(options.sources ?? ['liked', 'recent_plays']);
+  const sources = uniqueSources(options.sources ?? ['liked', 'listening_episodes']);
   const startedAtMs = Date.now();
   const sourceCounts: Record<string, number> = {};
   const errors: Record<string, string> = {};
@@ -94,7 +99,10 @@ export async function runMusicEntityIndex(options: RunOptions): Promise<MusicEnt
     sources,
     limits: {
       liked: resolveLimit(options.limits?.liked, DEFAULT_LIKED_LIMIT),
-      recentPlays: resolveLimit(options.limits?.recentPlays, DEFAULT_RECENT_PLAYS_LIMIT)
+      listeningEpisodes: resolveLimit(
+        options.limits?.listeningEpisodes,
+        DEFAULT_LISTENING_EPISODES_LIMIT
+      )
     }
   }, 'Music entity index run started');
 
@@ -107,9 +115,12 @@ export async function runMusicEntityIndex(options: RunOptions): Promise<MusicEnt
           ncmClient: options.ncmClient,
           limit: resolveLimit(options.limits?.liked, DEFAULT_LIKED_LIMIT)
         })
-        : loadRecentPlayEntities({
+        : loadListeningEpisodeEntities({
           userId,
-          limit: resolveLimit(options.limits?.recentPlays, DEFAULT_RECENT_PLAYS_LIMIT)
+          limit: resolveLimit(
+            options.limits?.listeningEpisodes,
+            DEFAULT_LISTENING_EPISODES_LIMIT
+          )
         });
 
       sourceCounts[source] = sourceResult.seenCount;
@@ -300,7 +311,7 @@ export function scheduleMusicEntityIndexIfDue(userId: string, ncmClient: EntityI
     sources: SCHEDULED_INDEX_SOURCES,
     limits: {
       liked: getLikedIndexLimit(),
-      recentPlays: getRecentPlaysIndexLimit()
+      listeningEpisodes: getListeningEpisodesIndexLimit()
     },
     logger
   }).catch((err) => {
@@ -438,19 +449,19 @@ async function loadLikedEntities(input: {
   };
 }
 
-function loadRecentPlayEntities(input: {
+function loadListeningEpisodeEntities(input: {
   userId: string;
   limit: number;
 }): SourceLoadResult {
-  const plays = getRecentPlays(input.userId, input.limit);
+  const episodes = listRecentListeningEpisodes(input.userId, input.limit);
   return {
-    seenCount: plays.length,
-    entities: plays
-      .map((play) => buildEntityFromPlayedTrack(input.userId, {
-        songId: play.song_id ?? '',
-        songName: play.song_name ?? '',
-        artistName: play.artist_name ?? ''
-      }, 'recent_plays'))
+    seenCount: episodes.length,
+    entities: episodes
+      .map((episode) => buildEntityFromPlayedTrack(input.userId, {
+        songId: episode.track.id,
+        songName: episode.track.name,
+        artistName: episode.track.artists.join(' / ')
+      }, 'listening_episodes'))
       .filter((entity): entity is IndexedEntity => entity !== null)
   };
 }
@@ -474,7 +485,7 @@ function buildEntityFromNcmTrack(userId: string, track: NcmTrackLike, source: En
       description: buildTrackDescription({ title, artist, source }),
       sourceSignals: source === 'liked'
         ? ['liked', 'verified_track', 'ncm', 'entity_indexer']
-        : ['recent_play', 'verified_play', 'ncm', 'entity_indexer'],
+        : ['listening_episode', 'verified_play', 'ncm', 'entity_indexer'],
       lastVerifiedAt: new Date().toISOString()
     }
   };
@@ -482,8 +493,8 @@ function buildEntityFromNcmTrack(userId: string, track: NcmTrackLike, source: En
 
 function buildEntityFromPlayedTrack(
   userId: string,
-  track: StartPlayInput,
-  source: 'play_start' | 'recent_plays' = 'play_start'
+  track: PlayedTrackInput,
+  source: 'play_start' | 'listening_episodes' = 'play_start'
 ): IndexedEntity | null {
   const providerId = track.songId.trim();
   const title = track.songName.trim();
@@ -503,7 +514,7 @@ function buildEntityFromPlayedTrack(
       description: buildTrackDescription({ title, artist, source }),
       sourceSignals: source === 'play_start'
         ? ['play_start', 'verified_play', 'ncm', 'entity_indexer']
-        : ['recent_play', 'verified_play', 'ncm', 'entity_indexer'],
+        : ['listening_episode', 'verified_play', 'ncm', 'entity_indexer'],
       lastVerifiedAt: new Date().toISOString()
     }
   };
@@ -698,11 +709,11 @@ function normalizeArtists(artists: string[] | null | undefined): string | null {
 function uniqueSources(sources: EntityIndexSource[]): EntityIndexSource[] {
   const result: EntityIndexSource[] = [];
   for (const source of sources) {
-    if ((source === 'liked' || source === 'recent_plays') && !result.includes(source)) {
+    if ((source === 'liked' || source === 'listening_episodes') && !result.includes(source)) {
       result.push(source);
     }
   }
-  return result.length > 0 ? result : ['liked', 'recent_plays'];
+  return result.length > 0 ? result : ['liked', 'listening_episodes'];
 }
 
 function uniqueByEntityId(entities: IndexedEntity[]): IndexedEntity[] {
@@ -735,8 +746,11 @@ function getLikedIndexLimit(): number {
   return resolveEnvPositiveInt('CROSSFADIO_MUSIC_ENTITY_INDEX_LIKED_LIMIT', DEFAULT_LIKED_LIMIT);
 }
 
-function getRecentPlaysIndexLimit(): number {
-  return resolveEnvPositiveInt('CROSSFADIO_MUSIC_ENTITY_INDEX_RECENT_PLAYS_LIMIT', DEFAULT_RECENT_PLAYS_LIMIT);
+function getListeningEpisodesIndexLimit(): number {
+  return resolveEnvPositiveInt(
+    'CROSSFADIO_MUSIC_ENTITY_INDEX_LISTENING_EPISODES_LIMIT',
+    DEFAULT_LISTENING_EPISODES_LIMIT
+  );
 }
 
 function resolveEnvPositiveInt(name: string, fallback: number): number {

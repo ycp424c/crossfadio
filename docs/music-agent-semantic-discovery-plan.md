@@ -1,5 +1,7 @@
 # MusicAgent Semantic Discovery Optimization Plan
 
+> Status: semantic recall background only. Selection pressure and candidate rejection are governed by DJ Memory / Selection Policy V2; this document does not define a Recall hard-filter contract.
+
 ## Context
 
 Recent DJ pick-next runs exposed a recall quality problem: NCM song search works well for exact track and artist queries, but performs poorly for mood, scene, and style phrases such as `city pop 柔和` or `indie pop 中低能量`. Those phrases either return empty results or title-polluted audio that only matches the words in the title.
@@ -279,12 +281,11 @@ Allowed output:
       "reason": "city pop 女声，轻快但不吵"
     }
   ],
-  "constraints": ["下午", "中低能量", "不吵"],
-  "avoidArtists": ["Taylor Swift"]
+  "constraints": ["下午", "中低能量", "不吵"]
 }
 ```
 
-Every LLM entity must be verified through NCM or the local entity index before entering CandidatePool.
+Every LLM entity must be verified through NCM or the local entity index before entering CandidatePool. Recent-artist pressure must remain observable to the phase-aware Policy and must not become an LLM-authored Recall hard filter.
 
 ## Scoring
 

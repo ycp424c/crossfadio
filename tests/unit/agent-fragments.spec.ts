@@ -1,206 +1,95 @@
 import { describe, expect, it } from 'vitest';
 import { assembleMessages } from '../../src/server/agent/fragments';
-import type { Fragments } from '../../src/server/agent/schema';
+import { fragmentsSchema, type Fragments } from '../../src/server/agent/schema';
 
 const base: Fragments = {
   mode: 'chat',
   system: 'You are a DJ.',
-  corpus: {
-    taste: 'Indie Pop / Dream Pop',
-    routines: '9am: 上班通勤',
-    moodRules: '深夜要安静',
-    playlists: [
-      { id: 'p1', name: '晨间清醒', provider: 'ncm', segments: ['morning'], tags: ['indie'], energyRange: [30, 60], priority: 1 }
-    ],
-    likedTracks: [
-      { id: '101', name: 'Sweet Disposition', artist: 'The Temper Trap' }
+  djMemory: {
+    schemaVersion: 1,
+    snapshotId: 'snapshot-1',
+    assembledAt: '2026-07-17T04:00:00.000Z',
+    sources: [],
+    purpose: 'chat',
+    facts: [
+      { key: 'current_track', value: ['Holocene', 'Bon Iver'], sourceId: 'queue' },
+      { key: 'weather', value: '18°C 晴', sourceId: 'weather' },
+      { key: 'taste_profile', value: 'Indie Pop / Dream Pop', sourceId: 'taste-1' }
     ]
-  },
-  env: {
-    nowIso: '2026-04-24T09:00:00Z',
-    localTime: '周四 09:00',
-    weather: { tempC: 18, desc: '晴' },
-    nowPlaying: { id: '123', name: 'Holocene', artist: 'Bon Iver', durationMs: 300000 }
-  },
-  memory: {
-    recentPlays: [
-      { id: 1, song_id: '1', song_name: 'Yesterday', artist_name: 'Beatles', started_at: '2026-04-23T20:00:00Z', ended_at: null, end_reason: null }
-    ],
-    recentChat: [{ role: 'user', content: '来一首安静的' }]
   },
   input: { kind: 'chat', text: '今天来点清新的' },
   trace: { triggeredBy: 'user', lastDecision: null }
 };
 
 describe('assembleMessages', () => {
-  it('returns exactly 4 messages', () => {
+  it('accepts only one purpose-scoped shared DJ Memory projection', () => {
     const msgs = assembleMessages(base);
-    expect(msgs).toHaveLength(4);
+
+    expect(msgs).toHaveLength(3);
+    expect(msgs[0]).toEqual({ role: 'system', content: 'You are a DJ.' });
+    expect(msgs[1]?.content).toContain('<dj_memory purpose="chat">');
+    expect(msgs[1]?.content).toContain('snapshot-1');
+    expect(msgs[1]?.content).toContain('Holocene');
+    expect(msgs[1]?.content).not.toContain('<corpus>');
+    expect(msgs[1]?.content).not.toContain('<env>');
+    expect(msgs[1]?.content).not.toContain('<memory>');
+    expect(msgs[2]?.content).toContain('今天来点清新的');
+    expect(msgs[2]?.content).toContain('triggeredBy=user');
   });
 
-  it('first message is system role with system prompt', () => {
-    const msgs = assembleMessages(base);
-    expect(msgs[0].role).toBe('system');
-    expect(msgs[0].content).toBe('You are a DJ.');
-  });
-
-  it('second message contains corpus and env tags', () => {
-    const msgs = assembleMessages(base);
-    expect(msgs[1].role).toBe('user');
-    expect(msgs[1].content).toContain('<corpus>');
-    expect(msgs[1].content).toContain('<env>');
-    expect(msgs[1].content).toContain('18°C');
-    expect(msgs[1].content).toContain('Holocene — Bon Iver');
-    expect(msgs[1].content).toContain('晨间清醒');
-    expect(msgs[1].content).toContain('<liked_tracks>');
-    expect(msgs[1].content).toContain('Sweet Disposition — The Temper Trap');
-  });
-
-  it('third message contains memory tags with recent plays and chat', () => {
-    const msgs = assembleMessages(base);
-    expect(msgs[2].role).toBe('user');
-    expect(msgs[2].content).toContain('<memory>');
-    expect(msgs[2].content).toContain('Yesterday');
-    expect(msgs[2].content).toContain('来一首安静的');
-  });
-
-  it('fourth message contains input and trace', () => {
-    const msgs = assembleMessages(base);
-    expect(msgs[3].role).toBe('user');
-    expect(msgs[3].content).toContain('今天来点清新的');
-    expect(msgs[3].content).toContain('triggeredBy=user');
-  });
-
-  it('handles chat input kind', () => {
-    const f: Fragments = { ...base, mode: 'chat', input: { kind: 'chat', text: '换首安静的' } };
-    const msgs = assembleMessages(f);
-    expect(msgs[3].content).toContain('换首安静的');
-  });
-
-  it('handles segueTrigger input kind', () => {
-    const f: Fragments = {
+  it('rejects old free-text corpus/env/memory inputs and mismatched purpose', () => {
+    expect(fragmentsSchema.safeParse({
       ...base,
-      mode: 'segue',
-      input: { kind: 'segueTrigger', from: { id: 'a', name: 'Song A' }, to: { id: 'b', name: 'Song B' } }
-    };
-    const msgs = assembleMessages(f);
-    expect(msgs[3].content).toContain('Song A');
-    expect(msgs[3].content).toContain('Song B');
+      corpus: { taste: 'legacy' },
+      env: { localTime: 'legacy' },
+      memory: { recentChat: [] }
+    }).success).toBe(false);
+    expect(fragmentsSchema.safeParse({
+      ...base,
+      djMemory: { ...base.djMemory, purpose: 'segue' }
+    }).success).toBe(false);
   });
 
-  it('injects segue context details (lyrics and tags) when provided', () => {
-    const f: Fragments = {
-      ...base,
+  it('keeps track evidence in segue input while memory guidance comes from the segue projection', () => {
+    const fragments: Fragments = {
       mode: 'segue',
+      system: 'You are a discreet DJ.',
+      djMemory: {
+        schemaVersion: 1,
+        snapshotId: 'snapshot-2',
+        assembledAt: '2026-07-17T04:00:00.000Z',
+        sources: [],
+        purpose: 'segue',
+        facts: [
+          { key: 'segue_tone', value: '克制、熟悉', sourceId: 'pdc-1' },
+          { key: 'segue_privacy_rule', value: '只说宽泛状态', sourceId: 'pdc-1' },
+          { key: 'session_continuity', value: '承接低干扰节奏', sourceId: 'selection-1' }
+        ]
+      },
       input: {
         kind: 'segueTrigger',
         from: { id: 'a', name: 'Song A', artist: 'Artist A' },
         to: { id: 'b', name: 'Song B', artist: 'Artist B' },
         context: {
           from: {
-            id: 'a',
-            name: 'Song A',
-            artist: 'Artist A',
-            lyricExcerpt: '雨滴落在窗沿上',
-            lyricKeywords: ['雨滴', '窗沿'],
-            tags: ['流行', '伤感']
+            id: 'a', name: 'Song A', artist: 'Artist A',
+            lyricExcerpt: '雨滴落在窗沿上', lyricKeywords: ['雨滴'], tags: ['伤感']
           },
           to: {
-            id: 'b',
-            name: 'Song B',
-            artist: 'Artist B',
-            lyricExcerpt: '太阳在地平线上升起',
-            lyricKeywords: ['太阳', '地平线'],
-            tags: ['电子', '治愈']
-          }
+            id: 'b', name: 'Song B', artist: 'Artist B',
+            lyricExcerpt: '太阳升起', lyricKeywords: ['太阳'], tags: ['治愈']
+          },
+          selectionRationale: '承接低干扰节奏。'
         }
-      }
+      },
+      trace: { triggeredBy: 'segue-hook', lastDecision: null }
     };
 
-    const msgs = assembleMessages(f);
-    expect(msgs[3].content).toContain('<segue_context>');
-    expect(msgs[3].content).toContain('雨滴落在窗沿上');
-    expect(msgs[3].content).toContain('电子 / 治愈');
-  });
-
-  it('renders selection rationale and personal segue guidance without source refs', () => {
-    const f: Fragments = {
-      ...base,
-      mode: 'segue',
-      input: {
-        kind: 'segueTrigger',
-        from: { id: 'a', name: 'Song A', artist: 'Artist A' },
-        to: { id: 'b', name: 'Song B', artist: 'Artist B' },
-        context: {
-          from: {
-            id: 'a',
-            name: 'Song A',
-            artist: 'Artist A',
-            lyricExcerpt: '',
-            lyricKeywords: [],
-            tags: []
-          },
-          to: {
-            id: 'b',
-            name: 'Song B',
-            artist: 'Artist B',
-            lyricExcerpt: '',
-            lyricKeywords: [],
-            tags: []
-          },
-          selectionRationale: '这首歌承接刚才的低干扰节奏。',
-          personalSegueGuidance: {
-            summary: '当前在专注写代码。',
-            tone: '克制、熟悉',
-            privacyRule: '只说宽泛状态，不暴露原始记录。'
-          }
-        }
-      }
-    };
-
-    const content = assembleMessages(f)[3].content;
-    expect(content).toContain('<selection_rationale>这首歌承接刚才的低干扰节奏。</selection_rationale>');
-    expect(content).toContain('<personal_segue_guidance>');
-    expect(content).toContain('当前状态摘要：当前在专注写代码。');
-    expect(content).toContain('口吻：克制、熟悉');
-    expect(content).toContain('隐私规则：只说宽泛状态，不暴露原始记录。');
-    expect(content).not.toContain('sliceRefs');
-    expect(content).not.toContain('citationLabel');
-  });
-
-  it('renders weather as unknown when null', () => {
-    const f: Fragments = { ...base, env: { ...base.env, weather: null } };
-    const msgs = assembleMessages(f);
-    expect(msgs[1].content).toContain('未知');
-  });
-
-  it('renders nowPlaying as 无 when null', () => {
-    const f: Fragments = { ...base, env: { ...base.env, nowPlaying: null } };
-    const msgs = assembleMessages(f);
-    expect(msgs[1].content).toContain('无');
-  });
-
-  it('renders empty playlists gracefully', () => {
-    const f: Fragments = { ...base, corpus: { ...base.corpus, playlists: [] } };
-    const msgs = assembleMessages(f);
-    expect(msgs[1].content).toContain('（无歌单）');
-  });
-
-  it('renders empty liked tracks gracefully', () => {
-    const f: Fragments = { ...base, corpus: { ...base.corpus, likedTracks: [] } };
-    const msgs = assembleMessages(f);
-    expect(msgs[1].content).toContain('（暂无红心歌曲）');
-  });
-
-  it('renders extracted preferences in memory slice when provided', () => {
-    const f: Fragments = { ...base, memory: { ...base.memory, extractedPreferences: '用户喜欢安静的indie风格' } };
-    const msgs = assembleMessages(f);
-    expect(msgs[2].content).toContain('<extracted_preferences>');
-    expect(msgs[2].content).toContain('用户喜欢安静的indie风格');
-  });
-
-  it('renders fallback text when extracted preferences absent', () => {
-    const msgs = assembleMessages(base);
-    expect(msgs[2].content).toContain('（暂无提取的偏好记忆）');
+    const msgs = assembleMessages(fragments);
+    expect(msgs[1]?.content).toContain('segue_privacy_rule');
+    expect(msgs[2]?.content).toContain('<segue_context>');
+    expect(msgs[2]?.content).toContain('雨滴落在窗沿上');
+    expect(msgs[2]?.content).toContain('<selection_rationale>承接低干扰节奏。</selection_rationale>');
+    expect(msgs[2]?.content).not.toContain('<personal_segue_guidance>');
   });
 });

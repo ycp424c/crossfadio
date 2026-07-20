@@ -1,32 +1,37 @@
 import { randomBytes } from 'node:crypto';
 import { computeStream } from '../agent/compute.js';
 import { buildSystemPrompt } from '../agent/modes.js';
-import type { ChatOutput, Fragments, Track } from '../agent/schema.js';
+import type { ChatOutput, Fragments } from '../agent/schema.js';
 import { resolveLlmConfig } from '../llm/config.js';
-import { LlmClient } from '../llm/client.js';
-import type { LlmConfig } from '../llm/client.js';
+import { beginForegroundLlmWork } from '../llm/foreground-activity.js';
 import type { NcmClient } from '../ncm/client.js';
-import { loadUserCorpus } from '../user-corpus/loader.js';
-import { loadLikedTracksForAgentContext } from '../user-corpus/ncm-liked.js';
-import { getRecentPlays } from '../store/plays.js';
-import { getRecentMessages, saveMessage } from '../store/messages.js';
-import { getPreferenceContext } from '../store/chat-preferences.js';
+import { saveMessage } from '../store/messages.js';
 import { getPref, deletePref, setPref } from '../store/prefs.js';
-import { fetchWeather } from '../weather.js';
 import { executeActions } from '../agent/actions.js';
-import { getCurrentIndex, getQueue, addToQueue, swapNext } from '../store/queue.js';
+import {
+  getCurrentIndex,
+  getQueue,
+  getQueueStateRevision,
+  addToQueue,
+  swapNext
+} from '../store/queue.js';
 import { appendDjEvent, type DjEventRecord } from '../store/dj-events.js';
 import { broadcastToUser } from './broadcast.js';
 import { getLogger } from '../logger.js';
-import { buildTrackDedupeKey, isTrackDedupeKeyExcluded, searchCandidates } from './routes/djNext.js';
+import { buildTrackDedupeKey, isTrackDedupeKeyExcluded } from './routes/djNext.js';
 import { MusicAgent } from '../music-agent/index.js';
-import { extractChatPreferencesIfDue } from '../music-agent/memory.js';
 import type { MusicAgentRunOutput } from '../music-agent/schema.js';
+import { buildDjMemorySnapshot } from '../dj-memory/snapshot.js';
+import {
+  projectDjMemoryForChat
+} from '../dj-memory/projections.js';
+import { createMusicAgentSelectionAdapter } from '../dj-memory/music-agent-adapter.js';
+import { applySelectionIntent } from '../music-agent/selection-intent.js';
+import { evaluateFinalQueuePick } from '../music-agent/final-queue-policy.js';
+import { enqueuePreferenceExtractionMessage } from '../music-agent/preference-extraction.js';
+import { safeOperationalError } from '../errors/safe-operational-error.js';
 
-const RECOMMEND_CANDIDATE_LIMIT = 20;
-const RECOMMEND_PICK_LLM_TIMEOUT_MS = 30_000;
-const ACTIVE_DIRECTIVE_TTL_MS = 6 * 60 * 60 * 1000;
-const RECENT_PLAY_EXCLUDE_COUNT = 30;
+const ACTIVE_DIRECTIVE_TTL_MS = 24 * 60 * 60 * 1000;
 const CHAT_AGENT_TIMEOUT_MS = 60_000;
 
 const activeRecommendJobs = new Map<string, AbortController>();
@@ -50,6 +55,19 @@ export async function handleChatMessage(
   try {
     const userMessageId = saveMessage(userId, 'user', text);
     appendListenerRequestReceivedEvent(userId, userMessageId, text);
+    enqueuePreferenceExtractionMessage({ userId, messageId: userMessageId });
+    const selectionIntentResult = await applySelectionIntent({
+      userId,
+      text,
+      sourceRef: { messageId: userMessageId },
+      ncmClient
+    });
+    if (selectionIntentResult.trackResolution === 'pending_resolution') {
+      send('chat.intent.notice', {
+        kind: 'track_exclusion_pending_resolution',
+        message: '暂时无法确认这首歌的唯一版本，已登记为待确认；硬禁播尚未生效，后台会在 24 小时内重试，仍无法确认时会明确通知。'
+      });
+    }
     applyQueueDirectiveFallbackFromText(userId, text);
 
     const llmConfig = resolveLlmConfig(userId);
@@ -62,34 +80,14 @@ export async function handleChatMessage(
 
     if (signal?.aborted) return;
 
-    const corpus = loadUserCorpus(userId);
-    const likedTracks = await loadLikedTracksForAgentContext(ncmClient);
-    if (signal?.aborted) return;
-    const weather = await fetchWeather(userId);
-    if (signal?.aborted) return;
     const now = new Date();
+    const memorySnapshot = await buildDjMemorySnapshot({ userId, now });
+    if (signal?.aborted) return;
 
     const fragments: Fragments = {
       mode: 'chat',
-      system: buildSystemPrompt(corpus.djPersona || 'You are a DJ.', 'chat'),
-      corpus: {
-        taste: corpus.taste,
-        routines: corpus.routines,
-        moodRules: corpus.moodRules,
-        playlists: corpus.playlists,
-        likedTracks
-      },
-      env: {
-        nowIso: now.toISOString(),
-        localTime: formatLocalTime(now),
-        weather,
-        nowPlaying: null
-      },
-      memory: {
-        recentPlays: getRecentPlays(userId, 50),
-        recentChat: getRecentMessages(userId, 20, 60),
-        extractedPreferences: getPreferenceContext(userId, 3)
-      },
+      system: buildSystemPrompt('You are a DJ.', 'chat'),
+      djMemory: projectDjMemoryForChat(memorySnapshot),
       input: { kind: 'chat', text },
       trace: { triggeredBy: 'user', lastDecision: null }
     };
@@ -97,13 +95,18 @@ export async function handleChatMessage(
     let streamedRaw = '';
     let chatOutput: ChatOutput | null = null;
 
-    for await (const event of computeStream(fragments, { llmConfig })) {
-      if (signal?.aborted) return;
-      if (event.type === 'delta') {
-        streamedRaw += event.say;
-      } else if (event.type === 'done' && event.output.mode === 'chat') {
-        chatOutput = event.output;
+    const releaseChatForegroundLlm = beginForegroundLlmWork();
+    try {
+      for await (const event of computeStream(fragments, { llmConfig })) {
+        if (signal?.aborted) return;
+        if (event.type === 'delta') {
+          streamedRaw += event.say;
+        } else if (event.type === 'done' && event.output.mode === 'chat') {
+          chatOutput = event.output;
+        }
       }
+    } finally {
+      releaseChatForegroundLlm();
     }
 
     if (signal?.aborted) return;
@@ -112,7 +115,6 @@ export async function handleChatMessage(
       const fallback = extractSayFromRawChat(streamedRaw);
       send('chat.done', { say: fallback, intent: 'chitchat', actions: [] });
       saveMessage(userId, 'assistant', fallback);
-      scheduleChatPreferenceExtraction(userId, llmConfig);
       return;
     }
 
@@ -123,7 +125,6 @@ export async function handleChatMessage(
       intent: chatOutput.intent,
       actions: chatOutput.actions
     });
-    scheduleChatPreferenceExtraction(userId, llmConfig);
 
     if (chatOutput.actions.length > 0) {
       const songActions = chatOutput.actions.filter(
@@ -173,62 +174,53 @@ export async function handleChatMessage(
         let added = 0;
         let recommendationTracks: ChatAddedTrack[] = [];
         try {
-          let shouldRunLegacyFallback = false;
+          reportProgress({ phase: 'agent' });
+          const agent = new MusicAgent({ llmConfig });
+          const agentAbort = createAbortTimeoutSignal(controller.signal, CHAT_AGENT_TIMEOUT_MS);
+          const releaseSelectionForegroundLlm = beginForegroundLlmWork();
           try {
-            reportProgress({ phase: 'agent' });
-            const agent = new MusicAgent({ llmConfig });
-            const agentAbort = createAbortTimeoutSignal(controller.signal, CHAT_AGENT_TIMEOUT_MS);
-            try {
-              const output = await agent.recommendFromChat({
-                userId,
-                ncmClient,
-                userText: text,
-                actions: songActions,
-                signal: agentAbort.signal
-              });
-
-              if (controller.signal.aborted) {
-                added = 0;
-              } else if (output.status === 'aborted') {
-                shouldRunLegacyFallback = agentAbort.timedOut();
-              } else if (output.status === 'ok') {
-                const addedTracks = applyMusicAgentPicks(
-                  userId,
-                  output,
-                  isSwap
-                );
-                recommendationTracks = addedTracks;
-                added = addedTracks.length;
-                shouldRunLegacyFallback = added === 0;
-                if (!shouldRunLegacyFallback && addedTracks.length > 0) {
-                  reportProgress({ phase: 'done', tracks: toChatProgressTracks(addedTracks) });
-                }
-              } else {
-                shouldRunLegacyFallback = output.status === 'empty_pool';
-              }
-            } finally {
-              agentAbort.cleanup();
-            }
-          } catch (err) {
-            logger.warn({ err, jobId }, 'Chat recommend MusicAgent error');
-            shouldRunLegacyFallback = !controller.signal.aborted;
-          }
-
-          if (shouldRunLegacyFallback && !controller.signal.aborted) {
-            recommendationTracks = await runChatRecommendPipeline(userId, {
-              actions: songActions,
-              likedTracks,
-              ncmClient,
-              llmConfig,
+            const selectionAdapter = createMusicAgentSelectionAdapter({
+              snapshot: memorySnapshot,
+              request: 'chat-recommend',
               userText: text,
-              onProgress: reportProgress,
-              signal: controller.signal
+              actionQueries: songActions.map((action) => action.pick.query),
+              selectionIntent: selectionIntentResult.intent
             });
-            added = recommendationTracks.length;
+            const output = await agent.recommendFromChat({
+              userId,
+              ncmClient,
+              userText: text,
+              actions: songActions,
+              signal: agentAbort.signal,
+              selectionAdapter
+            });
+
+            if (!controller.signal.aborted && output.status === 'ok') {
+              const applied = applyMusicAgentPicks(
+                userId,
+                output,
+                isSwap,
+                selectionAdapter.selectionModeForCandidate
+              );
+              recommendationTracks = applied.tracks;
+              added = recommendationTracks.length;
+              if (applied.skipped.length > 0) {
+                reportProgress({ phase: 'skipped', skipped: applied.skipped });
+              }
+              if (added > 0) {
+                reportProgress({ phase: 'done', tracks: toChatProgressTracks(recommendationTracks) });
+              }
+            } else if (!controller.signal.aborted) {
+              reportProgress({ phase: 'error', reason: output.status });
+            }
+          } finally {
+            releaseSelectionForegroundLlm();
+            agentAbort.cleanup();
           }
         } catch (err) {
-          logger.warn({ err, jobId }, 'Chat recommend pipeline error');
-          reportProgress({ phase: 'error', reason: err instanceof Error ? err.message : 'unknown' });
+          const safeError = safeOperationalError(err, 'chat_recommend_failed');
+          logger.warn({ error: safeError, jobId }, 'Chat recommend MusicAgent error');
+          reportProgress({ phase: 'error', reason: safeError.code });
         } finally {
           activeRecommendJobs.delete(jobId);
           signal?.removeEventListener('abort', onParentAbort);
@@ -242,7 +234,10 @@ export async function handleChatMessage(
             tracks: recommendationTracks,
             action: isSwap ? 'swap_next' : 'append'
           });
-          broadcastToUser(userId, { type: 'queue-updated', queue: getQueue(userId), currentIndex: getCurrentIndex(userId) });
+          broadcastToUser(userId, {
+            type: 'queue-updated', queue: getQueue(userId), currentIndex: getCurrentIndex(userId),
+            revision: getQueueStateRevision(userId)
+          });
         }
 
         // Still execute any non-song actions (skip, ban, etc.)
@@ -253,6 +248,7 @@ export async function handleChatMessage(
           await executeActions(otherActions, {
             userId,
             ncmClient,
+            sourceRef: { messageId: userMessageId },
             onQueueActiveDirectiveUpdated: (directive) => appendDirectiveUpdatedEvent(userId, directive?.text ?? null, 'chat')
           });
         }
@@ -261,28 +257,27 @@ export async function handleChatMessage(
         const result = await executeActions(chatOutput.actions, {
           userId,
           ncmClient,
+          sourceRef: { messageId: userMessageId },
           onQueueActiveDirectiveUpdated: (directive) => appendDirectiveUpdatedEvent(userId, directive?.text ?? null, 'chat')
         });
         if (result.queueChanged) {
-          broadcastToUser(userId, { type: 'queue-updated', queue: getQueue(userId), currentIndex: getCurrentIndex(userId) });
+          broadcastToUser(userId, {
+            type: 'queue-updated', queue: getQueue(userId), currentIndex: getCurrentIndex(userId),
+            revision: getQueueStateRevision(userId)
+          });
         }
       }
     }
   } catch (err) {
-    logger.warn({ err }, 'Chat message handler error');
-    send('chat.error', { error: err instanceof Error ? err.message : 'unknown error' });
+    const safeError = safeOperationalError(err, 'chat_message_failed');
+    logger.warn({ error: safeError }, 'Chat message handler error');
+    send('chat.error', {
+      error: 'AI DJ 暂时不可用，请稍后重试。',
+      code: safeError.code,
+      ...(safeError.requestId ? { requestId: safeError.requestId } : {})
+    });
   }
 }
-
-type RecommendPipelineInput = {
-  actions: Array<{ type: string; pick: { query: string }; position?: string }>;
-  likedTracks: Track[];
-  ncmClient: NcmClient;
-  llmConfig: LlmConfig;
-  userText: string;
-  onProgress: (evt: Record<string, unknown>) => void;
-  signal: AbortSignal;
-};
 
 type ChatAddedTrack = {
   id: string;
@@ -293,158 +288,18 @@ type ChatAddedTrack = {
   position: 'end' | 'after_current';
 };
 
-async function runChatRecommendPipeline(userId: string, input: RecommendPipelineInput): Promise<ChatAddedTrack[]> {
-  const logger = getLogger();
-  const { actions, likedTracks, ncmClient, llmConfig, userText, onProgress, signal } = input;
-  const isSwap = actions.some((a) => a.type === 'swap_next');
-  const maxAdded = isSwap ? 1 : 2;
-
-  const keywords = actions
-    .map((a) => a.pick.query)
-    .filter((q) => q.trim().length > 0);
-
-  if (keywords.length === 0) return [];
-
-  onProgress({ phase: 'searching' });
-
-  const recentIds = new Set(
-    getRecentPlays(userId, RECENT_PLAY_EXCLUDE_COUNT)
-      .map((p) => p.song_id)
-      .filter((id): id is string => id !== null)
-  );
-  const currentQueueIds = new Set(getQueue(userId).map((t) => t.ncmId));
-  const excludeIds = new Set([...recentIds, ...currentQueueIds]);
-
-  if (signal.aborted) return [];
-
-  const searchedTracks = await searchCandidates(
-    keywords,
-    ncmClient,
-    excludeIds,
-    RECOMMEND_CANDIDATE_LIMIT,
-    signal
-  );
-
-  const likedSampleIds = new Set(likedTracks.map((t) => t.id));
-  const allCandidates = [
-    ...likedTracks.filter((t) => !excludeIds.has(t.id)),
-    ...searchedTracks.filter((t) => !likedSampleIds.has(t.id))
-  ];
-
-  if (allCandidates.length === 0) {
-    onProgress({ phase: 'error', reason: 'no-candidates' });
-    return fallbackAddFromLiked(userId, likedTracks, excludeIds, actions.some((a) => a.type === 'swap_next'));
-  }
-
-  onProgress({ phase: 'picking', candidateCount: allCandidates.length });
-
-  logger.info(
-    { keywords, likedCount: likedTracks.length, searchedCount: searchedTracks.length, totalCandidates: allCandidates.length },
-    'Chat recommend: built candidate pool'
-  );
-
-  const candidateList = allCandidates
-    .map((t, i) => `${i + 1}. ${t.name ?? t.id} — ${t.artist ?? '未知艺人'}`)
-    .join('\n');
-
-  const pickSystemPrompt = `你是一个 DJ。根据候选歌曲列表和用户请求，挑选 ${maxAdded === 1 ? '1 首' : '1-2 首'}最匹配的歌曲。只输出 JSON 数组（1-based 索引），例如：[3]${maxAdded === 1 ? '' : ' 或 [3, 7]'}。不要输出任何其他内容。`;
-
-  const pickUserPrompt = `<用户请求>${userText}</用户请求>
-<候选歌曲>
-${candidateList}
-</候选歌曲>
-
-从以上 ${allCandidates.length} 首候选中挑选 ${maxAdded === 1 ? '1 首' : '1-2 首'}最符合用户请求的歌曲。只输出 JSON 数组。`;
-
-  let chosenIndices: number[] = [];
-  try {
-    if (signal.aborted) return [];
-    const pickResp = await withTimeout(
-      new LlmClient(llmConfig).complete(
-        [
-          { role: 'system', content: pickSystemPrompt },
-          { role: 'user', content: pickUserPrompt }
-        ],
-        { signal: AbortSignal.timeout(RECOMMEND_PICK_LLM_TIMEOUT_MS) }
-      ),
-      RECOMMEND_PICK_LLM_TIMEOUT_MS + 5_000,
-      { content: '[]', model: '' }
-    );
-    const cleaned = pickResp.content
-      .replace(/^```(?:json)?\s*/i, '')
-      .replace(/\s*```\s*$/, '')
-      .trim();
-    const match = cleaned.match(/\[[\s\S]*?\]/);
-    if (match) {
-      const parsed: unknown = JSON.parse(match[0]);
-      if (Array.isArray(parsed)) {
-        chosenIndices = parsed
-          .filter((n): n is number => typeof n === 'number' && n >= 1 && n <= allCandidates.length)
-          .slice(0, maxAdded);
-      }
-    }
-  } catch (err) {
-    logger.warn({ err }, 'Chat recommend: LLM pick failed, using top search results');
-  }
-
-  if (signal.aborted) return [];
-
-  if (chosenIndices.length === 0) {
-    chosenIndices = allCandidates.slice(0, maxAdded).map((_, i) => i + 1);
-  }
-
-  const position = isSwap ? 'after_current' : 'end';
-  const addedTracks: ChatAddedTrack[] = [];
-  const alreadyQueued = new Set(getQueue(userId).map((t) => t.ncmId));
-  for (const idx of chosenIndices) {
-    const track = allCandidates[idx - 1];
-    if (!track) continue;
-    if (alreadyQueued.has(track.id)) continue;
-    alreadyQueued.add(track.id);
-    if (isSwap) {
-      swapNext(userId, { ncmId: track.id, name: track.name, artists: track.artist ? [track.artist] : [] });
-    } else {
-      addToQueue(userId,
-        { ncmId: track.id, name: track.name, artists: track.artist ? [track.artist] : [] },
-        'end'
-      );
-    }
-    addedTracks.push({
-      id: track.id,
-      name: track.name ?? track.id,
-      artist: track.artist ?? '未知艺人',
-      selectionRationale: 'Matched the listener chat recommendation request.',
-      source: 'legacy_chat_recommend',
-      position
-    });
-    if (addedTracks.length >= maxAdded) break;
-  }
-
-  onProgress({ phase: 'done', tracks: toChatProgressTracks(addedTracks) });
-
-  logger.info({ added: addedTracks.length, chosenIndices, totalCandidates: allCandidates.length }, 'Chat recommend: added tracks');
-  return addedTracks;
-}
-
 function applyMusicAgentPicks(
   userId: string,
   output: MusicAgentRunOutput,
-  isSwap: boolean
-): ChatAddedTrack[] {
-  if (output.status !== 'ok') return [];
+  isSwap: boolean,
+  selectionModeForCandidate: (candidate: {
+    id: string;
+    name?: string;
+    artist?: string;
+  }) => 'autonomous' | 'explicit_request'
+): { tracks: ChatAddedTrack[]; skipped: Array<{ id: string; reason: string }> } {
+  if (output.status !== 'ok') return { tracks: [], skipped: [] };
 
-  const recentIds = new Set(
-    getRecentPlays(userId, RECENT_PLAY_EXCLUDE_COUNT)
-      .map((play) => play.song_id)
-      .filter((id): id is string => id !== null)
-  );
-  const recentDedupeKeys = getRecentPlays(userId, RECENT_PLAY_EXCLUDE_COUNT)
-    .map((play) => buildTrackDedupeKey({
-      id: play.song_id,
-      name: play.song_name,
-      artist: play.artist_name
-    }))
-    .filter(Boolean);
   const queuedTracks = getQueue(userId);
   const queueDedupeKeys = queuedTracks
     .map((track) => buildTrackDedupeKey({
@@ -453,14 +308,27 @@ function applyMusicAgentPicks(
       artists: track.artists
     }))
     .filter(Boolean);
-  const excludedIds = new Set([...recentIds, ...queuedTracks.map((track) => track.ncmId)]);
-  const excludedDedupeKeys = new Set([...recentDedupeKeys, ...queueDedupeKeys]);
+  const excludedIds = new Set(queuedTracks.map((track) => track.ncmId));
+  const excludedDedupeKeys = new Set(queueDedupeKeys);
   const addedTracks: ChatAddedTrack[] = [];
+  const skipped: Array<{ id: string; reason: string }> = [];
   const position = isSwap ? 'after_current' : 'end';
   const maxAdded = isSwap ? 1 : output.picks.length;
   for (const pick of output.picks) {
+    const finalDecision = evaluateFinalQueuePick({
+      userId,
+      pick,
+      mode: selectionModeForCandidate(pick)
+    });
+    if (finalDecision.action === 'reject') {
+      skipped.push({ id: pick.id, reason: finalDecision.reasonCodes[0] ?? 'final_rejected' });
+      continue;
+    }
     const dedupeKey = buildTrackDedupeKey(pick);
-    if (excludedIds.has(pick.id) || isTrackDedupeKeyExcluded(dedupeKey, excludedDedupeKeys)) continue;
+    if (excludedIds.has(pick.id) || isTrackDedupeKeyExcluded(dedupeKey, excludedDedupeKeys)) {
+      skipped.push({ id: pick.id, reason: 'queue_track_idempotency' });
+      continue;
+    }
     excludedIds.add(pick.id);
     if (dedupeKey) excludedDedupeKeys.add(dedupeKey);
     const track = {
@@ -483,27 +351,15 @@ function applyMusicAgentPicks(
     });
     if (addedTracks.length >= maxAdded) break;
   }
-  return addedTracks;
-}
-
-function scheduleChatPreferenceExtraction(userId: string, llmConfig: LlmConfig): void {
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(new Error('memory-extraction-timeout')), 10_000);
-  void extractChatPreferencesIfDue(userId, new LlmClient(llmConfig), controller.signal)
-    .catch((err) => {
-      getLogger().warn({ err }, 'Chat preference extraction failed');
-    })
-    .finally(() => clearTimeout(timeoutId));
+  return { tracks: addedTracks, skipped };
 }
 
 function createAbortTimeoutSignal(
   parentSignal: AbortSignal | undefined,
   timeoutMs: number
-): { signal: AbortSignal; cleanup: () => void; timedOut: () => boolean } {
+): { signal: AbortSignal; cleanup: () => void } {
   const controller = new AbortController();
-  let didTimeOut = false;
   const timeoutId = setTimeout(() => {
-    didTimeOut = true;
     controller.abort(new Error('timeout'));
   }, timeoutMs);
   const abortFromParent = (): void => {
@@ -521,59 +377,8 @@ function createAbortTimeoutSignal(
     cleanup: () => {
       clearTimeout(timeoutId);
       parentSignal?.removeEventListener('abort', abortFromParent);
-    },
-    timedOut: () => didTimeOut
-  };
-}
-
-function fallbackAddFromLiked(
-  userId: string,
-  likedTracks: Track[],
-  excludeIds: Set<string>,
-  isSwap: boolean
-): ChatAddedTrack[] {
-  const logger = getLogger();
-  const available = likedTracks.filter((t) => !excludeIds.has(t.id));
-  if (available.length === 0) return [];
-
-  const picked = sampleN(available, Math.min(isSwap ? 1 : 2, available.length));
-  const addedTracks: ChatAddedTrack[] = [];
-  for (const track of picked) {
-    if (isSwap) {
-      swapNext(userId, { ncmId: track.id, name: track.name, artists: track.artist ? [track.artist] : [] });
-    } else {
-      addToQueue(userId,
-        { ncmId: track.id, name: track.name, artists: track.artist ? [track.artist] : [] },
-        'end'
-      );
     }
-    addedTracks.push({
-      id: track.id,
-      name: track.name ?? track.id,
-      artist: track.artist ?? '未知艺人',
-      selectionRationale: 'Fallback matched a liked track to the listener chat request.',
-      source: 'liked_fallback',
-      position: isSwap ? 'after_current' : 'end'
-    });
-  }
-  logger.info({ count: picked.length }, 'Chat recommend: fallback added from liked');
-  return addedTracks;
-}
-
-function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
-  return Promise.race([
-    promise,
-    new Promise<T>((resolve) => setTimeout(() => resolve(fallback), ms))
-  ]);
-}
-
-function sampleN<T>(arr: T[], n: number): T[] {
-  const copy = [...arr];
-  for (let i = copy.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [copy[i], copy[j]] = [copy[j], copy[i]];
-  }
-  return copy.slice(0, n);
+  };
 }
 
 export function extractQueueDirectiveFromText(text: string, now = new Date()): { text: string; expiresAt: string } | null {
@@ -605,7 +410,8 @@ function applyQueueDirectiveFallbackFromText(userId: string, text: string): void
     return;
   }
 
-  if (getPref(userId, 'queue.activeDirective')) return;
+  const current = getPref<{ expiresAt?: string }>(userId, 'queue.activeDirective');
+  if (current?.expiresAt && Date.parse(current.expiresAt) > Date.now()) return;
   setPref(userId, 'queue.activeDirective', directive);
   appendDirectiveUpdatedEvent(userId, directive.text, 'fallback');
 }
@@ -700,7 +506,8 @@ function appendChatRecommendationEvents(input: {
 }
 
 function getActiveDirectiveText(userId: string): string | undefined {
-  const directive = getPref<{ text?: string }>(userId, 'queue.activeDirective');
+  const directive = getPref<{ text?: string; expiresAt?: string }>(userId, 'queue.activeDirective');
+  if (!directive?.expiresAt || Date.parse(directive.expiresAt) <= Date.now()) return undefined;
   const text = directive?.text?.trim();
   return text ? truncate(text, 800) : undefined;
 }
@@ -713,14 +520,6 @@ function truncate(value: string | undefined, maxLength: number): string {
   const trimmed = value?.trim() ?? '';
   if (trimmed.length <= maxLength) return trimmed;
   return trimmed.slice(0, maxLength);
-}
-
-function formatLocalTime(date: Date): string {
-  const weekdays = ['日', '一', '二', '三', '四', '五', '六'];
-  const day = weekdays[date.getDay()];
-  const hh = String(date.getHours()).padStart(2, '0');
-  const mm = String(date.getMinutes()).padStart(2, '0');
-  return `周${day} ${hh}:${mm}`;
 }
 
 function extractSayFromRawChat(raw: string): string {

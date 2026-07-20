@@ -2,7 +2,6 @@ import type { NcmClient } from '../ncm/client.js';
 import type { CandidatePool } from './candidates.js';
 import {
   rejectedPoolRecallProblems,
-  skippedRecallProblems,
   sourceScores,
   upsertTracks,
   type UpsertTracksResult
@@ -51,8 +50,6 @@ export type EntityRecallOptions = {
   searchLimit: number;
   consumeNcmSearch: () => boolean;
   consumePlaylistFetch: () => boolean;
-  avoidArtists: ReadonlySet<string>;
-  artistCounts: Map<string, number>;
   source?: CandidateSource;
   provenanceKind?: CandidateProvenanceKind;
   signal?: AbortSignal;
@@ -97,8 +94,6 @@ async function recallTrackEntity(options: EntityRecallOptions): Promise<EntityRe
     const result = upsertTracks(options.candidatePool, verifiedTracks.slice(0, options.limit), source, {
       evidence: `实体曲目: ${entityLabel(options.entity)}`,
       scores: sourceScores(source, options.context),
-      avoidArtists: options.avoidArtists,
-      artistCounts: options.artistCounts,
       provenanceKind: options.provenanceKind
     });
     return {
@@ -128,8 +123,6 @@ async function recallTrackEntity(options: EntityRecallOptions): Promise<EntityRe
   const result = upsertTracks(options.candidatePool, verifiedTracks, source, {
     evidence: `实体曲目: ${entityLabel(options.entity)}`,
     scores: sourceScores(source, options.context),
-    avoidArtists: options.avoidArtists,
-    artistCounts: options.artistCounts,
     provenanceKind: options.provenanceKind
   });
   return {
@@ -165,8 +158,6 @@ async function recallArtistEntity(options: EntityRecallOptions): Promise<EntityR
   const result = upsertTracks(options.candidatePool, verifiedTracks, source, {
     evidence: `实体艺人: ${artistName}`,
     scores: sourceScores(source, options.context),
-    avoidArtists: options.avoidArtists,
-    artistCounts: options.artistCounts,
     provenanceKind: options.provenanceKind
   });
   return {
@@ -211,8 +202,6 @@ async function recallAlbumEntity(options: EntityRecallOptions): Promise<EntityRe
     const result = upsertTracks(options.candidatePool, tracks, source, {
       evidence: `实体专辑: ${detail.name}`,
       scores: sourceScores(source, options.context),
-      avoidArtists: options.avoidArtists,
-      artistCounts: options.artistCounts,
       provenanceKind: options.provenanceKind
     });
     return {
@@ -257,8 +246,6 @@ async function recallAlbumEntity(options: EntityRecallOptions): Promise<EntityRe
   const result = upsertTracks(options.candidatePool, tracks, source, {
     evidence: `实体专辑: ${detail.name}`,
     scores: sourceScores(source, options.context),
-    avoidArtists: options.avoidArtists,
-    artistCounts: options.artistCounts,
     provenanceKind: options.provenanceKind
   });
   return {
@@ -312,8 +299,6 @@ async function recallPlaylistEntity(options: EntityRecallOptions): Promise<Entit
   const result = upsertTracks(options.candidatePool, tracks, source, {
     evidence: `实体歌单: ${detail.name}`,
     scores: sourceScores(source, options.context),
-    avoidArtists: options.avoidArtists,
-    artistCounts: options.artistCounts,
     provenanceKind: options.provenanceKind
   });
   return {
@@ -323,10 +308,7 @@ async function recallPlaylistEntity(options: EntityRecallOptions): Promise<Entit
 }
 
 function entityRecallProblems(result: UpsertTracksResult): string[] {
-  return [
-    ...skippedRecallProblems(result),
-    ...rejectedPoolRecallProblems(result)
-  ];
+  return rejectedPoolRecallProblems(result);
 }
 
 function findVerifiedPlaylist(

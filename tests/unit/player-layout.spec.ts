@@ -29,12 +29,12 @@ describe('player layout', () => {
     const errorStart = source.indexOf('function onTrackMediaError(): void', endedStart);
     const endedBlock = source.slice(endedStart, errorStart);
 
-    expect(source).toContain('function onNativePlay(): void');
+    expect(source).toContain('function onNativePlaying(): void');
     expect(source).toContain('playbackSessionRef.current?.setPlaying(true)');
     expect(source).toContain('function onNativePause(): void');
     expect(source).toContain('playbackSessionRef.current?.setPlaying(false)');
     expect(endedBlock).toContain('playbackSessionRef.current?.setPlaying(false)');
-    expect(source).toContain('onPlay={onNativePlay}');
+    expect(source).toContain('onPlaying={onNativePlaying}');
     expect(source).toContain('onPause={onNativePause}');
   });
 
@@ -99,7 +99,7 @@ describe('player layout', () => {
     expect(selectBlock).toContain('recordPlaybackHistory(transition.removedTracks)');
     expect(deleteBlock).not.toContain('recordPlaybackHistory(');
     expect(prevBlock).toContain('playbackHistoryRef.current.restore(queue)');
-    expect(prevBlock).toContain('shouldAutoplayNextRef.current = isPlaying');
+    expect(prevBlock).toContain('queueAutoplayTargetRef.current = getQueueAutoplayTargetForTransition(');
     expect(prevBlock).toContain('applyQueueSnapshot({ queue: restored, currentIndex: 0 })');
     expect(source).toContain('playbackHistoryRef.current.snapshot().length > 0');
     expect(loadLikedQueueBlock).toContain('playbackHistoryRef.current.clear()');
@@ -179,25 +179,75 @@ describe('player layout', () => {
     const loadNowPlayingStart = source.indexOf('async function loadNowPlaying');
     const loadLikedQueueBody = source.slice(loadLikedQueueStart, loadNowPlayingStart);
 
-    expect(loadLikedQueueBody).toContain('applyQueueSnapshot({ queue: [startTrack], currentIndex: 0 })');
+    expect(loadLikedQueueBody).toContain("rememberQueueOperation({ type: 'replace_queue', snapshot: startSnapshot })");
+    expect(loadLikedQueueBody).toContain('applyQueueSnapshot(startSnapshot)');
     expect(loadLikedQueueBody).not.toContain('applyingRemoteQueueRef.current = true');
   });
 
   it('restores the previous player queue from localStorage before falling back to liked queue', () => {
     const source = fs.readFileSync(path.join(root, 'src/renderer/views/Player/PlayerView.tsx'), 'utf-8');
     const cacheSource = fs.readFileSync(path.join(root, 'src/renderer/playerQueueCache.ts'), 'utf-8');
-    const initStart = source.indexOf('void refreshSession();');
-    const initEnd = source.indexOf("if ('geolocation' in navigator)", initStart);
-    const initBody = source.slice(initStart, initEnd);
+    const restoreStart = source.indexOf('const restoredQueue = restorePersistedQueueSnapshot(listeningUserId);');
+    const restoreEffectStart = source.lastIndexOf('useEffect(() => {', restoreStart);
+    const restoreEffectEnd = source.indexOf('}, [applyQueueSnapshot, listeningUserId, sseToken]);', restoreStart);
+    const initBody = source.slice(restoreEffectStart, restoreEffectEnd);
 
     expect(source).toContain('@renderer/playerQueueCache');
     expect(cacheSource).toContain('PLAYER_QUEUE_STORAGE_KEY');
-    expect(source).toContain('restorePersistedQueueSnapshot()');
-    expect(source).toContain('persistQueueSnapshot(queue, currentIndex)');
-    expect(initBody).toContain('const restoredQueue = restorePersistedQueueSnapshot();');
+    expect(source).toContain('restorePersistedQueueSnapshot(listeningUserId)');
+    expect(source).toContain('persistQueueSnapshot(listeningUserId, queue, currentIndex)');
+    expect(initBody).toContain('const restoredQueue = restorePersistedQueueSnapshot(listeningUserId);');
+    expect(initBody).toContain('const accountCapture = playerAccountScopeRef.current!.capture()');
+    expect(initBody).toContain('applyQueueSnapshot({ queue: [], currentIndex: 0 })');
     expect(initBody).toContain('if (restoredQueue)');
     expect(initBody).toContain('applyQueueSnapshot(restoredQueue);');
-    expect(initBody.indexOf('if (restoredQueue)')).toBeLessThan(initBody.indexOf('void loadLikedQueue();'));
+    expect(initBody.indexOf('if (restoredQueue)')).toBeLessThan(
+      initBody.indexOf('void loadLikedQueue(accountCapture);')
+    );
+  });
+
+  it('restores the latest 24-hour Selection Journey after refresh', () => {
+    const source = fs.readFileSync(path.join(root, 'src/renderer/views/Player/PlayerView.tsx'), 'utf-8');
+    const apiSource = fs.readFileSync(path.join(root, 'src/renderer/api.ts'), 'utf-8');
+    const historyStart = source.indexOf('void getSelectionJourneyHistory(20, { authToken: sseToken })');
+    const historyEffectStart = source.lastIndexOf('useEffect(() => {', historyStart);
+    const historyEffectEnd = source.indexOf('}, [applySelectionJourney, sseToken]);', historyStart);
+    const historyEffect = source.slice(historyEffectStart, historyEffectEnd);
+
+    expect(apiSource).toContain('getSelectionJourneyHistory');
+    expect(apiSource).toContain('/api/dj/selection-journeys');
+    expect(historyEffect).toContain('setSelectionJourneyState({ journeys: [], selectedRunId: null })');
+    expect(historyEffect).toContain('getSelectionJourneyHistory(20, { authToken: sseToken })');
+    expect(historyEffect).toContain('selectionJourneyHistoryGenerationRef.current');
+    expect(historyEffect).toContain('if (selectionJourneyHistoryGenerationRef.current !== generation) return');
+    expect(historyEffect).toContain('setSelectionJourneyState((current) => (');
+    expect(historyEffect).toContain('mergePlayerSelectionJourneyHistoryRestore(current, journeys)');
+    expect(historyEffect).toContain('return () => {');
+  });
+
+  it('restores authoritative queue and Journey state from every SSE connected handshake', () => {
+    const source = fs.readFileSync(path.join(root, 'src/renderer/views/Player/PlayerView.tsx'), 'utf-8');
+    const connectedStart = source.indexOf("if (playerEvent.type === 'connected')");
+    const queueUpdatedStart = source.indexOf("else if (playerEvent.type === 'queue-updated')", connectedStart);
+    const connectedBlock = source.slice(connectedStart, queueUpdatedStart);
+
+    expect(connectedBlock).toContain('queueAuthoritativeSnapshotRef.current = {');
+    expect(connectedBlock).toContain('replayUncommittedQueueOperations({');
+    expect(connectedBlock).toContain('applyQueueSnapshot(recoveredSnapshot)');
+    expect(connectedBlock).toContain('restorePlayerSelectionJourneyRecoverySnapshot(current, playerEvent.journeys)');
+  });
+
+  it('automatically retries queued saves after a network failure or online recovery', () => {
+    const source = fs.readFileSync(path.join(root, 'src/renderer/views/Player/PlayerView.tsx'), 'utf-8');
+    const queuePersistStart = source.indexOf('persistQueueSnapshot(listeningUserId, queue, currentIndex)');
+    const queuePersistEnd = source.indexOf('// When the queue gains a new song', queuePersistStart);
+    const queuePersistBlock = source.slice(queuePersistStart, queuePersistEnd);
+
+    expect(source).toContain('const [queueSaveRetryNonce, setQueueSaveRetryNonce] = useState(0)');
+    expect(source).toContain("window.addEventListener('online', retryPendingQueueSave)");
+    expect(queuePersistBlock).toContain('scheduleQueueSaveRetry();');
+    expect(queuePersistBlock).toContain('queueSaveRetryNonce');
+    expect(queuePersistBlock).toContain('pendingQueueOperationsRef.current = [');
   });
 
   it('refreshes liked track ids when restoring a persisted queue so the hero heart matches NCM', () => {
@@ -210,7 +260,7 @@ describe('player layout', () => {
     const restoredBlock = initBody.slice(restoredStart, restoredEnd);
 
     expect(source).toContain('async function refreshLikedTrackIds');
-    expect(restoredBlock).toContain('void refreshLikedTrackIds();');
+    expect(restoredBlock).toContain('void refreshLikedTrackIds(accountCapture);');
   });
 
   it('surfaces waiting segue states instead of falling back to idle text', () => {
@@ -244,8 +294,9 @@ describe('player layout', () => {
     expect(source).toContain('pendingTrackMediaRetryRef.current = {');
     expect(source).toContain('trackMediaRetryRequestIdRef.current += 1');
     expect(source).toContain('currentTrackIdRef.current !== trackId');
-    expect(retryBody).toContain('const payload = await getNowPlaying(trackId);');
-    expect(retryBody).not.toContain('getNowPlaying(trackId, {');
+    expect(retryBody).toContain('const accountCapture = playerAccountScopeRef.current!.capture()');
+    expect(retryBody).toContain('getNowPlaying(trackId, { authToken: accountCapture.token })');
+    expect(retryBody).toContain('!accountCapture.isActive()');
   });
 
   it('restores a fresh retry window after ten seconds of stable playback', () => {
@@ -278,7 +329,7 @@ describe('player layout', () => {
     expect(onEndedBody).toContain('advanceQueueAfterEnded({ queue, currentIndex })');
     expect(onEndedBody).toContain('applyQueueSnapshot(transition)');
     expect(onEndedBody).toContain("setTrackStatusText('播放完成')");
-    expect(source).toContain('persistQueueSnapshot(queue, currentIndex)');
+    expect(source).toContain('persistQueueSnapshot(listeningUserId, queue, currentIndex)');
   });
 
   it('ignores stale now-playing responses from a previous current track', () => {
@@ -287,11 +338,29 @@ describe('player layout', () => {
     const refreshNextTrackStart = source.indexOf('async function refreshNextTrack');
     const loadNowPlayingBody = source.slice(loadNowPlayingStart, refreshNextTrackStart);
 
-    expect(loadNowPlayingBody).toContain('if (currentTrackIdRef.current !== trackId)');
+    expect(loadNowPlayingBody).toContain('currentTrackIdRef.current !== trackId');
+    expect(loadNowPlayingBody).toContain('nowPlayingRequestSequenceRef.current !== requestSequence');
+    expect(loadNowPlayingBody).toContain('!accountCapture.isActive()');
+    expect(loadNowPlayingBody).toContain('authToken: accountCapture.token');
     expect(loadNowPlayingBody).toContain('setNowPlaying(payload)');
     expect(loadNowPlayingBody.indexOf('if (currentTrackIdRef.current !== trackId)')).toBeLessThan(
       loadNowPlayingBody.indexOf('setNowPlaying(payload)')
     );
+  });
+
+  it('rejects out-of-order next-track responses unless the account and current-next pair still match', () => {
+    const source = fs.readFileSync(path.join(root, 'src/renderer/views/Player/PlayerView.tsx'), 'utf-8');
+    const refreshNextTrackStart = source.indexOf('async function refreshNextTrack');
+    const maybeTriggerSegueStart = source.indexOf('const maybeTriggerSegue', refreshNextTrackStart);
+    const body = source.slice(refreshNextTrackStart, maybeTriggerSegueStart);
+
+    expect(body).toContain('const requestSequence = ++nextTrackRequestSequenceRef.current');
+    expect(body).toContain('!accountCapture.isActive()');
+    expect(body).toContain('nextTrackRequestSequenceRef.current !== requestSequence');
+    expect(body).toContain('currentTrackIdRef.current !== trackId');
+    expect(body).toContain('queueRef.current[currentIndexRef.current + 1]?.id !== expectedNextTrackId');
+    expect(body).toContain('payload.track.id !== expectedNextTrackId');
+    expect(body).toContain('authToken: accountCapture.token');
   });
 
   it('shows segue request failures directly in the player status area', () => {
@@ -321,6 +390,45 @@ describe('player layout', () => {
     expect(doneBlock).not.toContain('break;');
   });
 
+  it('renders immediate and background track-resolution notices without replacing chat.done', () => {
+    const source = fs.readFileSync(path.join(root, 'src/renderer/components/player/ChatPanel.tsx'), 'utf-8');
+
+    expect(source).toContain("type === 'chat.intent.notice'");
+    expect(source).toContain('addSseListener');
+    expect(source).toContain('appendIntentNotice');
+  });
+
+  it('isolates mounted chat history, persistent notices, and direct streams by account generation', () => {
+    const chatSource = fs.readFileSync(path.join(root, 'src/renderer/components/player/ChatPanel.tsx'), 'utf-8');
+    const appSource = fs.readFileSync(path.join(root, 'src/renderer/App.tsx'), 'utf-8');
+
+    expect(appSource).toContain('authToken={authToken}');
+    expect(appSource).toContain("key={authToken ?? 'anonymous'}");
+    expect(chatSource).toContain('const generation = ++accountGenerationRef.current');
+    expect(chatSource).toContain('setMessages([])');
+    expect(chatSource).toContain('getRecentChatMessages(50, { authToken })');
+    expect(chatSource).toContain('eventToken !== authToken');
+    expect(chatSource).toContain('streamChat(text, requestToken)');
+    expect(chatSource).toContain('accountGenerationRef.current !== generation');
+  });
+
+  it('cancels account-owned segue work and audio on token changes', () => {
+    const source = fs.readFileSync(path.join(root, 'src/renderer/views/Player/PlayerView.tsx'), 'utf-8');
+    const cleanupStart = source.indexOf('useEffect(() => {\n    segueClientRequestIdRef.current = null;');
+    const cleanupEnd = source.indexOf('}, [disposeAllSegueAudio, sseToken]);', cleanupStart);
+    const cleanup = source.slice(cleanupStart, cleanupEnd);
+    const requestStart = source.indexOf('const maybeTriggerSegue = useCallback');
+    const requestEnd = source.indexOf('}, [configureSegueAudio', requestStart);
+    const request = source.slice(requestStart, requestEnd);
+
+    expect(cleanup).toContain('disposeAllSegueAudio();');
+    expect(cleanup).toContain("setSegueScriptText('')");
+    expect(request).toContain('const accountCapture = playerAccountScopeRef.current!.capture()');
+    expect(request).toContain('authToken: accountToken');
+    expect(request).toContain('if (!accountCapture.isActive()) break;');
+    expect(request).toContain('if (!accountCapture.isActive()) return;');
+  });
+
   it('handles DJ pick-next completion from the one-shot SSE stream', () => {
     const source = fs.readFileSync(path.join(root, 'src/server/http/routes/djNext.ts'), 'utf-8');
     const sseHandlerStart = source.indexOf('export function createSseDjPickNextHandler');
@@ -346,9 +454,12 @@ describe('player layout', () => {
     expect(triggerBlock).toContain('lowWaterMark: AUTO_FILL_LOW_WATER_MARK');
     expect(triggerBlock).toContain('djPickNextInFlightRef.current = true');
     expect(triggerBlock).toContain('djPickNextInFlightRef.current = false');
+    expect(triggerBlock).toContain('const accountCapture = playerAccountScopeRef.current!.capture()');
+    expect(triggerBlock).toContain('authToken: accountCapture.token');
+    expect(triggerBlock).toContain('isActive: accountCapture.isActive');
   });
 
-  it('uses latest queue refs and direct SSE queue-appended events to avoid stale refill retries', () => {
+  it('uses latest queue refs and atomic direct SSE queue snapshots to avoid stale refill retries', () => {
     const source = fs.readFileSync(path.join(root, 'src/renderer/views/Player/PlayerView.tsx'), 'utf-8');
     const triggerStart = source.indexOf('// DJ mode: refill when the backup queue reaches the low-water mark');
     const startSegueAudioStart = source.indexOf('maybeStartSegueAudio();', triggerStart);
@@ -357,7 +468,10 @@ describe('player layout', () => {
     expect(source).toContain('const queueRef = useRef<QueueTrackDto[]>([])');
     expect(source).toContain('const currentIndexRef = useRef(0)');
     expect(source).toContain('consumePlayerPickNextStream({');
-    expect(source).toContain('onQueueAppended: appendRemoteQueueTrack');
+    expect(source).toContain('onQueueReplaced(nextQueue, nextIndex, revision)');
+    expect(source).toContain('shouldApplyAuthoritativeQueueRevision(');
+    expect(triggerBlock).toContain('const authoritativeSnapshot = replayUncommittedQueueOperations({');
+    expect(triggerBlock).toContain('applyQueueSnapshot(authoritativeSnapshot)');
     expect(triggerBlock).toContain('const latestQueue = queueRef.current');
     expect(triggerBlock).toContain('shouldTriggerDjRefill({');
     expect(triggerBlock).toContain('queueLength: latestQueue.length');
@@ -385,7 +499,7 @@ describe('player layout', () => {
     );
   });
 
-  it('sends manually skipped or removed queue tracks as temporary bans when syncing queue state', () => {
+  it('records queue jumps as skips and only sends explicitly removed tracks as temporary bans', () => {
     const source = fs.readFileSync(path.join(root, 'src/renderer/views/Player/PlayerView.tsx'), 'utf-8');
     const skipStart = source.indexOf('function handleSkip()');
     const selectStart = source.indexOf('function handleSelectIndex', skipStart);
@@ -397,16 +511,63 @@ describe('player layout', () => {
     const deleteBlock = source.slice(deleteStart, likeStart);
 
     expect(source).toContain('const pendingTemporaryBanTracksRef = useRef<QueueTrackDto[]>([])');
-    expect(source).toContain('saveQueueState(queue, currentIndex, temporaryBanTracks)');
+    expect(source).toContain('const result = await saveQueueState(');
+    expect(source).toContain('temporaryBanTracks,');
+    expect(source).toContain('queueRevisionRef.current');
     expect(skipBlock).toContain('skipCurrentQueueTrack({ queue, currentIndex })');
-    expect(skipBlock).toContain('rememberTemporaryBans(transition.removedTracks)');
+    expect(skipBlock).toContain("finalizeCurrentListeningEpisode('skipped')");
+    expect(skipBlock).not.toContain('rememberTemporaryBans(transition.removedTracks)');
     expect(selectBlock).toContain('selectQueueTrackAt({ queue, currentIndex }, index)');
-    expect(selectBlock).toContain('rememberTemporaryBans(transition.removedTracks)');
+    expect(selectBlock).toContain("finalizeCurrentListeningEpisode('skipped')");
+    expect(selectBlock).not.toContain('rememberTemporaryBans(transition.removedTracks)');
     expect(deleteBlock).toContain('deleteQueueTrackAt({ queue, currentIndex }, index)');
     expect(deleteBlock).toContain('rememberTemporaryBans(transition.removedTracks)');
   });
 
-  it('logs DJ pick-next debug tables to the browser console', () => {
+  it('rebases every local queue operation on an authoritative CAS conflict', () => {
+    const source = fs.readFileSync(path.join(root, 'src/renderer/views/Player/PlayerView.tsx'), 'utf-8');
+    const saveEffectStart = source.indexOf('persistQueueSnapshot(listeningUserId, queue, currentIndex)');
+    const saveEffectEnd = source.indexOf('// When the queue gains a new song', saveEffectStart);
+    const saveEffect = source.slice(saveEffectStart, saveEffectEnd);
+    const skipBlock = source.slice(source.indexOf('function handleSkip()'), source.indexOf('handleSkipRef.current'));
+    const selectBlock = source.slice(source.indexOf('function handleSelectIndex'), source.indexOf('function handleDeleteTrack'));
+    const deleteBlock = source.slice(source.indexOf('function handleDeleteTrack'), source.indexOf('function rememberTemporaryBans'));
+    const endedBlock = source.slice(source.indexOf('function onEnded(): void'), source.indexOf('function onTrackMediaError'));
+
+    expect(source).toContain('const pendingQueueOperationsRef = useRef<PlayerQueueOperation[]>([])');
+    expect(saveEffect).toContain('replayQueueOperations(');
+    expect(saveEffect).toContain('queueOperations');
+    expect(saveEffect).toContain('replayUncommittedQueueOperations(');
+    expect(saveEffect).toContain('scheduledOperationSequence');
+    expect(saveEffect).toContain('restoreAutoplayAfterQueueRebase(localSnapshot, [');
+    expect(skipBlock).toContain("rememberQueueOperation({ type: 'manual_skip'");
+    expect(skipBlock).toContain('autoplay: isPlaying');
+    expect(selectBlock).toContain("rememberQueueOperation({ type: 'select_track'");
+    expect(selectBlock).toContain('autoplay: isPlaying');
+    expect(deleteBlock).toContain("rememberQueueOperation({ type: 'delete_track'");
+    expect(endedBlock).toContain("rememberQueueOperation({ type: 'natural_ended'");
+  });
+
+  it('isolates queued saves and local queue journals when the player account changes', () => {
+    const source = fs.readFileSync(path.join(root, 'src/renderer/views/Player/PlayerView.tsx'), 'utf-8');
+    const accountSwitchStart = source.indexOf('if (!playerAccountScopeRef.current)');
+    const accountSwitchEnd = source.indexOf('if (!playerInstanceIdRef.current)', accountSwitchStart);
+    const accountSwitchBlock = source.slice(accountSwitchStart, accountSwitchEnd);
+    const saveEffectStart = source.indexOf('persistQueueSnapshot(listeningUserId, queue, currentIndex)');
+    const saveEffectEnd = source.indexOf('// When the queue gains a new song', saveEffectStart);
+    const saveEffect = source.slice(saveEffectStart, saveEffectEnd);
+
+    expect(accountSwitchBlock).toContain('pendingQueueOperationsRef.current = []');
+    expect(accountSwitchBlock).toContain('uncommittedQueueOperationsRef.current = []');
+    expect(accountSwitchBlock).toContain('pendingTemporaryBanTracksRef.current = []');
+    expect(accountSwitchBlock).toContain('queueSaveChainRef.current = Promise.resolve()');
+    expect(saveEffect).toContain('const accountCapture = playerAccountScopeRef.current!.capture()');
+    expect(saveEffect).toContain('if (!accountCapture.token || !accountCapture.isActive()) return');
+    expect(saveEffect).toContain('{ authToken: accountCapture.token }');
+    expect(saveEffect).toContain('if (!accountCapture.isActive()) return');
+  });
+
+  it('keeps operational debug in the console and renders semantic Journey snapshots', () => {
     const source = fs.readFileSync(path.join(root, 'src/renderer/views/Player/PlayerView.tsx'), 'utf-8');
     const debugStart = source.indexOf('onDebug(playerEvent)');
     const doneStart = source.indexOf('onDone(playerEvent)', debugStart);
@@ -419,12 +580,11 @@ describe('player layout', () => {
     expect(debugBlock).toContain('candidateScoreTable');
     expect(debugBlock).toContain('console.table');
     expect(debugBlock).toContain('DJ pick-next candidate scores');
-    expect(debugBlock).toContain('buildDjPickDebugLog(playerEvent.data)');
-    expect(source).toContain('mergeDjPickDoneLog(prev, playerEvent.data)');
-    expect(source).toContain('djPickLog.selectedTracks.map');
-    expect(source).toContain('track.reason');
-    expect(source).toContain('选歌总耗时');
-    expect(source).toContain('formatDjPickElapsed(djPickLog.elapsedMs)');
+    expect(debugBlock).toContain('onJourney: applySelectionJourney');
+    expect(source).toContain('SelectionJourneyCard');
+    expect(source).toContain('mergePlayerSelectionJourney');
+    expect(source).not.toContain('buildDjPickDebugLog');
+    expect(source).not.toContain('djPickLog.selectedTracks.map');
   });
 
   it('includes clientRequestId in direct SSE segue payloads before the player filters them', () => {
@@ -580,7 +740,9 @@ describe('player layout', () => {
     const allStart = source.indexOf('const disposeAllSegueAudio = useCallback(() => {');
     const allEnd = source.indexOf('const resolveSegueDurationSec', allStart);
     const allBlock = source.slice(allStart, allEnd);
-    const cleanupStart = source.indexOf('() => () => {\n      disposeAllSegueAudio();');
+    const cleanupStart = source.indexOf(
+      '() => () => {\n      finalizeCurrentListeningEpisode(\'interrupted\');'
+    );
     const cleanupEnd = source.indexOf('[disposeAllSegueAudio]', cleanupStart);
     const cleanupBlock = source.slice(cleanupStart, cleanupEnd);
 
@@ -646,7 +808,7 @@ describe('player layout', () => {
 
   it('reloads player context after auth token changes so daily theme appears after login', () => {
     const source = fs.readFileSync(path.join(root, 'src/renderer/views/Player/PlayerView.tsx'), 'utf-8');
-    const contextLoadStart = source.indexOf('getPlayerContext()');
+    const contextLoadStart = source.indexOf('getPlayerContext({ authToken: accountCapture.token ?? undefined })');
     const contextEffectStart = source.lastIndexOf('useEffect(() => {', contextLoadStart);
     const contextEffectEnd = source.indexOf('  }, [sseToken]);', contextLoadStart);
     const contextLoadEffect = source.slice(contextEffectStart, contextEffectEnd) + '  }, [sseToken]);';
@@ -655,9 +817,27 @@ describe('player layout', () => {
     expect(contextEffectStart).toBeGreaterThan(-1);
     expect(contextEffectEnd).toBeGreaterThan(contextLoadStart);
     expect(contextLoadEffect).toContain('if (!sseToken)');
+    expect(contextLoadEffect).toContain('const requestSequence = ++playerContextRequestSequenceRef.current');
+    expect(contextLoadEffect).toContain('playerContextRequestSequenceRef.current === requestSequence');
     expect(contextLoadEffect).toContain('setDailyTheme(ctx.theme)');
     expect(contextLoadEffect).toContain('  }, [sseToken]);');
     expect(source).not.toContain('void refreshSession();\n    void getPlayerContext()');
+  });
+
+  it('finalizes the old account and prepares the current track after a direct token switch', () => {
+    const source = fs.readFileSync(path.join(root, 'src/renderer/views/Player/PlayerView.tsx'), 'utf-8');
+    const switchStart = source.indexOf('const listeningUserId = listeningUserIdFromToken(sseToken)');
+    const switchEnd = source.indexOf("window.addEventListener('online'", switchStart);
+    const switchBlock = source.slice(switchStart, switchEnd);
+
+    expect(switchBlock).toContain('useEffect(() => {');
+    expect(switchBlock).toContain("previousEpisode?.finalize('interrupted', currentListeningPosition())");
+    expect(switchBlock).toContain('listeningTrackIdRef.current = null');
+    expect(switchBlock).toContain('nextEpisode.prepare({');
+    expect(switchBlock).toContain('nextEpisode.playing(currentListeningPosition())');
+    expect(switchBlock).toContain('const listeningAuthToken = sseToken;');
+    expect(switchBlock).toContain('authToken: listeningAuthToken');
+    expect(switchBlock).toContain('}, [listeningUserId, sseToken]);');
   });
 
   it('reports browser location only after auth token is available and then refreshes player context', () => {
@@ -670,9 +850,12 @@ describe('player layout', () => {
     expect(locationCall).toBeGreaterThan(-1);
     expect(locationEffectStart).toBeGreaterThan(-1);
     expect(locationEffect).toContain('if (!sseToken');
-    expect(locationEffect).toContain('updateLocation(pos.coords.latitude, pos.coords.longitude)');
+    expect(locationEffect).toContain('updateLocation(pos.coords.latitude, pos.coords.longitude, {');
+    expect(locationEffect).toContain('authToken: accountToken');
+    expect(locationEffect).toContain('geolocationRequestSequenceRef.current !== requestSequence');
+    expect(locationEffect).toContain('!accountCapture.isActive()');
     expect(locationEffect).toContain('.then(() => {');
-    expect(locationEffect).toContain('void refreshPlayerContext().catch(() => {});');
+    expect(locationEffect).toContain('void refreshPlayerContext(accountCapture).catch(() => {});');
     expect(locationEffect).toContain('  }, [sseToken]);');
     expect(source.slice(locationCall, locationEffectEnd)).not.toContain('  }, []);');
   });
@@ -818,8 +1001,9 @@ describe('player layout', () => {
     expect(source).toContain('xl:col-span-8');
     expect(source).toContain('xl:col-span-4');
     expect(source).toContain("discoveryMode === 'comfort'");
-    expect(source).toContain("discoveryMode === 'legacy'");
-    expect(source).toContain('Legacy LLM 模式');
+    expect(source).not.toContain("discoveryMode === 'legacy'");
+    expect(source).not.toContain('Legacy LLM 模式');
+    expect(source).toContain('grid-cols-2');
     expect(source).toContain('TodayThemePanel');
     expect(source).toContain('TastePanel');
     expect(source).toContain('DjStatusDock');
@@ -894,5 +1078,17 @@ describe('player layout', () => {
     expect(playPauseBody).toContain('retryTrackPlaybackAfterError(');
     expect(playPauseBody).toContain('trackMediaRetryAttemptsRef.current = 0');
     expect(source).toContain('trackMediaManualResumeRequiredRef.current = Boolean(trackId)');
+  });
+
+  it('PlayerView renders one responsive selection journey card instance', () => {
+    const source = fs.readFileSync(
+      path.join(root, 'src/renderer/views/Player/PlayerView.tsx'),
+      'utf-8'
+    );
+
+    expect(source.match(/<SelectionJourneyCard/g)).toHaveLength(1);
+    expect(source).toContain('const selectionJourneyCard = selectionJourney ? (');
+    expect(source).toContain('{!isDesktop && selectionJourneyCard ? (');
+    expect(source).toContain('{isDesktop ? selectionJourneyCard : null}');
   });
 });

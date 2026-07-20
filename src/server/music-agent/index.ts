@@ -3,8 +3,12 @@ import { getConfig } from '../config.js';
 import { EmbeddingClient } from '../embedding/client.js';
 import { getLogger } from '../logger.js';
 import type { NcmClient } from '../ncm/client.js';
+import {
+  createMusicAgentSelectionAdapter,
+  type MusicAgentSelectionAdapter
+} from '../dj-memory/music-agent-adapter.js';
+import { buildDjMemorySnapshot } from '../dj-memory/snapshot.js';
 import { CandidatePool } from './candidates.js';
-import { buildMusicAgentContext } from './context.js';
 import { runMusicAgentLoop } from './loop.js';
 import { createMusicAgentTools } from './tools.js';
 import type { MusicAgentEmbeddingClient } from './semantic-recall.js';
@@ -17,10 +21,10 @@ import type {
   AgentBudget,
   MusicAgentRuntimeContext,
   MusicAgentLlmClient,
-  MusicAgentRunOutput
+  MusicAgentRunOutput,
+  PromptJsonStatus
 } from './schema.js';
 import { parseAutoFillBatchSize } from '../../shared/dj.js';
-import { getActiveTemporaryQueueBanDedupeState } from '../store/temporary-bans.js';
 import {
   createFinalShortlistAssessmentPersister,
   createFinalShortlistEnricher,
@@ -28,6 +32,12 @@ import {
   type TrackAssessmentPersister
 } from './final-shortlist-enrichment.js';
 import type { LyricsSelectionMode } from './track-understanding.js';
+import { createSelectionDecisionRecorder } from './selection-policy/decision-trace.js';
+import { buildSelectionPolicyReplayCases } from './selection-policy/replay-case.js';
+import { rankOptionsFromContext } from './rank.js';
+import { recordSelectionPolicyReplayCases } from '../store/selection-replay.js';
+import type { SelectionDecision } from '../../shared/selection.js';
+import { parseSelectionIntent } from './selection-intent.js';
 
 const TRACK_ANALYZER_VERSION = 'lyrics-selection-v1';
 const sharedDefaultFinalShortlistEnrichers = new WeakMap<
@@ -73,8 +83,22 @@ export type PickNextInput = {
   excludeTrackIds?: Set<string>;
   excludeTrackDedupeKeys?: Set<string>;
   targetPickCount?: number;
-  context?: MusicAgentRuntimeContext;
+  selectionAdapter?: MusicAgentSelectionAdapter;
   now?: Date;
+  onProgress?: (progress: MusicAgentProgress) => void;
+  replayRunId?: string;
+  onReplayObservation?: (observation: {
+    candidateCount: number;
+    promptJsonStatus: PromptJsonStatus;
+  }) => void;
+};
+
+export type MusicAgentProgressStage = 'recall' | 'filtering' | 'balancing' | 'finalizing';
+
+export type MusicAgentProgress = {
+  stage: MusicAgentProgressStage;
+  selectionDecisions: SelectionDecision[];
+  candidates: Array<{ id: string; name: string; artist: string }>;
 };
 
 type ChatRecommendAction = {
@@ -90,11 +114,12 @@ export type ChatRecommendInput = {
   actions?: ChatRecommendAction[];
   signal?: AbortSignal;
   now?: Date;
+  selectionAdapter?: MusicAgentSelectionAdapter;
 };
 
 export class MusicAgent {
   private readonly llmClient: MusicAgentLlmClient;
-  private readonly fallbackLogger: ((event: MusicAgentFallbackLogEvent & { userId: string }) => void) | undefined;
+  private readonly fallbackLogger: ((event: MusicAgentFallbackLogEvent) => void) | undefined;
   private readonly embeddingRuntime: EmbeddingRuntime | null;
   private readonly webMusicDiscoveryProvider: WebMusicDiscoveryProvider | null;
   private readonly lyricsSelectionMode: LyricsSelectionMode;
@@ -122,7 +147,7 @@ export class MusicAgent {
           const logger = getLogger();
           const message = musicAgentRunLogMessage(event);
           const fallbackStats = musicAgentFallbackStats.record(event);
-          const logEvent = { ...event, fallbackStats };
+          const logEvent = projectMusicAgentFallbackEventForLog(event, fallbackStats);
           if (event.reason === 'ranked_tool_completed') {
             logger.info(logEvent, message);
           } else {
@@ -135,18 +160,20 @@ export class MusicAgent {
   async pickNext(input: PickNextInput): Promise<MusicAgentRunOutput> {
     const targetPickCount = parseAutoFillBatchSize(input.targetPickCount);
     const budget = pickNextBudget(targetPickCount);
-    const context = input.context ?? await buildMusicAgentContext({
+    const selectionAdapter = input.selectionAdapter ?? await buildSelectionAdapter({
       userId: input.userId,
-      ncmClient: input.ncmClient,
       request: 'auto-fill',
-      includeDailyTheme: input.includeDailyTheme,
-      now: input.now
+      now: input.now,
+      playedTrackIds: input.excludeTrackIds,
+      playedTrackKeys: input.excludeTrackDedupeKeys
     });
-    const temporaryBans = getActiveTemporaryQueueBanDedupeState(input.userId, input.now);
+    const context = selectionAdapter.runtimeContext;
+    const selectionPolicyContext = selectionAdapter.policyContext;
+    const selectionDecisionRecorder = createSelectionDecisionRecorder();
     const candidatePool = new CandidatePool({
       maxCandidates: budget.maxCandidates,
-      bannedIds: mergeSets(input.excludeTrackIds, temporaryBans.ids),
-      bannedTrackKeys: mergeSets(input.excludeTrackDedupeKeys, temporaryBans.dedupeKeys)
+      selectionPolicyContext,
+      selectionDecisionRecorder
     });
     const tools = createMusicAgentTools({
       userId: input.userId,
@@ -157,42 +184,96 @@ export class MusicAgent {
       embeddingClient: this.embeddingRuntime?.client ?? null,
       embeddingModel: this.embeddingRuntime?.model ?? null,
       webMusicDiscoveryProvider: this.webMusicDiscoveryProvider,
-      targetPickCount
+      targetPickCount,
+      selectionPressureForCandidate: selectionAdapter.pressureForCandidate,
+      selectionPolicyContext,
+      selectionDecisionRecorder
     });
     const finalShortlistEnricher = this.resolveFinalShortlistEnricher(input.ncmClient);
     const persistTrackAssessments = this.lyricsSelectionMode === 'off'
       ? undefined
       : this.persistTrackAssessments ?? this.defaultTrackAssessmentPersister;
+    let promptJsonStatus: PromptJsonStatus = 'not_observed';
 
-    return runMusicAgentLoop({
-      mode: 'pick_next',
-      context,
-      candidatePool,
-      llmClient: this.llmClient,
-      tools,
-      budget,
-      targetPickCount,
-      signal: input.signal,
-      lyricsSelectionMode: this.lyricsSelectionMode,
-      finalShortlistEnricher,
-      persistTrackAssessments,
-      lyricsRequestScope: `ncm-user:${input.userId.trim()}`,
-      fallbackLogger: this.withUserIdFallbackLogger(input.userId)
-    });
+    try {
+      const output = await runMusicAgentLoop({
+        mode: 'pick_next',
+        context,
+        candidatePool,
+        llmClient: this.llmClient,
+        tools,
+        budget,
+        targetPickCount,
+        signal: input.signal,
+        lyricsSelectionMode: this.lyricsSelectionMode,
+        finalShortlistEnricher,
+        persistTrackAssessments,
+        lyricsRequestScope: `ncm-user:${input.userId.trim()}`,
+        fallbackLogger: this.fallbackLogger,
+        selectionPolicyContext,
+        selectionPressureForCandidate: selectionAdapter.pressureForCandidate,
+        selectionDecisionRecorder,
+        onPromptJsonValidation: (valid) => {
+          promptJsonStatus = nextPromptJsonStatus(promptJsonStatus, valid);
+        },
+        onProgress: (stage) => input.onProgress?.({
+          stage,
+          selectionDecisions: selectionDecisionRecorder.snapshot(),
+          candidates: candidatePool.list().slice(0, 8).map((candidate) => ({
+            id: candidate.id,
+            name: candidate.name,
+            artist: candidate.artist
+          }))
+        })
+      });
+      return {
+        ...output,
+        promptJsonStatus,
+        selectionDecisions: selectionDecisionRecorder.snapshot()
+      };
+    } finally {
+      const replayCandidates = candidatePool.replayCandidates();
+      input.onReplayObservation?.({
+        candidateCount: replayCandidates.length,
+        promptJsonStatus
+      });
+      if (input.replayRunId) {
+        recordSelectionPolicyReplayCases({
+          userId: input.userId,
+          runId: input.replayRunId,
+          mode: selectionPolicyContext.mode,
+          cases: buildSelectionPolicyReplayCases({
+            candidates: replayCandidates,
+            context: selectionPolicyContext,
+            batchLimit: targetPickCount,
+            pressureForCandidate: selectionAdapter.pressureForCandidate,
+            rankingOptions: rankOptionsFromContext(context, {
+              pressureForCandidate: selectionAdapter.pressureForCandidate,
+              selectionPolicyContext
+            })
+          }),
+          ...(input.now ? { createdAt: input.now.toISOString() } : {})
+        });
+      }
+    }
   }
 
   async recommendFromChat(input: ChatRecommendInput): Promise<MusicAgentRunOutput> {
     const budget = chatRecommendBudget();
-    const context = await buildMusicAgentContext({
+    const selectionAdapter = input.selectionAdapter ?? await buildSelectionAdapter({
       userId: input.userId,
-      ncmClient: input.ncmClient,
       request: 'chat-recommend',
       userText: input.userText,
       actionQueries: extractActionQueries(input.actions ?? []),
       now: input.now
     });
+    const context = selectionAdapter.runtimeContext;
+    const selectionPolicyContext = selectionAdapter.policyContext;
+    const selectionDecisionRecorder = createSelectionDecisionRecorder();
     const candidatePool = new CandidatePool({
-      maxCandidates: budget.maxCandidates
+      maxCandidates: budget.maxCandidates,
+      selectionPolicyContext,
+      selectionDecisionRecorder
     });
     const tools = createMusicAgentTools({
       userId: input.userId,
@@ -202,10 +283,14 @@ export class MusicAgent {
       budget,
       embeddingClient: this.embeddingRuntime?.client ?? null,
       embeddingModel: this.embeddingRuntime?.model ?? null,
-      webMusicDiscoveryProvider: this.webMusicDiscoveryProvider
+      webMusicDiscoveryProvider: this.webMusicDiscoveryProvider,
+      selectionPressureForCandidate: selectionAdapter.pressureForCandidate,
+      selectionPolicyContext,
+      selectionDecisionRecorder
     });
+    let promptJsonStatus: PromptJsonStatus = 'not_observed';
 
-    return runMusicAgentLoop({
+    const output = await runMusicAgentLoop({
       mode: 'chat_recommend',
       context,
       candidatePool,
@@ -213,14 +298,18 @@ export class MusicAgent {
       tools,
       budget,
       signal: input.signal,
-      fallbackLogger: this.withUserIdFallbackLogger(input.userId)
+      fallbackLogger: this.fallbackLogger,
+      selectionPolicyContext,
+      selectionPressureForCandidate: selectionAdapter.pressureForCandidate,
+      selectionDecisionRecorder,
+      onPromptJsonValidation: (valid) => {
+        promptJsonStatus = nextPromptJsonStatus(promptJsonStatus, valid);
+      }
     });
-  }
-
-  private withUserIdFallbackLogger(userId: string) {
-    if (!this.fallbackLogger) return undefined;
-    return (event: MusicAgentFallbackLogEvent) => {
-      this.fallbackLogger?.({ ...event, userId });
+    return {
+      ...output,
+      promptJsonStatus,
+      selectionDecisions: selectionDecisionRecorder.snapshot()
     };
   }
 
@@ -244,6 +333,81 @@ export class MusicAgent {
     byConfiguration.set(key, created);
     return created;
   }
+}
+
+export function projectMusicAgentFallbackEventForLog(
+  event: MusicAgentFallbackLogEvent,
+  fallbackStats: MusicAgentFallbackStats
+): Record<string, unknown> {
+  return {
+    reason: event.reason,
+    mode: event.mode,
+    status: event.status,
+    candidateCount: event.candidateCount,
+    pickCount: event.pickCount,
+    step: event.step,
+    llmCalls: event.llmCalls,
+    toolCalls: event.toolCalls,
+    elapsedMs: event.elapsedMs,
+    budget: event.budget,
+    finalPickDiagnostics: event.finalPickDiagnostics,
+    queryCount: event.queryFunnel?.length ?? 0,
+    candidateScoreTableCount: event.candidateScoreTableCount ?? 0,
+    ...(event.webDiscoveryDiagnostics
+      ? {
+          webDiscoveryDiagnostics: {
+            step: event.webDiscoveryDiagnostics.step,
+            candidateCount: event.webDiscoveryDiagnostics.candidateCount,
+            problemCount: event.webDiscoveryDiagnostics.problems?.length ?? 0
+          }
+        }
+      : {}),
+    ...(event.lyricsAwareDiagnostics
+      ? {
+          lyricsAwareDiagnostics: {
+            mode: event.lyricsAwareDiagnostics.mode,
+            assessmentCoverageValid: event.lyricsAwareDiagnostics.assessmentCoverageValid,
+            assessmentValidationProblemCount:
+              event.lyricsAwareDiagnostics.assessmentValidationProblems.length,
+            decisionCount: event.lyricsAwareDiagnostics.decisions.length,
+            promptChars: event.lyricsAwareDiagnostics.promptChars,
+            enrichment: event.lyricsAwareDiagnostics.enrichment
+          }
+        }
+      : {}),
+    fallbackStats
+  };
+}
+
+function nextPromptJsonStatus(
+  current: PromptJsonStatus,
+  valid: boolean
+): PromptJsonStatus {
+  if (!valid || current === 'invalid') return 'invalid';
+  return 'valid';
+}
+
+async function buildSelectionAdapter(input: {
+  userId: string;
+  request: MusicAgentRuntimeContext['request'];
+  userText?: string;
+  actionQueries?: string[];
+  now?: Date;
+  playedTrackIds?: ReadonlySet<string>;
+  playedTrackKeys?: ReadonlySet<string>;
+}): Promise<MusicAgentSelectionAdapter> {
+  const snapshot = await buildDjMemorySnapshot({ userId: input.userId, now: input.now });
+  return createMusicAgentSelectionAdapter({
+    snapshot,
+    request: input.request,
+    ...(input.userText !== undefined ? { userText: input.userText } : {}),
+    ...(input.actionQueries !== undefined ? { actionQueries: input.actionQueries } : {}),
+    ...(input.request === 'chat-recommend' && input.userText
+      ? { selectionIntent: parseSelectionIntent(input.userText) }
+      : {}),
+    ...(input.playedTrackIds ? { playedTrackIds: input.playedTrackIds } : {}),
+    ...(input.playedTrackKeys ? { playedTrackKeys: input.playedTrackKeys } : {})
+  });
 }
 
 export function musicAgentRunLogMessage(event: MusicAgentFallbackLogEvent): string {
@@ -361,10 +525,6 @@ function pickNextBudget(targetPickCount = 2): AgentBudget {
     maxTrendFetchMs: 2_000,
     maxCandidates: largeBatch ? 160 : 120
   };
-}
-
-function mergeSets<T>(left: Set<T> | undefined, right: Set<T>): Set<T> {
-  return new Set([...(left ?? []), ...right]);
 }
 
 function chatRecommendBudget(): AgentBudget {

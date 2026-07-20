@@ -21,6 +21,33 @@ describe('queue store', () => {
     expect(q.getCurrentIndex('test-user')).toBe(1);
   });
 
+  it('advances current state without changing the content revision', async () => {
+    const q = await import('../../src/server/store/queue');
+    const queue = [{ ncmId: 'a' }, { ncmId: 'b' }];
+    q.setQueueState('test-user', queue, 0);
+    const contentRevision = q.getQueueRevision('test-user');
+    const stateRevision = q.getQueueStateRevision('test-user');
+
+    const update = q.compareAndSetQueueState('test-user', stateRevision, queue, 1);
+
+    expect(update.applied).toBe(true);
+    expect(q.getCurrentIndex('test-user')).toBe(1);
+    expect(q.getQueueRevision('test-user')).toBe(contentRevision);
+    expect(q.getQueueStateRevision('test-user')).toBe(stateRevision + 1);
+  });
+
+  it('keeps the state revision stable for an idempotent compare-and-set snapshot', async () => {
+    const q = await import('../../src/server/store/queue');
+    const queue = [{ ncmId: 'a' }, { ncmId: 'b' }];
+    q.setQueueState('test-user', queue, 0);
+    const stateRevision = q.getQueueStateRevision('test-user');
+
+    const update = q.compareAndSetQueueState('test-user', stateRevision, queue, 0);
+
+    expect(update).toMatchObject({ applied: true, snapshot: { revision: stateRevision } });
+    expect(q.getQueueStateRevision('test-user')).toBe(stateRevision);
+  });
+
   it('swapNext inserts track at position after current', async () => {
     const q = await import('../../src/server/store/queue');
     q.setQueue('test-user', [{ ncmId: 'a' }, { ncmId: 'c' }]);
@@ -49,5 +76,16 @@ describe('queue store', () => {
     q.setQueue('test-user', [{ ncmId: 'x' }, { ncmId: 'y' }, { ncmId: 'x' }]);
     q.banNcmId('test-user', 'x');
     expect(q.getQueue('test-user').every((t) => t.ncmId !== 'x')).toBe(true);
+  });
+
+  it('rejects oversized or overlong queue state at the store boundary', async () => {
+    const q = await import('../../src/server/store/queue');
+
+    expect(() => q.setQueue(
+      'test-user',
+      Array.from({ length: 101 }, (_, index) => ({ ncmId: `track-${index}` }))
+    )).toThrow('queue exceeds limit');
+    expect(() => q.setQueue('test-user', [{ ncmId: 'x'.repeat(129) }]))
+      .toThrow('queue track id exceeds limit');
   });
 });

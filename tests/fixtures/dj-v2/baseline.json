@@ -1,0 +1,169 @@
+{
+  "schemaVersion": 2,
+  "episodes": [
+    {
+      "episodeId": "h_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "userId": "h_11111111111111111111111111111111",
+      "trackId": "h_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "primaryArtistId": "h_cccccccccccccccccccccccccccccccc",
+      "startedAt": 1700086400000,
+      "endedAt": 1700086460000,
+      "durationMs": 180000,
+      "positionMs": 60000,
+      "listenedMs": 58000,
+      "outcome": "skipped",
+      "protocolVersion": 2
+    },
+    {
+      "episodeId": "h_dddddddddddddddddddddddddddddddd",
+      "userId": "h_11111111111111111111111111111111",
+      "trackId": "h_eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "primaryArtistId": "h_ffffffffffffffffffffffffffffffff",
+      "startedAt": 1700086500000,
+      "endedAt": 1700086680000,
+      "durationMs": 180000,
+      "positionMs": 180000,
+      "listenedMs": 178000,
+      "outcome": "completed",
+      "protocolVersion": 2
+    }
+  ],
+  "selectionRuns": [
+    {
+      "runId": "h_22222222222222222222222222222222",
+      "userId": "h_11111111111111111111111111111111",
+      "startedAt": 1700086398000,
+      "completedAt": 1700086399000,
+      "selectedTrackIds": ["h_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"],
+      "candidateCount": 1,
+      "eligibleCount": 1,
+      "appendedCount": 1,
+      "latencyMs": 1000,
+      "hardViolationCount": 0,
+      "promptJsonStatus": "valid",
+      "journeyPublished": true,
+      "narrationStatus": "succeeded",
+      "narrationDeadlineAt": 1700172798000,
+      "outcome": "succeeded",
+      "reasonCodes": ["taste_match"]
+    },
+    {
+      "runId": "h_33333333333333333333333333333333",
+      "userId": "h_11111111111111111111111111111111",
+      "startedAt": 1700086498000,
+      "completedAt": 1700086499800,
+      "selectedTrackIds": [],
+      "candidateCount": 1,
+      "eligibleCount": 0,
+      "appendedCount": 0,
+      "latencyMs": 1800,
+      "hardViolationCount": 0,
+      "promptJsonStatus": "valid",
+      "journeyPublished": true,
+      "narrationStatus": "not_applicable",
+      "outcome": "empty",
+      "reasonCodes": ["no_eligible_candidate"]
+    }
+  ],
+  "retrievalAttempts": [
+    {
+      "attemptId": "h_44444444444444444444444444444444",
+      "runId": "h_22222222222222222222222222222222",
+      "userId": "h_11111111111111111111111111111111",
+      "source": "ncm_search",
+      "requestKind": "autonomous",
+      "queryFingerprint": "h_55555555555555555555555555555555",
+      "attemptedAt": 1700086398500,
+      "searchedCount": 20,
+      "resultCount": 8,
+      "addedCount": 2,
+      "selectedCount": 1
+    }
+  ],
+  "policyCases": [
+    {
+      "caseId": "h_66666666666666666666666666666666",
+      "runId": "h_22222222222222222222222222222222",
+      "userId": "h_11111111111111111111111111111111",
+      "candidateId": "h_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "candidateTrackKey": "h_77777777777777777777777777777777",
+      "candidateArtistKey": "h_cccccccccccccccccccccccccccccccc",
+      "mode": "autonomous",
+      "identityValid": true,
+      "source": "search",
+      "qualitySignals": {},
+      "titleMotifKeys": [],
+      "baseScore": 0.5,
+      "batchIndex": 0,
+      "batchLimit": 1,
+      "context": {
+        "explicitlyRequested": false,
+        "explicitTrackExcluded": false,
+        "explicitArtistExcluded": false,
+        "temporaryTrackExcluded": false,
+        "temporaryArtistExcluded": false,
+        "retrievalCooldown": false,
+        "queueContainsTrack": false,
+        "playedTrack": false
+      },
+      "pressure": [],
+      "expected": {
+        "admission": { "action": "admit", "reasonCodes": ["admission_eligible"] },
+        "recall": { "action": "include", "reasonCodes": ["recall_included"] },
+        "ranking": {
+          "action": "rank",
+          "reasonCodes": ["ranking_scored"],
+          "adjustedScore": 0.5,
+          "contributions": []
+        },
+        "batch": [{ "action": "select", "reasonCodes": ["batch_selected"] }],
+        "final": { "action": "select", "reasonCodes": ["final_eligible"] },
+        "finalContext": {
+          "explicitlyRequested": false,
+          "explicitTrackExcluded": false,
+          "explicitArtistExcluded": false,
+          "temporaryTrackExcluded": false,
+          "temporaryArtistExcluded": false,
+          "retrievalCooldown": false,
+          "queueContainsTrack": false,
+          "playedTrack": false
+        }
+      }
+    },
+    {
+      "caseId": "h_88888888888888888888888888888888",
+      "runId": "h_33333333333333333333333333333333",
+      "userId": "h_11111111111111111111111111111111",
+      "candidateId": "h_99999999999999999999999999999999",
+      "candidateTrackKey": "h_abababababababababababababababab",
+      "candidateArtistKey": "h_cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd",
+      "mode": "autonomous",
+      "identityValid": true,
+      "source": "search",
+      "qualitySignals": {},
+      "titleMotifKeys": [],
+      "baseScore": 0.5,
+      "batchIndex": 0,
+      "batchLimit": 1,
+      "context": {
+        "explicitlyRequested": false,
+        "explicitTrackExcluded": true,
+        "explicitArtistExcluded": false,
+        "temporaryTrackExcluded": false,
+        "temporaryArtistExcluded": false,
+        "retrievalCooldown": false,
+        "queueContainsTrack": false,
+        "playedTrack": false
+      },
+      "pressure": [],
+      "expected": {
+        "admission": { "action": "reject", "reasonCodes": ["explicit_track_exclusion"] },
+        "recall": null,
+        "ranking": null,
+        "batch": null,
+        "final": null,
+        "finalContext": null
+      }
+    }
+  ]
+}

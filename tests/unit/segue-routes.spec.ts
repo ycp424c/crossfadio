@@ -164,6 +164,41 @@ describe('segue trigger handler', () => {
     expect(second.body).toMatchObject({ clientRequestId: null });
   });
 
+  it('isolates in-flight dedupe and cancellation by user', async () => {
+    vi.spyOn(llmConfigModule, 'resolveLlmConfig').mockReturnValue({
+      baseUrl: 'https://llm.example/v1',
+      apiKey: 'test-key',
+      model: 'test-model'
+    });
+    const requestSignals: AbortSignal[] = [];
+    vi.stubGlobal('fetch', vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.signal) requestSignals.push(init.signal);
+      return new Promise<Response>(() => undefined);
+    }));
+    const handler = createSegueTriggerHandler({
+      secrets: {} as never,
+      ncmClient: {
+        getLikedSongIds: async () => [],
+        getSongDetails: async () => [],
+        getLyric: async () => null,
+        getSongWikiSummary: async () => null
+      } as never
+    });
+    const body = { clientRequestId: 'same-client-id', from: { id: 'a' }, to: { id: 'b' } };
+    const first = createJsonResponse();
+    handler({ body, userId: 'user-a' } as never, first as never, vi.fn() as never);
+    await vi.waitFor(() => expect(requestSignals).toHaveLength(1));
+
+    const second = createJsonResponse();
+    handler({ body, userId: 'user-b' } as never, second as never, vi.fn() as never);
+    await vi.waitFor(() => expect(requestSignals).toHaveLength(2));
+
+    expect((first.body as { requestId: string }).requestId)
+      .not.toBe((second.body as { requestId: string }).requestId);
+    expect(requestSignals[0]?.aborted).toBe(false);
+    expect(requestSignals[1]?.aborted).toBe(false);
+  });
+
   it('rejects identical from/to ids with 400', () => {
     const handler = createSegueTriggerHandler({ secrets: {} as never, ncmClient: {} as never });
     const res = createJsonResponse();

@@ -28,8 +28,6 @@ describe('MusicAgent entity recall', () => {
       searchLimit: 3,
       consumeNcmSearch,
       consumePlaylistFetch,
-      avoidArtists: new Set(),
-      artistCounts: new Map(),
       provenanceKind: 'verified_entity'
     });
 
@@ -47,8 +45,8 @@ describe('MusicAgent entity recall', () => {
     ]);
   });
 
-  it('reports candidate-pool rejects for track entity recall admissions', async () => {
-    const pool = new CandidatePool({ bannedIds: ['track-1'] });
+  it('reports bounded candidate-pool rejects for track entity recall admissions', async () => {
+    const pool = new CandidatePool({ maxCandidates: 0 });
     const ncmClient = ncmClientStub({
       getSongDetails: vi.fn(async () => [{
         id: 'track-1',
@@ -66,14 +64,12 @@ describe('MusicAgent entity recall', () => {
       searchLimit: 3,
       consumeNcmSearch: vi.fn(() => true),
       consumePlaylistFetch: vi.fn(() => true),
-      avoidArtists: new Set(),
-      artistCounts: new Map(),
       provenanceKind: 'verified_entity'
     });
 
     expect(result).toEqual({
       added: 0,
-      problems: ['candidate admission: rejectedByPool=1 (banned_id=1)']
+      problems: ['candidate admission: rejectedByPool=1 (pool_full=1)']
     });
     expect(pool.count()).toBe(0);
   });
@@ -102,8 +98,6 @@ describe('MusicAgent entity recall', () => {
       searchLimit: 3,
       consumeNcmSearch,
       consumePlaylistFetch: vi.fn(() => true),
-      avoidArtists: new Set(),
-      artistCounts: new Map(),
       provenanceKind: 'semantic_discovery'
     });
 
@@ -113,7 +107,7 @@ describe('MusicAgent entity recall', () => {
     expect(pool.count()).toBe(0);
   });
 
-  it('samples artist top songs before the per-artist admission cap', async () => {
+  it('samples artist top songs while retaining the full explicit recall limit', async () => {
     const pool = new CandidatePool();
     const randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0);
     const ncmClient = ncmClientStub({
@@ -137,14 +131,13 @@ describe('MusicAgent entity recall', () => {
         searchLimit: 3,
         consumeNcmSearch: vi.fn(() => true),
         consumePlaylistFetch: vi.fn(() => true),
-        avoidArtists: new Set(),
-        artistCounts: new Map(),
         provenanceKind: 'verified_entity'
       });
 
-      expect(result.added).toBe(2);
-      expect(pool.list().map((candidate) => candidate.id)).toEqual(['top-2', 'top-3']);
-      expect(pool.get('top-1')).toBeUndefined();
+      expect(result.added).toBe(5);
+      expect(pool.list().map((candidate) => candidate.id)).toEqual([
+        'top-2', 'top-3', 'top-4', 'top-5', 'top-1'
+      ]);
     } finally {
       randomSpy.mockRestore();
     }
@@ -179,8 +172,6 @@ describe('MusicAgent entity recall', () => {
       searchLimit: 5,
       consumeNcmSearch: vi.fn(() => true),
       consumePlaylistFetch: vi.fn(() => true),
-      avoidArtists: new Set(),
-      artistCounts: new Map(),
       provenanceKind: 'verified_entity'
     });
 
@@ -217,8 +208,6 @@ describe('MusicAgent entity recall', () => {
       searchLimit: 5,
       consumeNcmSearch: vi.fn(() => true),
       consumePlaylistFetch: vi.fn(() => true),
-      avoidArtists: new Set(),
-      artistCounts: new Map(),
       provenanceKind: 'verified_entity'
     });
 
@@ -256,8 +245,6 @@ describe('MusicAgent entity recall', () => {
       searchLimit: 5,
       consumeNcmSearch: vi.fn(() => true),
       consumePlaylistFetch: vi.fn(() => true),
-      avoidArtists: new Set(),
-      artistCounts: new Map(),
       provenanceKind: 'verified_entity'
     });
 

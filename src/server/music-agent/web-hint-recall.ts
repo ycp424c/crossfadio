@@ -1,5 +1,4 @@
 import type { CandidatePool } from './candidates.js';
-import { countCandidateArtistKeys } from './candidate-admission.js';
 import { parseEntityRecallInput } from './entity-hypotheses.js';
 import {
   recallFromEntity,
@@ -23,7 +22,6 @@ export type WebHintRecallOptions = {
   candidatePool: CandidatePool;
   context: MusicAgentContextSummary;
   queryPlan: QueryPlan | null;
-  avoidArtists: ReadonlySet<string>;
   consumeNcmSearch: () => boolean;
   consumePlaylistFetch: () => boolean;
   signal?: AbortSignal;
@@ -40,7 +38,6 @@ export async function recallFromWebDiscoveryHints(options: WebHintRecallOptions)
   const filteredHints = filterWebDiscoveryHintsForRecall(options.hints, options);
   const parsedInput = parseEntityRecallInput({ hints: filteredHints.hints });
   const entities = parsedInput.entities.slice(0, MAX_ENTITY_RECALL_COUNT);
-  const artistCounts = countCandidateArtistKeys(options.candidatePool.list());
   const problems = [...filteredHints.problems, ...parsedInput.problems];
   let added = 0;
 
@@ -55,8 +52,6 @@ export async function recallFromWebDiscoveryHints(options: WebHintRecallOptions)
       searchLimit: DEFAULT_ENTITY_SEARCH_LIMIT,
       consumeNcmSearch: options.consumeNcmSearch,
       consumePlaylistFetch: options.consumePlaylistFetch,
-      avoidArtists: options.avoidArtists,
-      artistCounts,
       provenanceKind: 'web_hint_recall',
       signal: options.signal
     });
@@ -72,11 +67,8 @@ export async function recallFromWebDiscoveryHints(options: WebHintRecallOptions)
 
 function filterWebDiscoveryHintsForRecall(
   value: unknown,
-  input: Pick<WebHintRecallOptions, 'avoidArtists' | 'context' | 'queryPlan'>
+  input: Pick<WebHintRecallOptions, 'context' | 'queryPlan'>
 ): { hints: unknown[]; problems: string[] } {
   const expectedStyle = selectWebDiscoveryStyle(input.context, input.queryPlan);
-  return filterWebDiscoveryHintsByPolicy(value, {
-    avoidArtists: input.avoidArtists,
-    expectedStyle
-  });
+  return filterWebDiscoveryHintsByPolicy(value, { expectedStyle });
 }

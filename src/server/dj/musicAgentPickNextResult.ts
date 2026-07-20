@@ -5,15 +5,20 @@ import {
 import { buildMusicTrackDedupeKey, isMusicTrackDedupeKeyExcluded } from '../music-agent/dedupe.js';
 import type { DiscoveryMode } from '../../shared/dj.js';
 import { defaultDJAgentQueuePort, type DJAgentQueuePort } from '../dj-agent/ports.js';
-import { getRemainingPickSlots, hasReachedPickTarget } from './pickNextQueueProgress.js';
+import type { QueueTrack } from '../store/queue.js';
+import {
+  evaluateFinalQueuePickWithContext as evaluateLiveFinalQueuePick,
+  type FinalQueueEvaluation
+} from '../music-agent/final-queue-policy.js';
+import type { SelectionReasonCode } from '../music-agent/selection-policy/types.js';
+import type { SelectionPhaseDecision } from '../music-agent/selection-policy/types.js';
+import type { SelectionPolicyReplayContext } from '../music-agent/selection-policy/replay-case.js';
+import { createSelectionTraceFromDecisions } from './selection-trace-from-output.js';
+import { projectSelectionTraceForLog } from './selection-trace-projections.js';
 
 export type DjPickNextFallbackPath =
   | 'music_agent_success'
-  | 'music_agent_ranked_fallback'
-  | 'music_agent_safety_block'
-  | 'music_agent_legacy_fallback'
-  | 'legacy_llm_success'
-  | 'legacy_random_fallback'
+  | 'music_agent_ranked_recovery'
   | 'no_candidates';
 
 export type DjEventSink = (payload: Record<string, unknown>) => void;
@@ -39,7 +44,11 @@ export type TrackDedupeInput = {
   artists?: string[] | null;
 };
 
-export type SkippedPickReason = 'id_excluded' | 'dedupe_excluded' | 'no_remaining_slots';
+export type SkippedPickReason =
+  | 'id_excluded'
+  | 'dedupe_excluded'
+  | 'no_remaining_slots'
+  | SelectionReasonCode;
 
 export type SkippedPickLog = {
   id?: string;
@@ -55,8 +64,35 @@ export type DedupeState = {
 };
 
 export type MusicAgentPickNextHandlingResult =
-  | { status: 'handled'; debugBroadcastSent: true }
-  | { status: 'legacy-fallback'; legacyFallbackPath: 'music_agent_legacy_fallback'; debugBroadcastSent: false };
+  {
+    status: 'handled';
+    completion: 'applied' | 'superseded';
+    finalQueueDecisions: FinalQueueDecision[];
+    appendedCount: number;
+    appendedTrackIds: string[];
+    appendedTracks: QueueTrack[];
+    successPublication?: MusicAgentPickNextSuccessPublication;
+  };
+
+export type MusicAgentPickNextSuccessPublication = {
+  appendedTracks: QueueTrack[];
+  appendedTrackIds: string[];
+  appendedDedupeKeys: string[];
+  pickReason: string;
+  debugPayload: Record<string, unknown>;
+  path: DjPickNextFallbackPath;
+  metrics: DjPickNextRunMetrics;
+  warning?: {
+    payload: Record<string, unknown>;
+    message: string;
+  };
+};
+
+export type FinalQueueDecision = {
+  candidateId: string;
+  decision: SelectionPhaseDecision;
+  replayContext?: SelectionPolicyReplayContext;
+};
 
 type Logger = {
   warn(payload: Record<string, unknown>, message: string): void;
@@ -64,7 +100,7 @@ type Logger = {
 
 type BroadcastAppended = (
   userId: string,
-  prevQueueLength: number,
+  tracks: QueueTrack[],
   targetPickCount: number,
   emit: DjEventSink,
   path?: DjPickNextFallbackPath,
@@ -75,199 +111,285 @@ export function handleMusicAgentPickNextOutput(input: {
   userId: string;
   output: MusicAgentRunOutput;
   excludeState: DedupeState;
-  initialQueueLength: number;
+  initialQueueRevision?: number;
   targetPickCount: number;
   startedAt: number;
   discoveryMode: DiscoveryMode;
   emit: DjEventSink;
-  broadcastAppended: BroadcastAppended;
   logger: Logger;
   queuePort?: DJAgentQueuePort;
-  setPickReason(trackId: string, reason: string): void;
   recordRouteOutcome?(path: DjPickNextFallbackPath): unknown;
   fallbackStatsSnapshot(): unknown;
+  evaluateFinalQueuePick?(input: {
+    userId: string;
+    pick: MusicAgentRunOutput['picks'][number];
+    mode: 'autonomous';
+    runId?: string;
+    playedTrackIds?: ReadonlySet<string>;
+    playedTrackKeys?: ReadonlySet<string>;
+  }): SelectionPhaseDecision | FinalQueueEvaluation;
+  runId?: string;
 }): MusicAgentPickNextHandlingResult {
   const {
     userId,
     output,
     excludeState,
-    initialQueueLength,
+    initialQueueRevision,
     targetPickCount,
     startedAt,
     discoveryMode,
     emit,
-    broadcastAppended,
     logger,
     queuePort = defaultDJAgentQueuePort,
-    setPickReason,
     recordRouteOutcome,
-    fallbackStatsSnapshot
+    fallbackStatsSnapshot,
+    runId,
+    evaluateFinalQueuePick = evaluateLiveFinalQueuePick
   } = input;
+  const finalQueueDecisions: FinalQueueDecision[] = [];
+  const plannedExcludeState: DedupeState = {
+    ids: new Set(excludeState.ids),
+    dedupeKeys: new Set(excludeState.dedupeKeys)
+  };
 
-  if (isLyricsAwareSafetyBlock(output)) {
-    const lyricsAwareDiagnostics = compactLyricsAwareDiagnostics(output);
-    const fallbackStats = recordRouteOutcome?.('music_agent_safety_block')
-      ?? fallbackStatsSnapshot();
-    logger.warn(
-      {
-        routeOutcome: 'lyrics_safety_block',
-        fallbackPath: 'music_agent_safety_block',
-        legacyFallbackSuppressed: true,
-        lyricsAwareDiagnostics,
-        fallbackStats
-      },
-      'DJ pick-next: lyrics-aware safety block suppressed legacy fallback'
-    );
-    emit({
-      ...buildMusicAgentDebugPayload({ output, appendedPicks: [], excludeState }),
-      routeOutcome: 'lyrics_safety_block',
-      legacyFallbackSuppressed: true,
-      lyricsAwareDiagnostics
-    });
+  if (initialQueueRevision !== undefined && queuePort.getRevision(userId) !== initialQueueRevision) {
+    emit(buildMusicAgentDebugPayload({ output, appendedPicks: [], excludeState }));
     emit({
       type: 'dj.pick-next.done',
       added: false,
       addedCount: 0,
-      reason: 'lyrics-safety-block',
+      reason: 'queue-changed',
       targetCount: targetPickCount
     });
-    return { status: 'handled', debugBroadcastSent: true };
-  }
-
-  if (output.status !== 'ok') {
     return {
-      status: 'legacy-fallback',
-      legacyFallbackPath: 'music_agent_legacy_fallback',
-      debugBroadcastSent: false
+      status: 'handled', completion: 'superseded',
+      finalQueueDecisions, appendedCount: 0, appendedTrackIds: [], appendedTracks: []
     };
   }
 
-  if (shouldRouteRankedRecoveryToLegacy(output)) {
-    const legacyFallbackPath = 'music_agent_legacy_fallback';
+  if (output.status !== 'ok') {
+    emit({
+      type: 'dj.pick-next.done',
+      added: false,
+      addedCount: 0,
+      reason: output.status,
+      targetCount: targetPickCount
+    });
+    recordRouteOutcome?.('no_candidates');
+    return {
+      status: 'handled', completion: 'applied',
+      finalQueueDecisions, appendedCount: 0, appendedTrackIds: [], appendedTracks: []
+    };
+  }
+
+  if (hasRankedRecoveryPicks(output)) {
     logger.warn(
       {
         targetCount: targetPickCount,
         requestedPickCount: output.picks.length,
-        rankedFallbackPicks: createMusicAgentSelectedTrackDebug(output.picks),
-        ...getMusicAgentShortfallDiagnostics(output, []),
-        fallbackPath: legacyFallbackPath,
+        ...getMusicAgentShortfallDiagnostics(output, [], runId, startedAt),
+        fallbackPath: 'music_agent_ranked_recovery',
         fallbackStats: fallbackStatsSnapshot()
       },
-      'DJ pick-next: MusicAgent returned ranked fallback picks, using legacy fallback'
-    );
-    return { status: 'legacy-fallback', legacyFallbackPath, debugBroadcastSent: false };
-  }
-
-  if (hasSafeAssessedRankedPicks(output)) {
-    logger.warn(
-      {
-        routeOutcome: 'accepted_assessed_ranked',
-        rankedPicks: createMusicAgentSelectedTrackDebug(output.picks),
-        lyricsAwareDiagnostics: compactLyricsAwareDiagnostics(output)
-      },
-      'DJ pick-next: accepting assessed and eligible MusicAgent ranked picks'
+      'DJ pick-next: accepting policy-governed ranked recovery picks'
     );
   }
 
-  const pathQueueLength = queuePort.getQueue(userId).length;
   const appendedPicks: typeof output.picks = [];
+  const appendedTracks: QueueTrack[] = [];
+  const appendedDedupeKeys: string[] = [];
   const musicAgentSkippedPicks: SkippedPickLog[] = [];
 
   for (const pick of output.picks) {
-    if (getRemainingPickSlots(userId, initialQueueLength, targetPickCount, queuePort) <= 0) {
+    if (appendedPicks.length >= targetPickCount) {
       musicAgentSkippedPicks.push(createSkippedPickLog(pick, 'no_remaining_slots', buildTrackDedupeKey(pick)));
-      break;
+      finalQueueDecisions.push({
+        candidateId: pick.id,
+        decision: finalQueueRejection('queue_target_reached')
+      });
+      continue;
+    }
+    const evaluatedFinal = evaluateFinalQueuePick({
+      userId,
+      pick,
+      mode: 'autonomous',
+      runId,
+      playedTrackIds: plannedExcludeState.ids,
+      playedTrackKeys: plannedExcludeState.dedupeKeys
+    });
+    const finalDecision = 'decision' in evaluatedFinal ? evaluatedFinal.decision : evaluatedFinal;
+    finalQueueDecisions.push({
+      candidateId: pick.id,
+      decision: finalDecision,
+      ...('decision' in evaluatedFinal ? { replayContext: evaluatedFinal.replayContext } : {})
+    });
+    if (finalDecision.action === 'reject') {
+      musicAgentSkippedPicks.push(createSkippedPickLog(
+        pick,
+        finalDecision.reasonCodes[0] ?? 'invalid_track_identity',
+        buildTrackDedupeKey(pick)
+      ));
+      continue;
     }
     const dedupeKey = buildTrackDedupeKey(pick);
-    if (excludeState.ids.has(pick.id)) {
+    if (plannedExcludeState.ids.has(pick.id)) {
       musicAgentSkippedPicks.push(createSkippedPickLog(pick, 'id_excluded', dedupeKey));
+      finalQueueDecisions.push({
+        candidateId: pick.id,
+        decision: finalQueueRejection('queue_track_idempotency')
+      });
       continue;
     }
-    if (isTrackDedupeKeyExcluded(dedupeKey, excludeState.dedupeKeys)) {
+    if (isTrackDedupeKeyExcluded(dedupeKey, plannedExcludeState.dedupeKeys)) {
       musicAgentSkippedPicks.push(createSkippedPickLog(pick, 'dedupe_excluded', dedupeKey));
+      finalQueueDecisions.push({
+        candidateId: pick.id,
+        decision: finalQueueRejection('queue_track_idempotency')
+      });
       continue;
     }
-    queuePort.addToQueue(userId, {
+    const appendedTrack = {
       ncmId: pick.id,
       name: pick.name,
       artists: pick.artist ? [pick.artist] : []
-    }, 'end');
+    };
     appendedPicks.push(pick);
-    excludeState.ids.add(pick.id);
-    if (dedupeKey) excludeState.dedupeKeys.add(dedupeKey);
-  }
-
-  if (queuePort.getQueue(userId).length > pathQueueLength) {
-    const pathNewTracks = queuePort.getQueue(userId).slice(pathQueueLength);
-    const pickReason = output.say.trim();
-    if (pickReason) {
-      for (const track of pathNewTracks) {
-        setPickReason(track.ncmId, pickReason);
-      }
+    appendedTracks.push(appendedTrack);
+    plannedExcludeState.ids.add(pick.id);
+    if (dedupeKey) {
+      plannedExcludeState.dedupeKeys.add(dedupeKey);
+      appendedDedupeKeys.push(dedupeKey);
     }
   }
 
-  if (hasReachedPickTarget(userId, initialQueueLength, targetPickCount, queuePort)) {
-    emit(buildMusicAgentDebugPayload({ output, appendedPicks, excludeState }));
-    broadcastAppended(
-      userId,
-      initialQueueLength,
-      targetPickCount,
-      emit,
-      getMusicAgentRoutePath(output),
-      musicAgentRunMetrics(output, appendedPicks, startedAt, discoveryMode)
-    );
-    return { status: 'handled', debugBroadcastSent: true };
+  const pickReason = output.say.trim();
+
+  if (appendedPicks.length >= targetPickCount) {
+    const appendedTrackIds = appendedPicks.map((pick) => pick.id);
+    return {
+      status: 'handled', completion: 'applied', finalQueueDecisions,
+      appendedCount: appendedPicks.length,
+      appendedTrackIds,
+      appendedTracks,
+      successPublication: {
+        appendedTracks,
+        appendedTrackIds,
+        appendedDedupeKeys,
+        pickReason,
+        debugPayload: buildMusicAgentDebugPayload({
+          output,
+          appendedPicks,
+          excludeState: plannedExcludeState
+        }),
+        path: getMusicAgentRoutePath(output),
+        metrics: musicAgentRunMetrics(output, appendedPicks, startedAt, discoveryMode)
+      }
+    };
   }
 
-  const appendedCount = queuePort.getQueue(userId).length - initialQueueLength;
+  const appendedCount = appendedPicks.length;
   if (appendedCount > 0) {
-    emit(buildMusicAgentDebugPayload({
-      output,
-      appendedPicks,
-      excludeState,
-      partial: true,
-      targetCount: targetPickCount,
+    const appendedTrackIds = appendedPicks.map((pick) => pick.id);
+    return {
+      status: 'handled', completion: 'applied', finalQueueDecisions,
       appendedCount,
-      requestedPickCount: output.picks.length,
-      skippedPicks: musicAgentSkippedPicks
-    }));
-    logger.warn(
-      {
-        targetCount: targetPickCount,
-        appendedCount,
-        requestedPickCount: output.picks.length,
-        skippedPicks: musicAgentSkippedPicks,
-        ...getMusicAgentShortfallDiagnostics(output, appendedPicks),
-        fallbackPath: getMusicAgentRoutePath(output),
-        fallbackStats: fallbackStatsSnapshot()
-      },
-      'DJ pick-next: MusicAgent appended fewer than target'
-    );
-    broadcastAppended(
-      userId,
-      initialQueueLength,
-      targetPickCount,
-      emit,
-      getMusicAgentRoutePath(output),
-      musicAgentRunMetrics(output, appendedPicks, startedAt, discoveryMode)
-    );
-    return { status: 'handled', debugBroadcastSent: true };
+      appendedTrackIds,
+      appendedTracks,
+      successPublication: {
+        appendedTracks,
+        appendedTrackIds,
+        appendedDedupeKeys,
+        pickReason,
+        debugPayload: buildMusicAgentDebugPayload({
+          output,
+          appendedPicks,
+          excludeState: plannedExcludeState,
+          partial: true,
+          targetCount: targetPickCount,
+          appendedCount,
+          requestedPickCount: output.picks.length,
+          skippedPicks: musicAgentSkippedPicks
+        }),
+        path: getMusicAgentRoutePath(output),
+        metrics: musicAgentRunMetrics(output, appendedPicks, startedAt, discoveryMode),
+        warning: {
+          payload: {
+            targetCount: targetPickCount,
+            appendedCount,
+            requestedPickCount: output.picks.length,
+            skippedPickReasonCounts: countSkippedPickReasons(musicAgentSkippedPicks),
+            ...getMusicAgentShortfallDiagnostics(output, appendedPicks, runId, startedAt),
+            fallbackPath: getMusicAgentRoutePath(output),
+            fallbackStats: fallbackStatsSnapshot()
+          },
+          message: 'DJ pick-next: MusicAgent appended fewer than target'
+        }
+      }
+    };
   }
 
-  const legacyFallbackPath = 'music_agent_legacy_fallback';
   logger.warn(
     {
       targetCount: targetPickCount,
       appendedCount,
       requestedPickCount: output.picks.length,
-      skippedPicks: musicAgentSkippedPicks,
-      fallbackPath: legacyFallbackPath,
-      fallbackStats: fallbackStatsSnapshot()
+      skippedPickReasonCounts: countSkippedPickReasons(musicAgentSkippedPicks),
+      fallbackPath: 'no_candidates',
+      fallbackStats: fallbackStatsSnapshot(),
+      ...selectionTraceLogProjection(output, runId, startedAt)
     },
-    'DJ pick-next: MusicAgent picks did not change queue, using legacy fallback'
+    'DJ pick-next: no policy-eligible picks changed the queue'
   );
-  return { status: 'legacy-fallback', legacyFallbackPath, debugBroadcastSent: false };
+  emit(buildMusicAgentDebugPayload({ output, appendedPicks, excludeState }));
+  emit({
+    type: 'dj.pick-next.done',
+    added: false,
+    addedCount: 0,
+    reason: 'no-candidates',
+    targetCount: targetPickCount
+  });
+  recordRouteOutcome?.('no_candidates');
+  return {
+    status: 'handled', completion: 'applied',
+    finalQueueDecisions, appendedCount: 0, appendedTrackIds: [], appendedTracks: []
+  };
+}
+
+export function publishCommittedMusicAgentPickNextSuccess(input: {
+  userId: string;
+  publication: MusicAgentPickNextSuccessPublication;
+  excludeState: DedupeState;
+  targetPickCount: number;
+  emit: DjEventSink;
+  broadcastAppended: BroadcastAppended;
+  logger: Logger;
+  setPickReason(trackId: string, reason: string): void;
+}): void {
+  for (const trackId of input.publication.appendedTrackIds) input.excludeState.ids.add(trackId);
+  for (const dedupeKey of input.publication.appendedDedupeKeys) {
+    input.excludeState.dedupeKeys.add(dedupeKey);
+  }
+  if (input.publication.pickReason) {
+    for (const track of input.publication.appendedTracks) {
+      input.setPickReason(track.ncmId, input.publication.pickReason);
+    }
+  }
+  input.emit(input.publication.debugPayload);
+  if (input.publication.warning) {
+    input.logger.warn(input.publication.warning.payload, input.publication.warning.message);
+  }
+  input.broadcastAppended(
+    input.userId,
+    input.publication.appendedTracks,
+    input.targetPickCount,
+    input.emit,
+    input.publication.path,
+    input.publication.metrics
+  );
+}
+
+function finalQueueRejection(reasonCode: SelectionReasonCode): SelectionPhaseDecision {
+  return { phase: 'final', action: 'reject', reasonCodes: [reasonCode] };
 }
 
 function getMusicAgentDebugCandidateCount(output: MusicAgentRunOutput): number {
@@ -379,24 +501,52 @@ function createMusicAgentSelectedTrackDebug(
 
 function getMusicAgentShortfallDiagnostics(
   output: MusicAgentRunOutput,
-  appendedPicks: MusicAgentRunOutput['picks']
+  appendedPicks: MusicAgentRunOutput['picks'],
+  runId: string | undefined,
+  startedAt: number
 ): Record<string, unknown> {
   return {
-    selectedTracks: createMusicAgentSelectedTrackDebug(appendedPicks),
-    selectedSay: output.say,
-    rejected: output.rejected,
+    selectedTrackCount: appendedPicks.length,
+    rejectedPickCount: output.rejected.length,
     finalPickDiagnostics: output.finalPickDiagnostics,
-    queryFunnel: output.queryFunnel,
-    traceLastSteps: output.trace.slice(-3),
+    queryCount: output.queryFunnel.length,
+    traceStepCount: output.trace.length,
     candidateScoreTableCount: output.candidateScoreTable.length,
-    candidateScoreTablePreview: output.candidateScoreTable.slice(0, 20),
-    ...getMusicAgentCandidateSourceDiagnostics(output)
+    ...getMusicAgentCandidateSourceDiagnostics(output),
+    ...selectionTraceLogProjection(output, runId, startedAt)
   };
+}
+
+function selectionTraceLogProjection(
+  output: MusicAgentRunOutput,
+  runId: string | undefined,
+  startedAt: number
+): Record<string, unknown> {
+  if (!runId) return {};
+  const trace = createSelectionTraceFromDecisions({
+    runId,
+    mode: output.mode === 'chat_recommend' ? 'explicit_request' : 'autonomous',
+    createdAt: new Date(startedAt).toISOString(),
+    decisions: output.selectionDecisions ?? []
+  });
+  return {
+    selectionTrace: projectSelectionTraceForLog(trace, {
+      timingMs: Math.max(0, Date.now() - startedAt)
+    })
+  };
+}
+
+function countSkippedPickReasons(
+  skipped: SkippedPickLog[]
+): Partial<Record<SkippedPickReason, number>> {
+  const counts: Partial<Record<SkippedPickReason, number>> = {};
+  for (const pick of skipped) counts[pick.reason] = (counts[pick.reason] ?? 0) + 1;
+  return counts;
 }
 
 function getMusicAgentRoutePath(output: MusicAgentRunOutput): DjPickNextFallbackPath {
   return output.picks.some((pick) => pick.reason === 'ranked fallback')
-    ? 'music_agent_ranked_fallback'
+    ? 'music_agent_ranked_recovery'
     : 'music_agent_success';
 }
 
@@ -404,58 +554,6 @@ function hasRankedRecoveryPicks(output: MusicAgentRunOutput): boolean {
   return output.picks.some(
     (pick) => pick.reason === 'ranked fallback' || pick.reason === 'ranked convergence'
   );
-}
-
-function shouldRouteRankedRecoveryToLegacy(output: MusicAgentRunOutput): boolean {
-  if (output.picks.some((pick) => pick.reason === 'ranked fallback')) {
-    return !hasSafeAssessedRankedPicks(output);
-  }
-  if (!output.picks.some((pick) => pick.reason === 'ranked convergence')) return false;
-
-  return isLyricsEnforcementMode(output.lyricsAwareDiagnostics?.mode ?? '')
-    && !hasSafeAssessedRankedPicks(output);
-}
-
-function hasSafeAssessedRankedPicks(output: MusicAgentRunOutput): boolean {
-  if (!hasRankedRecoveryPicks(output)) return false;
-  const parsedDiagnostics = lyricsAwareDiagnosticsSchema.safeParse(output.lyricsAwareDiagnostics);
-  if (!parsedDiagnostics.success) return false;
-  const diagnostics = parsedDiagnostics.data;
-  if (
-    !isLyricsEnforcementMode(diagnostics.mode)
-    || diagnostics.enforcementApplied !== true
-    || diagnostics.assessmentCoverageValid !== true
-    || diagnostics.allReturnedPicksAssessed !== true
-  ) {
-    return false;
-  }
-
-  const decisionsById = new Map<string, typeof diagnostics.decisions>();
-  for (const decision of diagnostics.decisions) {
-    const existing = decisionsById.get(decision.id) ?? [];
-    existing.push(decision);
-    decisionsById.set(decision.id, existing);
-  }
-  return output.picks.every((pick) => {
-    const decisions = decisionsById.get(pick.id);
-    return decisions?.length === 1 && decisions[0]?.eligible === true;
-  });
-}
-
-export function isLyricsAwareSafetyBlock(output: MusicAgentRunOutput): boolean {
-  const parsedDiagnostics = lyricsAwareDiagnosticsSchema.safeParse(output.lyricsAwareDiagnostics);
-  if (!parsedDiagnostics.success) return false;
-  const diagnostics = parsedDiagnostics.data;
-  return output.status === 'empty_pool'
-    && output.picks.length === 0
-    && isLyricsEnforcementMode(diagnostics.mode)
-    && diagnostics.enforcementApplied === true
-    && diagnostics.fallbackSuppressed === true
-    && diagnostics.allReturnedPicksAssessed === true;
-}
-
-function isLyricsEnforcementMode(mode: string): mode is 'enforce_fit' | 'enforce_all' {
-  return mode === 'enforce_fit' || mode === 'enforce_all';
 }
 
 function compactLyricsAwareDiagnostics(output: MusicAgentRunOutput): Record<string, unknown> | undefined {
@@ -467,8 +565,6 @@ function compactLyricsAwareDiagnostics(output: MusicAgentRunOutput): Record<stri
     assessmentCoverageValid: diagnostics.assessmentCoverageValid,
     assessmentValidationProblemCount: diagnostics.assessmentValidationProblems.length,
     allReturnedPicksAssessed: diagnostics.allReturnedPicksAssessed,
-    enforcementApplied: diagnostics.enforcementApplied,
-    fallbackSuppressed: diagnostics.fallbackSuppressed,
     eligibleDecisionCount: diagnostics.decisions.filter((decision) => decision.eligible).length,
     decisionCount: diagnostics.decisions.length,
     promptChars: diagnostics.promptChars,

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { CandidatePool } from '../../src/server/music-agent/candidates.js';
 import { runMusicAgentLoop } from '../../src/server/music-agent/loop.js';
+import { createSelectionDecisionRecorder } from '../../src/server/music-agent/selection-policy/decision-trace.js';
 import type { FinalShortlistEnricher } from '../../src/server/music-agent/final-shortlist-enrichment.js';
 import type { MusicAgentToolRegistry } from '../../src/server/music-agent/tools.js';
 import type {
@@ -52,7 +53,7 @@ function queryPlan(constraints = ['calm']): QueryPlan {
   return {
     exactTrackQueries: [], artistAnchors: [], albumAnchors: [], playlistQueries: [],
     intentQueries: [], tasteAnchorQueries: [], trendQueries: [], explorationQueries: [],
-    styleHints: [], listeningConstraints: constraints, avoidArtists: [], negativeTerms: [], rationale: ''
+    styleHints: [], listeningConstraints: constraints, negativeTerms: [], rationale: ''
   };
 }
 
@@ -69,8 +70,6 @@ function candidate(id: string, overrides: Partial<MusicCandidate> = {}): MusicCa
       timeFit: 0.8,
       contextFit: 0.8,
       novelty: 0.5,
-      recentPenalty: 0,
-      skipPenalty: 0,
       sourceConfidence: 0.8
     },
     ...overrides
@@ -425,6 +424,7 @@ describe('lyrics-aware music agent loop', () => {
     pool.upsert(death); pool.upsert(calm);
     const enrich = enricherFor([death, calm]);
     const persisted: TrackAssessment[][] = [];
+    const selectionDecisionRecorder = createSelectionDecisionRecorder();
     const client = llm([
       finalOutput(['death', 'calm'], []),
       finalOutput(['death', 'calm'], [
@@ -438,21 +438,26 @@ describe('lyrics-aware music agent loop', () => {
       llmClient: client, context: context(), candidatePool: pool, tools,
       budget: budget(), targetPickCount: 2, lyricsSelectionMode: 'enforce_fit',
       finalShortlistEnricher: enrich,
+      selectionDecisionRecorder,
       persistTrackAssessments: async (value) => { persisted.push(value.assessments); }
     });
 
     expect(client.calls).toBe(2);
     expect(enrich).toHaveBeenCalledTimes(1);
-    expect(result.picks.map((pick) => pick.id)).toEqual(['calm']);
+    expect(result.picks.map((pick) => pick.id)).toEqual(['death', 'calm']);
     expect(persisted[0]?.map((item) => item.id)).toEqual(['death', 'calm']);
-    expect(result.finalPickDiagnostics).toMatchObject({ semanticConflictDroppedCount: 1 });
+    expect(result.finalPickDiagnostics).toMatchObject({ semanticConflictDroppedCount: 0 });
     expect(result.lyricsAwareDiagnostics).toMatchObject({
-      mode: 'enforce_fit', assessmentCoverageValid: true, allReturnedPicksAssessed: true,
-      enforcementApplied: true
+      mode: 'enforce_fit', assessmentCoverageValid: true, allReturnedPicksAssessed: true
     });
     expect(result.lyricsAwareDiagnostics?.decisions.find((item) => item.id === 'death')).toMatchObject({
-      compatibility: 'conflict'
+      compatibility: 'conflict', eligible: true
     });
+    expect(selectionDecisionRecorder.snapshot()).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        stage: 'ranking', action: 'lowered', reasonCode: 'semantic_compatibility', candidateId: 'death'
+      })
+    ]));
   });
 
   it('reuses the same enrichment when the hard-final retry is needed', async () => {
@@ -483,7 +488,7 @@ describe('lyrics-aware music agent loop', () => {
     ['missing', [assessment('one')]],
     ['duplicate', [assessment('one'), assessment('one')]],
     ['unknown', [assessment('one'), assessment('unknown')]]
-  ])('blocks enforcement and persistence for %s assessment coverage', async (_case, assessments) => {
+  ])('keeps %s assessment coverage failures observable without blocking valid candidates', async (_case, assessments) => {
     const one = candidate('one'); const two = candidate('two');
     const pool = new CandidatePool(); pool.upsert(one); pool.upsert(two);
     const persist = vi.fn();
@@ -495,11 +500,11 @@ describe('lyrics-aware music agent loop', () => {
       finalShortlistEnricher: enricherFor([one, two]), persistTrackAssessments: persist
     });
 
-    expect(result.status).toBe('empty_pool');
-    expect(result.picks).toEqual([]);
+    expect(result.status).toBe('ok');
+    expect(result.picks.map((pick) => pick.id)).toEqual(['one']);
     expect(persist).not.toHaveBeenCalled();
     expect(result.finalPickDiagnostics).toMatchObject({ assessmentValidationFailureCount: 1 });
-    expect(result.lyricsAwareDiagnostics).toMatchObject({ assessmentCoverageValid: false, fallbackSuppressed: true });
+    expect(result.lyricsAwareDiagnostics).toMatchObject({ assessmentCoverageValid: false });
   });
 
   it('retains trusted cached assessments for safe fallback after malformed fused coverage', async () => {
@@ -519,10 +524,10 @@ describe('lyrics-aware music agent loop', () => {
     });
 
     expect(result.status).toBe('ok');
-    expect(result.picks.map((pick) => pick.id)).toEqual(['cached']);
+    expect(result.picks.map((pick) => pick.id)).toEqual(['fresh']);
     expect(result.lyricsAwareDiagnostics).toMatchObject({
       assessmentCoverageValid: false,
-      allReturnedPicksAssessed: true
+      allReturnedPicksAssessed: false
     });
   });
 
@@ -586,7 +591,7 @@ describe('lyrics-aware music agent loop', () => {
 
     expect(client.calls).toBe(2);
     expect(result.picks.map((pick) => pick.id)).toEqual(['one', 'two']);
-    expect(result.finalPickDiagnostics).toMatchObject({ rankedBackfillCount: 2, semanticConflictDroppedCount: 1 });
+    expect(result.finalPickDiagnostics).toMatchObject({ rankedBackfillCount: 2, semanticConflictDroppedCount: 0 });
   });
 
   it('does not count an unselected conflicting shortlist track as an actual semantic drop', async () => {
@@ -625,14 +630,14 @@ describe('lyrics-aware music agent loop', () => {
       finalShortlistEnricher: enricherFor([death], [profilePacket(death, cachedDeath)])
     });
 
-    expect(result.status).toBe('empty_pool');
-    expect(result.picks).toEqual([]);
+    expect(result.status).toBe('ok');
+    expect(result.picks.map((pick) => pick.id)).toEqual(['death']);
     expect(result.lyricsAwareDiagnostics?.decisions[0]).toMatchObject({
-      id: 'death', compatibility: 'conflict', eligible: false
+      id: 'death', compatibility: 'conflict', eligible: true
     });
   });
 
-  it('does not let ranked fallback reselect a cached aggressive assessment', async () => {
+  it('keeps cached aggressive assessment as soft pressure during ranked fallback', async () => {
     const death = candidate('death'); const pool = new CandidatePool(); pool.upsert(death);
     const fallbackLogger = vi.fn();
     const deathAssessment = assessment(
@@ -646,18 +651,18 @@ describe('lyrics-aware music agent loop', () => {
       fallbackLogger
     });
 
-    expect(result.status).toBe('empty_pool');
-    expect(result.picks).toEqual([]);
-    expect(result.finalPickDiagnostics).toMatchObject({ semanticConflictDroppedCount: 1 });
-    expect(result.lyricsAwareDiagnostics).toMatchObject({ fallbackSuppressed: true });
+    expect(result.status).toBe('ok');
+    expect(result.picks.map((pick) => pick.id)).toEqual(['death']);
+    expect(result.finalPickDiagnostics).toMatchObject({ semanticConflictDroppedCount: 0 });
+    expect(result.lyricsAwareDiagnostics).toMatchObject({ assessmentCoverageValid: true });
     expect(fallbackLogger).toHaveBeenCalledWith(expect.objectContaining({
       lyricsAwareDiagnostics: expect.objectContaining({
-        mode: 'enforce_fit', assessmentCoverageValid: true, fallbackSuppressed: true
+        mode: 'enforce_fit', assessmentCoverageValid: true
       })
     }));
   });
 
-  it('returns a safety-blocked empty result when ranked convergence has no eligible assessed track', async () => {
+  it('keeps assessed conflicts as soft pressure during ranked convergence', async () => {
     const items = ['death-1', 'death-2'].map((id) => candidate(id));
     const pool = new CandidatePool(); items.forEach((item) => pool.upsert(item));
     const profiles = items.map((item) => profilePacket(item, assessment(
@@ -674,12 +679,12 @@ describe('lyrics-aware music agent loop', () => {
       finalShortlistEnricher: enricherFor(items, profiles)
     });
 
-    expect(result.status).toBe('empty_pool');
-    expect(result.picks).toEqual([]);
-    expect(result.lyricsAwareDiagnostics?.fallbackSuppressed).toBe(true);
+    expect(result.status).toBe('ok');
+    expect(result.picks.map((pick) => pick.id)).toEqual(['death-1', 'death-2']);
+    expect(result.lyricsAwareDiagnostics?.assessmentCoverageValid).toBe(true);
   });
 
-  it('fails closed instead of throwing when shortlist enrichment itself fails', async () => {
+  it('keeps valid candidates when optional shortlist enrichment fails', async () => {
     const one = candidate('one'); const pool = new CandidatePool(); pool.upsert(one);
     const result = await runMusicAgentLoop({
       llmClient: llm([]), context: context(), candidatePool: pool, tools: {},
@@ -687,15 +692,15 @@ describe('lyrics-aware music agent loop', () => {
       finalShortlistEnricher: vi.fn(async () => { throw new Error('cache unavailable'); })
     });
 
-    expect(result.status).toBe('empty_pool');
-    expect(result.picks).toEqual([]);
+    expect(result.status).toBe('ok');
+    expect(result.picks.map((pick) => pick.id)).toEqual(['one']);
     expect(result.lyricsAwareDiagnostics).toMatchObject({
-      assessmentCoverageValid: false, fallbackSuppressed: true,
+      assessmentCoverageValid: false,
       assessmentValidationProblems: ['enrichment_failed']
     });
   });
 
-  it('drops suspicious external tracks in enforce_all when an acceptable alternative exists', async () => {
+  it('tracks suspicious external quality as soft ranking pressure without hard-dropping it', async () => {
     const spam = candidate('spam', {
       artist: '网络歌手',
       qualitySignals: { popularity: 1, albumName: null, copyright: 1 }
@@ -704,21 +709,29 @@ describe('lyrics-aware music agent loop', () => {
       qualitySignals: { popularity: 80, albumName: 'Real Album', copyright: 1 }
     });
     const pool = new CandidatePool(); pool.upsert(spam); pool.upsert(good);
+    const selectionDecisionRecorder = createSelectionDecisionRecorder();
     const result = await runMusicAgentLoop({
       llmClient: llm([
         finalOutput(['spam', 'good'], []),
         finalOutput(['spam', 'good'], [assessment('spam'), assessment('good')])
       ]),
       context: context(), candidatePool: pool, tools: {}, budget: budget(), targetPickCount: 2,
-      lyricsSelectionMode: 'enforce_all', finalShortlistEnricher: enricherFor([spam, good])
+      lyricsSelectionMode: 'enforce_all', finalShortlistEnricher: enricherFor([spam, good]),
+      selectionDecisionRecorder
     });
 
-    expect(result.picks.map((pick) => pick.id)).toEqual(['good']);
-    expect(result.finalPickDiagnostics).toMatchObject({ qualityDroppedCount: 1 });
+    expect(result.picks.map((pick) => pick.id)).toEqual(['spam', 'good']);
+    expect(result.finalPickDiagnostics).toMatchObject({ qualityDroppedCount: 0 });
     expect(result.lyricsAwareDiagnostics?.decisions.find((item) => item.id === 'spam')).toMatchObject({
       quality: 'suspicious',
+      eligible: true,
       qualityNegativeSignals: expect.arrayContaining(['placeholder_or_collection_artist'])
     });
+    expect(selectionDecisionRecorder.snapshot()).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        stage: 'ranking', action: 'lowered', reasonCode: 'candidate_quality', candidateId: 'spam'
+      })
+    ]));
   });
 
   it('keeps the exact legacy behavior when lyrics selection is off', async () => {
