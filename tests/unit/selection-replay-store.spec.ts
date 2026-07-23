@@ -30,6 +30,62 @@ afterEach(() => {
 });
 
 describe('selection replay persistence', () => {
+  it('captures logical rotation distance so hard-window decisions can be replayed', () => {
+    const track = candidate('rotation');
+    const cases = buildSelectionPolicyReplayCases({
+      candidates: [track],
+      context: {
+        mode: 'autonomous',
+        explicitlyRequested: false,
+        rotation: {
+          currentRound: 20,
+          tracks: [{
+            trackKey: 'songrotation::artistrotation',
+            lastSelectedRound: 15,
+            selectionsInWindow: 2
+          }]
+        }
+      },
+      batchLimit: 1,
+      pressureForCandidate: () => [{
+        source: 'rotation',
+        reasonCode: 'rotation_track_suppression',
+        direction: 'penalty',
+        amount: 1,
+        severity: 'suppress',
+        evidence: {
+          currentRound: 20,
+          lastSelectedRound: 15,
+          roundDistance: 5,
+          hardRounds: 12,
+          softRounds: 40,
+          selectionsInWindow: 2
+        }
+      }]
+    });
+
+    expect(cases[0]).toMatchObject({
+      context: {
+        rotationCurrentRound: 20,
+        rotationLastSelectedRound: 15,
+        rotationRoundDistance: 5,
+        rotationSelectionsInWindow: 2,
+        rotationSuppressed: true
+      },
+      pressure: [{
+        reasonCode: 'rotation_track_suppression',
+        roundDistance: 5,
+        selectionsInWindow: 2
+      }],
+      expected: {
+        recall: {
+          action: 'suppress',
+          reasonCodes: ['rotation_track_suppression']
+        }
+      }
+    });
+  });
+
   it('keeps early-phase context and writes only the last replayable live Final evaluation', () => {
     const initialContext = { mode: 'autonomous' as const, explicitlyRequested: false };
     const cases = buildSelectionPolicyReplayCases({
@@ -137,6 +193,11 @@ function replayContext(
     retrievalCooldown: false,
     queueContainsTrack: false,
     playedTrack: false,
+    rotationCurrentRound: 0,
+    rotationLastSelectedRound: null,
+    rotationRoundDistance: null,
+    rotationSelectionsInWindow: 0,
+    rotationSuppressed: false,
     ...overrides
   };
 }

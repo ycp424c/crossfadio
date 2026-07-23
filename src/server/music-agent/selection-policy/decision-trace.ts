@@ -141,6 +141,7 @@ function provenanceForReason(reason: SelectionReasonCode): SelectionDecision['pr
   if (reason.startsWith('active_directive')) return 'active_directive';
   if (reason.includes('preference')) return 'preference_evidence';
   if (reason.startsWith('exposure_') || reason.startsWith('early_skip_')) return 'listening_exposure';
+  if (reason.startsWith('rotation_')) return 'selection_rotation';
   if (reason.startsWith('retrieval_')) return 'retrieval_history';
   if (reason.startsWith('upcoming_queue_') || reason.includes('idempotency')) return 'queue';
   if (reason.startsWith('batch_')) return 'batch_diversity';

@@ -25,18 +25,14 @@ export function createSelectionTraceCollector(input: {
   createdAt?: string;
 }): SelectionTraceCollector {
   const decisions: SelectionDecision[] = [];
-  const base = selectionDecisionTraceSchema.pick({
-    schemaVersion: true,
-    runId: true,
-    mode: true,
-    createdAt: true,
-    decisions: true
-  }).omit({ decisions: true }).parse({
+  const parsedBase = selectionDecisionTraceSchema.parse({
     schemaVersion: SELECTION_TRACE_SCHEMA_VERSION,
     runId: input.runId,
     mode: input.mode,
-    createdAt: input.createdAt ?? new Date().toISOString()
+    createdAt: input.createdAt ?? new Date().toISOString(),
+    decisions: []
   });
+  const { decisions: _decisions, ...base } = parsedBase;
 
   return {
     record(recordInput) {
@@ -73,6 +69,7 @@ export function projectSelectionTraceForLog(
   decisionCount: number;
   stageCounts: Partial<Record<SelectionDecision['stage'], number>>;
   finalReasonCodes: string[];
+  rotationReasonCounts?: Record<string, number>;
   timingMs?: number;
   errorCode?: string;
 } {
@@ -87,6 +84,12 @@ export function projectSelectionTraceForLog(
   for (const decision of parsed.decisions) {
     stageCounts[decision.stage] = (stageCounts[decision.stage] ?? 0) + 1;
   }
+  const rotationReasonCounts: Record<string, number> = {};
+  for (const decision of parsed.decisions) {
+    if (decision.provenance.source !== 'selection_rotation') continue;
+    rotationReasonCounts[decision.reasonCode] =
+      (rotationReasonCounts[decision.reasonCode] ?? 0) + 1;
+  }
   return {
     runId: parsed.runId,
     decisionCount: parsed.decisions.length,
@@ -96,6 +99,7 @@ export function projectSelectionTraceForLog(
         .filter((decision) => decision.stage === 'final')
         .map((decision) => decision.reasonCode)
     )),
+    ...(Object.keys(rotationReasonCounts).length > 0 ? { rotationReasonCounts } : {}),
     ...(operational.timingMs !== undefined ? { timingMs: operational.timingMs } : {}),
     ...(operational.errorCode !== undefined ? { errorCode: operational.errorCode } : {})
   };

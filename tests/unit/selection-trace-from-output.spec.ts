@@ -7,11 +7,11 @@ import {
 import type { MusicAgentRunOutput } from '../../src/server/music-agent/schema.js';
 
 describe('selection trace from MusicAgent output', () => {
-  it('creates a valid empty v1 trace for the running journey', () => {
+  it('creates a valid empty current-version trace for the running journey', () => {
     expect(createEmptySelectionTrace({
       runId: 'run-1', mode: 'autonomous', createdAt: '2026-07-17T04:00:00.000Z'
     })).toEqual({
-      schemaVersion: 1,
+      schemaVersion: 2,
       runId: 'run-1',
       mode: 'autonomous',
       createdAt: '2026-07-17T04:00:00.000Z',

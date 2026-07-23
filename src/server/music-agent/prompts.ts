@@ -48,6 +48,8 @@ const MAX_FINAL_CONTEXT_CHARS = 8_000;
 const MAX_FINAL_CANDIDATE_BASE_CHARS = 8_000;
 const MAX_FINAL_LYRIC_EVIDENCE_CHARS = 40_000;
 const MAX_FINAL_PROMPT_CHARS = 48_000;
+const ROTATION_PROMPT_RULE =
+  'Selection rotation is authoritative: never pick an auto-selection candidate marked inside the 12-successful-round hard window; only an exact current user request may bypass it.';
 const STRUCTURED_PROMPT_SECTIONS = new Set([
   'compact_context',
   'candidate_pool',
@@ -197,6 +199,7 @@ export function buildLoopMessages(input: BuildLoopMessagesInput): LlmMessage[] {
         'final picks 的 id 必须来自候选池；不能选择候选池外的歌曲。',
         'activeDirective/current chat 必须优先于趋势、榜单、泛化流行度。',
         'recentArtistPenalties/recentTrackPenalties 只是 Ranking 阶段的可解释 Selection Pressure，不得在 Recall 阶段升级成硬过滤。',
+        ROTATION_PROMPT_RULE,
         'NCM song search 只适合精确召回：recall_from_ncm_search 只能使用具体歌名+艺人、榜单曲目或高置信曲目实体；不要把 mood、场景、风格、人声、能量词直接作为 song search query。',
         'expand_queries 应把具体曲目实体放入 exactTrackQueries，把具体艺人放入 artistAnchors，把具体专辑放入 albumAnchors，把风格/语言/场景适合的歌单搜索入口放入 playlistQueries；不要把这些实体混成一条 song search query。',
         '风格、地区、年代、人声、能量、编曲质感应放入 styleHints/listeningConstraints；这些语义线索用于实体发现和排序，不是直接搜索词。',
@@ -377,6 +380,7 @@ function buildLegacyFinalPickMessages(input: BuildLoopMessagesInput): LlmMessage
         `picks 必须从候选池里选择 1 到 ${targetPickCount} 首；id 必须完全来自候选池；source 必须是对应候选的来源之一。`,
         `候选池数量达到或超过目标数量时，必须尽量返回 ${targetPickCount} 首。`,
         `如果少于 ${targetPickCount} 首，必须在 rejected 里为每个缺口说明原因；不要为了凑数选择明显不适合当前队列的歌曲。`,
+        ROTATION_PROMPT_RULE,
         'reason 要说明为什么这首适合当前时刻、用户偏好或当前队列。',
         'Each pick reason is user-visible: only describe public musical traits, current-moment fit, or queue flow; never quote user wording, personal data, private context, or system fields.',
         '不要请求更多信息，不要继续规划，不要输出候选池外的歌曲。'
@@ -420,6 +424,7 @@ function buildAssessmentAwareFinalSystem(input: BuildLoopMessagesInput, targetPi
     `picks must select 1 to ${targetPickCount} candidate ids; ids and sources must exactly match candidate_base.`,
     `When at least ${targetPickCount} candidates exist, return ${targetPickCount} picks unless they are clearly unsuitable.`,
     `If fewer than ${targetPickCount} are picked, rejected must explain every missing slot; do not fill slots with clearly unsuitable tracks.`,
+    ROTATION_PROMPT_RULE,
     'Pick reasons must explain fit for the current moment, user preference, or queue. Do not request information, plan another action, or invent a candidate.',
     'Each pick reason is user-visible: only describe public musical traits, current-moment fit, or queue flow; never quote user wording, personal data, private context, or system fields.'
   ].join('\n');

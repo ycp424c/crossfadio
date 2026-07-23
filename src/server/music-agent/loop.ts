@@ -10,12 +10,14 @@ import {
   buildCandidateScoreTableRows,
   candidateTitleMotifKeys,
   diversifyCandidates,
+  isHardFilteredCandidate,
   rankCandidates,
   rankOptionsFromContext
 } from './rank.js';
 import { evaluateAdmission } from './selection-policy/admission.js';
 import { evaluateRecall } from './selection-policy/recall.js';
 import { evaluateFinal } from './selection-policy/final.js';
+import { isRotationTrackSuppressed } from './selection-policy/rotation.js';
 import { selectDiverseBatch } from './selection-policy/batch.js';
 import type { SelectionDecisionRecorder } from './selection-policy/decision-trace.js';
 import type { MusicAgentProgressStage } from './index.js';
@@ -427,7 +429,7 @@ async function runMusicAgentLoopInternal(input: RunMusicAgentLoopInput): Promise
       continue;
     }
 
-    const candidateCountBeforeTool = input.candidatePool.count();
+    const candidateCountBeforeTool = convergenceCandidateCount(input);
     if (toolName === 'finalize_pick') reportProgress(input, 'balancing');
     const progressStage = progressStageForTool(toolName);
     if (progressStage) reportProgress(input, progressStage);
@@ -455,7 +457,7 @@ async function runMusicAgentLoopInternal(input: RunMusicAgentLoopInput): Promise
         toolCalls
       );
     }
-    if (rewrite) forcedEmptyPoolRecallCompleted = input.candidatePool.count() < 2;
+    if (rewrite) forcedEmptyPoolRecallCompleted = convergenceCandidateCount(input) < 2;
 
     if (input.signal?.aborted) {
       return abortedOutput(resolveMode(input), trace);
@@ -1030,7 +1032,7 @@ async function maybeForceLikedRecallAfterEmptyPoolRewrite(
   step: number,
   toolCalls: number
 ): Promise<number> {
-  if (input.candidatePool.count() >= 2) return toolCalls;
+  if (convergenceCandidateCount(input) >= 2) return toolCalls;
   if (toolCalls >= input.budget.maxToolCalls) return toolCalls;
   const likedTool = input.tools.recall_from_liked;
   if (!likedTool) return toolCalls;
@@ -1061,7 +1063,7 @@ function getEmptyPoolToolRewrite(options: {
 }): ToolRewrite | 'fallback' | undefined {
   const { output, requestedToolName, input, trace, forcedEmptyPoolRecallCompleted } = options;
   if (modeFromContext(input.context) !== 'pick_next') return undefined;
-  if (input.candidatePool.count() >= 2) return undefined;
+  if (convergenceCandidateCount(input) >= 2) return undefined;
   if (requestedToolName && RECALL_TOOL_NAMES.has(requestedToolName)) return undefined;
   if (requestedToolName && DISCOVERY_ONLY_TOOL_NAMES.has(requestedToolName)) return undefined;
   if (requestedToolName === 'expand_queries' && !hasExecutedTool(trace, 'expand_queries')) return undefined;
@@ -1118,7 +1120,7 @@ function hasExecutedTool(trace: AgentTraceStep[], toolName: MusicAgentToolName):
 }
 
 function forcedRecallFallbackReason(input: RunMusicAgentLoopInput): MusicAgentFallbackReason {
-  return input.candidatePool.count() === 0
+  return convergenceCandidateCount(input) === 0
     ? 'empty_pool_after_forced_recall'
     : 'insufficient_pool_after_forced_recall';
 }
@@ -1126,7 +1128,7 @@ function forcedRecallFallbackReason(input: RunMusicAgentLoopInput): MusicAgentFa
 function canUseReservedRankTool(tool: MusicAgentToolName | undefined, input: RunMusicAgentLoopInput): boolean {
   return (
     tool === DEFAULT_TOOL_NAME &&
-    input.candidatePool.count() > 0 &&
+    convergenceCandidateCount(input) > 0 &&
     Boolean(input.tools[DEFAULT_TOOL_NAME])
   );
 }
@@ -2130,7 +2132,7 @@ function shouldConvergeAfterTool(
   input: RunMusicAgentLoopInput,
   llmCalls: number
 ): boolean {
-  if (input.candidatePool.count() < 2) return false;
+  if (convergenceCandidateCount(input) < 2) return false;
   if (CONVERGENCE_TOOL_NAMES.has(toolName)) return true;
   return input.budget.maxLlmCalls - llmCalls <= 1;
 }
@@ -2139,14 +2141,14 @@ function shouldConvergeAfterSkippedTerminalTool(
   toolName: MusicAgentToolName | undefined,
   input: RunMusicAgentLoopInput
 ): boolean {
-  return Boolean(toolName && input.candidatePool.count() >= 2 && CONVERGENCE_TOOL_NAMES.has(toolName));
+  return Boolean(toolName && convergenceCandidateCount(input) >= 2 && CONVERGENCE_TOOL_NAMES.has(toolName));
 }
 
 function shouldConvergeAfterSkippedToolBudget(
   toolName: MusicAgentToolName | undefined,
   input: RunMusicAgentLoopInput
 ): boolean {
-  if (!toolName || input.candidatePool.count() < 2) return false;
+  if (!toolName || convergenceCandidateCount(input) < 2) return false;
   if (input.context.request === 'auto-fill' && !CONVERGENCE_TOOL_NAMES.has(toolName)) {
     return hasEnoughAutoFillSkippedRecallCandidates(input);
   }
@@ -2162,9 +2164,9 @@ function shouldAskFinalAfterNoProgressTool(
   return (
     modeFromContext(input.context) === 'pick_next' &&
     targetPickCount(input) >= 4 &&
-    input.candidatePool.count() >= SKIPPED_TOOL_FINAL_PICK_MIN_CANDIDATES &&
-    (input.candidatePool.count() < targetPickCount(input) || isLikedOnlyFallbackPool(input, trace)) &&
-    input.candidatePool.count() <= candidateCountBeforeTool &&
+    convergenceCandidateCount(input) >= SKIPPED_TOOL_FINAL_PICK_MIN_CANDIDATES &&
+    (convergenceCandidateCount(input) < targetPickCount(input) || isLikedOnlyFallbackPool(input, trace)) &&
+    convergenceCandidateCount(input) <= candidateCountBeforeTool &&
     NO_PROGRESS_FINAL_TOOL_NAMES.has(toolName) &&
     hasExecutedExternalRecall(trace)
   );
@@ -2180,9 +2182,9 @@ function shouldSupplementSparseExpandRecall(
     toolName === 'expand_queries' &&
     modeFromContext(input.context) === 'pick_next' &&
     targetPickCount(input) >= 4 &&
-    input.candidatePool.count() >= SKIPPED_TOOL_FINAL_PICK_MIN_CANDIDATES &&
+    convergenceCandidateCount(input) >= SKIPPED_TOOL_FINAL_PICK_MIN_CANDIDATES &&
     hasSparseAutoFillCandidatesAfterNoProgress(input, trace) &&
-    input.candidatePool.count() <= candidateCountBeforeTool &&
+    convergenceCandidateCount(input) <= candidateCountBeforeTool &&
     hasExecutedExternalRecall(trace)
   );
 }
@@ -2194,7 +2196,7 @@ function hasSparseAutoFillCandidatesAfterNoProgress(
   if (isExploreAutoFill(input)) {
     return !hasEnoughAutoFillRankedCandidates(input);
   }
-  return input.candidatePool.count() < targetPickCount(input) || isLikedOnlyFallbackPool(input, trace);
+  return convergenceCandidateCount(input) < targetPickCount(input) || isLikedOnlyFallbackPool(input, trace);
 }
 
 function isLikedOnlyFallbackPool(input: RunMusicAgentLoopInput, trace: AgentTraceStep[]): boolean {
@@ -2247,7 +2249,7 @@ function hasExtraFinalPickBudget(
 ): boolean {
   const remainingMs = input.budget.maxMs - (Date.now() - startedAt);
   return (
-    input.candidatePool.count() >= minCandidates &&
+    convergenceCandidateCount(input) >= minCandidates &&
     step < input.budget.maxSteps &&
     llmCalls < input.budget.maxLlmCalls &&
     remainingMs >= extraFinalPickRemainingMs(input.budget.maxMs)
@@ -2325,10 +2327,10 @@ function shouldConvergeAfterAutoFillRecallMix(input: RunMusicAgentLoopInput): bo
     return explicitTargetPickCount !== null &&
       nonLikedCount >= minExternalCandidatesBeforeLikedTail(explicitTargetPickCount) &&
       countLikedCandidates(input) > 0 &&
-      input.candidatePool.count() >= explicitTargetPickCount;
+      convergenceCandidateCount(input) >= explicitTargetPickCount;
   }
   return (
-    input.candidatePool.count() >= autoFillTotalConvergenceTarget(input)
+    convergenceCandidateCount(input) >= autoFillTotalConvergenceTarget(input)
   );
 }
 
@@ -2339,7 +2341,7 @@ function shouldSupplementLikedTailFallback(input: RunMusicAgentLoopInput): boole
   const nonLikedCount = countNonLikedCandidates(input);
   return (
     nonLikedCount >= minExternalCandidatesBeforeLikedTail(explicitTargetPickCount) &&
-    input.candidatePool.count() < explicitTargetPickCount
+    convergenceCandidateCount(input) < explicitTargetPickCount
   );
 }
 
@@ -2348,7 +2350,7 @@ function isExploreAutoFill(input: RunMusicAgentLoopInput): boolean {
 }
 
 function countLikedCandidates(input: RunMusicAgentLoopInput): number {
-  return input.candidatePool.list().filter((candidate) => candidate.sources.includes('liked')).length;
+  return convergenceCandidates(input).filter((candidate) => candidate.sources.includes('liked')).length;
 }
 
 function minExternalCandidatesBeforeLikedTail(target: number): number {
@@ -2364,7 +2366,21 @@ function autoFillTotalConvergenceTarget(input: RunMusicAgentLoopInput): number {
 }
 
 function countNonLikedCandidates(input: RunMusicAgentLoopInput): number {
-  return input.candidatePool.list().filter((candidate) => candidate.sources.some((source) => source !== 'liked')).length;
+  return convergenceCandidates(input)
+    .filter((candidate) => candidate.sources.some((source) => source !== 'liked'))
+    .length;
+}
+
+function convergenceCandidateCount(input: RunMusicAgentLoopInput): number {
+  return convergenceCandidates(input).length;
+}
+
+function convergenceCandidates(input: RunMusicAgentLoopInput): MusicCandidate[] {
+  const policyContext = resolveSelectionPolicyContext(input);
+  return input.candidatePool.list().filter((candidate) =>
+    !isHardFilteredCandidate(candidate) &&
+    !isRotationTrackSuppressed(toSelectionPolicyCandidate(candidate), policyContext)
+  );
 }
 
 function resolveMode(input: RunMusicAgentLoopInput): MusicAgentFinalOutput['mode'] {

@@ -12,10 +12,12 @@ import {
   getCurrentIndex,
   getQueue,
   getQueueStateRevision,
-  addToQueue,
-  swapNext
+  prepareQueueState,
+  type QueueTrack
 } from '../store/queue.js';
+import { getDb } from '../store/db.js';
 import { appendDjEvent, type DjEventRecord } from '../store/dj-events.js';
+import { recordSelectionRotationExposure } from '../store/selection-rotation.js';
 import { broadcastToUser } from './broadcast.js';
 import { getLogger } from '../logger.js';
 import { buildTrackDedupeKey, isTrackDedupeKeyExcluded } from './routes/djNext.js';
@@ -207,9 +209,6 @@ export async function handleChatMessage(
               if (applied.skipped.length > 0) {
                 reportProgress({ phase: 'skipped', skipped: applied.skipped });
               }
-              if (added > 0) {
-                reportProgress({ phase: 'done', tracks: toChatProgressTracks(recommendationTracks) });
-              }
             } else if (!controller.signal.aborted) {
               reportProgress({ phase: 'error', reason: output.status });
             }
@@ -227,13 +226,14 @@ export async function handleChatMessage(
         }
 
         if (added > 0) {
-          appendChatRecommendationEvents({
+          commitChatQueueSelection({
             userId,
             runId,
             selectionStartedEvent,
             tracks: recommendationTracks,
             action: isSwap ? 'swap_next' : 'append'
           });
+          reportProgress({ phase: 'done', tracks: toChatProgressTracks(recommendationTracks) });
           broadcastToUser(userId, {
             type: 'queue-updated', queue: getQueue(userId), currentIndex: getCurrentIndex(userId),
             revision: getQueueStateRevision(userId)
@@ -258,6 +258,14 @@ export async function handleChatMessage(
           userId,
           ncmClient,
           sourceRef: { messageId: userMessageId },
+          commitQueueTrack: ({ actionIndex, position, track }) => {
+            commitDirectChatQueueTrack({
+              userId,
+              runId: `chat-direct-${userMessageId}:${actionIndex}`,
+              position,
+              track
+            });
+          },
           onQueueActiveDirectiveUpdated: (directive) => appendDirectiveUpdatedEvent(userId, directive?.text ?? null, 'chat')
         });
         if (result.queueChanged) {
@@ -331,16 +339,6 @@ function applyMusicAgentPicks(
     }
     excludedIds.add(pick.id);
     if (dedupeKey) excludedDedupeKeys.add(dedupeKey);
-    const track = {
-      ncmId: pick.id,
-      name: pick.name,
-      artists: pick.artist ? [pick.artist] : []
-    };
-    if (isSwap) {
-      swapNext(userId, track);
-    } else {
-      addToQueue(userId, track, 'end');
-    }
     addedTracks.push({
       id: pick.id,
       name: pick.name ?? pick.id,
@@ -468,6 +466,7 @@ function appendChatRecommendationEvents(input: {
   selectionStartedEvent: DjEventRecord;
   tracks: ChatAddedTrack[];
   action: 'append' | 'swap_next';
+  afterQueue: QueueTrack[];
 }): void {
   const selectionEvents = input.tracks.map((track, index) => appendDjEvent({
     userId: input.userId,
@@ -496,13 +495,96 @@ function appendChatRecommendationEvents(input: {
       action: input.action,
       trackIds: input.tracks.map((track) => track.id),
       position: input.action === 'swap_next' ? 'after_current' : 'end',
-      afterQueuePreview: getQueue(input.userId).slice(0, 12).map((track) => ({
+      afterQueuePreview: input.afterQueue.slice(0, 12).map((track) => ({
         id: track.ncmId,
         ...(track.name ? { name: track.name } : {}),
         ...(track.artists?.length ? { artist: track.artists.join(' / ') } : {})
       }))
     }
   });
+}
+
+function commitChatQueueSelection(input: {
+  userId: string;
+  runId: string;
+  selectionStartedEvent: DjEventRecord;
+  tracks: ChatAddedTrack[];
+  action: 'append' | 'swap_next';
+}): void {
+  const queueTracks = input.tracks.map((track) => ({
+    ncmId: track.id,
+    name: track.name,
+    artists: track.artist ? [track.artist] : []
+  }));
+  const position = input.action === 'swap_next' ? 'after_current' : 'end';
+  const prepared = prepareChatQueueMutation(input.userId, queueTracks, position);
+  getDb().transaction(() => {
+    prepared.persist();
+    appendChatRecommendationEvents({
+      ...input,
+      afterQueue: prepared.snapshot.queue
+    });
+    recordSelectionRotationExposure({
+      userId: input.userId,
+      runId: input.runId,
+      tracks: queueTracks.map((track) => ({
+        id: track.ncmId,
+        name: track.name ?? track.ncmId,
+        artists: track.artists ?? []
+      }))
+    });
+  }).immediate();
+  prepared.commitCache();
+}
+
+function commitDirectChatQueueTrack(input: {
+  userId: string;
+  runId: string;
+  position: 'end' | 'after_current';
+  track: { ncmId: string; name: string; artists: string[] };
+}): void {
+  const prepared = prepareChatQueueMutation(input.userId, [input.track], input.position);
+  getDb().transaction(() => {
+    prepared.persist();
+    recordSelectionRotationExposure({
+      userId: input.userId,
+      runId: input.runId,
+      tracks: [{
+        id: input.track.ncmId,
+        name: input.track.name,
+        artists: input.track.artists
+      }]
+    });
+  }).immediate();
+  prepared.commitCache();
+}
+
+function prepareChatQueueMutation(
+  userId: string,
+  tracks: QueueTrack[],
+  position: 'end' | 'after_current'
+) {
+  const currentQueue = getQueue(userId);
+  const currentIndex = getCurrentIndex(userId);
+  let queue = [...currentQueue];
+  for (const track of tracks) {
+    if (position === 'end') {
+      queue = queue.filter((item) => item.ncmId !== track.ncmId);
+      queue.push(track);
+      continue;
+    }
+    if (queue.length === 0) {
+      queue = [track];
+      continue;
+    }
+    const insertAt = Math.min(currentIndex + 1, queue.length);
+    queue.splice(insertAt, 0, track);
+    const laterIndex = queue.findIndex(
+      (item, index) => index > insertAt && item.ncmId === track.ncmId
+    );
+    if (laterIndex !== -1) queue.splice(laterIndex, 1);
+  }
+  return prepareQueueState(userId, queue, currentIndex);
 }
 
 function getActiveDirectiveText(userId: string): string | undefined {

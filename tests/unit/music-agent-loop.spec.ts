@@ -428,6 +428,63 @@ describe('runMusicAgentLoop', () => {
     });
   });
 
+  it('never ranked-backfills a track inside the hard rotation window', async () => {
+    const rotationTrack = candidate({
+      id: 'pick-2',
+      name: 'Recent Rotation Pick',
+      artist: 'Recent Artist'
+    });
+    const selectionPolicyContext = {
+      mode: 'autonomous' as const,
+      explicitlyRequested: false,
+      rotation: {
+        currentRound: 20,
+        tracks: [{
+          trackKey: 'recentrotationpick::recentartist',
+          lastSelectedRound: 19,
+          selectionsInWindow: 1
+        }]
+      }
+    };
+    const pool = new CandidatePool({ selectionPolicyContext });
+    pool.upsert(candidate({ id: 'pick-1', name: 'Fresh Pick 1', artist: 'Artist 1' }));
+    pool.upsert(rotationTrack);
+    pool.upsert(candidate({ id: 'pick-3', name: 'Fresh Pick 3', artist: 'Artist 3' }));
+    pool.upsert(candidate({ id: 'pick-4', name: 'Fresh Pick 4', artist: 'Artist 4' }));
+    const llmClient = new LoopFakeLlmClient([
+      JSON.stringify({
+        type: 'final',
+        say: '先选一首。',
+        picks: [{ id: 'pick-1', reason: '开头最贴合', source: 'liked' }],
+        rejected: []
+      })
+    ]);
+
+    const result = await runMusicAgentLoop({
+      llmClient,
+      context: context({ request: 'auto-fill', discoveryMode: 'comfort' }),
+      candidatePool: pool,
+      tools: {},
+      budget: budget(),
+      targetPickCount: 3,
+      selectionPolicyContext,
+      selectionPressureForCandidate: (item) => item.id === rotationTrack.id
+        ? [{
+            source: 'rotation',
+            reasonCode: 'rotation_track_suppression',
+            direction: 'penalty',
+            amount: 1,
+            severity: 'suppress'
+          }]
+        : []
+    });
+
+    expect(result.status).toBe('ok');
+    expect(result.picks.map((pick) => pick.id)).toEqual(['pick-1', 'pick-3', 'pick-4']);
+    expect(result.picks.map((pick) => pick.id)).not.toContain('pick-2');
+    expect(result.finalPickDiagnostics?.rankedBackfillCount).toBe(2);
+  });
+
   it('dedupes repeated title motifs before returning partial auto-fill batches', async () => {
     const pool = new CandidatePool();
     const baseScores = candidate().scores;
@@ -1235,7 +1292,7 @@ describe('runMusicAgentLoop', () => {
     }));
   });
 
-  it('does not bypass Batch artist diversity when ranked recovery is short', async () => {
+  it('relaxes Batch artist diversity only after the diverse ranked-recovery pass', async () => {
     const pool = new CandidatePool();
     const liveCandidates = [
       ['live-1', '和每天讲再见', '李幸倪'],
@@ -1273,13 +1330,13 @@ describe('runMusicAgentLoop', () => {
     });
 
     expect(result.status).toBe('ok');
-    expect(result.picks).toHaveLength(4);
-    expect(result.picks.map((pick) => pick.id)).toEqual(['live-1', 'live-2', 'live-3', 'live-4']);
+    expect(result.picks).toHaveLength(5);
+    expect(result.picks.map((pick) => pick.id)).toEqual(['live-1', 'live-2', 'live-3', 'live-4', 'live-5']);
     expect(result.picks.every((pick) => pick.reason.startsWith('ranked '))).toBe(true);
     expect(fallbackLogger).toHaveBeenCalledWith(expect.objectContaining({
       status: 'ok',
       candidateCount: 6,
-      pickCount: 4
+      pickCount: 5
     }));
   });
 
@@ -2113,7 +2170,7 @@ describe('runMusicAgentLoop', () => {
     }));
   });
 
-  it('does not bypass Batch artist diversity after ranking a target-sized comfort pool', async () => {
+  it('fills a target-sized comfort batch after the primary-artist diversity pass', async () => {
     const pool = new CandidatePool();
     const fallbackLogger = vi.fn();
     const llmClient = new LoopFakeLlmClient([
@@ -2151,13 +2208,13 @@ describe('runMusicAgentLoop', () => {
     });
 
     expect(result.status).toBe('ok');
-    expect(result.picks).toHaveLength(3);
+    expect(result.picks).toHaveLength(5);
     expect(calls).toEqual(['recall_auto_fill_mix', 'rank_candidates']);
     expect(llmClient.calls).toHaveLength(3);
     expect(fallbackLogger).toHaveBeenCalledWith(expect.objectContaining({
       status: 'ok',
       candidateCount: 5,
-      pickCount: 3
+      pickCount: 5
     }));
   });
 
@@ -2902,6 +2959,65 @@ describe('runMusicAgentLoop', () => {
       rewriteReason: 'empty_pool_forced_liked_recall'
     });
     expect(fallbackLogger).not.toHaveBeenCalled();
+  });
+
+  it('does not count hard-window rotation tracks as sufficient recall candidates', async () => {
+    const selectionPolicyContext = {
+      mode: 'autonomous' as const,
+      explicitlyRequested: false,
+      rotation: {
+        currentRound: 20,
+        tracks: [
+          { trackKey: 'recentone::artistone', lastSelectedRound: 19, selectionsInWindow: 1 },
+          { trackKey: 'recenttwo::artisttwo', lastSelectedRound: 18, selectionsInWindow: 1 }
+        ]
+      }
+    };
+    const pool = new CandidatePool({ selectionPolicyContext });
+    pool.upsert(candidate({ id: 'recent-1', name: 'Recent One', artist: 'Artist One' }));
+    pool.upsert(candidate({ id: 'recent-2', name: 'Recent Two', artist: 'Artist Two' }));
+    const calls: string[] = [];
+    const llmClient = new LoopFakeLlmClient([
+      JSON.stringify({ type: 'tool_call', tool: 'rank_candidates', input: { limit: 8 } }),
+      JSON.stringify({
+        type: 'final',
+        say: '用了新的候选。',
+        picks: [
+          { id: 'fresh-1', reason: '轮换后新候选', source: 'search' },
+          { id: 'fresh-2', reason: '轮换后新候选', source: 'search' }
+        ],
+        rejected: []
+      })
+    ]);
+
+    const result = await runMusicAgentLoop({
+      llmClient,
+      context: context({ request: 'auto-fill' }),
+      candidatePool: pool,
+      tools: {
+        recall_auto_fill_mix: async () => {
+          calls.push('recall_auto_fill_mix');
+          pool.upsert(candidate({ id: 'fresh-1', name: 'Fresh One', artist: 'Artist Three', sources: ['search'] }));
+          pool.upsert(candidate({ id: 'fresh-2', name: 'Fresh Two', artist: 'Artist Four', sources: ['search'] }));
+          return { summary: 'added fresh candidates', candidateCount: pool.count() };
+        },
+        rank_candidates: async () => {
+          throw new Error('rotation-suppressed pool should trigger recall before ranking');
+        }
+      },
+      budget: budget({ maxLlmCalls: 4, maxSteps: 4, maxToolCalls: 3 }),
+      selectionPolicyContext
+    });
+
+    expect(calls).toEqual(['recall_auto_fill_mix']);
+    expect(result.status).toBe('ok');
+    expect(result.picks.map((pick) => pick.id)).toEqual(['fresh-1', 'fresh-2']);
+    expect(result.picks.map((pick) => pick.id)).not.toContain('recent-1');
+    expect(result.trace[0]).toMatchObject({
+      requestedTool: 'rank_candidates',
+      executedTool: 'recall_auto_fill_mix',
+      rewriteReason: 'empty_pool_non_recall_tool'
+    });
   });
 
   it('does not rewrite reserved rank into forced recall after tool budget is exhausted', async () => {

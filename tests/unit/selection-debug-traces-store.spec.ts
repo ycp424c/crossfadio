@@ -34,7 +34,7 @@ describe('selection debug trace store', () => {
     });
 
     expect(saved).toMatchObject({
-      userId: 'user-1', runId: 'run-1', schemaVersion: 1,
+      userId: 'user-1', runId: 'run-1', schemaVersion: 2,
       createdAt: '2026-07-17T10:00:00.000Z',
       expiresAt: '2026-07-24T10:00:00.000Z'
     });
@@ -84,7 +84,7 @@ describe('selection debug trace store', () => {
 
 function trace(runId: string) {
   return {
-    schemaVersion: 1 as const,
+    schemaVersion: 2 as const,
     runId,
     mode: 'autonomous' as const,
     createdAt: '2026-07-17T10:00:00.000Z',

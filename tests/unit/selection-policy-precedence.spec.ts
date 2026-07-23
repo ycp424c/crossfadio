@@ -186,6 +186,40 @@ describe('phase-aware selection policy precedence', () => {
     expect(decision.reasonCodes).toEqual(['played_track_idempotency']);
   });
 
+  it('rejects a recent rotation pick at Final while allowing an explicit request to bypass it', () => {
+    const candidate = policyCandidate();
+    const rotation = {
+      currentRound: 20,
+      tracks: [{
+        trackKey: candidate.trackKey,
+        lastSelectedRound: 19,
+        selectionsInWindow: 1
+      }]
+    };
+
+    expect(evaluateFinal({
+      candidate,
+      context: context({ rotation })
+    })).toEqual({
+      phase: 'final',
+      action: 'reject',
+      reasonCodes: ['rotation_final_rejection']
+    });
+    expect(evaluateFinal({
+      candidate,
+      context: context({
+        mode: 'explicit_request',
+        explicitlyRequested: true,
+        explicitRequest: { trackIds: new Set([candidate.track.id]) },
+        rotation
+      })
+    })).toEqual({
+      phase: 'final',
+      action: 'select',
+      reasonCodes: ['final_eligible']
+    });
+  });
+
   it('records phase decisions without collapsing them into a universal penalty', () => {
     const admission = { phase: 'admission', action: 'admit', reasonCodes: ['admission_eligible'] } as const;
     const ranking = evaluateRanking({

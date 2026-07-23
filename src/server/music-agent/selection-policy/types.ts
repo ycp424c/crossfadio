@@ -26,6 +26,10 @@ export type SelectionReasonCode = PlaybackEligibilityReason
   | 'early_skip_artist'
   | 'upcoming_queue_track'
   | 'upcoming_queue_artist'
+  | 'rotation_track_suppression'
+  | 'rotation_track_penalty'
+  | 'rotation_frequency_penalty'
+  | 'rotation_final_rejection'
   | 'batch_primary_artist_repeat'
   | 'batch_source_repeat'
   | 'batch_title_motif_repeat'
@@ -46,6 +50,7 @@ export type SelectionPressureSource =
   | 'inferred_preference'
   | 'exposure'
   | 'early_skip'
+  | 'rotation'
   | 'upcoming_queue'
   | 'batch'
   | 'retrieval'
@@ -81,6 +86,17 @@ export type SelectionQueueState = {
   currentIndex: number;
 };
 
+export type SelectionRotationTrackState = {
+  trackKey: string;
+  lastSelectedRound: number;
+  selectionsInWindow: number;
+};
+
+export type SelectionRotationPolicyContext = {
+  currentRound: number;
+  tracks: readonly SelectionRotationTrackState[];
+};
+
 export type SelectionExclusions = {
   trackIds?: ReadonlySet<string>;
   trackKeys?: ReadonlySet<string>;
@@ -96,6 +112,7 @@ export type SelectionPolicyContext = {
   explicitExclusions?: SelectionExclusions;
   temporaryExclusions?: SelectionExclusions;
   retrievalCooldownTrackKeys?: ReadonlySet<string>;
+  rotation?: SelectionRotationPolicyContext;
   queue?: SelectionQueueState;
   playedTrackIds?: ReadonlySet<string>;
   playedTrackKeys?: ReadonlySet<string>;
@@ -114,6 +131,7 @@ export const SELECTION_PRESSURE_PRIORITY: Record<SelectionPressureSource, number
   inferred_preference: 5,
   exposure: 6,
   early_skip: 6,
+  rotation: 6,
   upcoming_queue: 6,
   batch: 6,
   retrieval: 6,

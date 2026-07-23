@@ -65,7 +65,7 @@ describe('DJ v2 replay export', () => {
       },
     );
 
-    expect(exported.schemaVersion).toBe(2);
+    expect(exported.schemaVersion).toBe(3);
     expect(exported.episodes[0]?.userId).toBe(exported.selectionRuns[0]?.userId);
     expect(exported.episodes[0]?.trackId).toBe(exported.selectionRuns[0]?.selectedTrackIds[0]);
     expect(exported.episodes[0]?.userId).toMatch(/^h_[a-f0-9]{32}$/);
@@ -456,7 +456,10 @@ describe('DJ v2 replay export', () => {
       candidateArtistKey: 'shared-artist', baseScore: 0.8, batchIndex: 1,
       expected: replayPolicyExpectation({
         baseScore: 0.8,
-        batch: [{ action: 'defer', reasonCodes: ['batch_primary_artist_repeat'] }],
+        batch: [
+          { action: 'defer', reasonCodes: ['batch_primary_artist_repeat'] },
+          { action: 'select', reasonCodes: ['batch_selected'] }
+        ],
         final: null
       })
     });
@@ -469,7 +472,7 @@ describe('DJ v2 replay export', () => {
       hardViolationCount: 0,
       runsWithIncompletePolicyCases: 0,
       phaseMismatchCounts: { admission: 0, recall: 0, ranking: 0, batch: 0, final: 0 },
-      phaseExecutions: { admission: 2, recall: 2, ranking: 2, batch: 2, final: 1 }
+      phaseExecutions: { admission: 2, recall: 2, ranking: 2, batch: 3, final: 1 }
     });
   });
 
@@ -488,7 +491,10 @@ describe('DJ v2 replay export', () => {
       candidateArtistKey: 'shared-artist', baseScore: 0.8, batchIndex: 1,
       expected: replayPolicyExpectation({
         baseScore: 0.8,
-        batch: [{ action: 'defer', reasonCodes: ['batch_primary_artist_repeat'] }],
+        batch: [
+          { action: 'defer', reasonCodes: ['batch_primary_artist_repeat'] },
+          { action: 'select', reasonCodes: ['batch_selected'] }
+        ],
         final: { action: 'select', reasonCodes: ['final_eligible'] },
         finalContext: replayPolicyContext()
       })
@@ -501,7 +507,7 @@ describe('DJ v2 replay export', () => {
     expect(replayDjV2(exported).policyReplay).toMatchObject({
       decisionMismatchCount: 0,
       phaseMismatchCounts: { admission: 0, recall: 0, ranking: 0, batch: 0, final: 0 },
-      phaseExecutions: { admission: 2, recall: 2, ranking: 2, batch: 2, final: 1 }
+      phaseExecutions: { admission: 2, recall: 2, ranking: 2, batch: 3, final: 1 }
     });
   });
 
@@ -574,6 +580,46 @@ describe('DJ v2 replay export', () => {
     });
   });
 
+  it('重放 rotation pressure 的轮次证据时不会误报 Ranking 漂移', () => {
+    const pressure = [{
+      source: 'rotation',
+      reasonCode: 'rotation_track_penalty',
+      direction: 'penalty' as const,
+      amount: 0.2,
+      severity: 'soft' as const,
+      currentRound: 30,
+      lastSelectedRound: 15,
+      roundDistance: 15,
+      hardRounds: 12,
+      softRounds: 40,
+      selectionsInWindow: 2
+    }];
+    const policyCase = replayPolicyCase({
+      pressure,
+      expected: {
+        admission: { action: 'admit', reasonCodes: ['admission_eligible'] },
+        recall: { action: 'include', reasonCodes: ['recall_included'] },
+        ranking: {
+          action: 'rank',
+          reasonCodes: ['ranking_scored'],
+          adjustedScore: 0.3,
+          contributions: pressure
+        },
+        batch: [{ action: 'select', reasonCodes: ['batch_selected'] }],
+        final: { action: 'select', reasonCodes: ['final_eligible'] },
+        finalContext: replayPolicyContext()
+      }
+    });
+    const exported = exportDjV2Replay({
+      episodes: [], selectionRuns: [], retrievalAttempts: [], policyCases: [policyCase]
+    }, replayExportOptions());
+
+    expect(replayDjV2(exported).policyReplay).toMatchObject({
+      decisionMismatchCount: 0,
+      phaseMismatchCounts: { ranking: 0 }
+    });
+  });
+
   it('用独立 live Final context 重放最后一刻排除和幂等，不污染早期 Admission', () => {
     const explicit = replayPolicyCase({
       caseId: 'case-explicit',
@@ -634,7 +680,7 @@ describe('DJ v2 replay export', () => {
       });
 
       expect(fs.statSync(outputPath).mode & 0o777).toBe(0o600);
-      expect(JSON.parse(fs.readFileSync(outputPath, 'utf8'))).toMatchObject({ schemaVersion: 2 });
+      expect(JSON.parse(fs.readFileSync(outputPath, 'utf8'))).toMatchObject({ schemaVersion: 3 });
     } finally {
       fs.rmSync(tempDir, { recursive: true, force: true });
     }
@@ -981,7 +1027,12 @@ function replayPolicyContext(): DjV2ReplayPolicyCaseInput['context'] {
     temporaryArtistExcluded: false,
     retrievalCooldown: false,
     queueContainsTrack: false,
-    playedTrack: false
+    playedTrack: false,
+    rotationCurrentRound: 0,
+    rotationLastSelectedRound: null,
+    rotationRoundDistance: null,
+    rotationSelectionsInWindow: 0,
+    rotationSuppressed: false
   };
 }
 
@@ -1051,7 +1102,7 @@ describe('DJ v2 replay baseline', () => {
     exported.selectionRuns[1]!.candidateCount = 3;
 
     expect(replayDjV2(exported)).toEqual({
-      schemaVersion: 2,
+      schemaVersion: 3,
       counts: { episodes: 0, selectionRuns: 2, retrievalAttempts: 0, policyCases: 0 },
       baseline: {
         hardViolationCount: 1,

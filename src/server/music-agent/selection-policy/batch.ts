@@ -20,6 +20,7 @@ export function selectDiverseBatch(
   const target = Math.max(0, limit);
   const selected: MusicCandidate[] = [];
   const deferredBySource: MusicCandidate[] = [];
+  const deferredByArtist: MusicCandidate[] = [];
   const state = createBatchState(options.blockedTitleMotifs);
   const maxPerSource = Math.max(1, options.maxPerSource ?? Math.ceil(Math.max(1, target) / 2));
 
@@ -32,12 +33,39 @@ export function selectDiverseBatch(
       rememberCandidate(state, candidate);
     } else if (decision.reasonCodes.length === 1 && decision.reasonCodes[0] === 'batch_source_repeat') {
       deferredBySource.push(candidate);
+    } else if (
+      decision.reasonCodes.length === 1
+      && decision.reasonCodes[0] === 'batch_primary_artist_repeat'
+    ) {
+      deferredByArtist.push(candidate);
     }
   }
 
   for (const candidate of deferredBySource) {
     if (selected.length >= target) break;
     const decision = evaluateBatch({ candidate, state, maxPerSource: Number.POSITIVE_INFINITY });
+    options.recordDecision?.(candidate, decision);
+    if (decision.action !== 'select') {
+      if (decision.reasonCodes[0] === 'batch_primary_artist_repeat') {
+        deferredByArtist.push(candidate);
+      }
+      continue;
+    }
+    selected.push(cloneCandidate(candidate));
+    rememberCandidate(state, candidate);
+  }
+
+  const retriedArtistIds = new Set<string>();
+  for (const candidate of deferredByArtist) {
+    if (selected.length >= target) break;
+    if (retriedArtistIds.has(candidate.id)) continue;
+    retriedArtistIds.add(candidate.id);
+    const decision = evaluateBatch({
+      candidate,
+      state,
+      maxPerSource: Number.POSITIVE_INFINITY,
+      allowPrimaryArtistRepeat: true
+    });
     options.recordDecision?.(candidate, decision);
     if (decision.action !== 'select') continue;
     selected.push(cloneCandidate(candidate));
@@ -57,9 +85,14 @@ export function evaluateBatch(input: {
   candidate: MusicCandidate;
   state: BatchState;
   maxPerSource: number;
+  allowPrimaryArtistRepeat?: boolean;
 }): SelectionPhaseDecision {
   const primaryArtist = primaryArtistKey(input.candidate.artist);
-  if (primaryArtist && input.state.primaryArtists.has(primaryArtist)) {
+  if (
+    !input.allowPrimaryArtistRepeat
+    && primaryArtist
+    && input.state.primaryArtists.has(primaryArtist)
+  ) {
     return { phase: 'batch', action: 'defer', reasonCodes: ['batch_primary_artist_repeat'] };
   }
   if (candidateTitleMotifKeys(input.candidate).some((motif) => input.state.titleMotifs.has(motif))) {

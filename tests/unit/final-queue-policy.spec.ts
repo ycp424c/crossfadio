@@ -9,6 +9,7 @@ import {
 import { _resetDbForTest, initDb } from '../../src/server/store/db';
 import { createExplicitExclusion } from '../../src/server/store/explicit-exclusions';
 import { setQueueState } from '../../src/server/store/queue';
+import { recordSelectionRotationRound } from '../../src/server/store/selection-rotation';
 
 const originalDataDir = process.env.CROSSFADIO_DATA_DIR;
 let dataDir: string;
@@ -28,6 +29,30 @@ afterEach(() => {
 });
 
 describe('live final queue policy', () => {
+  it('re-reads durable rotation history before mutating the queue', () => {
+    recordSelectionRotationRound({
+      userId: 'user-1',
+      runId: 'previous-run',
+      tracks: [{ id: 'recent', name: 'Recent Song', artists: ['Recent Artist'] }]
+    });
+
+    expect(evaluateFinalQueuePick({
+      userId: 'user-1',
+      mode: 'autonomous',
+      runId: 'next-run',
+      pick: {
+        id: 'recent',
+        name: 'Recent Song',
+        artist: 'Recent Artist',
+        source: 'search',
+        reason: 'LLM selected it'
+      }
+    })).toMatchObject({
+      action: 'reject',
+      reasonCodes: ['rotation_final_rejection']
+    });
+  });
+
   it('preserves exact band identities containing comma and ampersand', () => {
     createExplicitExclusion({
       userId: 'user-1', entityType: 'artist', entityKey: 'Earth, Wind & Fire',

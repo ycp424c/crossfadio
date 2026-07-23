@@ -1,6 +1,8 @@
 import Database from 'better-sqlite3';
 import { randomUUID } from 'node:crypto';
 import { LISTENING_EPISODE_DAILY_LIMIT } from '../../shared/listening.js';
+import { explicitArtistKeys } from '../music-agent/artists.js';
+import { buildMusicTrackDedupeKey } from '../music-agent/dedupe.js';
 
 const createMetaTableSql = `
 CREATE TABLE IF NOT EXISTS meta (
@@ -674,6 +676,109 @@ WHEN NEW.protocol_version >= 2 AND (
 BEGIN
   SELECT RAISE(ABORT, 'listening_episode_daily_quota_exceeded');
 END;
+  `,
+  `
+CREATE TABLE selection_rotation_runs (
+  user_id      TEXT NOT NULL,
+  run_id       TEXT NOT NULL,
+  round_number INTEGER NOT NULL,
+  selected_at  TEXT NOT NULL,
+  track_count  INTEGER NOT NULL,
+  PRIMARY KEY (user_id, run_id),
+  UNIQUE (user_id, round_number),
+  CHECK (round_number > 0),
+  CHECK (track_count > 0)
+);
+
+CREATE INDEX idx_selection_rotation_runs_user_round
+  ON selection_rotation_runs (user_id, round_number DESC);
+
+CREATE TABLE selection_rotation_picks (
+  user_id          TEXT NOT NULL,
+  run_id           TEXT NOT NULL,
+  round_number     INTEGER NOT NULL,
+  pick_order       INTEGER NOT NULL,
+  track_id         TEXT NOT NULL,
+  track_name       TEXT NOT NULL,
+  artist_display   TEXT NOT NULL,
+  track_key        TEXT NOT NULL,
+  artist_keys_json TEXT NOT NULL,
+  selected_at      TEXT NOT NULL,
+  PRIMARY KEY (user_id, run_id, pick_order),
+  FOREIGN KEY (user_id, run_id)
+    REFERENCES selection_rotation_runs(user_id, run_id)
+    ON DELETE CASCADE,
+  CHECK (round_number > 0),
+  CHECK (pick_order > 0)
+);
+
+CREATE INDEX idx_selection_rotation_picks_user_round
+  ON selection_rotation_picks (user_id, round_number DESC, pick_order ASC);
+
+CREATE INDEX idx_selection_rotation_picks_user_track
+  ON selection_rotation_picks (user_id, track_key, round_number DESC);
+  `,
+  `
+ALTER TABLE selection_rotation_picks RENAME TO selection_rotation_picks_legacy;
+ALTER TABLE selection_rotation_runs RENAME TO selection_rotation_runs_legacy;
+
+CREATE TABLE selection_rotation_runs (
+  user_id       TEXT NOT NULL,
+  run_id        TEXT NOT NULL,
+  round_number  INTEGER NOT NULL,
+  advances_round INTEGER NOT NULL,
+  selected_at   TEXT NOT NULL,
+  track_count   INTEGER NOT NULL,
+  PRIMARY KEY (user_id, run_id),
+  CHECK (round_number >= 0),
+  CHECK (advances_round IN (0, 1)),
+  CHECK (track_count > 0)
+);
+
+CREATE TABLE selection_rotation_picks (
+  user_id          TEXT NOT NULL,
+  run_id           TEXT NOT NULL,
+  round_number     INTEGER NOT NULL,
+  pick_order       INTEGER NOT NULL,
+  track_id         TEXT NOT NULL,
+  track_name       TEXT NOT NULL,
+  artist_display   TEXT NOT NULL,
+  track_key        TEXT NOT NULL,
+  artist_keys_json TEXT NOT NULL,
+  selected_at      TEXT NOT NULL,
+  PRIMARY KEY (user_id, run_id, pick_order),
+  FOREIGN KEY (user_id, run_id)
+    REFERENCES selection_rotation_runs(user_id, run_id)
+    ON DELETE CASCADE,
+  CHECK (round_number >= 0),
+  CHECK (pick_order > 0)
+);
+
+INSERT INTO selection_rotation_runs (
+  user_id, run_id, round_number, advances_round, selected_at, track_count
+)
+SELECT user_id, run_id, round_number, 1, selected_at, track_count
+FROM selection_rotation_runs_legacy;
+
+INSERT INTO selection_rotation_picks (
+  user_id, run_id, round_number, pick_order, track_id, track_name,
+  artist_display, track_key, artist_keys_json, selected_at
+)
+SELECT user_id, run_id, round_number, pick_order, track_id, track_name,
+       artist_display, track_key, artist_keys_json, selected_at
+FROM selection_rotation_picks_legacy;
+
+DROP TABLE selection_rotation_picks_legacy;
+DROP TABLE selection_rotation_runs_legacy;
+
+CREATE INDEX idx_selection_rotation_runs_user_round
+  ON selection_rotation_runs (user_id, round_number DESC);
+
+CREATE INDEX idx_selection_rotation_picks_user_round
+  ON selection_rotation_picks (user_id, round_number DESC, pick_order ASC);
+
+CREATE INDEX idx_selection_rotation_picks_user_track
+  ON selection_rotation_picks (user_id, track_key, round_number DESC);
   `
 ];
 
@@ -709,7 +814,8 @@ const dataMigrationList: DataMigration[] = [
   normalizeExplicitExclusionIdentities,
   normalizePreferenceEvidenceIdentities,
   backfillExplicitExclusionAliases,
-  normalizeListeningEpisodeTimestamps
+  normalizeListeningEpisodeTimestamps,
+  backfillSelectionRotationFromDjEvents
 ];
 
 export function runDataMigrations(db: Database.Database): void {
@@ -1152,6 +1258,139 @@ function normalizeListeningEpisodeTimestamps(db: Database.Database): void {
   `).run();
 }
 
+function backfillSelectionRotationFromDjEvents(db: Database.Database): void {
+  if (!tableExists(db, 'selection_rotation_runs') || !tableExists(db, 'dj_events')) return;
+  const rows = db.prepare(`
+    SELECT rowid, user_id, type, run_id, payload_json, created_at
+    FROM dj_events
+    WHERE run_id IS NOT NULL
+      AND type IN ('selection_started', 'track_selected', 'queue_changed')
+    ORDER BY created_at ASC, rowid ASC
+  `).all() as RotationMigrationEventRow[];
+  const runs = new Map<string, RotationMigrationRun>();
+
+  for (const row of rows) {
+    const runId = row.run_id?.trim();
+    if (!runId) continue;
+    const key = `${row.user_id}\u0000${runId}`;
+    const run = runs.get(key) ?? {
+      userId: row.user_id,
+      runId,
+      trigger: null,
+      selected: [],
+      committedTrackIds: null,
+      committedAt: null
+    };
+    const payload = parseObject(row.payload_json);
+    if (row.type === 'selection_started') {
+      run.trigger = typeof payload?.trigger === 'string' ? payload.trigger : null;
+    } else if (row.type === 'track_selected') {
+      const trackId = stringValue(payload?.trackId);
+      const trackName = stringValue(payload?.trackName);
+      if (trackId && trackName) {
+        run.selected.push({
+          trackId,
+          trackName,
+          artist: stringValue(payload?.artist),
+          pickOrder: positiveInteger(payload?.pickOrder) ?? run.selected.length + 1
+        });
+      }
+    } else if (
+      row.type === 'queue_changed'
+      && (payload?.action === 'append' || payload?.action === 'swap_next')
+    ) {
+      const trackIds = Array.isArray(payload.trackIds)
+        ? payload.trackIds.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+        : [];
+      if (trackIds.length > 0) {
+        run.committedTrackIds = trackIds;
+        run.committedAt = normalizedMigrationTimestamp(row.created_at);
+      }
+    }
+    runs.set(key, run);
+  }
+
+  const byUser = new Map<string, RotationMigrationRun[]>();
+  for (const run of runs.values()) {
+    if (
+      (run.trigger !== 'auto_fill' && run.trigger !== 'chat_recommend')
+      || !run.committedAt
+      || !run.committedTrackIds
+    ) continue;
+    const selectedById = new Map(run.selected.map((track) => [track.trackId, track]));
+    const committed = run.committedTrackIds.flatMap((trackId) => {
+      const track = selectedById.get(trackId);
+      return track ? [track] : [];
+    });
+    if (committed.length === 0) continue;
+    run.selected = committed;
+    const userRuns = byUser.get(run.userId) ?? [];
+    userRuns.push(run);
+    byUser.set(run.userId, userRuns);
+  }
+
+  const insertRun = db.prepare(`
+    INSERT OR IGNORE INTO selection_rotation_runs (
+      user_id, run_id, round_number, advances_round, selected_at, track_count
+    ) VALUES (?, ?, ?, ?, ?, ?)
+  `);
+  const insertPick = db.prepare(`
+    INSERT OR IGNORE INTO selection_rotation_picks (
+      user_id, run_id, round_number, pick_order, track_id, track_name,
+      artist_display, track_key, artist_keys_json, selected_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+
+  for (const [userId, userRuns] of byUser) {
+    const existing = db.prepare(`
+      SELECT COUNT(*) AS count
+      FROM selection_rotation_runs
+      WHERE user_id = ?
+    `).get(userId) as { count: number };
+    if (existing.count > 0) continue;
+    userRuns.sort((left, right) => (
+      Date.parse(left.committedAt!) - Date.parse(right.committedAt!)
+      || left.runId.localeCompare(right.runId)
+    ));
+    let currentRound = 0;
+    userRuns.forEach((run) => {
+      const advancesRound = run.trigger === 'auto_fill';
+      if (advancesRound) currentRound += 1;
+      const roundNumber = currentRound;
+      insertRun.run(
+        userId,
+        run.runId,
+        roundNumber,
+        advancesRound ? 1 : 0,
+        run.committedAt,
+        run.selected.length
+      );
+      run.selected
+        .sort((left, right) => left.pickOrder - right.pickOrder)
+        .forEach((track, pickIndex) => {
+          const artistDisplay = track.artist;
+          const trackKey = buildMusicTrackDedupeKey({
+            name: track.trackName,
+            artist: artistDisplay
+          });
+          if (!trackKey) return;
+          insertPick.run(
+            userId,
+            run.runId,
+            roundNumber,
+            pickIndex + 1,
+            track.trackId,
+            track.trackName,
+            artistDisplay,
+            trackKey,
+            JSON.stringify(explicitArtistKeys(artistDisplay)),
+            run.committedAt
+          );
+        });
+    });
+  }
+}
+
 function parseStringArray(value: string): string[] {
   try {
     const parsed = JSON.parse(value) as unknown;
@@ -1162,6 +1401,44 @@ function parseStringArray(value: string): string[] {
     return [];
   }
 }
+
+function stringValue(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function positiveInteger(value: unknown): number | null {
+  return Number.isInteger(value) && Number(value) > 0 ? Number(value) : null;
+}
+
+function normalizedMigrationTimestamp(value: string): string {
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : new Date(0).toISOString();
+}
+
+type RotationMigrationEventRow = {
+  rowid: number;
+  user_id: string;
+  type: 'selection_started' | 'track_selected' | 'queue_changed';
+  run_id: string | null;
+  payload_json: string;
+  created_at: string;
+};
+
+type RotationMigrationTrack = {
+  trackId: string;
+  trackName: string;
+  artist: string;
+  pickOrder: number;
+};
+
+type RotationMigrationRun = {
+  userId: string;
+  runId: string;
+  trigger: string | null;
+  selected: RotationMigrationTrack[];
+  committedTrackIds: string[] | null;
+  committedAt: string | null;
+};
 
 function compareMigratedEvidenceOrder(
   left: { observed_at: string; source_refs_json: string; created_at: string },

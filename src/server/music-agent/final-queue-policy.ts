@@ -1,9 +1,11 @@
 import { getCurrentIndex, getQueue } from '../store/queue.js';
 import { findMatchingExplicitExclusion } from '../store/explicit-exclusions.js';
+import { getSelectionRotationSnapshot } from '../store/selection-rotation.js';
 import { explicitArtistKeys, primaryArtistKey } from './artists.js';
 import { buildMusicTrackDedupeKey } from './dedupe.js';
 import type { FinalPick, MusicCandidate } from './schema.js';
 import { evaluateFinal } from './selection-policy/final.js';
+import { buildSelectionRotationPolicyContext } from './selection-policy/rotation.js';
 import {
   selectionPolicyReplayContext,
   type SelectionPolicyReplayContext
@@ -22,8 +24,9 @@ export type FinalQueueEvaluation = {
 
 /**
  * Rebuild the authoritative hard-gate context immediately before queue mutation.
- * This deliberately reads only live queue/exclusion state; historical pressure
- * belongs to recall/ranking and must not become a final hard gate.
+ * Ordinary historical pressure belongs to recall/ranking. The durable logical-
+ * round rotation ledger is different: its hard window is an explicit cross-phase
+ * track constraint and is rechecked here against the latest committed state.
  */
 export function evaluateFinalQueuePick(input: {
   userId: string;
@@ -71,10 +74,14 @@ function liveFinalContext(
   }
 ): SelectionPolicyContext {
   const queue = getQueue(userId);
+  const rotation = buildSelectionRotationPolicyContext(
+    getSelectionRotationSnapshot(userId)
+  );
   return {
     mode,
     explicitlyRequested: mode === 'explicit_request',
     explicitExclusions: liveExplicitExclusions(userId, candidate),
+    rotation,
     queue: {
       currentIndex: getCurrentIndex(userId),
       tracks: queue.map((track) => ({

@@ -167,6 +167,17 @@ describe('final music-agent prompt', () => {
     }
   });
 
+  it('tells every selector that the logical-round rotation hard window is authoritative', () => {
+    const loopSystem = buildLoopMessages(input())[0]?.content ?? '';
+    const legacySystem = buildFinalPickMessages(input())[0]?.content ?? '';
+    const fusedSystem = buildFinalPickPromptPayload(input([evidencePacket('track-1')])).messages[0]?.content ?? '';
+
+    for (const system of [loopSystem, legacySystem, fusedSystem]) {
+      expect(system).toContain('12-successful-round hard window');
+      expect(system).toContain('exact current user request');
+    }
+  });
+
   it('requires one assessment for every candidate and treats all track material as untrusted data', () => {
     const system = buildFinalPickMessages(input([basePacket()]))[0]?.content ?? '';
 

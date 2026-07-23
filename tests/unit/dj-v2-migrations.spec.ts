@@ -144,7 +144,7 @@ describe('DJ v2 additive migrations', () => {
     });
     expect(db.prepare(
       `SELECT value FROM meta WHERE key = 'data_migration_version'`
-    ).get()).toEqual({ value: '8' });
+    ).get()).toEqual({ value: '9' });
   });
 
   it('normalizes existing Listening Episode timestamps without destroying unparseable values', () => {
@@ -201,7 +201,7 @@ describe('DJ v2 additive migrations', () => {
     ]);
     expect(db.prepare(
       `SELECT value FROM meta WHERE key = 'data_migration_version'`
-    ).get()).toEqual({ value: '8' });
+    ).get()).toEqual({ value: '9' });
   });
 
   it('runs data migrations after schema migration during database initialization', () => {
@@ -214,7 +214,7 @@ describe('DJ v2 additive migrations', () => {
       const initialized = initDb();
       expect(initialized.prepare(
         `SELECT value FROM meta WHERE key = 'data_migration_version'`
-      ).get()).toEqual({ value: '8' });
+      ).get()).toEqual({ value: '9' });
     } finally {
       _resetDbForTest();
       fs.rmSync(dataDir, { recursive: true, force: true });

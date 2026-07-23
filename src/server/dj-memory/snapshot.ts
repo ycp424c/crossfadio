@@ -10,6 +10,7 @@ import { getCurrentPersonalDjContext } from '../store/personal-dj-context.js';
 import { listRecentRetrievalAttempts } from '../store/retrieval-attempts.js';
 import { listDjConfigurationEntries } from '../store/dj-configuration.js';
 import { getRecentDjEvents } from '../store/dj-events.js';
+import { getSelectionRotationSnapshot } from '../store/selection-rotation.js';
 import { fetchWeather } from '../weather.js';
 import { getDailyTheme } from '../daily-theme.js';
 import { getDaypart, getShanghaiTimeParts } from '../timezone.js';
@@ -34,6 +35,7 @@ type ActiveDirective = { text: string; expiresAt: string };
 type SnapshotDeps = {
   loadQueue: (userId: string) => Promise<{ queue: QueueTrack[]; currentIndex: number }>;
   loadEpisodes: (userId: string, now: Date) => Promise<DjMemorySnapshot['listeningEpisodes']>;
+  loadRotation: (userId: string) => Promise<DjMemorySnapshot['rotation']>;
   loadPreferenceEvidence: (userId: string, now: Date) => Promise<DjMemorySnapshot['preferences']>;
   loadTasteProfile: (userId: string) => Promise<DjMemorySnapshot['tasteProfile']>;
   loadActiveDirective: (userId: string, now: Date) => Promise<ActiveDirective | null>;
@@ -64,6 +66,7 @@ export async function buildDjMemorySnapshot(input: {
   const [
     queueState,
     loadedListeningEpisodes,
+    rotation,
     preferences,
     tasteProfile,
     activeDirective,
@@ -77,6 +80,7 @@ export async function buildDjMemorySnapshot(input: {
   ] = await Promise.all([
     deps.loadQueue(input.userId),
     deps.loadEpisodes(input.userId, now),
+    deps.loadRotation(input.userId),
     deps.loadPreferenceEvidence(input.userId, now),
     deps.loadTasteProfile(input.userId),
     deps.loadActiveDirective(input.userId, now),
@@ -129,6 +133,7 @@ export async function buildDjMemorySnapshot(input: {
       sources: [
         source('queue', 'authoritative', count(currentTrack) + upcoming.length, loadedAt),
         source('listening_episodes', 'authoritative', pressureEpisodes.length, loadedAt),
+        source('selection_rotation', 'authoritative', rotation.picks.length, loadedAt),
         source('preference_evidence', 'derived', preferences.length, loadedAt),
         source('active_directive', 'authoritative', count(activeDirective), loadedAt, activeDirective?.expiresAt),
         source('explicit_exclusions', 'authoritative', exclusions.explicit.length, loadedAt),
@@ -146,6 +151,7 @@ export async function buildDjMemorySnapshot(input: {
     queue: { currentTrack, upcoming },
     listeningEpisodes,
     selectionPressure,
+    rotation,
     preferences,
     tasteProfile,
     activeDirective,
@@ -182,6 +188,7 @@ function isEpisodeInSnapshotWindow(
 const defaultDeps: SnapshotDeps = {
   loadQueue: async (userId) => ({ queue: getQueue(userId), currentIndex: getCurrentIndex(userId) }),
   loadEpisodes: async (userId, now) => loadRecentEpisodes(userId, now),
+  loadRotation: async (userId) => getSelectionRotationSnapshot(userId),
   loadPreferenceEvidence: async (userId, now) => loadEffectivePreferences(userId, now),
   loadTasteProfile: async (userId) => {
     const item = getCurrentTasteProfile(userId);

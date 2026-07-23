@@ -1,4 +1,5 @@
 import { evaluateAdmission } from './admission.js';
+import { isRotationTrackSuppressed } from './rotation.js';
 import type {
   SelectionPhaseDecision,
   SelectionPolicyCandidate,
@@ -22,6 +23,9 @@ export function evaluateFinal(input: {
     || input.context.playedTrackKeys?.has(input.candidate.trackKey)
   ) {
     return { phase: 'final', action: 'reject', reasonCodes: ['played_track_idempotency'] };
+  }
+  if (isRotationTrackSuppressed(input.candidate, input.context)) {
+    return { phase: 'final', action: 'reject', reasonCodes: ['rotation_final_rejection'] };
   }
   return { phase: 'final', action: 'select', reasonCodes: ['final_eligible'] };
 }

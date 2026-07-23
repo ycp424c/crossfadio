@@ -21,6 +21,7 @@ import {
   finalizeSelectionPolicyReplayCases,
   recordSelectionReplayRun
 } from '../store/selection-replay.js';
+import { recordSelectionRotationRound } from '../store/selection-rotation.js';
 import { getDb } from '../store/db.js';
 import type {
   SelectionDecisionTrace,
@@ -321,6 +322,16 @@ export class DJAgent {
             appendedTracks: handled.appendedTracks,
             queueAfter: preparedQueue.snapshot.queue,
             selectionStartedEventId: selectionStartedEvent.id
+          });
+          recordSelectionRotationRound({
+            userId: input.userId,
+            runId,
+            selectedAt: completedAt,
+            tracks: handled.appendedTracks.map((track) => ({
+              id: track.ncmId,
+              name: track.name ?? track.ncmId,
+              artists: track.artists ?? []
+            }))
           });
         }
       }

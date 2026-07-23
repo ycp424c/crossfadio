@@ -16,6 +16,7 @@ import {
   selectDiverseBatch
 } from './selection-policy/batch.js';
 import { evaluateRanking } from './selection-policy/ranking.js';
+import { isRotationTrackSuppressed } from './selection-policy/rotation.js';
 import {
   toSelectionPolicyCandidate,
   type SelectionExclusions,
@@ -57,6 +58,7 @@ export type RankCandidatesOptions = {
   mode?: SelectionPolicyMode;
   explicitlyRequested?: boolean;
   explicitRequest?: SelectionExclusions;
+  selectionPolicyContext?: SelectionPolicyContext;
   recordDecision?: (candidate: MusicCandidate, decision: SelectionPhaseDecision) => void;
 };
 
@@ -81,6 +83,7 @@ export function rankOptionsFromContext(
     ...(selectionPolicyContext?.explicitRequest
       ? { explicitRequest: selectionPolicyContext.explicitRequest }
       : {}),
+    ...(selectionPolicyContext ? { selectionPolicyContext } : {}),
     ...rankOverrides
   };
 }
@@ -150,7 +153,7 @@ export function scoreCandidateForRanking(
   ];
   const decision = evaluateRanking({
     candidate: toSelectionPolicyCandidate(candidate),
-    context: {
+    context: options.selectionPolicyContext ?? {
       mode: options.mode ?? 'autonomous',
       explicitlyRequested: options.explicitlyRequested ?? false,
       ...(options.explicitRequest ? { explicitRequest: options.explicitRequest } : {})
@@ -174,11 +177,23 @@ export function scoreCandidateForRanking(
 export function rankCandidates(candidates: MusicCandidate[], limit: number, options: RankCandidatesOptions = {}): MusicCandidate[] {
   const target = Math.max(0, limit);
   return candidates
-    .filter((candidate) => !isHardFilteredCandidate(candidate))
+    .filter((candidate) =>
+      !isHardFilteredCandidate(candidate) &&
+      !isRotationTrackSuppressedForRanking(candidate, options)
+    )
     .map((candidate, index) => ({ candidate, index, score: scoreCandidateForRanking(candidate, options).adjustedScore }))
     .sort((left, right) => right.score - left.score || left.index - right.index)
     .slice(0, target)
     .map(({ candidate }) => cloneCandidate(candidate));
+}
+
+function isRotationTrackSuppressedForRanking(
+  candidate: MusicCandidate,
+  options: RankCandidatesOptions
+): boolean {
+  return options.selectionPolicyContext
+    ? isRotationTrackSuppressed(toSelectionPolicyCandidate(candidate), options.selectionPolicyContext)
+    : false;
 }
 
 export function buildCandidateScoreTableRows(

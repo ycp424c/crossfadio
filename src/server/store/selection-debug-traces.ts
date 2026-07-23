@@ -56,15 +56,18 @@ export function getSelectionDebugTrace(
   runId: string,
   options: { now?: Date; schemaVersion?: number } = {}
 ): SelectionDebugTraceRecord | null {
-  const row = getDb().prepare(`
-    SELECT * FROM selection_debug_traces
-    WHERE user_id = ? AND run_id = ? AND schema_version = ? AND expires_at > ?
-  `).get(
-    userId,
-    runId,
-    options.schemaVersion ?? 1,
-    (options.now ?? new Date()).toISOString()
-  ) as SelectionDebugTraceRow | undefined;
+  const now = (options.now ?? new Date()).toISOString();
+  const row = options.schemaVersion === undefined
+    ? getDb().prepare(`
+        SELECT * FROM selection_debug_traces
+        WHERE user_id = ? AND run_id = ? AND expires_at > ?
+        ORDER BY schema_version DESC
+        LIMIT 1
+      `).get(userId, runId, now) as SelectionDebugTraceRow | undefined
+    : getDb().prepare(`
+        SELECT * FROM selection_debug_traces
+        WHERE user_id = ? AND run_id = ? AND schema_version = ? AND expires_at > ?
+      `).get(userId, runId, options.schemaVersion, now) as SelectionDebugTraceRow | undefined;
   return row ? mapRow(row) : null;
 }
 

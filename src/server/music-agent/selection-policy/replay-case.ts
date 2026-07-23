@@ -5,6 +5,7 @@ import { evaluateRecall } from './recall.js';
 import { isCurrentExplicitRequest, matchesExclusion, toSelectionPolicyCandidate } from './types.js';
 import { scoreCandidateForRanking, type RankCandidatesOptions } from '../rank.js';
 import { hasValidTrackIdentity } from '../playback-eligibility.js';
+import { isRotationTrackSuppressed, rotationTrackState } from './rotation.js';
 import type {
   CandidateSource,
   MusicCandidate,
@@ -24,6 +25,12 @@ export type ReplayPressureContribution = {
   severity?: NonNullable<SelectionPressureContribution['severity']>;
   bypassed?: boolean;
   temporaryExcluded?: boolean;
+  currentRound?: number;
+  lastSelectedRound?: number;
+  roundDistance?: number;
+  hardRounds?: number;
+  softRounds?: number;
+  selectionsInWindow?: number;
 };
 
 export type ReplayPhaseExpectation = {
@@ -45,6 +52,11 @@ export type SelectionPolicyReplayContext = {
   retrievalCooldown: boolean;
   queueContainsTrack: boolean;
   playedTrack: boolean;
+  rotationCurrentRound: number;
+  rotationLastSelectedRound: number | null;
+  rotationRoundDistance: number | null;
+  rotationSelectionsInWindow: number;
+  rotationSuppressed: boolean;
 };
 
 export type SelectionPolicyReplayCase = {
@@ -158,12 +170,34 @@ export function restoreReplayPressure(
     ...(item.severity ? { severity: item.severity } : {}),
     ...(item.bypassed !== undefined ? { bypassed: item.bypassed } : {}),
     ...(item.temporaryExcluded !== undefined
-      ? { evidence: { temporaryExcluded: item.temporaryExcluded } }
+      || item.currentRound !== undefined
+      || item.lastSelectedRound !== undefined
+      || item.roundDistance !== undefined
+      || item.hardRounds !== undefined
+      || item.softRounds !== undefined
+      || item.selectionsInWindow !== undefined
+      ? {
+          evidence: {
+            ...(item.temporaryExcluded !== undefined
+              ? { temporaryExcluded: item.temporaryExcluded }
+              : {}),
+            ...(item.currentRound !== undefined ? { currentRound: item.currentRound } : {}),
+            ...(item.lastSelectedRound !== undefined
+              ? { lastSelectedRound: item.lastSelectedRound }
+              : {}),
+            ...(item.roundDistance !== undefined ? { roundDistance: item.roundDistance } : {}),
+            ...(item.hardRounds !== undefined ? { hardRounds: item.hardRounds } : {}),
+            ...(item.softRounds !== undefined ? { softRounds: item.softRounds } : {}),
+            ...(item.selectionsInWindow !== undefined
+              ? { selectionsInWindow: item.selectionsInWindow }
+              : {})
+          }
+        }
       : {})
   }));
 }
 
-function cloneReplayPressure(
+export function cloneReplayPressure(
   pressure: readonly SelectionPressureContribution[]
 ): ReplayPressureContribution[] {
   return pressure.map((item) => ({
@@ -175,8 +209,37 @@ function cloneReplayPressure(
     ...(item.bypassed !== undefined ? { bypassed: item.bypassed } : {}),
     ...(typeof item.evidence?.temporaryExcluded === 'boolean'
       ? { temporaryExcluded: item.evidence.temporaryExcluded }
-      : {})
+      : {}),
+    ...replayRotationEvidence(item.evidence)
   }));
+}
+
+function replayRotationEvidence(
+  evidence: SelectionPressureContribution['evidence']
+): Pick<
+  ReplayPressureContribution,
+  | 'currentRound'
+  | 'lastSelectedRound'
+  | 'roundDistance'
+  | 'hardRounds'
+  | 'softRounds'
+  | 'selectionsInWindow'
+> {
+  if (!evidence) return {};
+  return {
+    ...(typeof evidence.currentRound === 'number' ? { currentRound: evidence.currentRound } : {}),
+    ...(typeof evidence.lastSelectedRound === 'number'
+      ? { lastSelectedRound: evidence.lastSelectedRound }
+      : {}),
+    ...(typeof evidence.roundDistance === 'number'
+      ? { roundDistance: evidence.roundDistance }
+      : {}),
+    ...(typeof evidence.hardRounds === 'number' ? { hardRounds: evidence.hardRounds } : {}),
+    ...(typeof evidence.softRounds === 'number' ? { softRounds: evidence.softRounds } : {}),
+    ...(typeof evidence.selectionsInWindow === 'number'
+      ? { selectionsInWindow: evidence.selectionsInWindow }
+      : {})
+  };
 }
 
 function phaseExpectation(decision: SelectionPhaseDecision): ReplayPhaseExpectation {
@@ -189,6 +252,11 @@ export function selectionPolicyReplayContext(
 ): SelectionPolicyReplayContext {
   const explicit = matchesExclusion(candidate, context.explicitExclusions);
   const temporary = matchesExclusion(candidate, context.temporaryExclusions);
+  const rotation = rotationTrackState(candidate, context);
+  const rotationCurrentRound = context.rotation?.currentRound ?? 0;
+  const rotationRoundDistance = rotation
+    ? Math.max(0, rotationCurrentRound - rotation.lastSelectedRound)
+    : null;
   return {
     explicitlyRequested: isCurrentExplicitRequest(context, candidate),
     explicitTrackExcluded: explicit === 'track',
@@ -202,7 +270,12 @@ export function selectionPolicyReplayContext(
     )) ?? false,
     playedTrack: context.playedTrackIds?.has(candidate.track.id)
       || context.playedTrackKeys?.has(candidate.trackKey)
-      || false
+      || false,
+    rotationCurrentRound,
+    rotationLastSelectedRound: rotation?.lastSelectedRound ?? null,
+    rotationRoundDistance,
+    rotationSelectionsInWindow: rotation?.selectionsInWindow ?? 0,
+    rotationSuppressed: isRotationTrackSuppressed(candidate, context)
   };
 }
 

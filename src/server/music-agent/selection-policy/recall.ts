@@ -44,6 +44,9 @@ function autonomousSuppressionReasons(input: {
   if (suppressing.some((item) => item.reasonCode === 'early_skip_artist')) {
     reasons.push('early_skip_artist_suppression');
   }
+  if (suppressing.some((item) => item.reasonCode === 'rotation_track_suppression')) {
+    reasons.push('rotation_track_suppression');
+  }
   if (
     input.context.retrievalCooldownTrackKeys?.has(input.candidate.trackKey)
     || suppressing.some((item) => item.reasonCode === 'retrieval_pressure')

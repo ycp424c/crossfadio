@@ -255,7 +255,17 @@ export function prepareQueueAppend(
     queue = queue.filter((item) => item.ncmId !== track.ncmId);
     queue.push(track);
   }
-  const nextState = nextQueueState(current, queue, current.currentIndex);
+  return prepareQueueState(userId, queue, current.currentIndex);
+}
+
+export function prepareQueueState(
+  userId: string,
+  tracks: QueueTrack[],
+  currentIndex: number
+): PreparedQueueAppend {
+  assertQueueTracks(tracks);
+  const current = getState(userId);
+  const nextState = nextQueueState(current, tracks, currentIndex);
   let persisted = false;
 
   return {

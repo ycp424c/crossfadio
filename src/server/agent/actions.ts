@@ -19,11 +19,18 @@ export type ActionContext = {
   ncmClient: NcmClient;
   sourceRef?: ExclusionSourceRef;
   logger?: Pick<ReturnType<typeof getLogger>, 'info' | 'warn'>;
+  commitQueueTrack?: (input: {
+    action: 'swap_next' | 'add_to_queue';
+    actionIndex: number;
+    position: 'end' | 'after_current';
+    track: { ncmId: string; name: string; artists: string[] };
+  }) => void;
   onQueueActiveDirectiveUpdated?: (directive: { text: string; expiresAt: string } | null) => void;
 };
 
 export type ActionResult = {
   queueChanged: boolean;
+  addedTracks: Array<{ ncmId: string; name: string; artists: string[] }>;
 };
 
 /**
@@ -36,6 +43,7 @@ export async function executeActions(
 ): Promise<ActionResult> {
   const logger = ctx.logger ?? getLogger();
   let queueChanged = false;
+  const addedTracks: ActionResult['addedTracks'] = [];
   const queuedIds = new Set(getQueue(ctx.userId).map((track) => track.ncmId));
 
   for (const [actionIndex, action] of actions.entries()) {
@@ -44,8 +52,18 @@ export async function executeActions(
         case 'swap_next': {
           const resolved = await resolveDirectTrack(action.pick.query, ctx, queuedIds);
           if (resolved) {
-            swapNext(ctx.userId, { ncmId: resolved.ncmId, name: resolved.name, artists: resolved.artists });
+            if (ctx.commitQueueTrack) {
+              ctx.commitQueueTrack({
+                action: 'swap_next',
+                actionIndex,
+                position: 'after_current',
+                track: resolved
+              });
+            } else {
+              swapNext(ctx.userId, resolved);
+            }
             queuedIds.add(resolved.ncmId);
+            addedTracks.push(resolved);
             queueChanged = true;
           }
           break;
@@ -53,8 +71,18 @@ export async function executeActions(
         case 'add_to_queue': {
           const resolved = await resolveDirectTrack(action.pick.query, ctx, queuedIds);
           if (resolved) {
-            addToQueue(ctx.userId, { ncmId: resolved.ncmId, name: resolved.name, artists: resolved.artists }, action.position);
+            if (ctx.commitQueueTrack) {
+              ctx.commitQueueTrack({
+                action: 'add_to_queue',
+                actionIndex,
+                position: action.position,
+                track: resolved
+              });
+            } else {
+              addToQueue(ctx.userId, resolved, action.position);
+            }
             queuedIds.add(resolved.ncmId);
+            addedTracks.push(resolved);
             queueChanged = true;
           }
           break;
@@ -140,7 +168,7 @@ export async function executeActions(
     }
   }
 
-  return { queueChanged };
+  return { queueChanged, addedTracks };
 }
 
 async function resolveDirectTrack(

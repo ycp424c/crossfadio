@@ -10,6 +10,7 @@ import { getQueue, getQueueRevision, setQueueState } from '../../src/server/stor
 import { getPref, setPref } from '../../src/server/store/prefs';
 import { getSelectionDebugTrace } from '../../src/server/store/selection-debug-traces';
 import { getSelectionJourney } from '../../src/server/store/selection-journeys';
+import { getSelectionRotationSnapshot } from '../../src/server/store/selection-rotation';
 import { createExplicitExclusion } from '../../src/server/store/explicit-exclusions';
 import type { MusicAgentRunOutput } from '../../src/server/music-agent/schema';
 import type { PickNextInput } from '../../src/server/music-agent';
@@ -164,6 +165,13 @@ describe('DJAgent pick-next orchestration', () => {
       action: 'append',
       trackIds: ['201', '202'],
       position: 'end'
+    });
+    expect(getSelectionRotationSnapshot('dj-agent-user')).toMatchObject({
+      currentRound: 1,
+      picks: [
+        { runId: result.runId, roundNumber: 1, trackId: '201', pickOrder: 1 },
+        { runId: result.runId, roundNumber: 1, trackId: '202', pickOrder: 2 }
+      ]
     });
 
     const journeyEvents = emit.mock.calls

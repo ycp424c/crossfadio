@@ -22,7 +22,7 @@ import { enqueueSelectionNarration } from '../../src/server/store/selection-narr
 let dataDir: string;
 
 const trace: SelectionDecisionTrace = {
-  schemaVersion: 1,
+  schemaVersion: 2,
   runId: 'run-runtime',
   mode: 'autonomous',
   createdAt: '2026-07-17T10:00:00.000Z',

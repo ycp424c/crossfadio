@@ -60,7 +60,7 @@ describe('player SSE event parsing', () => {
       excludedIds: ['1', '3'],
       excludedDedupeKeys: ['a'],
       candidateScoreTable: [{ rank: 1, id: '11', song: 'Song', artist: 'Artist', sources: 'semantic', adjustedScore: 4.2 }],
-      selectionTrace: expect.objectContaining({ runId: 'run-1', schemaVersion: 1 })
+      selectionTrace: expect.objectContaining({ runId: 'run-1', schemaVersion: 2 })
     });
 
     expect(parsePlayerPickNextSseEvent('dj.debug', {

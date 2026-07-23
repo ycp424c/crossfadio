@@ -3,6 +3,15 @@ import type {
   SelectionPressureContribution,
   SelectionQueueState
 } from './selection-policy/types.js';
+import {
+  SELECTION_ROTATION_TRACK_HARD_ROUNDS,
+  SELECTION_ROTATION_TRACK_SOFT_ROUNDS
+} from './selection-policy/rotation.js';
+
+export {
+  SELECTION_ROTATION_TRACK_HARD_ROUNDS,
+  SELECTION_ROTATION_TRACK_SOFT_ROUNDS
+} from './selection-policy/rotation.js';
 
 export const SELECTION_PRESSURE_WINDOW_DAYS = 60;
 export const SELECTION_PRESSURE_HALF_LIFE_DAYS = 21;
@@ -26,6 +35,12 @@ export type ExposureObservation = {
   primaryArtist: string;
   exposure: number;
   occurredAt: string;
+};
+
+export type SelectionRotationObservation = {
+  currentRound: number;
+  lastSelectedRound: number;
+  selectionsInWindow: number;
 };
 
 export type SelectionPressureAggregate = {
@@ -59,6 +74,7 @@ export function calculateSelectionPressure(input: {
   retrievalCooldown?: boolean;
   trendMatch?: number;
   aggregate?: SelectionPressureAggregate;
+  rotation?: SelectionRotationObservation;
 }): SelectionPressureResult {
   const contributions: SelectionPressureContribution[] = [];
   const earlySkips = recentWeighted(input.earlySkips ?? [], input.now);
@@ -116,6 +132,7 @@ export function calculateSelectionPressure(input: {
     });
   }
 
+  addRotationContributions(contributions, input.rotation);
   addExposureContributions(contributions, input);
   addUpcomingQueueContributions(contributions, input.candidate, input.queue);
   if (input.retrievalCooldown) {
@@ -147,6 +164,59 @@ export function calculateSelectionPressure(input: {
       autonomousSuppressed: trackSuppressed || artistSuppressed
     }
   };
+}
+
+function addRotationContributions(
+  contributions: SelectionPressureContribution[],
+  rotation: SelectionRotationObservation | undefined
+): void {
+  if (!rotation) return;
+  const roundDistance = Math.max(
+    0,
+    Math.trunc(rotation.currentRound) - Math.trunc(rotation.lastSelectedRound)
+  );
+  const evidence = {
+    currentRound: Math.max(0, Math.trunc(rotation.currentRound)),
+    lastSelectedRound: Math.max(0, Math.trunc(rotation.lastSelectedRound)),
+    roundDistance,
+    hardRounds: SELECTION_ROTATION_TRACK_HARD_ROUNDS,
+    softRounds: SELECTION_ROTATION_TRACK_SOFT_ROUNDS,
+    selectionsInWindow: Math.max(0, Math.trunc(rotation.selectionsInWindow))
+  };
+  if (roundDistance < SELECTION_ROTATION_TRACK_HARD_ROUNDS) {
+    contributions.push({
+      source: 'rotation',
+      reasonCode: 'rotation_track_suppression',
+      direction: 'penalty',
+      amount: 1,
+      severity: 'suppress',
+      evidence
+    });
+    return;
+  }
+  if (roundDistance >= SELECTION_ROTATION_TRACK_SOFT_ROUNDS) return;
+  const remaining = SELECTION_ROTATION_TRACK_SOFT_ROUNDS - roundDistance;
+  const softWindow = SELECTION_ROTATION_TRACK_SOFT_ROUNDS
+    - SELECTION_ROTATION_TRACK_HARD_ROUNDS;
+  contributions.push({
+    source: 'rotation',
+    reasonCode: 'rotation_track_penalty',
+    direction: 'penalty',
+    amount: round(0.32 * remaining / softWindow),
+    severity: 'soft',
+    evidence
+  });
+  const selectionsInWindow = Math.max(0, Math.trunc(rotation.selectionsInWindow));
+  if (selectionsInWindow > 1) {
+    contributions.push({
+      source: 'rotation',
+      reasonCode: 'rotation_frequency_penalty',
+      direction: 'penalty',
+      amount: round(Math.min(0.3, (selectionsInWindow - 1) * 0.1)),
+      severity: 'soft',
+      evidence
+    });
+  }
 }
 
 function addExposureContributions(

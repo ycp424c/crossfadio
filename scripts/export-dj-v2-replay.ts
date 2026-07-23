@@ -57,6 +57,12 @@ export interface ReplayPressureInput {
   severity?: 'soft' | 'suppress';
   bypassed?: boolean;
   temporaryExcluded?: boolean;
+  currentRound?: number;
+  lastSelectedRound?: number;
+  roundDistance?: number;
+  hardRounds?: number;
+  softRounds?: number;
+  selectionsInWindow?: number;
 }
 
 export interface ReplayPolicyContextInput {
@@ -68,6 +74,11 @@ export interface ReplayPolicyContextInput {
   retrievalCooldown: boolean;
   queueContainsTrack: boolean;
   playedTrack: boolean;
+  rotationCurrentRound?: number;
+  rotationLastSelectedRound?: number | null;
+  rotationRoundDistance?: number | null;
+  rotationSelectionsInWindow?: number;
+  rotationSuppressed?: boolean;
 }
 
 export interface DjV2ReplayPolicyCaseInput {
@@ -204,10 +215,14 @@ const QUALITY_SIGNAL_ENUMS = {
 const POLICY_CONTEXT_FIELDS = new Set([
   'explicitlyRequested', 'explicitTrackExcluded', 'explicitArtistExcluded',
   'temporaryTrackExcluded', 'temporaryArtistExcluded', 'retrievalCooldown',
-  'queueContainsTrack', 'playedTrack'
+  'queueContainsTrack', 'playedTrack', 'rotationCurrentRound',
+  'rotationLastSelectedRound', 'rotationRoundDistance',
+  'rotationSelectionsInWindow', 'rotationSuppressed'
 ]);
 const PRESSURE_FIELDS = new Set([
-  'source', 'reasonCode', 'direction', 'amount', 'severity', 'bypassed', 'temporaryExcluded'
+  'source', 'reasonCode', 'direction', 'amount', 'severity', 'bypassed',
+  'temporaryExcluded', 'currentRound', 'lastSelectedRound', 'roundDistance',
+  'hardRounds', 'softRounds', 'selectionsInWindow'
 ]);
 const EXPECTED_FIELDS = new Set([
   'admission', 'recall', 'ranking', 'batch', 'final', 'finalContext'
@@ -420,18 +435,12 @@ function assertInputNumbers(input: DjV2ReplayInput): void {
     assertNonNegativeInteger(policyCase.batchLimit, `${path}.batchLimit`);
     assertArray(policyCase.titleMotifKeys, `${path}.titleMotifKeys`);
     assertArray(policyCase.pressure, `${path}.pressure`);
-    for (const [field, value] of Object.entries(policyCase.context)) {
-      if (typeof value !== 'boolean') throw new Error(`${path}.context.${field} must be a boolean`);
-    }
+    assertPolicyContext(policyCase.context, `${path}.context`);
     if ((policyCase.expected.final === null) !== (policyCase.expected.finalContext === null)) {
       throw new Error(`${path}.expected.final and finalContext must both be null or both be present`);
     }
     if (policyCase.expected.finalContext) {
-      for (const [field, value] of Object.entries(policyCase.expected.finalContext)) {
-        if (typeof value !== 'boolean') {
-          throw new Error(`${path}.expected.finalContext.${field} must be a boolean`);
-        }
-      }
+      assertPolicyContext(policyCase.expected.finalContext, `${path}.expected.finalContext`);
     }
     policyCase.pressure.forEach((item, pressureIndex) => {
       assertPressure(item, `${path}.pressure[${pressureIndex}]`);
@@ -478,6 +487,48 @@ function assertPressure(value: ReplayPressureInput, path: string): void {
   }
   if (value.temporaryExcluded !== undefined && typeof value.temporaryExcluded !== 'boolean') {
     throw new Error(`${path}.temporaryExcluded must be a boolean`);
+  }
+  for (const field of [
+    'currentRound',
+    'lastSelectedRound',
+    'roundDistance',
+    'hardRounds',
+    'softRounds',
+    'selectionsInWindow'
+  ] as const) {
+    if (value[field] !== undefined) assertNonNegativeInteger(value[field], `${path}.${field}`);
+  }
+}
+
+function assertPolicyContext(value: ReplayPolicyContextInput, path: string): void {
+  for (const field of [
+    'explicitlyRequested',
+    'explicitTrackExcluded',
+    'explicitArtistExcluded',
+    'temporaryTrackExcluded',
+    'temporaryArtistExcluded',
+    'retrievalCooldown',
+    'queueContainsTrack',
+    'playedTrack'
+  ] as const) {
+    if (typeof value[field] !== 'boolean') throw new Error(`${path}.${field} must be a boolean`);
+  }
+  if (
+    value.rotationSuppressed !== undefined
+    && typeof value.rotationSuppressed !== 'boolean'
+  ) {
+    throw new Error(`${path}.rotationSuppressed must be a boolean`);
+  }
+  if (value.rotationCurrentRound !== undefined) {
+    assertNonNegativeInteger(value.rotationCurrentRound, `${path}.rotationCurrentRound`);
+  }
+  if (value.rotationSelectionsInWindow !== undefined) {
+    assertNonNegativeInteger(value.rotationSelectionsInWindow, `${path}.rotationSelectionsInWindow`);
+  }
+  for (const field of ['rotationLastSelectedRound', 'rotationRoundDistance'] as const) {
+    if (value[field] !== undefined && value[field] !== null) {
+      assertNonNegativeInteger(value[field], `${path}.${field}`);
+    }
   }
 }
 
@@ -647,7 +698,7 @@ export function exportDjV2Replay(input: DjV2ReplayInput, options: DjV2ReplayExpo
   assertWithinReplayWindow(input, nowMs);
   assertCompletePolicyCaseCoverage(input);
   return {
-    schemaVersion: 2 as const,
+    schemaVersion: 3 as const,
     episodes: input.episodes.map((episode) => ({
       ...episode,
       episodeId: hashId('episode', episode.episodeId, options.salt),

@@ -13,14 +13,20 @@ import { evaluateRecall } from '../src/server/music-agent/selection-policy/recal
 import { evaluateRanking } from '../src/server/music-agent/selection-policy/ranking.js';
 import { selectDiverseBatch } from '../src/server/music-agent/selection-policy/batch.js';
 import { evaluateFinal } from '../src/server/music-agent/selection-policy/final.js';
-import { restoreReplayPressure } from '../src/server/music-agent/selection-policy/replay-case.js';
+import {
+  cloneReplayPressure,
+  restoreReplayPressure
+} from '../src/server/music-agent/selection-policy/replay-case.js';
 import type { MusicCandidate } from '../src/server/music-agent/schema.js';
 import type {
   SelectionPolicyCandidate,
   SelectionPolicyContext
 } from '../src/server/music-agent/selection-policy/types.js';
 
-export type DjV2ReplayDataset = ReturnType<typeof exportDjV2Replay>;
+type CurrentDjV2ReplayDataset = ReturnType<typeof exportDjV2Replay>;
+export type DjV2ReplayDataset = Omit<CurrentDjV2ReplayDataset, 'schemaVersion'> & {
+  schemaVersion: 2 | 3;
+};
 
 const HASHED_ID = /^h_[a-f0-9]{32}$/;
 const REASON_CODE = /^[a-z][a-z0-9_]{0,79}$/;
@@ -85,10 +91,14 @@ const QUALITY_SIGNAL_FIELDS = new Set([
 const POLICY_CONTEXT_FIELDS = new Set([
   'explicitlyRequested', 'explicitTrackExcluded', 'explicitArtistExcluded',
   'temporaryTrackExcluded', 'temporaryArtistExcluded', 'retrievalCooldown',
-  'queueContainsTrack', 'playedTrack'
+  'queueContainsTrack', 'playedTrack', 'rotationCurrentRound',
+  'rotationLastSelectedRound', 'rotationRoundDistance',
+  'rotationSelectionsInWindow', 'rotationSuppressed'
 ]);
 const PRESSURE_FIELDS = new Set([
-  'source', 'reasonCode', 'direction', 'amount', 'severity', 'bypassed', 'temporaryExcluded'
+  'source', 'reasonCode', 'direction', 'amount', 'severity', 'bypassed',
+  'temporaryExcluded', 'currentRound', 'lastSelectedRound', 'roundDistance',
+  'hardRounds', 'softRounds', 'selectionsInWindow'
 ]);
 const EXPECTED_FIELDS = new Set([
   'admission', 'recall', 'ranking', 'batch', 'final', 'finalContext'
@@ -132,7 +142,9 @@ export function assertValidDjV2ReplayDataset(value: unknown): asserts value is D
   assertNoForbiddenReplayContent(value);
   assertObject(value, 'root');
   assertKnownKeys(value, ROOT_FIELDS, 'root');
-  if (value.schemaVersion !== 2) throw new Error('schemaVersion must be 2');
+  if (value.schemaVersion !== 2 && value.schemaVersion !== 3) {
+    throw new Error('schemaVersion must be 2 or 3');
+  }
   assertArray(value.episodes, 'episodes');
   assertArray(value.selectionRuns, 'selectionRuns');
   assertArray(value.retrievalAttempts, 'retrievalAttempts');
@@ -263,9 +275,7 @@ export function assertValidDjV2ReplayDataset(value: unknown): asserts value is D
     });
     assertObject(policyCase.context, `${path}.context`);
     assertKnownKeys(policyCase.context, POLICY_CONTEXT_FIELDS, `${path}.context`);
-    for (const [field, fieldValue] of Object.entries(policyCase.context)) {
-      if (typeof fieldValue !== 'boolean') throw new Error(`${path}.context.${field} must be a boolean`);
-    }
+    assertReplayPolicyContext(policyCase.context, `${path}.context`);
     assertArray(policyCase.pressure, `${path}.pressure`);
     policyCase.pressure.forEach((item, pressureIndex) => {
       assertReplayPressure(item, `${path}.pressure[${pressureIndex}]`);
@@ -283,11 +293,7 @@ export function assertValidDjV2ReplayDataset(value: unknown): asserts value is D
         POLICY_CONTEXT_FIELDS,
         `${path}.expected.finalContext`
       );
-      for (const [field, fieldValue] of Object.entries(policyCase.expected.finalContext)) {
-        if (typeof fieldValue !== 'boolean') {
-          throw new Error(`${path}.expected.finalContext.${field} must be a boolean`);
-        }
-      }
+      assertReplayPolicyContext(policyCase.expected.finalContext, `${path}.expected.finalContext`);
     }
   });
 }
@@ -319,6 +325,45 @@ function assertReplayPressure(value: unknown, path: string): void {
   }
   if (value.temporaryExcluded !== undefined && typeof value.temporaryExcluded !== 'boolean') {
     throw new Error(`${path}.temporaryExcluded must be a boolean`);
+  }
+  for (const field of [
+    'currentRound',
+    'lastSelectedRound',
+    'roundDistance',
+    'hardRounds',
+    'softRounds',
+    'selectionsInWindow'
+  ]) {
+    if (value[field] !== undefined) assertNonNegativeInteger(value[field], `${path}.${field}`);
+  }
+}
+
+function assertReplayPolicyContext(value: Record<string, unknown>, path: string): void {
+  for (const field of [
+    'explicitlyRequested',
+    'explicitTrackExcluded',
+    'explicitArtistExcluded',
+    'temporaryTrackExcluded',
+    'temporaryArtistExcluded',
+    'retrievalCooldown',
+    'queueContainsTrack',
+    'playedTrack'
+  ]) {
+    if (typeof value[field] !== 'boolean') throw new Error(`${path}.${field} must be a boolean`);
+  }
+  if (value.rotationSuppressed !== undefined && typeof value.rotationSuppressed !== 'boolean') {
+    throw new Error(`${path}.rotationSuppressed must be a boolean`);
+  }
+  if (value.rotationCurrentRound !== undefined) {
+    assertNonNegativeInteger(value.rotationCurrentRound, `${path}.rotationCurrentRound`);
+  }
+  if (value.rotationSelectionsInWindow !== undefined) {
+    assertNonNegativeInteger(value.rotationSelectionsInWindow, `${path}.rotationSelectionsInWindow`);
+  }
+  for (const field of ['rotationLastSelectedRound', 'rotationRoundDistance']) {
+    if (value[field] !== undefined && value[field] !== null) {
+      assertNonNegativeInteger(value[field], `${path}.${field}`);
+    }
   }
 }
 
@@ -559,7 +604,15 @@ function replayContext(
       }] : []
     },
     playedTrackIds: context.playedTrack ? new Set([policyCase.candidateId]) : new Set(),
-    playedTrackKeys: context.playedTrack ? new Set([policyCase.candidateTrackKey]) : new Set()
+    playedTrackKeys: context.playedTrack ? new Set([policyCase.candidateTrackKey]) : new Set(),
+    rotation: {
+      currentRound: context.rotationCurrentRound ?? 0,
+      tracks: context.rotationLastSelectedRound == null ? [] : [{
+        trackKey: policyCase.candidateTrackKey,
+        lastSelectedRound: context.rotationLastSelectedRound,
+        selectionsInWindow: context.rotationSelectionsInWindow ?? 0
+      }]
+    }
   };
 }
 
@@ -585,17 +638,7 @@ function sameRankingExpectation(
   expected: ReplayPolicyCase['expected']['ranking']
 ): boolean {
   if (actual === null || expected === null) return actual === null && expected === null;
-  const actualContributions = actual.contributions.map((item) => ({
-    source: item.source,
-    reasonCode: item.reasonCode,
-    direction: item.direction,
-    amount: item.amount,
-    ...(item.severity ? { severity: item.severity } : {}),
-    ...(item.bypassed !== undefined ? { bypassed: item.bypassed } : {}),
-    ...(typeof item.evidence?.temporaryExcluded === 'boolean'
-      ? { temporaryExcluded: item.evidence.temporaryExcluded }
-      : {})
-  }));
+  const actualContributions = cloneReplayPressure(actual.contributions);
   return sameExpectation(actual, expected)
     && actual.adjustedScore === expected.adjustedScore
     && JSON.stringify(actualContributions) === JSON.stringify(expected.contributions);

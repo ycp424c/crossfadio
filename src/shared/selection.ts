@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-export const SELECTION_TRACE_SCHEMA_VERSION = 1 as const;
+export const SELECTION_TRACE_SCHEMA_VERSION = 2 as const;
 export const SELECTION_JOURNEY_SCHEMA_VERSION = 1 as const;
 export const MAX_SELECTION_JOURNEY_PICKS = 5;
 
@@ -39,6 +39,7 @@ export const selectionProvenanceSourceSchema = z.enum([
   'active_directive',
   'preference_evidence',
   'listening_exposure',
+  'selection_rotation',
   'retrieval_history',
   'queue',
   'candidate_quality',
@@ -69,13 +70,21 @@ export const selectionDecisionSchema = z.object({
   evidenceRefs: z.array(selectionEvidenceRefSchema).max(8).default([])
 }).strict();
 
-export const selectionDecisionTraceSchema = z.object({
+const currentSelectionDecisionTraceSchema = z.object({
   schemaVersion: z.literal(SELECTION_TRACE_SCHEMA_VERSION),
   runId: z.string().trim().min(1).max(100),
   mode: z.enum(['autonomous', 'explicit_request']),
   createdAt: z.string().datetime({ offset: true }),
   decisions: z.array(selectionDecisionSchema).max(500)
 }).strict();
+
+export const selectionDecisionTraceSchema = z.preprocess((value) => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+  const trace = value as Record<string, unknown>;
+  return trace.schemaVersion === 1
+    ? { ...trace, schemaVersion: SELECTION_TRACE_SCHEMA_VERSION }
+    : value;
+}, currentSelectionDecisionTraceSchema);
 
 export const selectionJourneyStageSchema = z.enum([
   'understanding',

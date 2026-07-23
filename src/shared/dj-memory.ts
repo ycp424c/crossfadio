@@ -1,10 +1,12 @@
 import { z } from 'zod';
 
 export const DJ_MEMORY_SCHEMA_VERSION = 1 as const;
+export const SELECTION_ROTATION_HISTORY_PICK_LIMIT = 4000;
 
 export const djMemorySourceKindSchema = z.enum([
   'queue',
   'listening_episodes',
+  'selection_rotation',
   'preference_evidence',
   'active_directive',
   'explicit_exclusions',

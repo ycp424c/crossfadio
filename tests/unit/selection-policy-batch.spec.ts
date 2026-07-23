@@ -8,9 +8,26 @@ describe('selection policy batch', () => {
       candidate('lead-a', 'Lead Artist / Guest Artist', 'search'),
       candidate('guest-lead', 'Guest Artist / Other Artist', 'playlist'),
       candidate('lead-repeat', 'Lead Artist / Different Guest', 'trend')
-    ], 3);
+    ], 2);
 
     expect(selected.map((item) => item.id)).toEqual(['lead-a', 'guest-lead']);
+  });
+
+  it('relaxes the primary-artist limit only when it is needed to fill the batch', () => {
+    const decisions: string[] = [];
+    const selected = selectDiverseBatch([
+      candidate('lead-a', 'Lead Artist', 'search'),
+      candidate('guest-lead', 'Guest Artist', 'playlist'),
+      candidate('lead-repeat', 'Lead Artist', 'trend')
+    ], 3, {
+      recordDecision: (item, decision) => {
+        decisions.push(`${item.id}:${decision.action}:${decision.reasonCodes[0]}`);
+      }
+    });
+
+    expect(selected.map((item) => item.id)).toEqual(['lead-a', 'guest-lead', 'lead-repeat']);
+    expect(decisions).toContain('lead-repeat:defer:batch_primary_artist_repeat');
+    expect(decisions).toContain('lead-repeat:select:batch_selected');
   });
 
   it('uses source diversity as a deferral and fills from the same source only when needed', () => {

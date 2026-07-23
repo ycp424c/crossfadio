@@ -5,7 +5,7 @@ import {
 } from '../../src/shared/selection';
 
 describe('Selection Decision Trace schema', () => {
-  it('accepts a versioned, source-attributed phase decision', () => {
+  it('upgrades a v1 source-attributed phase decision to the current schema', () => {
     const trace = {
       schemaVersion: 1,
       runId: 'run-1',
@@ -28,7 +28,10 @@ describe('Selection Decision Trace schema', () => {
       }]
     };
 
-    expect(selectionDecisionTraceSchema.parse(trace)).toEqual(trace);
+    expect(selectionDecisionTraceSchema.parse(trace)).toEqual({
+      ...trace,
+      schemaVersion: 2
+    });
   });
 
   it('bounds evidence references and rejects private trace payloads', () => {

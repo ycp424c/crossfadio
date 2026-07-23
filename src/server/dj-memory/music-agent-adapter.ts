@@ -8,6 +8,10 @@ import {
   type ExposureObservation,
   type SelectionPressureAggregate
 } from '../music-agent/selection-pressure.js';
+import {
+  buildSelectionRotationPolicyContext,
+  rotationTrackState
+} from '../music-agent/selection-policy/rotation.js';
 import type { MusicAgentRuntimeContext, MusicCandidate } from '../music-agent/schema.js';
 import {
   isCurrentExplicitRequest,
@@ -69,12 +73,14 @@ export function createMusicAgentSelectionAdapter(input: {
     ...(input.actionQueries !== undefined ? { actionQueries: input.actionQueries } : {})
   });
   const queue = selectionQueue(input.snapshot);
+  const rotation = buildSelectionRotationPolicyContext(input.snapshot.rotation);
   const policyContext: SelectionPolicyContext = {
     mode,
     explicitlyRequested: mode === 'explicit_request',
     ...(explicitRequest ? { explicitRequest } : {}),
     explicitExclusions: explicitExclusions(input.snapshot),
     temporaryExclusions: temporaryExclusions(input.snapshot),
+    rotation,
     queue,
     ...(input.playedTrackIds ? { playedTrackIds: input.playedTrackIds } : {}),
     ...(input.playedTrackKeys ? { playedTrackKeys: input.playedTrackKeys } : {})
@@ -100,6 +106,7 @@ export function createMusicAgentSelectionAdapter(input: {
     },
     pressureForCandidate(candidate) {
       const policyCandidate = toSelectionPolicyCandidate(candidate);
+      const rotationState = rotationTrackState(policyCandidate, policyContext);
       return [
         ...calculateSelectionPressure({
           candidate: policyCandidate,
@@ -107,6 +114,9 @@ export function createMusicAgentSelectionAdapter(input: {
           earlySkips,
           exposures,
           queue,
+          ...(rotationState
+            ? { rotation: { currentRound: rotation.currentRound, ...rotationState } }
+            : {}),
           ...(hasCompletePressureProjection
             ? { aggregate: pressureAggregateForCandidate(pressureIndex, policyCandidate) }
             : {})

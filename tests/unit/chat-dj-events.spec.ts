@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { resetConfigForTest } from '../../src/server/config';
-import { initDb, _resetDbForTest } from '../../src/server/store/db';
+import { getDb, initDb, _resetDbForTest } from '../../src/server/store/db';
 import { getRecentDjEvents } from '../../src/server/store/dj-events';
 import { getQueue, setQueue } from '../../src/server/store/queue';
 import {
@@ -20,6 +20,7 @@ import { createListeningEpisode } from '../../src/server/store/listening-episode
 import { getUnextractedMessages } from '../../src/server/store/messages';
 import { getPreferenceExtractionBatchBySource } from '../../src/server/store/preference-extraction-batches';
 import { PREFERENCE_EXTRACTION_VERSION } from '../../src/server/music-agent/preference-extraction';
+import { getSelectionRotationSnapshot } from '../../src/server/store/selection-rotation';
 
 const mocks = vi.hoisted(() => ({
   computeStream: vi.fn(),
@@ -269,6 +270,157 @@ describe('chat DJ event integration', () => {
       trackIds: ['track-1'],
       position: 'end'
     });
+    expect(getSelectionRotationSnapshot(userId)).toMatchObject({
+      currentRound: 0,
+      picks: [
+        expect.objectContaining({
+          trackId: 'track-1',
+          roundNumber: 0
+        })
+      ]
+    });
+  });
+
+  it('rolls back the MusicAgent queue mutation and events when rotation persistence fails', async () => {
+    const userId = 'chat-events-user-atomic-agent';
+    setQueue(userId, [{ ncmId: 'current-track', name: 'Current', artists: ['Current Artist'] }]);
+    mocks.computeStream.mockImplementation(async function* () {
+      yield {
+        type: 'done',
+        output: {
+          mode: 'chat',
+          say: '我给你接一首',
+          intent: 'adjust_queue',
+          actions: [{
+            type: 'add_to_queue',
+            pick: { query: 'city pop' },
+            position: 'end'
+          }]
+        }
+      };
+    });
+    mocks.recommendFromChat.mockResolvedValue({
+      status: 'ok',
+      mode: 'chat_recommend',
+      say: '接一首',
+      picks: [{
+        id: 'track-atomic',
+        name: 'Atomic Track',
+        artist: 'Atomic Artist',
+        reason: 'atomic recommendation',
+        source: 'search'
+      }],
+      rejected: [],
+      queryFunnel: [],
+      trace: [],
+      candidateScoreTable: []
+    });
+    getDb().exec(`
+      CREATE TRIGGER fail_chat_rotation_insert
+      BEFORE INSERT ON selection_rotation_picks
+      BEGIN
+        SELECT RAISE(ABORT, 'forced rotation failure');
+      END;
+    `);
+
+    await handleChatMessage(userId, mockNcmClient(), '帮我加一首 city pop', vi.fn());
+
+    expect(getQueue(userId).map((track) => track.ncmId)).toEqual(['current-track']);
+    const events = getRecentDjEvents(userId, 10);
+    expect(events.some((event) => event.type === 'track_selected')).toBe(false);
+    expect(events.some((event) => event.type === 'queue_changed')).toBe(false);
+    expect(getSelectionRotationSnapshot(userId).picks).toEqual([]);
+  });
+
+  it('records a direct explicit chat pick as exposure without advancing the autonomous round', async () => {
+    const userId = 'chat-events-user-direct';
+    setQueue(userId, []);
+    mocks.computeStream.mockImplementation(async function* () {
+      yield {
+        type: 'done',
+        output: {
+          mode: 'chat',
+          say: '给你加上',
+          intent: 'adjust_queue',
+          actions: [{
+            type: 'add_to_queue',
+            pick: { query: 'Plastic Love — 竹内まりや' },
+            position: 'end'
+          }]
+        }
+      };
+    });
+    const ncmClient = mockNcmClient() as NcmClient & {
+      getSongDetails: ReturnType<typeof vi.fn>;
+    };
+    vi.mocked(ncmClient.searchSongs).mockResolvedValue([{
+      id: 'direct-track',
+      name: 'Plastic Love',
+      artists: ['竹内まりや']
+    }]);
+    ncmClient.getSongDetails = vi.fn().mockResolvedValue([{
+      id: 'direct-track',
+      name: 'Plastic Love',
+      artists: ['竹内まりや']
+    }]);
+
+    await handleChatMessage(userId, ncmClient, '直接放 Plastic Love', vi.fn());
+
+    expect(mocks.recommendFromChat).not.toHaveBeenCalled();
+    expect(getSelectionRotationSnapshot(userId)).toMatchObject({
+      currentRound: 0,
+      picks: [
+        expect.objectContaining({
+          trackId: 'direct-track',
+          roundNumber: 0
+        })
+      ]
+    });
+  });
+
+  it('rolls back a direct chat queue mutation when rotation persistence fails', async () => {
+    const userId = 'chat-events-user-direct-atomic';
+    setQueue(userId, []);
+    mocks.computeStream.mockImplementation(async function* () {
+      yield {
+        type: 'done',
+        output: {
+          mode: 'chat',
+          say: '给你加上',
+          intent: 'adjust_queue',
+          actions: [{
+            type: 'add_to_queue',
+            pick: { query: 'Plastic Love — 竹内まりや' },
+            position: 'end'
+          }]
+        }
+      };
+    });
+    const ncmClient = mockNcmClient() as NcmClient & {
+      getSongDetails: ReturnType<typeof vi.fn>;
+    };
+    vi.mocked(ncmClient.searchSongs).mockResolvedValue([{
+      id: 'direct-track',
+      name: 'Plastic Love',
+      artists: ['竹内まりや']
+    }]);
+    ncmClient.getSongDetails = vi.fn().mockResolvedValue([{
+      id: 'direct-track',
+      name: 'Plastic Love',
+      artists: ['竹内まりや']
+    }]);
+    getDb().exec(`
+      CREATE TRIGGER fail_direct_rotation_insert
+      BEFORE INSERT ON selection_rotation_picks
+      BEGIN
+        SELECT RAISE(ABORT, 'forced rotation failure');
+      END;
+    `);
+
+    await handleChatMessage(userId, ncmClient, '直接放 Plastic Love', vi.fn());
+
+    expect(getQueue(userId)).toEqual([]);
+    expect(getSelectionRotationSnapshot(userId).picks).toEqual([]);
   });
 
   it('reports recommendation failures with a stable code instead of provider text', async () => {

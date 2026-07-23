@@ -112,6 +112,104 @@ describe('DJ Memory MusicAgent adapter', () => {
     ]));
   });
 
+  it('projects persisted rotation history into candidate pressure and final policy context', () => {
+    const rotationSnapshot = djMemorySnapshotSchema.parse({
+      ...snapshot,
+      rotation: {
+        currentRound: 20,
+        picks: [{
+          runId: 'rotation-run',
+          roundNumber: 19,
+          pickOrder: 1,
+          trackId: 'candidate-1',
+          trackName: 'Candidate Song',
+          artistDisplay: 'Candidate Artist',
+          trackKey: 'candidatesong::candidateartist',
+          artistKeys: ['candidate artist'],
+          selectedAt: '2026-01-01T00:00:00.000Z'
+        }]
+      }
+    });
+    const adapter = createMusicAgentSelectionAdapter({
+      snapshot: rotationSnapshot,
+      request: 'auto-fill'
+    });
+
+    expect(adapter.pressureForCandidate(candidate())).toContainEqual(expect.objectContaining({
+      source: 'rotation',
+      reasonCode: 'rotation_track_suppression',
+      severity: 'suppress',
+      evidence: expect.objectContaining({ roundDistance: 1 })
+    }));
+    expect(adapter.pressureForCandidate(candidate({
+      id: 'candidate-variant',
+      name: 'Candidate Songs',
+      artist: 'Candidate Artist'
+    }))).toContainEqual(expect.objectContaining({
+      source: 'rotation',
+      reasonCode: 'rotation_track_suppression'
+    }));
+    expect(adapter.policyContext.rotation).toMatchObject({
+      currentRound: 20,
+      tracks: [{
+        trackKey: 'candidatesong::candidateartist',
+        lastSelectedRound: 19,
+        selectionsInWindow: 1
+      }]
+    });
+  });
+
+  it('aggregates soft-window frequency across similar track keys', () => {
+    const rotationSnapshot = djMemorySnapshotSchema.parse({
+      ...snapshot,
+      rotation: {
+        currentRound: 30,
+        picks: [
+          {
+            runId: 'rotation-run-a',
+            roundNumber: 15,
+            pickOrder: 1,
+            trackId: 'candidate-a',
+            trackName: 'Candidate Song',
+            artistDisplay: 'Candidate Artist',
+            trackKey: 'candidatesong::candidateartist',
+            artistKeys: ['candidate artist'],
+            selectedAt: '2026-01-01T00:00:00.000Z'
+          },
+          {
+            runId: 'rotation-run-b',
+            roundNumber: 14,
+            pickOrder: 1,
+            trackId: 'candidate-b',
+            trackName: 'Candidate Songs',
+            artistDisplay: 'Candidate Artist',
+            trackKey: 'candidatesongs::candidateartist',
+            artistKeys: ['candidate artist'],
+            selectedAt: '2025-12-31T00:00:00.000Z'
+          }
+        ]
+      }
+    });
+    const pressure = createMusicAgentSelectionAdapter({
+      snapshot: rotationSnapshot,
+      request: 'auto-fill'
+    }).pressureForCandidate(candidate());
+
+    expect(pressure).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        reasonCode: 'rotation_track_penalty',
+        evidence: expect.objectContaining({
+          lastSelectedRound: 15,
+          selectionsInWindow: 2
+        })
+      }),
+      expect.objectContaining({
+        reasonCode: 'rotation_frequency_penalty',
+        amount: 0.1
+      })
+    ]));
+  });
+
   it('preserves exact lookup behavior for a high-cardinality accepted pressure projection', () => {
     const tracks = Array.from({ length: 10_000 }, (_, index) => ({
       trackKey: `other${index}::artist${index}`,

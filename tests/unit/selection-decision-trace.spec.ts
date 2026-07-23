@@ -58,7 +58,7 @@ describe('selection decision trace', () => {
     const trace = collector.snapshot();
 
     expect(projectSelectionTraceForPrompt(trace)).toEqual({
-      schemaVersion: 1,
+      schemaVersion: 2,
       mode: 'explicit_request',
       decisions: [{
         stage: 'final', action: 'selected', reasonCode: 'final_eligible',
@@ -147,6 +147,35 @@ describe('selection decision trace', () => {
         evidenceRefs: []
       })
     ]);
+  });
+
+  it('attributes logical-round suppression to the durable selection rotation ledger', () => {
+    const recorder = createSelectionDecisionRecorder();
+    recorder.record({
+      candidateId: 'recent-track',
+      decision: {
+        phase: 'recall',
+        action: 'suppress',
+        reasonCodes: ['rotation_track_suppression']
+      }
+    });
+
+    expect(recorder.snapshot()).toEqual([
+      expect.objectContaining({
+        reasonCode: 'rotation_track_suppression',
+        provenance: { source: 'selection_rotation' }
+      })
+    ]);
+    const trace = {
+      schemaVersion: 2 as const,
+      runId: 'rotation-run',
+      mode: 'autonomous' as const,
+      createdAt: '2026-07-17T10:00:00.000Z',
+      decisions: recorder.snapshot()
+    };
+    expect(projectSelectionTraceForLog(trace)).toMatchObject({
+      rotationReasonCounts: { rotation_track_suppression: 1 }
+    });
   });
 
   it('keeps the real final decision when earlier phase detail exceeds the shared trace limit', () => {

@@ -4,6 +4,36 @@ import { buildDjMemorySnapshot } from '../../src/server/dj-memory/snapshot';
 import { DJ_MEMORY_SELECTION_PRESSURE_LIMIT } from '../../src/server/dj-memory/schema';
 
 describe('DJ Memory Snapshot', () => {
+  it('loads durable rotation history without aging it by wall-clock time', async () => {
+    const snapshot = await buildDjMemorySnapshot({
+      userId: 'user-rotation',
+      now: new Date('2027-07-23T03:31:00.000Z'),
+      deps: emptyDeps({
+        loadRotation: async () => ({
+          currentRound: 7,
+          picks: [{
+            runId: 'old-run',
+            roundNumber: 7,
+            pickOrder: 1,
+            trackId: 'old-track',
+            trackName: 'Old Song',
+            artistDisplay: 'Old Artist',
+            trackKey: 'oldsong::oldartist',
+            artistKeys: ['old artist'],
+            selectedAt: '2026-07-23T03:31:00.000Z'
+          }]
+        })
+      })
+    });
+
+    expect(snapshot.rotation).toMatchObject({
+      currentRound: 7,
+      picks: [{ roundNumber: 7, trackKey: 'oldsong::oldartist' }]
+    });
+    expect(snapshot.metadata.sources.find((source) => source.kind === 'selection_rotation'))
+      .toEqual(expect.objectContaining({ authority: 'authoritative', recordCount: 1 }));
+  });
+
   it('derives the current daypart from the Shanghai-local numeric hour', async () => {
     const snapshot = await buildDjMemorySnapshot({
       userId: 'user-current-moment',
@@ -24,7 +54,7 @@ describe('DJ Memory Snapshot', () => {
     const barrier = new Promise<void>((resolve) => { release = resolve; });
     const load = <T>(name: string, value: T) => vi.fn(async () => {
       started.push(name);
-      if (started.length === 11) release?.();
+      if (started.length === 12) release?.();
       await barrier;
       return value;
     });
@@ -42,6 +72,7 @@ describe('DJ Memory Snapshot', () => {
           currentIndex: 1
         }),
         loadEpisodes: load('episodes', []),
+        loadRotation: load('rotation', { currentRound: 0, picks: [] }),
         loadPreferenceEvidence: load('preferences', []),
         loadTasteProfile: load('taste', null),
         loadActiveDirective: load('directive', null),
@@ -57,7 +88,7 @@ describe('DJ Memory Snapshot', () => {
         loadWeather: vi.fn(async () => ({ location: 'Shanghai', tempC: 30, desc: '晴' }))
       }
     });
-    await vi.waitFor(() => expect(started).toHaveLength(11));
+    await vi.waitFor(() => expect(started).toHaveLength(12));
     const snapshot = await snapshotPromise;
 
     expect(snapshot.queue.currentTrack?.id).toBe('current');
@@ -323,6 +354,7 @@ function emptyDeps(overrides: Record<string, unknown> = {}) {
   return {
     loadQueue: async () => ({ queue: [], currentIndex: 0 }),
     loadEpisodes: async () => [],
+    loadRotation: async () => ({ currentRound: 0, picks: [] }),
     loadPreferenceEvidence: async () => [],
     loadTasteProfile: async () => null,
     loadActiveDirective: async () => null,

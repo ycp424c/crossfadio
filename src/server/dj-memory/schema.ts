@@ -1,5 +1,8 @@
 import { z } from 'zod';
-import { djMemorySnapshotMetadataSchema } from '../../shared/dj-memory.js';
+import {
+  djMemorySnapshotMetadataSchema,
+  SELECTION_ROTATION_HISTORY_PICK_LIMIT
+} from '../../shared/dj-memory.js';
 import { LISTENING_EPISODE_DAILY_LIMIT } from '../../shared/listening.js';
 import { SELECTION_PRESSURE_WINDOW_DAYS } from '../music-agent/selection-pressure.js';
 
@@ -64,6 +67,20 @@ export const djMemorySnapshotSchema = z.object({
       exposureEffective: z.number().nonnegative()
     }).strict()).max(DJ_MEMORY_SELECTION_PRESSURE_LIMIT)
   }).strict().default({ tracks: [], artists: [] }),
+  rotation: z.object({
+    currentRound: z.number().int().nonnegative(),
+    picks: z.array(z.object({
+      runId: z.string().trim().min(1).max(200),
+      roundNumber: z.number().int().nonnegative(),
+      pickOrder: z.number().int().positive(),
+      trackId: z.string().trim().min(1).max(200),
+      trackName: z.string().trim().min(1).max(300),
+      artistDisplay: z.string().max(1000),
+      trackKey: z.string().trim().min(1).max(700),
+      artistKeys: z.array(z.string().trim().min(1).max(300)).max(20),
+      selectedAt: z.string().datetime({ offset: true })
+    }).strict()).max(SELECTION_ROTATION_HISTORY_PICK_LIMIT)
+  }).strict().default({ currentRound: 0, picks: [] }),
   preferences: z.array(z.object({
     id: z.string().min(1),
     kind: z.enum(['expressed', 'inferred']),

@@ -161,6 +161,46 @@ describe('music-agent ranking', () => {
     expect(rankCandidates(candidates, 3).map((item) => item.id)).toEqual(['a1', 'a2', 'b1']);
   });
 
+  it('keeps hard-window rotation tracks out of ranking unless explicitly requested', () => {
+    const recent = candidate({
+      id: 'recent',
+      name: 'Recent Song',
+      artist: 'Recent Artist',
+      scores: { ...candidate().scores, intentMatch: 1 }
+    });
+    const fresh = candidate({
+      id: 'fresh',
+      name: 'Fresh Song',
+      artist: 'Fresh Artist',
+      scores: { ...candidate().scores, intentMatch: 0.8 }
+    });
+    const rotation = {
+      currentRound: 20,
+      tracks: [{
+        trackKey: 'recentsong::recentartist',
+        lastSelectedRound: 19,
+        selectionsInWindow: 1
+      }]
+    };
+
+    expect(rankCandidates([recent, fresh], 2, {
+      selectionPolicyContext: {
+        mode: 'autonomous',
+        explicitlyRequested: false,
+        rotation
+      }
+    }).map((item) => item.id)).toEqual(['fresh']);
+
+    expect(rankCandidates([recent, fresh], 2, {
+      selectionPolicyContext: {
+        mode: 'explicit_request',
+        explicitlyRequested: true,
+        explicitRequest: { trackIds: new Set(['recent']) },
+        rotation
+      }
+    }).map((item) => item.id)).toEqual(['recent', 'fresh']);
+  });
+
   it('does not turn collaborator overlap into Ranking pressure', () => {
     const candidates = [
       candidate({ id: 'payphone', artist: 'Maroon 5 / Wiz Khalifa', scores: { ...candidate().scores, intentMatch: 1 } }),
@@ -405,13 +445,13 @@ describe('music-agent ranking', () => {
     expect(rankedIds.indexOf('polluted-external')).toBeGreaterThan(rankedIds.indexOf('polluted-trusted'));
   });
 
-  it('diversifyCandidates skips repeated artists instead of filling the limit', () => {
+  it('diversifyCandidates relaxes repeated artists only after the diverse pass', () => {
     const candidates = [
       candidate({ id: 'a1', artist: 'Artist A', scores: { ...candidate().scores, intentMatch: 1 } }),
       candidate({ id: 'a2', artist: 'Artist A', scores: { ...candidate().scores, intentMatch: 0.9 } })
     ];
 
-    expect(diversifyCandidates(candidates, 3).map((item) => item.id)).toEqual(['a1']);
+    expect(diversifyCandidates(candidates, 3).map((item) => item.id)).toEqual(['a1', 'a2']);
     expect(diversifyCandidates(candidates, 0)).toEqual([]);
   });
 
