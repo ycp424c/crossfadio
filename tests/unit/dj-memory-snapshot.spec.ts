@@ -4,6 +4,20 @@ import { buildDjMemorySnapshot } from '../../src/server/dj-memory/snapshot';
 import { DJ_MEMORY_SELECTION_PRESSURE_LIMIT } from '../../src/server/dj-memory/schema';
 
 describe('DJ Memory Snapshot', () => {
+  it('derives the current daypart from the Shanghai-local numeric hour', async () => {
+    const snapshot = await buildDjMemorySnapshot({
+      userId: 'user-current-moment',
+      now: new Date('2026-07-23T03:31:00.000Z'),
+      deps: emptyDeps()
+    });
+
+    expect(snapshot.currentMoment).toEqual({
+      iso: '2026-07-23T03:31:00.000Z',
+      localTime: '11:31',
+      daypart: '上午'
+    });
+  });
+
   it('loads sources together and separates current track from upcoming queue', async () => {
     const started: string[] = [];
     let release: (() => void) | null = null;

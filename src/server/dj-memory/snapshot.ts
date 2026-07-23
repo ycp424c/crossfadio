@@ -12,6 +12,7 @@ import { listDjConfigurationEntries } from '../store/dj-configuration.js';
 import { getRecentDjEvents } from '../store/dj-events.js';
 import { fetchWeather } from '../weather.js';
 import { getDailyTheme } from '../daily-theme.js';
+import { getDaypart, getShanghaiTimeParts } from '../timezone.js';
 import { parseDiscoveryMode } from '../../shared/dj.js';
 import { deriveListeningSignals } from '../listening/listening-signals.js';
 import { primaryArtistKey } from '../music-agent/artists.js';
@@ -442,14 +443,9 @@ function mapTrack(track: QueueTrack): DjMemorySnapshot['queue']['upcoming'][numb
 }
 
 function currentMoment(now: Date): DjMemorySnapshot['currentMoment'] {
-  const hour = Number(new Intl.DateTimeFormat('zh-CN', {
-    hour: '2-digit', hour12: false, timeZone: 'Asia/Shanghai'
-  }).format(now));
-  const localTime = new Intl.DateTimeFormat('zh-CN', {
-    hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Shanghai'
-  }).format(now);
-  const daypart = hour < 6 ? '深夜' : hour < 9 ? '早晨' : hour < 12 ? '上午'
-    : hour < 14 ? '中午' : hour < 18 ? '下午' : hour < 23 ? '晚上' : '深夜';
+  const { hour, minute } = getShanghaiTimeParts(now);
+  const localTime = `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
+  const daypart = getDaypart(hour);
   return { iso: now.toISOString(), localTime, daypart };
 }
 
