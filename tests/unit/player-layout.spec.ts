@@ -884,10 +884,10 @@ describe('player layout', () => {
     expect(bannerSource).toContain('aria-checked={dailyThemeEnabled}');
   });
 
-  it('places the daily theme panel in the right queue column on the player page', () => {
+  it('orders the right column as daily theme, queue, selection journey, then DJ status', () => {
     const source = fs.readFileSync(path.join(root, 'src/renderer/views/Player/PlayerView.tsx'), 'utf-8');
     const leftStart = source.indexOf('{/* Left column — player */}');
-    const rightStart = source.indexOf('{/* Right column — queue + status */}');
+    const rightStart = source.indexOf('{/* Right column — daily theme + queue + DJ */}');
     const rightEnd = source.indexOf('</section>', rightStart);
     const leftColumn = source.slice(leftStart, rightStart);
     const rightColumn = source.slice(rightStart, rightEnd);
@@ -897,8 +897,9 @@ describe('player layout', () => {
     expect(rightEnd).toBeGreaterThan(rightStart);
     expect(leftColumn).not.toContain('<TodayThemePanel');
     expect(rightColumn).toContain('<TodayThemePanel');
-    expect(rightColumn.indexOf('<QueuePanel')).toBeLessThan(rightColumn.indexOf('<TodayThemePanel'));
-    expect(rightColumn.indexOf('<TodayThemePanel')).toBeLessThan(rightColumn.indexOf('<DjStatusDock'));
+    expect(rightColumn.indexOf('<TodayThemePanel')).toBeLessThan(rightColumn.indexOf('<QueuePanel'));
+    expect(rightColumn.indexOf('<QueuePanel')).toBeLessThan(rightColumn.indexOf('selectionJourneyCard'));
+    expect(rightColumn.indexOf('selectionJourneyCard')).toBeLessThan(rightColumn.indexOf('<DjStatusDock'));
   });
 
   it('shows weather location and current weather in the player header', () => {

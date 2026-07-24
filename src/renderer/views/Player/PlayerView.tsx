@@ -2599,18 +2599,8 @@ export function PlayerView({ onAuthTokenChange, onNavigate }: PlayerViewProps): 
           </div>
         </section>
 
-        {/* Right column — queue + status */}
+        {/* Right column — daily theme + queue + DJ */}
         <section className="col-span-1 md:order-3 flex flex-col gap-4 md:col-span-12 xl:col-span-4">
-          {isDesktop ? selectionJourneyCard : null}
-          <QueuePanel
-            currentIndex={currentIndex}
-            mode={discoveryMode}
-            nextId={nextTrack?.track.id ?? null}
-            onDeleteIndex={handleDeleteTrack}
-            onSelectIndex={handleSelectIndex}
-            queue={queue}
-          />
-
           {sseToken ? (
             <TodayThemePanel
               dailyTheme={dailyTheme}
@@ -2620,6 +2610,17 @@ export function PlayerView({ onAuthTokenChange, onNavigate }: PlayerViewProps): 
               onToggle={() => void handleDailyThemeToggle()}
             />
           ) : null}
+
+          <QueuePanel
+            currentIndex={currentIndex}
+            mode={discoveryMode}
+            nextId={nextTrack?.track.id ?? null}
+            onDeleteIndex={handleDeleteTrack}
+            onSelectIndex={handleSelectIndex}
+            queue={queue}
+          />
+
+          {isDesktop ? selectionJourneyCard : null}
 
           <DjStatusDock
             djStatusText={djStatusText}
