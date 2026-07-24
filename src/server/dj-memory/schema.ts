@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import {
   djMemorySnapshotMetadataSchema,
+  SELECTION_ROTATION_ARTIST_KEY_LIMIT,
   SELECTION_ROTATION_HISTORY_PICK_LIMIT
 } from '../../shared/dj-memory.js';
 import { LISTENING_EPISODE_DAILY_LIMIT } from '../../shared/listening.js';
@@ -77,7 +78,8 @@ export const djMemorySnapshotSchema = z.object({
       trackName: z.string().trim().min(1).max(300),
       artistDisplay: z.string().max(1000),
       trackKey: z.string().trim().min(1).max(700),
-      artistKeys: z.array(z.string().trim().min(1).max(300)).max(20),
+      artistKeys: z.array(z.string().trim().min(1).max(300))
+        .max(SELECTION_ROTATION_ARTIST_KEY_LIMIT),
       selectedAt: z.string().datetime({ offset: true })
     }).strict()).max(SELECTION_ROTATION_HISTORY_PICK_LIMIT)
   }).strict().default({ currentRound: 0, picks: [] }),

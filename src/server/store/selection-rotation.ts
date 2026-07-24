@@ -1,7 +1,10 @@
-import { explicitArtistKeys } from '../music-agent/artists.js';
 import { buildMusicTrackDedupeKey } from '../music-agent/dedupe.js';
 import { SELECTION_ROTATION_HISTORY_PICK_LIMIT } from '../../shared/dj-memory.js';
 import { getDb } from './db.js';
+import {
+  buildSelectionRotationArtistKeys,
+  parseSelectionRotationArtistKeys
+} from './selection-rotation-artist-keys.js';
 
 export const SELECTION_ROTATION_HISTORY_ROUNDS = 200;
 
@@ -107,7 +110,7 @@ function recordSelectionRotation(
         trackName,
         artistDisplay,
         trackKey,
-        JSON.stringify(explicitArtistKeys(artistDisplay)),
+        JSON.stringify(buildSelectionRotationArtistKeys(artistDisplay)),
         selectedAt
       );
     });
@@ -195,20 +198,9 @@ function mapPick(row: SelectionRotationPickRow): SelectionRotationPick {
     trackName: row.track_name,
     artistDisplay: row.artist_display,
     trackKey: row.track_key,
-    artistKeys: parseStringArray(row.artist_keys_json),
+    artistKeys: parseSelectionRotationArtistKeys(row.artist_keys_json),
     selectedAt: row.selected_at
   };
-}
-
-function parseStringArray(value: string): string[] {
-  try {
-    const parsed = JSON.parse(value) as unknown;
-    return Array.isArray(parsed)
-      ? parsed.filter((item): item is string => typeof item === 'string')
-      : [];
-  } catch {
-    return [];
-  }
 }
 
 function required(value: string, field: string): string {

@@ -1,8 +1,8 @@
 import Database from 'better-sqlite3';
 import { randomUUID } from 'node:crypto';
 import { LISTENING_EPISODE_DAILY_LIMIT } from '../../shared/listening.js';
-import { explicitArtistKeys } from '../music-agent/artists.js';
 import { buildMusicTrackDedupeKey } from '../music-agent/dedupe.js';
+import { buildSelectionRotationArtistKeys } from './selection-rotation-artist-keys.js';
 
 const createMetaTableSql = `
 CREATE TABLE IF NOT EXISTS meta (
@@ -1383,7 +1383,7 @@ function backfillSelectionRotationFromDjEvents(db: Database.Database): void {
             track.trackName,
             artistDisplay,
             trackKey,
-            JSON.stringify(explicitArtistKeys(artistDisplay)),
+            JSON.stringify(buildSelectionRotationArtistKeys(artistDisplay)),
             run.committedAt
           );
         });

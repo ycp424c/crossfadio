@@ -129,6 +129,31 @@ describe('selection rotation persistence', () => {
     expect(snapshot.picks.some((pick) => pick.runId === 'failed-run')).toBe(false);
   });
 
+  it('bounds artist identities while backfilling historical selection events', () => {
+    appendSelectionRun({
+      runId: 'many-artists-backfill',
+      trigger: 'auto_fill',
+      trackId: 'many-artists-track',
+      trackName: 'Many Artists Song',
+      artist: Array.from({ length: 38 }, (_, index) => `A${index + 1}`).join(' / '),
+      committed: true
+    });
+
+    const current = Number((getDb().prepare(
+      `SELECT value FROM meta WHERE key = 'data_migration_version'`
+    ).get() as { value: string }).value);
+    getDb().prepare(
+      `UPDATE meta SET value = ? WHERE key = 'data_migration_version'`
+    ).run(String(current - 1));
+    runDataMigrations(getDb());
+
+    expect(getDb().prepare(`
+      SELECT json_array_length(artist_keys_json) AS artistKeyCount
+      FROM selection_rotation_picks
+      WHERE user_id = ? AND run_id = ?
+    `).get('user-1', 'many-artists-backfill')).toEqual({ artistKeyCount: 20 });
+  });
+
   it('advances once per committed autonomous selection run and preserves normalized pick identities', () => {
     expect(recordSelectionRotationRound({
       userId: 'user-1',
@@ -180,6 +205,82 @@ describe('selection rotation persistence', () => {
         })
       ]
     });
+  });
+
+  it('bounds collaborator identities when recording a track with many credited artists', () => {
+    const artists = Array.from({ length: 38 }, (_, index) => `Artist ${index + 1}`);
+
+    recordSelectionRotationRound({
+      userId: 'many-artists-user',
+      runId: 'many-artists-run',
+      tracks: [{ id: 'many-artists-track', name: 'Many Artists Song', artists }]
+    });
+
+    expect(getSelectionRotationSnapshot('many-artists-user').picks[0]?.artistKeys)
+      .toEqual(artists.slice(0, 20).map((artist) => artist.toLowerCase()));
+  });
+
+  it('keeps snapshots readable when persisted history contains too many artist identities', () => {
+    const persistedArtistKeys = Array.from(
+      { length: 38 },
+      (_, index) => `legacy artist ${index + 1}`
+    );
+    recordSelectionRotationRound({
+      userId: 'legacy-many-artists-user',
+      runId: 'legacy-many-artists-run',
+      tracks: [{
+        id: 'legacy-many-artists-track',
+        name: 'Legacy Many Artists Song',
+        artists: ['Legacy Artist']
+      }]
+    });
+    getDb().prepare(`
+      UPDATE selection_rotation_picks
+      SET artist_keys_json = ?
+      WHERE user_id = ? AND run_id = ?
+    `).run(
+      JSON.stringify(persistedArtistKeys),
+      'legacy-many-artists-user',
+      'legacy-many-artists-run'
+    );
+
+    expect(getSelectionRotationSnapshot('legacy-many-artists-user').picks[0]?.artistKeys)
+      .toEqual(persistedArtistKeys.slice(0, 20));
+  });
+
+  it('sanitizes malformed persisted artist identities without poisoning the snapshot', () => {
+    recordSelectionRotationRound({
+      userId: 'malformed-artists-user',
+      runId: 'malformed-artists-run',
+      tracks: [{
+        id: 'malformed-artists-track',
+        name: 'Malformed Artists Song',
+        artists: ['Legacy Artist']
+      }]
+    });
+    const validArtistKeys = Array.from(
+      { length: 24 },
+      (_, index) => `artist ${index + 1}`
+    );
+    getDb().prepare(`
+      UPDATE selection_rotation_picks
+      SET artist_keys_json = ?
+      WHERE user_id = ? AND run_id = ?
+    `).run(
+      JSON.stringify([
+        '  Legacy Artist  ',
+        'legacy artist',
+        '',
+        42,
+        'x'.repeat(301),
+        ...validArtistKeys
+      ]),
+      'malformed-artists-user',
+      'malformed-artists-run'
+    );
+
+    expect(getSelectionRotationSnapshot('malformed-artists-user').picks[0]?.artistKeys)
+      .toEqual(['legacy artist', ...validArtistKeys.slice(0, 19)]);
   });
 
   it('bounds same-round manual exposure history by pick count', () => {

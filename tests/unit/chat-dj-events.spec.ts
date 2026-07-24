@@ -20,7 +20,10 @@ import { createListeningEpisode } from '../../src/server/store/listening-episode
 import { getUnextractedMessages } from '../../src/server/store/messages';
 import { getPreferenceExtractionBatchBySource } from '../../src/server/store/preference-extraction-batches';
 import { PREFERENCE_EXTRACTION_VERSION } from '../../src/server/music-agent/preference-extraction';
-import { getSelectionRotationSnapshot } from '../../src/server/store/selection-rotation';
+import {
+  getSelectionRotationSnapshot,
+  recordSelectionRotationRound
+} from '../../src/server/store/selection-rotation';
 
 const mocks = vi.hoisted(() => ({
   computeStream: vi.fn(),
@@ -129,6 +132,39 @@ describe('chat DJ event integration', () => {
     expect(capturedFragments).not.toHaveProperty('corpus');
     expect(capturedFragments).not.toHaveProperty('env');
     expect(capturedFragments).not.toHaveProperty('memory');
+  });
+
+  it('continues the chat when historical rotation data has too many artist identities', async () => {
+    const userId = 'chat-legacy-many-artists';
+    const send = vi.fn();
+    setQueue(userId, []);
+    recordSelectionRotationRound({
+      userId,
+      runId: 'legacy-many-artists-run',
+      tracks: [{
+        id: 'legacy-many-artists-track',
+        name: 'Legacy Many Artists Song',
+        artists: ['Legacy Artist']
+      }]
+    });
+    getDb().prepare(`
+      UPDATE selection_rotation_picks
+      SET artist_keys_json = ?
+      WHERE user_id = ? AND run_id = ?
+    `).run(
+      JSON.stringify(Array.from({ length: 38 }, (_, index) => `legacy artist ${index + 1}`)),
+      userId,
+      'legacy-many-artists-run'
+    );
+
+    await handleChatMessage(userId, mockNcmClient(), '来几首炎明熹的歌吧', send);
+
+    expect(send).toHaveBeenCalledWith('chat.done', {
+      say: '收到',
+      intent: 'chitchat',
+      actions: []
+    });
+    expect(send).not.toHaveBeenCalledWith('chat.error', expect.anything());
   });
 
   it('records chat-authored active directive updates from set_pref actions', async () => {

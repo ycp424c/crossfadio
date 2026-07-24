@@ -2,6 +2,7 @@ import { z } from 'zod';
 
 export const DJ_MEMORY_SCHEMA_VERSION = 1 as const;
 export const SELECTION_ROTATION_HISTORY_PICK_LIMIT = 4000;
+export const SELECTION_ROTATION_ARTIST_KEY_LIMIT = 20;
 
 export const djMemorySourceKindSchema = z.enum([
   'queue',
