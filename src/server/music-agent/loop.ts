@@ -1062,6 +1062,24 @@ function getEmptyPoolToolRewrite(options: {
   forcedEmptyPoolRecallCompleted: boolean;
 }): ToolRewrite | 'fallback' | undefined {
   const { output, requestedToolName, input, trace, forcedEmptyPoolRecallCompleted } = options;
+  const chatActionQueries = explicitChatActionQueries(input);
+  if (chatActionQueries.length > 0) {
+    if (convergenceCandidateCount(input) >= 2) return undefined;
+    if (requestedToolName === 'recall_from_ncm_search') return undefined;
+    if (
+      forcedEmptyPoolRecallCompleted ||
+      hasExecutedTool(trace, 'recall_from_ncm_search')
+    ) {
+      return 'fallback';
+    }
+    if (!input.tools.recall_from_ncm_search) return 'fallback';
+    return {
+      toolName: 'recall_from_ncm_search',
+      input: { queries: chatActionQueries },
+      requestedTool: output.tool,
+      rewriteReason: 'empty_pool_chat_action_query'
+    };
+  }
   if (modeFromContext(input.context) !== 'pick_next') return undefined;
   if (convergenceCandidateCount(input) >= 2) return undefined;
   if (requestedToolName && RECALL_TOOL_NAMES.has(requestedToolName)) return undefined;
@@ -1077,6 +1095,15 @@ function getEmptyPoolToolRewrite(options: {
     requestedTool: output.tool,
     rewriteReason: 'empty_pool_non_recall_tool'
   };
+}
+
+function explicitChatActionQueries(input: RunMusicAgentLoopInput): string[] {
+  if (modeFromContext(input.context) !== 'chat_recommend') return [];
+  return [...new Set(
+    (input.context.actionQueries ?? [])
+      .map((query) => query.trim())
+      .filter(Boolean)
+  )];
 }
 
 function getExploreLikedRecallRewrite(options: {

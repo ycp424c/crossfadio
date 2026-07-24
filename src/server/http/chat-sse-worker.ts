@@ -120,23 +120,19 @@ export async function handleChatMessage(
       return;
     }
 
-    saveMessage(userId, 'assistant', chatOutput.say);
-    send('chat.delta', { say: chatOutput.say });
-    send('chat.done', {
-      say: chatOutput.say,
-      intent: chatOutput.intent,
-      actions: chatOutput.actions
-    });
+    const songActions = chatOutput.actions.filter(
+      (action) => action.type === 'swap_next' || action.type === 'add_to_queue'
+    );
+    const isRecommend = chatOutput.intent === 'adjust_queue' &&
+      llmConfig &&
+      songActions.length > 0 &&
+      !songActions.every((action) => action.pick.query.includes(' — '));
+
+    if (!isRecommend) {
+      sendChatReply(userId, chatOutput.say, chatOutput.intent, chatOutput.actions, send);
+    }
 
     if (chatOutput.actions.length > 0) {
-      const songActions = chatOutput.actions.filter(
-        (a) => a.type === 'swap_next' || a.type === 'add_to_queue'
-      );
-      const isRecommend = chatOutput.intent === 'adjust_queue' &&
-        llmConfig &&
-        songActions.length > 0 &&
-        !songActions.every((a) => 'query' in a.pick && a.pick.query.includes(' — '));
-
       if (isRecommend) {
         const jobId = randomBytes(6).toString('hex');
         const runId = `chat-recommend-${jobId}`;
@@ -175,6 +171,7 @@ export async function handleChatMessage(
 
         let added = 0;
         let recommendationTracks: ChatAddedTrack[] = [];
+        let recommendationFailureReason: string | null = null;
         try {
           reportProgress({ phase: 'agent' });
           const agent = new MusicAgent({ llmConfig });
@@ -209,8 +206,15 @@ export async function handleChatMessage(
               if (applied.skipped.length > 0) {
                 reportProgress({ phase: 'skipped', skipped: applied.skipped });
               }
+              if (added === 0) {
+                recommendationFailureReason = 'no-tracks-added';
+                reportProgress({ phase: 'error', reason: recommendationFailureReason });
+              }
             } else if (!controller.signal.aborted) {
-              reportProgress({ phase: 'error', reason: output.status });
+              recommendationFailureReason = output.status === 'empty_pool'
+                ? 'no-candidates'
+                : output.status;
+              reportProgress({ phase: 'error', reason: recommendationFailureReason });
             }
           } finally {
             releaseSelectionForegroundLlm();
@@ -219,7 +223,8 @@ export async function handleChatMessage(
         } catch (err) {
           const safeError = safeOperationalError(err, 'chat_recommend_failed');
           logger.warn({ error: safeError, jobId }, 'Chat recommend MusicAgent error');
-          reportProgress({ phase: 'error', reason: safeError.code });
+          recommendationFailureReason = safeError.code;
+          reportProgress({ phase: 'error', reason: recommendationFailureReason });
         } finally {
           activeRecommendJobs.delete(jobId);
           signal?.removeEventListener('abort', onParentAbort);
@@ -238,6 +243,8 @@ export async function handleChatMessage(
             type: 'queue-updated', queue: getQueue(userId), currentIndex: getCurrentIndex(userId),
             revision: getQueueStateRevision(userId)
           });
+        } else if (controller.signal.aborted) {
+          recommendationFailureReason = 'cancelled';
         }
 
         // Still execute any non-song actions (skip, ban, etc.)
@@ -251,6 +258,18 @@ export async function handleChatMessage(
             sourceRef: { messageId: userMessageId },
             onQueueActiveDirectiveUpdated: (directive) => appendDirectiveUpdatedEvent(userId, directive?.text ?? null, 'chat')
           });
+        }
+        if (signal?.aborted) return;
+        if (added > 0) {
+          sendChatReply(userId, chatOutput.say, chatOutput.intent, chatOutput.actions, send);
+        } else {
+          sendChatReply(
+            userId,
+            chatRecommendationFailureMessage(recommendationFailureReason),
+            chatOutput.intent,
+            [],
+            send
+          );
         }
       } else {
         if (signal?.aborted) return;
@@ -285,6 +304,28 @@ export async function handleChatMessage(
       ...(safeError.requestId ? { requestId: safeError.requestId } : {})
     });
   }
+}
+
+function sendChatReply(
+  userId: string,
+  say: string,
+  intent: ChatOutput['intent'],
+  actions: ChatOutput['actions'],
+  send: (type: string, payload: Record<string, unknown>) => void
+): void {
+  saveMessage(userId, 'assistant', say);
+  send('chat.delta', { say });
+  send('chat.done', { say, intent, actions });
+}
+
+function chatRecommendationFailureMessage(reason: string | null): string {
+  if (reason === 'cancelled') {
+    return '已取消这次推荐，播放队列没有变化。';
+  }
+  if (reason === 'no-candidates' || reason === 'no-tracks-added') {
+    return '这次没有找到可加入的新歌曲，播放队列没有变化。';
+  }
+  return '这次推荐没有完成，播放队列没有变化，请稍后再试。';
 }
 
 type ChatAddedTrack = {

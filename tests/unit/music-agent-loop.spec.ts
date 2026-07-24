@@ -95,6 +95,58 @@ function expectProviderSafeFinalPickResponseFormat(responseFormat: LlmCompleteOp
 }
 
 describe('runMusicAgentLoop', () => {
+  it('forces an explicit chat action query through NCM search before ranking an empty pool', async () => {
+    const llmClient = new LoopFakeLlmClient([
+      JSON.stringify({ type: 'tool_call', tool: 'rank_candidates', input: { limit: 8 } }),
+      JSON.stringify({
+        type: 'final',
+        say: '给你加上炎明熹。',
+        picks: [{ id: 'gigi-1', reason: '符合明确艺人请求', source: 'search' }],
+        rejected: []
+      })
+    ]);
+    const pool = new CandidatePool();
+    const searchInputs: Record<string, unknown>[] = [];
+
+    const result = await runMusicAgentLoop({
+      llmClient,
+      context: context({ actionQueries: ['炎明熹'] }),
+      candidatePool: pool,
+      tools: {
+        recall_from_ncm_search: async (toolInput) => {
+          searchInputs.push(toolInput);
+          pool.upsert(candidate({
+            id: 'gigi-1',
+            name: '焰',
+            artist: '炎明熹',
+            sources: ['search']
+          }));
+          pool.upsert(candidate({
+            id: 'gigi-2',
+            name: '複雜',
+            artist: '炎明熹',
+            sources: ['search']
+          }));
+          return { summary: 'search added 2 candidates', candidateCount: pool.count() };
+        },
+        rank_candidates: async () => {
+          throw new Error('explicit chat requests must recall before ranking an empty pool');
+        }
+      },
+      budget: budget()
+    });
+
+    expect(searchInputs).toEqual([{ queries: ['炎明熹'] }]);
+    expect(result.status).toBe('ok');
+    expect(result.picks.map((pick) => pick.id)).toEqual(['gigi-1']);
+    expect(result.trace[0]).toMatchObject({
+      tool: 'recall_from_ncm_search',
+      requestedTool: 'rank_candidates',
+      executedTool: 'recall_from_ncm_search',
+      rewriteReason: 'empty_pool_chat_action_query'
+    });
+  });
+
   it('calls a whitelisted tool and accepts a final pick from the candidate pool', async () => {
     const llmClient = new LoopFakeLlmClient([
       JSON.stringify({ type: 'tool_call', tool: 'recall_from_liked', input: { limit: 5 } }),

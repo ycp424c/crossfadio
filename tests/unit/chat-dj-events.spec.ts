@@ -17,7 +17,7 @@ import {
 import type { NcmClient } from '../../src/server/ncm/client';
 import type { Fragments } from '../../src/server/agent/schema';
 import { createListeningEpisode } from '../../src/server/store/listening-episodes';
-import { getUnextractedMessages } from '../../src/server/store/messages';
+import { getRecentMessages, getUnextractedMessages } from '../../src/server/store/messages';
 import { getPreferenceExtractionBatchBySource } from '../../src/server/store/preference-extraction-batches';
 import { PREFERENCE_EXTRACTION_VERSION } from '../../src/server/music-agent/preference-extraction';
 import {
@@ -315,6 +315,49 @@ describe('chat DJ event integration', () => {
         })
       ]
     });
+  });
+
+  it('reports an unchanged queue instead of persisting a false success when recommendation finds nothing', async () => {
+    const userId = 'chat-events-user-empty-recommendation';
+    const send = vi.fn();
+    setQueue(userId, [{ ncmId: 'current-track', name: 'Current', artists: ['Current Artist'] }]);
+    mocks.computeStream.mockImplementation(async function* () {
+      yield {
+        type: 'done',
+        output: {
+          mode: 'chat',
+          say: '我帮你把炎明熹加进队列。',
+          intent: 'adjust_queue',
+          actions: [{
+            type: 'add_to_queue',
+            pick: { query: '炎明熹' },
+            position: 'end'
+          }]
+        }
+      };
+    });
+
+    await handleChatMessage(userId, mockNcmClient(), '加几首炎明熹的歌吧', send);
+
+    expect(getQueue(userId).map((track) => track.ncmId)).toEqual(['current-track']);
+    expect(send).toHaveBeenCalledWith('chat.recommend.progress', expect.objectContaining({
+      phase: 'error',
+      reason: 'no-candidates'
+    }));
+    expect(send).toHaveBeenCalledWith('chat.done', {
+      say: '这次没有找到可加入的新歌曲，播放队列没有变化。',
+      intent: 'adjust_queue',
+      actions: []
+    });
+    expect(JSON.stringify(send.mock.calls)).not.toContain('我帮你把炎明熹加进队列');
+    expect(getRecentMessages(userId, 10)).toEqual([
+      { role: 'user', content: '加几首炎明熹的歌吧', created_at: expect.any(String) },
+      {
+        role: 'assistant',
+        content: '这次没有找到可加入的新歌曲，播放队列没有变化。',
+        created_at: expect.any(String)
+      }
+    ]);
   });
 
   it('rolls back the MusicAgent queue mutation and events when rotation persistence fails', async () => {
