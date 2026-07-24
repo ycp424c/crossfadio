@@ -41,7 +41,9 @@ describe('selection debug trace store', () => {
     expect(getSelectionDebugTrace('user-1', 'run-1', {
       now: new Date('2026-07-24T09:59:59.999Z')
     })).toEqual(saved);
-    expect(getSelectionDebugTrace('user-2', 'run-1')).toBeNull();
+    expect(getSelectionDebugTrace('user-2', 'run-1', {
+      now: new Date('2026-07-24T09:59:59.999Z')
+    })).toBeNull();
     expect(getSelectionDebugTrace('user-1', 'run-1', {
       now: new Date('2026-07-24T10:00:00.000Z')
     })).toBeNull();
@@ -62,7 +64,9 @@ describe('selection debug trace store', () => {
     });
 
     expect(updated.trace.decisions).toHaveLength(1);
-    expect(getSelectionDebugTrace('user-1', 'run-1')?.id).toBe(updated.id);
+    expect(getSelectionDebugTrace('user-1', 'run-1', {
+      now: new Date('2026-07-17T11:00:00.000Z')
+    })?.id).toBe(updated.id);
   });
 
   it('deletes expired rows and rejects malformed full traces', () => {
@@ -75,7 +79,9 @@ describe('selection debug trace store', () => {
 
     expect(deleteExpiredSelectionDebugTraces(new Date('2026-07-17T00:00:00.000Z'))).toBe(1);
     expect(getSelectionDebugTrace('user-1', 'expired')).toBeNull();
-    expect(getSelectionDebugTrace('user-1', 'active')).not.toBeNull();
+    expect(getSelectionDebugTrace('user-1', 'active', {
+      now: new Date('2026-07-17T00:00:00.000Z')
+    })).not.toBeNull();
     expect(() => saveSelectionDebugTrace({
       userId: 'user-1', trace: { ...trace('bad'), schemaVersion: 999 } as never
     })).toThrow();
