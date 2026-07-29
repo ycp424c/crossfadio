@@ -1,0 +1,4 @@
+interface:
+  display_name: "Crossfadio Runtime Ops"
+  short_description: "Evidence-first Crossfadio runtime diagnosis and deployment"
+  default_prompt: "Use $crossfadio-runtime-ops to diagnose live Crossfadio behavior and verify deployment."
