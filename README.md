@@ -1,110 +1,67 @@
 # Crossfadio
 
-Crossfadio 是一个本地运行的 AI DJ Web App（Node.js + React + TypeScript）。
+**你的私人 AI 电台 DJ。** 它不只是随机播放歌单——它懂你的品味，看天气、读时间、追每日主题，在合适的时刻用语音串场把两首歌无缝衔接，像一档只为你一个人直播的深夜电台。
 
-## 当前状态
+![Crossfadio 播放器界面](docs/screenshots/player-explore.jpg)
 
-多用户在线 AI DJ 服务，支持 JWT 认证、按用户隔离的数据存储：
+## 为什么不一样
 
-- Vite + React + Tailwind 前端，3 Tab（播放 / 聊天 / 设置）
-- Node.js + Express HTTP/SSE 服务，JWT 认证，公开/受保护路由分离
-- SQLite（better-sqlite3）：messages、plays、prefs、segues、chat_preferences、users、blocked_login_attempts
-- 每用户数据隔离（`user_id` 列 + per-user Map）
-- NCM 接入（子进程管理 + 客户端封装 + 扫码登录 + JWT 签发）
-- 白名单控制（`allowlist.json` + 管理员 Web UI，移除即撤销会话）
-- Web Audio 双 Deck 播放引擎（等能量 crossfade + filter sweep）
-- AI Agent（segue/chat 两模式，OpenAI 兼容 LLM，env var 配置）
-- TTS 串场口播（cache-first，底铺式插入，阿里云 Qwen TTS）
-- 每日主题系统（LLM 生成，可单独开关）
-- 聊天动态调整（自然语言换歌/加歌/跳过/短期偏好）
-- DJ 自动选歌（红心歌单采样 + LLM 搜索推荐；pick-next 通过一次性 SSE stream 返回进度与结果）
-- 探索 / 舒适区两种选歌模式：探索模式降低个人品味权重并扩展到主题、时间、天气、DJ 偏好；舒适区模式提高个人品味匹配
-- NCM 唱片封面透传：歌曲详情的 `al.picUrl` 会进入播放主卡和队列项
-- 过渡语音一次性 SSE 请求对临时 `502/503/504` 自动重试
+- **会说话的 DJ** — 歌曲切换前 12 秒，DJ 开始构思串场词：为什么是这首歌、此刻的天气、今天的主题。TTS 语音在音乐渐入时低声响起，随后完成一次等能量 crossfade + 低通滤波扫频的专业级过渡。
+- **探索 / 舒适区双模式** — 想听点没听过的？探索模式把你的品味当作扩张种子，混合每日主题、时间、天气和 DJ 偏好往外推。想待在熟悉的声音里？舒适区模式把品味锚定得更紧。
+- **每日主题电台** — 每天由 LLM 生成一个电台主题（节日、节气、艺人纪念日……），比如「盛夏炽光里的自由漫游与热烈心跳」，全天的选歌和串场都围绕它展开。可以一键开关。
+- **聊着天换歌** — 直接对 DJ 说"来点更安静的"、"跳过这首"、"最近想听 City Pop"，自然语言即刻调整队列和短期偏好。
+- **懂你的品味** — 从你的网易云红心歌单学习偏好画像，可选语义向量发现（embedding）挖掘风格相近的新歌。
+- **专业播放引擎** — Web Audio 双 Deck 架构，A/B 轮流加载，歌词同步高亮，封面氛围底图，预取下一首零等待。
 
-## NCM 本地 API 启动配置（开发阶段）
+## 快速开始
 
-当前代码会按以下顺序拉起 NCM API：
+```bash
+pnpm install
+pnpm dev        # 同时启动后端 + 前端
+# 浏览器打开 http://127.0.0.1:5173
+```
 
-1. 如果配置了 `CROSSFADIO_NCM_COMMAND`，优先使用显式命令。
-2. 否则默认尝试 `pnpm exec NeteaseCloudMusicApi`（已内置依赖）。
-3. 如果两者都不可用，`/api/ncm/status` 会显示 disabled。
+必需环境变量（OpenAI 兼容接口即可）：
 
-可选环境变量：
+| 变量 | 用途 |
+|------|------|
+| `CROSSFADIO_JWT_SECRET` | JWT 签名密钥（多用户必需） |
+| `CROSSFADIO_LLM_BASE_URL` / `CROSSFADIO_LLM_API_KEY` / `CROSSFADIO_LLM_MODEL` | DJ 大脑 |
+| `CROSSFADIO_TTS_BASE_URL` / `CROSSFADIO_TTS_API_KEY` | DJ 嗓音 |
 
-- `CROSSFADIO_NCM_COMMAND`: 自定义可执行命令
-- `CROSSFADIO_NCM_ARGS`: 自定义参数字符串
-- `CROSSFADIO_NCM_PORT`: 端口（默认 `3000`）
-- `CROSSFADIO_PORT`: Web Server 端口（默认 `4318`）
-- `CROSSFADIO_DATA_DIR`: 自定义本地数据目录
-- `CROSSFADIO_NCM_CWD`: 子进程工作目录
-- `CROSSFADIO_NCM_HEALTH_PATH`: 健康探测路径（默认 `/`）
-- `CROSSFADIO_NCM_DISABLE_AUTO=1`: 禁用默认自动拉起
-- `CROSSFADIO_HOST`: 服务绑定地址（默认 `127.0.0.1`）
-- `CROSSFADIO_ALLOWED_ORIGINS`: 逗号分隔的 CORS 来源
-- `CROSSFADIO_LYRICS_SELECTION_MODE`: 歌词感知选歌模式，支持 `off` / `shadow` / `enforce_fit` / `enforce_all`（默认及非法值均为 `off`）
+可选：`CROSSFADIO_TTS_VOICE_DEFAULT`（默认音色）、`CROSSFADIO_EMBEDDING_*`（语义发现）、`CROSSFADIO_ADMIN_NCM_ID`（白名单管理员）。
 
-多用户必需环境变量：
+登录方式：网易云音乐**扫码登录**，曲库来自 NeteaseCloudMusicApi。
 
-- `CROSSFADIO_JWT_SECRET`: JWT HS256 签名密钥
-- `CROSSFADIO_LLM_BASE_URL` / `CROSSFADIO_LLM_API_KEY` / `CROSSFADIO_LLM_MODEL`
-- `CROSSFADIO_TTS_BASE_URL` / `CROSSFADIO_TTS_API_KEY`
-- `CROSSFADIO_EMBEDDING_API_KEY`（可选，语义发现向量化；第一版可使用同一个阿里云百炼/DashScope key）
-- `CROSSFADIO_EMBEDDING_BASE_URL` / `CROSSFADIO_EMBEDDING_MODEL` / `CROSSFADIO_EMBEDDING_DIMENSIONS`（可选，默认 DashScope compatible `text-embedding-v4` / `1024`）
-- `CROSSFADIO_ADMIN_NCM_ID`（可选，白名单管理员 NCM 用户 ID）
+## 产品界面
 
-白名单：在数据目录下创建 `allowlist.json`（数组），或配置 `CROSSFADIO_ADMIN_NCM_ID` 后通过 Web UI「设置 → 白名单管理」页面操作。
+- **播放** — 封面主卡 + 同步歌词 + 波形时间线 + 播放队列，右栏展示今日主题与上下文（天气 / 时间 / DJ 偏好）
+- **聊天** — 与 DJ 对话，实时流式回复，支持取消
+- **设置** — 网易云登录、TTS 音色、每日主题开关、探索模式、白名单管理（管理员）
+- **移动端** — 768px 断点自适应单列布局，iPhone 安全区适配
 
-重启策略：
+## 多用户与部署
 
-- 健康检查超时（默认 8s）会判定启动失败
-- 子进程崩溃后 3 秒重启
-- 60 秒内最多重试 3 次，超过后停止重启并上报错误状态
+支持多人同时使用：JWT 认证、按用户隔离的 SQLite 数据、白名单准入（`allowlist.json` 或管理员 Web UI）。生产部署（构建 → OSS → ECS → 重启）见 [`docs/ops-runbook.md`](docs/ops-runbook.md)，日常一条命令：
+
+```bash
+./scripts/deploy.sh
+```
+
+## 技术栈
+
+TypeScript 全栈 · React 18 + Tailwind + zustand · Express + SSE 实时推送 · better-sqlite3 · Web Audio API · Zod 全链路校验
 
 ## 开发
 
 ```bash
-pnpm install
-pnpm dev
+pnpm dev:web       # 仅前端
+pnpm dev:server    # 仅后端
+pnpm check         # 类型检查（提交前必过）
+pnpm test          # 全部测试
+pnpm build && pnpm start   # 生产构建与启动
 ```
 
-- `pnpm dev:web`: 启动前端开发服务器
-- `pnpm dev:server`: 启动本地后端服务
-- 浏览器访问 `http://127.0.0.1:5173`
+数据目录：macOS `~/Library/Application Support/Crossfadio` · Linux `~/.crossfadio` · Windows `%APPDATA%/Crossfadio`
 
-## 生产运行
-
-```bash
-pnpm build
-pnpm start
-```
-
-默认配置（单机本地使用）：
-
-- 服务监听 `http://127.0.0.1:4318`，仅本机访问
-- 也可以不设白名单和 JWT，单用户跑
-
-多用户在线部署（公网暴露）需要额外配置：
-
-- `CROSSFADIO_HOST=0.0.0.0` 公开绑定
-- `CROSSFADIO_JWT_SECRET` HS256 签名密钥（必须）
-- `CROSSFADIO_LLM_*` / `CROSSFADIO_TTS_*` 完整配置
-- 数据目录下放 `allowlist.json`（数组，允许登录的 NCM 用户 ID）
-- 受保护路由要求 `Authorization: Bearer <jwt>`，扫码登录后从 `/api/ncm/login/status` 拿到 token
-
-实际线上部署、重启、加白名单、改 persona 等操作流程见 [`docs/ops-runbook.md`](docs/ops-runbook.md)。日常部署使用 `./scripts/deploy.sh`（构建 → OSS 中转 → ECS 部署）。
-
-## 数据目录
-
-- macOS 默认目录：`~/Library/Application Support/Crossfadio`
-- Linux 默认目录：`~/.crossfadio`
-- Windows 默认目录：`%APPDATA%/Crossfadio`
-- 包含 `state.db`、`logs/`、`users/<ncmId>/`（每用户语料）、`allowlist.json`
-
-## 检查
-
-```bash
-pnpm check
-pnpm test
-pnpm build
-```
+更多配置项（NCM 子进程、歌词感知选歌、CORS 等）见 [`CLAUDE.md`](CLAUDE.md) 与 [`docs/ops-runbook.md`](docs/ops-runbook.md)。
