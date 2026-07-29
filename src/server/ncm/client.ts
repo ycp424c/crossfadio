@@ -34,6 +34,7 @@ type NcmClientOptions = {
 export type NcmRequestOptions = {
   signal?: AbortSignal;
   timeoutMs?: number;
+  bypassUpstreamCache?: boolean;
 };
 
 export const NCM_SONG_URL_QUALITY_LEVELS = [
@@ -54,6 +55,7 @@ export type NcmSongUrlQualityCache = Map<
 type GetSongUrlOptions = {
   qualityCacheKey?: string;
   nowMs?: number;
+  bypassUpstreamCache?: boolean;
 };
 
 const defaultSongUrlQualityCache: NcmSongUrlQualityCache = new Map();
@@ -296,7 +298,10 @@ export class NcmClient {
           );
         }
 
-        const songUrl = await this.getSongUrlAtLevel(id, level, { timeoutMs: remainingMs });
+        const songUrl = await this.getSongUrlAtLevel(id, level, {
+          timeoutMs: remainingMs,
+          bypassUpstreamCache: options.bypassUpstreamCache
+        });
         if (songUrl?.url) {
           this.setCachedSongUrlQuality(options.qualityCacheKey, level, nowMs);
           return songUrl;
@@ -658,7 +663,11 @@ export class NcmClient {
     }, Math.max(0, timeoutMs));
 
     try {
-      const response = await fetch(url, { method: 'GET', signal: controller.signal });
+      const response = await fetch(url, {
+        method: 'GET',
+        signal: controller.signal,
+        headers: options.bypassUpstreamCache ? { 'x-apicache-bypass': '1' } : undefined
+      });
       return await consumeResponse(response);
     } catch (error) {
       if (parentSignal?.aborted) {

@@ -1494,7 +1494,10 @@ export function PlayerView({ onAuthTokenChange, onNavigate }: PlayerViewProps): 
     const accountCapture = playerAccountScopeRef.current!.capture();
     if (!accountCapture.token || !accountCapture.isActive()) return;
     try {
-      const payload = await getNowPlaying(trackId, { authToken: accountCapture.token });
+      const payload = await getNowPlaying(trackId, {
+        authToken: accountCapture.token,
+        freshStream: true
+      });
       if (!accountCapture.isActive()
         || currentTrackIdRef.current !== trackId
         || trackMediaRetryRequestIdRef.current !== requestId) {

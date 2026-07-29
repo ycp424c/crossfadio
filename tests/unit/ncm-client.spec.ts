@@ -375,6 +375,35 @@ describe('NcmClient DTO mapping', () => {
     expect(requestedLevels[0]).toBe('lossless');
   });
 
+  it('only bypasses the embedded NCM response cache for every fresh song URL attempt', async () => {
+    const requests: Array<{ level: string; headers: Headers }> = [];
+    mockFetch(async (url, init) => {
+      const level = url.searchParams.get('level') ?? '';
+      requests.push({ level, headers: new Headers(init?.headers) });
+      return new Response(
+        JSON.stringify({
+          data: [
+            level === 'exhigh'
+              ? { id: 42, url: 'https://music/fresh-42.flac', br: 999000, size: 12_000_000, type: 'flac' }
+              : { id: 42, url: null }
+          ]
+        }),
+        { status: 200 }
+      );
+    });
+    const client = new NcmClient('http://127.0.0.1:3000');
+
+    await client.getSongUrl('42');
+    expect(requests.map(({ level }) => level)).toEqual(['lossless', 'exhigh']);
+    expect(requests.every(({ headers }) => headers.get('x-apicache-bypass') === null)).toBe(true);
+
+    requests.length = 0;
+    await client.getSongUrl('42', { bypassUpstreamCache: true });
+
+    expect(requests.map(({ level }) => level)).toEqual(['lossless', 'exhigh']);
+    expect(requests.every(({ headers }) => headers.get('x-apicache-bypass') === '1')).toBe(true);
+  });
+
   it('falls back from highest song URL quality and caches the successful level per user', async () => {
     const requestedLevels: string[] = [];
     const cache: NcmSongUrlQualityCache = new Map();

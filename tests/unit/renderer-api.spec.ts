@@ -111,6 +111,35 @@ describe('renderer queue API', () => {
 });
 
 describe('renderer player account-bound API', () => {
+  it('bypasses browser caches when refreshing a failed track stream', async () => {
+    vi.stubGlobal('window', { location: { origin: 'http://localhost:5173' } });
+    vi.stubGlobal('localStorage', { getItem: vi.fn(() => 'new-account-token') });
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      ok: true,
+      ncmId: 'track-a',
+      url: 'https://example.test/fresh-a.mp3',
+      durationMs: 100_000,
+      lyric: null,
+      translation: null,
+      timing: { prefetchLeadSec: 10, crossfadeSec: 3, segueLeadSec: 8 }
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' }
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await getNowPlaying('track-a', {
+      authToken: 'captured-account-token',
+      freshStream: true
+    });
+
+    expect(String(fetchMock.mock.calls[0]?.[0])).toContain('/api/now?ncmId=track-a&fresh=1');
+    expect(fetchMock.mock.calls[0]?.[1]).toMatchObject({
+      cache: 'no-store',
+      headers: expect.objectContaining({ Authorization: 'Bearer captured-account-token' })
+    });
+  });
+
   it('uses the captured token for now, next and geolocation context requests', async () => {
     vi.stubGlobal('window', { location: { origin: 'http://localhost:5173' } });
     vi.stubGlobal('localStorage', { getItem: vi.fn(() => 'new-account-token') });

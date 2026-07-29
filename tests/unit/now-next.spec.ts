@@ -41,6 +41,34 @@ describe('estimateDurationMs', () => {
 });
 
 describe('now/next song URL quality cache key', () => {
+  it('bypasses the upstream song URL cache for fresh recovery requests', async () => {
+    const ncmClient = {
+      getSongUrl: vi.fn(async () => ({
+        id: 42,
+        url: 'https://music/fresh-42.flac',
+        br: 1_411_000,
+        size: 18_000_000,
+        type: 'flac',
+        expireAt: 1800
+      })),
+      getLyric: vi.fn(async () => null),
+      getSongDetails: vi.fn(async () => [])
+    };
+    const res = createResponse();
+
+    await createNowHandler()(
+      { query: { ncmId: '42', fresh: '1' }, userId: 'user-1', ncmClient } as never,
+      res as never,
+      vi.fn()
+    );
+
+    expect(ncmClient.getSongUrl).toHaveBeenCalledWith('42', {
+      qualityCacheKey: 'user-1',
+      bypassUpstreamCache: true
+    });
+    expect(res.set).toHaveBeenCalledWith('Cache-Control', 'private, no-store');
+  });
+
   it('passes request userId when resolving the current song URL', async () => {
     const ncmClient = {
       getSongUrl: vi.fn(async () => ({
@@ -63,6 +91,7 @@ describe('now/next song URL quality cache key', () => {
     );
 
     expect(ncmClient.getSongUrl).toHaveBeenCalledWith('42', { qualityCacheKey: 'user-1' });
+    expect(res.set).toHaveBeenCalledWith('Cache-Control', 'private, no-store');
   });
 
   it('passes request userId when resolving the next song URL', async () => {
@@ -86,12 +115,14 @@ describe('now/next song URL quality cache key', () => {
     );
 
     expect(ncmClient.getSongUrl).toHaveBeenCalledWith('43', { qualityCacheKey: 'user-1' });
+    expect(res.set).toHaveBeenCalledWith('Cache-Control', 'private, no-store');
   });
 });
 
 function createResponse() {
   return {
     status: vi.fn().mockReturnThis(),
+    set: vi.fn().mockReturnThis(),
     json: vi.fn()
   };
 }

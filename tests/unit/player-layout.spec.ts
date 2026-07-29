@@ -295,7 +295,9 @@ describe('player layout', () => {
     expect(source).toContain('trackMediaRetryRequestIdRef.current += 1');
     expect(source).toContain('currentTrackIdRef.current !== trackId');
     expect(retryBody).toContain('const accountCapture = playerAccountScopeRef.current!.capture()');
-    expect(retryBody).toContain('getNowPlaying(trackId, { authToken: accountCapture.token })');
+    expect(retryBody).toContain('const payload = await getNowPlaying(trackId, {');
+    expect(retryBody).toContain('authToken: accountCapture.token');
+    expect(retryBody).toContain('freshStream: true');
     expect(retryBody).toContain('!accountCapture.isActive()');
   });
 

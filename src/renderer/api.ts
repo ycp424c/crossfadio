@@ -33,6 +33,10 @@ type RequestJsonOptions = {
   authToken?: string;
 };
 
+type GetNowPlayingOptions = RequestJsonOptions & {
+  freshStream?: boolean;
+};
+
 // ── JWT storage ────────────────────────────────────────────────────────────────
 
 const JWT_KEY = 'crossfadio_jwt';
@@ -143,10 +147,11 @@ export async function logoutNcm(): Promise<void> {
 
 export async function getNowPlaying(
   ncmId: string,
-  requestOptions?: RequestJsonOptions
+  requestOptions?: GetNowPlayingOptions
 ): Promise<NowPlayingResponse> {
-  const query = `ncmId=${encodeURIComponent(ncmId)}`;
-  const payload = await requestJson<unknown>(`/api/now?${query}`, undefined, requestOptions);
+  const query = `ncmId=${encodeURIComponent(ncmId)}${requestOptions?.freshStream ? '&fresh=1' : ''}`;
+  const init = requestOptions?.freshStream ? { cache: 'no-store' as const } : undefined;
+  const payload = await requestJson<unknown>(`/api/now?${query}`, init, requestOptions);
   return nowPlayingResponseSchema.parse(payload);
 }
 

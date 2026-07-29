@@ -15,7 +15,8 @@ const DEFAULT_CROSSFADE_SEC = 8;
 const DEFAULT_SEGUE_LEAD_SEC = 24;
 
 const nowQuerySchema = z.object({
-  ncmId: z.string().min(1)
+  ncmId: z.string().min(1),
+  fresh: z.literal('1').optional()
 }).strict();
 
 const nextQuerySchema = z.object({
@@ -25,6 +26,7 @@ const nextQuerySchema = z.object({
 
 export function createNowHandler(fallbackNcmClient?: NcmClient): RequestHandler {
   return async (req, res) => {
+    setSignedMediaResponseCacheHeaders(res);
     const parsed = nowQuerySchema.safeParse(req.query);
     if (!parsed.success) {
       res
@@ -37,7 +39,7 @@ export function createNowHandler(fallbackNcmClient?: NcmClient): RequestHandler 
       const ncmClient = getScopedNcmClient(req, fallbackNcmClient);
       const ncmId = parsed.data.ncmId;
       const [songUrl, lyric, details] = await Promise.all([
-        ncmClient.getSongUrl(ncmId, songUrlQualityOptions(req)),
+        ncmClient.getSongUrl(ncmId, songUrlQualityOptions(req, parsed.data.fresh === '1')),
         ncmClient.getLyric(ncmId),
         ncmClient.getSongDetails([ncmId]).catch(() => [])
       ]);
@@ -70,6 +72,7 @@ export function createNowHandler(fallbackNcmClient?: NcmClient): RequestHandler 
 
 export function createNextHandler(fallbackNcmClient?: NcmClient): RequestHandler {
   return async (req, res) => {
+    setSignedMediaResponseCacheHeaders(res);
     const parsed = nextQuerySchema.safeParse(req.query);
     if (!parsed.success) {
       res.status(400).json({
@@ -186,9 +189,22 @@ function getScopedNcmClient(req: Request, fallback?: NcmClient): NcmClient {
   return ncmClient;
 }
 
-function songUrlQualityOptions(req: Request): { qualityCacheKey: string } | undefined {
+function songUrlQualityOptions(
+  req: Request,
+  bypassUpstreamCache = false
+): { qualityCacheKey?: string; bypassUpstreamCache?: true } | undefined {
   const userId = (req as Partial<AuthedRequest>).userId;
-  return userId ? { qualityCacheKey: userId } : undefined;
+  if (!userId) {
+    return bypassUpstreamCache ? { bypassUpstreamCache: true } : undefined;
+  }
+  return {
+    qualityCacheKey: userId,
+    ...(bypassUpstreamCache ? { bypassUpstreamCache: true as const } : {})
+  };
+}
+
+function setSignedMediaResponseCacheHeaders(res: Response): void {
+  res.set('Cache-Control', 'private, no-store');
 }
 
 function classifyError(error: unknown): { code: NcmErrorCode; message: string } {
