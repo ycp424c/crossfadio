@@ -179,9 +179,9 @@ pnpm start            # Start production server
 
 ## Production
 
-Live deployment runbook (instance, paths, restart, allowlist edits, persona updates) is at [`docs/ops-runbook.md`](docs/ops-runbook.md). Deploy with `./scripts/deploy.sh` (build → OSS → ECS → restart). Read it before doing anything on the box.
+Real deployment identifiers, paths, runtime configuration, log locations and operational commands live only in the ignored `.local/ops/production-runbook.md` and `.local/ops/production.env`. Read them before any production action. If either file is missing or stale, stop and ask the environment owner to restore it.
 
-Production-specific topology and access details belong only in the ignored local runbook.
+[`docs/ops-runbook.md`](docs/ops-runbook.md) defines the repository privacy boundary. `./scripts/deploy.sh` contains reusable deployment logic and refuses to operate without an explicit local private configuration.
 
 ## Architecture Notes
 

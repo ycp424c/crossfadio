@@ -22,7 +22,7 @@ const localBindingConfig = {
   vars: {
     CROSSFADIO_UPSTREAM_BASE_URL:
       process.env.CROSSFADIO_UPSTREAM_BASE_URL ??
-      "http://REDACTED_PRODUCTION_ADDRESS:4318",
+      "",
   },
   d1_databases: d1
     ? [

@@ -8,7 +8,7 @@ import sqlite3
 import sys
 
 
-DB_PATH = os.environ.get("CROSSFADIO_REPLAY_DB", "REDACTED_DATA_DIR/state.db")
+DB_PATH = os.environ.get("CROSSFADIO_REPLAY_DB")
 NOW = dt.datetime.now(dt.timezone.utc)
 CUTOFF = NOW - dt.timedelta(days=30)
 MAX_SELECTION_RUNS = 500
@@ -177,6 +177,8 @@ def policy_cases_for_runs(connection, selected_runs):
 
 
 def main():
+    if not DB_PATH:
+        raise RuntimeError("CROSSFADIO_REPLAY_DB must point to the replay database")
     uri = "file:" + os.path.abspath(DB_PATH) + "?mode=ro"
     connection = sqlite3.connect(uri, uri=True)
     connection.row_factory = sqlite3.Row

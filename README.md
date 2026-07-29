@@ -42,7 +42,7 @@ pnpm dev        # 同时启动后端 + 前端
 
 ## 多用户与部署
 
-支持多人同时使用：JWT 认证、按用户隔离的 SQLite 数据、白名单准入（`allowlist.json` 或管理员 Web UI）。生产部署（构建 → OSS → ECS → 重启）见 [`docs/ops-runbook.md`](docs/ops-runbook.md)，日常一条命令：
+支持多人同时使用：JWT 认证、按用户隔离的 SQLite 数据、白名单准入（`allowlist.json` 或管理员 Web UI）。生产参数和完整运维手册仅保存在被 Git 忽略的本地文件中；公开边界见 [`docs/ops-runbook.md`](docs/ops-runbook.md)。本地配置齐全后可运行：
 
 ```bash
 ./scripts/deploy.sh

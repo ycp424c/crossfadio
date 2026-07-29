@@ -9,7 +9,7 @@ Use this skill for runtime truth, not as a replacement for feature design or gen
 
 ## Evidence workflow
 
-1. Read AGENTS.md, then the relevant sections of docs/ops-runbook.md. Check git status --short, branch, and current deployment scope before editing.
+1. Read AGENTS.md, then the relevant sections of the ignored `.local/ops/production-runbook.md`. Check git status --short, branch, and current deployment scope before editing. If the local runbook is missing or stale, stop live operations and ask the environment owner to restore it.
 2. Establish the live boundary: service process, local and public /api/health, effective runtime .env, provider/model, and the relevant request/log window. Never print credentials.
 3. Trace the full event path. For DJ refill, distinguish:
    - MusicAgent result and fallback reason;
@@ -32,4 +32,4 @@ When the user asks for subagent review and repair, declare the scope, non-goals,
 
 ## Source of truth
 
-Use docs/ops-runbook.md for current ECS/deploy/log commands and the repository code for route, timeout, queue, fallback, and schema semantics. Treat old conversation summaries as leads that must be checked against the current runtime.
+Use `.local/ops/production-runbook.md` for current production identifiers, deploy/log commands and runtime paths. Use `docs/ops-runbook.md` only for the public/private documentation boundary, and repository code for route, timeout, queue, fallback, and schema semantics. Treat old conversation summaries as leads that must be checked against the current runtime.
