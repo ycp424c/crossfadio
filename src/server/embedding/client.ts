@@ -4,7 +4,10 @@ export const embeddingConfigSchema = z.object({
   baseUrl: z.string().url(),
   apiKey: z.string().min(1),
   model: z.string().min(1),
-  dimensions: z.number().int().positive()
+  dimensions: z.number().int().positive(),
+  // 部分模型（如腾讯云 TokenHub kinfra-text-embedding-*）不接受 dimensions 参数，
+  // 由 CROSSFADIO_EMBEDDING_SEND_DIMENSIONS=0 关闭发送；实际维度以响应向量长度为准。
+  sendDimensions: z.boolean().default(true)
 });
 
 export type EmbeddingConfig = z.infer<typeof embeddingConfigSchema>;
@@ -38,11 +41,13 @@ export class EmbeddingClient {
   }
 
   async embed(input: string | string[], opts: { signal?: AbortSignal } = {}): Promise<EmbeddingResponse> {
-    const body = {
+    const body: Record<string, unknown> = {
       model: this.config.model,
-      input,
-      dimensions: this.config.dimensions
+      input
     };
+    if (this.config.sendDimensions) {
+      body.dimensions = this.config.dimensions;
+    }
 
     const resp = await fetch(`${this.config.baseUrl}/embeddings`, {
       method: 'POST',
