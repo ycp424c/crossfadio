@@ -1,11 +1,20 @@
 import { lyricsSelectionModeSchema, type LyricsSelectionMode } from './music-agent/track-understanding.js';
 
+export type TtsProvider = 'aliyun-qwen' | 'openai-compatible' | 'tencent-cloud';
+
 export type ServerConfig = {
   jwtSecret: string;
   jwtTtlDays: number;
   llm: { baseUrl: string; apiKey: string; model: string };
-  tts: { baseUrl: string; apiKey: string; voiceDefault: string | null };
-  embedding: { baseUrl: string; apiKey: string; model: string; dimensions: number } | null;
+  tts: {
+    provider: TtsProvider;
+    baseUrl: string | null;
+    apiKey: string | null;
+    secretId: string | null;
+    secretKey: string | null;
+    voiceDefault: string | null;
+  };
+  embedding: { baseUrl: string; apiKey: string; model: string; dimensions: number; sendDimensions: boolean } | null;
   host: string;
   allowedOrigins: string[];
   adminNcmId: string | null;
@@ -33,11 +42,7 @@ export function loadConfig(): ServerConfig {
       apiKey: required('CROSSFADIO_LLM_API_KEY'),
       model: required('CROSSFADIO_LLM_MODEL')
     },
-    tts: {
-      baseUrl: required('CROSSFADIO_TTS_BASE_URL'),
-      apiKey: required('CROSSFADIO_TTS_API_KEY'),
-      voiceDefault: process.env.CROSSFADIO_TTS_VOICE_DEFAULT?.trim() || null
-    },
+    tts: resolveTtsServerConfig(),
     embedding: resolveEmbeddingConfig(),
     host: process.env.CROSSFADIO_HOST?.trim() || '127.0.0.1',
     allowedOrigins: (process.env.CROSSFADIO_ALLOWED_ORIGINS ?? '')
@@ -56,6 +61,33 @@ function resolveLyricsSelectionMode(value: string | undefined): LyricsSelectionM
   return parsed.success ? parsed.data : 'off';
 }
 
+function resolveTtsServerConfig(): ServerConfig['tts'] {
+  const provider = (process.env.CROSSFADIO_TTS_PROVIDER?.trim() || 'aliyun-qwen') as TtsProvider;
+  const baseUrl = process.env.CROSSFADIO_TTS_BASE_URL?.trim() || null;
+  const apiKey = process.env.CROSSFADIO_TTS_API_KEY?.trim() || null;
+  const secretId = process.env.CROSSFADIO_TTS_SECRET_ID?.trim() || null;
+  const secretKey = process.env.CROSSFADIO_TTS_SECRET_KEY?.trim() || null;
+
+  if (provider === 'tencent-cloud') {
+    if (!secretId || !secretKey) {
+      throw new Error('Missing required environment variable: CROSSFADIO_TTS_SECRET_ID / CROSSFADIO_TTS_SECRET_KEY (provider=tencent-cloud)');
+    }
+  } else {
+    if (!baseUrl || !apiKey) {
+      throw new Error(`Missing required environment variable: CROSSFADIO_TTS_BASE_URL / CROSSFADIO_TTS_API_KEY (provider=${provider})`);
+    }
+  }
+
+  return {
+    provider,
+    baseUrl,
+    apiKey,
+    secretId,
+    secretKey,
+    voiceDefault: process.env.CROSSFADIO_TTS_VOICE_DEFAULT?.trim() || null
+  };
+}
+
 export function getConfig(): ServerConfig {
   if (!_config) return loadConfig();
   return _config;
@@ -72,7 +104,8 @@ function resolveEmbeddingConfig(): ServerConfig['embedding'] {
     baseUrl: process.env.CROSSFADIO_EMBEDDING_BASE_URL?.trim() || DEFAULT_EMBEDDING_BASE_URL,
     apiKey,
     model: process.env.CROSSFADIO_EMBEDDING_MODEL?.trim() || DEFAULT_EMBEDDING_MODEL,
-    dimensions: resolvePositiveInt(process.env.CROSSFADIO_EMBEDDING_DIMENSIONS, DEFAULT_EMBEDDING_DIMENSIONS)
+    dimensions: resolvePositiveInt(process.env.CROSSFADIO_EMBEDDING_DIMENSIONS, DEFAULT_EMBEDDING_DIMENSIONS),
+    sendDimensions: (process.env.CROSSFADIO_EMBEDDING_SEND_DIMENSIONS?.trim() ?? '1') !== '0'
   };
 }
 

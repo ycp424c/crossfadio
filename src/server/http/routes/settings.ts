@@ -52,9 +52,11 @@ export function createGetSettingsHandler() {
         thinkingSupported: supportsThinkingControl(config.llm.model, config.llm.baseUrl)
       },
       tts: {
-        baseUrl: config.tts.baseUrl,
-        model: DEFAULT_TTS_MODEL,
-        hasApiKey: Boolean(config.tts.apiKey),
+        baseUrl: config.tts.baseUrl ?? '',
+        model: config.tts.provider === 'tencent-cloud' ? 'TextToVoice' : DEFAULT_TTS_MODEL,
+        hasApiKey: config.tts.provider === 'tencent-cloud'
+          ? Boolean(config.tts.secretId && config.tts.secretKey)
+          : Boolean(config.tts.apiKey),
         voice: userVoice ?? config.tts.voiceDefault ?? DEFAULT_TTS_VOICE,
         voiceDefault: config.tts.voiceDefault
       },

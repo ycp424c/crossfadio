@@ -18,13 +18,39 @@ export function resolveTtsConfig(userId: string): TtsConfig {
   const config = getConfig();
   const userVoice = getPref<string>(userId, 'tts.voice');
   const voice = userVoice || config.tts.voiceDefault || DEFAULT_TTS_VOICE;
+  const speed = DEFAULT_TTS_CONFIG.speed;
+
+  if (config.tts.provider === 'tencent-cloud') {
+    return {
+      provider: 'tencent-cloud',
+      secretId: config.tts.secretId ?? undefined,
+      secretKey: config.tts.secretKey ?? undefined,
+      model: 'TextToVoice',
+      voice,
+      speed,
+      format: 'mp3'
+    };
+  }
+
+  if (config.tts.provider === 'openai-compatible') {
+    return {
+      provider: 'openai-compatible',
+      baseUrl: config.tts.baseUrl ?? undefined,
+      apiKey: config.tts.apiKey ?? undefined,
+      model: DEFAULT_TTS_MODEL,
+      voice,
+      speed,
+      format: 'mp3'
+    };
+  }
+
   return {
     provider: 'aliyun-qwen',
-    baseUrl: config.tts.baseUrl,
-    apiKey: config.tts.apiKey,
-    model: DEFAULT_TTS_CONFIG.model,
+    baseUrl: config.tts.baseUrl ?? undefined,
+    apiKey: config.tts.apiKey ?? undefined,
+    model: DEFAULT_TTS_MODEL,
     voice,
-    speed: DEFAULT_TTS_CONFIG.speed,
-    format: DEFAULT_TTS_CONFIG.format
+    speed,
+    format: 'mp3'
   };
 }

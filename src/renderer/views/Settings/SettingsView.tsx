@@ -21,7 +21,7 @@ import {
   type PersonalDjContextStatusResponse,
   type PersonalDjContextToken
 } from '@renderer/api';
-import { QWEN3_TTS_VOICES } from '@shared/tts';
+import { TENCENT_TTS_VOICES } from '@shared/tts';
 import { AUTO_FILL_BATCH_SIZE_OPTIONS, DEFAULT_AUTO_FILL_BATCH_SIZE, type AutoFillBatchSize } from '@shared/dj';
 
 type SaveStatus = { type: 'idle' } | { type: 'saving' } | { type: 'ok' } | { type: 'error'; message: string };
@@ -231,9 +231,9 @@ export function SettingsView(): JSX.Element {
   const disabled = voice === tts?.voice && autoFillBatchSize === savedAutoFillBatchSize;
   const activePersonalTokenCount = personalContextTokens.filter((token) => !token.revokedAt).length;
   const personalTokenLimitReached = activePersonalTokenCount >= 10;
-  const voiceOptions = voice && !(QWEN3_TTS_VOICES as readonly string[]).includes(voice)
-    ? [voice, ...QWEN3_TTS_VOICES]
-    : QWEN3_TTS_VOICES;
+  const voiceOptions = voice && !(TENCENT_TTS_VOICES as readonly { id: string }[]).some((v) => v.id === voice)
+    ? [{ id: voice, label: voice }, ...TENCENT_TTS_VOICES]
+    : TENCENT_TTS_VOICES;
 
   if (loading) {
     return (
@@ -319,7 +319,7 @@ export function SettingsView(): JSX.Element {
                   className={inputClass}
                 >
                   {voiceOptions.map((v) => (
-                    <option key={v} value={v}>{v}</option>
+                    <option key={v.id} value={v.id}>{v.label}</option>
                   ))}
                 </select>
                 <button

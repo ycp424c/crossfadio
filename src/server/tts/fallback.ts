@@ -8,6 +8,7 @@ import {
   type TtsConfig,
   type TtsResult
 } from './client.js';
+import { getLogger } from '../logger.js';
 import type { Track } from '../agent/schema.js';
 
 export type FallbackAwareTtsResult = TtsResult & {
@@ -66,14 +67,17 @@ export async function synthesizeTtsWithFallback(
     return { ...result, fallback: false };
   } catch (err) {
     const fallback = getCachedFallbackTts(config, fallbackText);
-    if (fallback) return { ...fallback, fallback: true };
+    if (fallback) {
+      getLogger().warn({ err, provider: config.provider }, 'TTS synthesis failed; serving cached fallback audio');
+      return { ...fallback, fallback: true };
+    }
     throw err;
   }
 }
 
 function fallbackFilePath(config: TtsConfig, text: string, format: string): string {
   const hash = buildCacheHash({
-    endpoint: `${config.baseUrl}/fallback-template`,
+    endpoint: config.baseUrl ? `${config.baseUrl}/fallback-template` : `${config.provider}/fallback-template`,
     model: config.model,
     voice: config.voice,
     speed: config.speed,
