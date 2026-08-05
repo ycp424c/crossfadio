@@ -54,17 +54,19 @@ export const QWEN3_TTS_VOICES = [
 ] as const;
 
 // 腾讯云语音合成（1073）基础音色（ModelType=1，按次计费）。
-// 实测有效 VoiceType 为 1001–1010；1011–1014 不存在。
+// 实测有效 VoiceType：1001-1005、1007-1010（1006 及 1011+ 不存在）。
+// 名称与性别依据腾讯云官方音色表（智瑜/智聆/智云/智华等，经 SDK 文档与实测 F0 双重核对）。
 // per-user `tts.voice` pref 存 id（字符串），如 '1001'。
 export const TENCENT_TTS_VOICES = [
-  { id: '1001', label: '亲和女声' },
-  { id: '1002', label: '亲和男声' },
-  { id: '1003', label: '成熟男声' },
-  { id: '1004', label: '成熟女声' },
-  { id: '1005', label: '严肃男声' },
-  { id: '1006', label: '严肃女声' },
-  { id: '1007', label: '活泼男声' },
-  { id: '1008', label: '活泼女声' },
-  { id: '1009', label: '温柔男声' },
-  { id: '1010', label: '温柔女声' }
+  { id: '1001', label: '智瑜 · 情感女声' },
+  { id: '1002', label: '智聆 · 通用女声' },
+  { id: '1003', label: '智美 · 客服女声' },
+  { id: '1004', label: '智云 · 通用男声' },
+  { id: '1005', label: '智莉 · 通用女声' },
+  { id: '1007', label: '智娜 · 客服女声' },
+  { id: '1008', label: '智琪 · 客服女声' },
+  { id: '1009', label: '智芸 · 知性女声' },
+  { id: '1010', label: '智华 · 通用男声' }
 ] as const;
+
+export const TENCENT_TTS_VOICE_IDS = TENCENT_TTS_VOICES.map((v) => v.id);

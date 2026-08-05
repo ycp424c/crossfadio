@@ -2,6 +2,8 @@ import { randomUUID } from 'node:crypto';
 import { createHmac, createHash } from 'node:crypto';
 import { z } from 'zod';
 import { buildCacheHash, getCachedFilePath, saveToCache } from './cache.js';
+import { getLogger } from '../logger.js';
+import { TENCENT_TTS_VOICE_IDS } from '../../shared/tts.js';
 
 const ALIYUN_CACHE_HASH_FORMAT = 'aliyun-auto-v2';
 const ALIYUN_CACHE_LOOKUP_FORMATS = ['wav', 'mp3', 'opus', 'aac', 'flac'] as const;
@@ -14,10 +16,14 @@ const TENCENT_TTS_SERVICE = 'tts';
 const TENCENT_TTS_VERSION = '2019-08-23';
 const TENCENT_TTS_ACTION = 'TextToVoice';
 const TENCENT_TTS_REGION = 'ap-guangzhou';
+// TextToVoice 中文最多 150 字（接口文档：cloud.tencent.com/document/api/1073/37995）
+const TENCENT_TTS_MAX_INPUT_CHARS = 150;
 
-// 腾讯云 1073 基础音色（ModelType=1，按次计费、性价比高）
-const TENCENT_BASIC_VOICE_FEMALE_DEFAULT = 1001; // 亲和女声
-const TENCENT_BASIC_VOICE_MALE_DEFAULT = 1002;   // 亲和男声
+// 腾讯云 1073 基础音色（ModelType=1，按次计费、性价比高）。
+// 官方音色表：1001 智瑜(女)、1002 智聆(女)、1003 智美(女)、1004 智云(男)、1005 智莉(女)、
+// 1007 智娜(女)、1008 智琪(女)、1009 智芸(女)、1010 智华(男)；1006 与 1011+ 无效。
+const TENCENT_BASIC_VOICE_FEMALE_DEFAULT = 1001; // 智瑜 · 情感女声
+const TENCENT_BASIC_VOICE_MALE_DEFAULT = 1004;   // 智云 · 通用男声
 const TENCENT_MALE_VOICE_NAMES = new Set([
   'Ethan', 'Ryan', 'Aiden', 'Vincent', 'Neil', 'Elias', 'Arthur', 'Alek', 'Andre',
   'Dylan', 'Marcus', 'Roy', 'Peter', 'Eric', 'Rocky', 'Kai', 'Li', 'Sunny',
@@ -47,13 +53,16 @@ export class TtsClient {
   constructor(private readonly config: TtsConfig) {}
 
   async synthesize(text: string, opts: { signal?: AbortSignal } = {}): Promise<TtsResult> {
+    const effectiveText = this.config.provider === 'tencent-cloud'
+      ? truncateTencentTtsText(text)
+      : text;
     const hash = buildCacheHash({
       endpoint: this.config.baseUrl ?? TENCENT_TTS_ENDPOINT,
       model: this.config.model,
       voice: this.config.voice,
       speed: this.config.speed,
       format: resolveTtsCacheHashFormat(this.config),
-      text
+      text: effectiveText
     });
 
     const cached = getCachedFilePath(hash, resolveTtsCacheLookupFormats(this.config));
@@ -62,11 +71,11 @@ export class TtsClient {
     }
 
     if ((this.config.provider ?? 'openai-compatible') === 'aliyun-qwen') {
-      return this.synthesizeWithAliyunQwen(text, hash, opts);
+      return this.synthesizeWithAliyunQwen(effectiveText, hash, opts);
     }
 
     if (this.config.provider === 'tencent-cloud') {
-      return this.synthesizeWithTencentTts(text, hash, opts);
+      return this.synthesizeWithTencentTts(effectiveText, hash, opts);
     }
 
     const baseUrl = this.config.baseUrl;
@@ -263,19 +272,30 @@ export function resolvePreferredTtsAudioFormat(config: Pick<TtsConfig, 'provider
 }
 
 // 把 per-user 的 TTS 音色解析为腾讯云 1073 基础音色 VoiceType。
-// 新格式直接存 VoiceType 字符串（'1001'..'1010'，实测 1011-1014 不存在）；
-// 旧格式（阿里云音色名）按性别映射：男声 -> 1002 亲和男声，其余 -> 1001 亲和女声。
+// 新格式直接存 VoiceType 字符串（TENCENT_TTS_VOICE_IDS，实测 1006/1011+ 无效）；
+// 旧格式（阿里云音色名）按性别映射：男声 -> 1004 智云，其余 -> 1001 智瑜。
 export function resolveTencentVoiceType(voice: string): number {
   const normalized = voice.trim();
   if (/^\d+$/.test(normalized)) {
     const parsed = Number.parseInt(normalized, 10);
-    if (parsed >= 1001 && parsed <= 1010) return parsed;
+    if ((TENCENT_TTS_VOICE_IDS as readonly string[]).includes(String(parsed))) return parsed;
     return TENCENT_BASIC_VOICE_FEMALE_DEFAULT;
   }
   if (TENCENT_MALE_VOICE_NAMES.has(normalized)) {
     return TENCENT_BASIC_VOICE_MALE_DEFAULT;
   }
   return TENCENT_BASIC_VOICE_FEMALE_DEFAULT;
+}
+
+// TextToVoice 中文最多 150 字；超长时按码点截断并告警（避免 151-220 字口播被接口拒绝）。
+function truncateTencentTtsText(text: string): string {
+  if (Array.from(text).length <= TENCENT_TTS_MAX_INPUT_CHARS) return text;
+  const truncated = Array.from(text).slice(0, TENCENT_TTS_MAX_INPUT_CHARS).join('');
+  getLogger().warn({
+    originalChars: Array.from(text).length,
+    truncatedChars: TENCENT_TTS_MAX_INPUT_CHARS
+  }, 'Tencent TTS input truncated to 150 chars');
+  return truncated;
 }
 
 // 阿里云语义 speed（1.0 = 正常语速）映射到腾讯云 1073 的 Speed（0 = 正常语速，范围 -2..2）

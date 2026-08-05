@@ -27,9 +27,9 @@ pnpm dev        # 同时启动后端 + 前端
 |------|------|
 | `CROSSFADIO_JWT_SECRET` | JWT 签名密钥（多用户必需） |
 | `CROSSFADIO_LLM_BASE_URL` / `CROSSFADIO_LLM_API_KEY` / `CROSSFADIO_LLM_MODEL` | DJ 大脑 |
-| `CROSSFADIO_TTS_BASE_URL` / `CROSSFADIO_TTS_API_KEY` | DJ 嗓音 |
+| `CROSSFADIO_TTS_PROVIDER` | TTS 供应商：`aliyun-qwen`（默认，需 `CROSSFADIO_TTS_BASE_URL` / `CROSSFADIO_TTS_API_KEY`）\| `openai-compatible`（同上）\| `tencent-cloud`（腾讯云语音合成 1073，需 `CROSSFADIO_TTS_SECRET_ID` / `CROSSFADIO_TTS_SECRET_KEY`） |
 
-可选：`CROSSFADIO_TTS_VOICE_DEFAULT`（默认音色）、`CROSSFADIO_EMBEDDING_*`（语义发现）、`CROSSFADIO_ADMIN_NCM_ID`（白名单管理员）。
+可选：`CROSSFADIO_TTS_VOICE_DEFAULT`（默认音色）、`CROSSFADIO_EMBEDDING_*`（语义发现，`CROSSFADIO_EMBEDDING_SEND_DIMENSIONS=0` 可适配不接受 dimensions 参数的模型）、`CROSSFADIO_ADMIN_NCM_ID`（白名单管理员）。
 
 登录方式：网易云音乐**扫码登录**，曲库来自 NeteaseCloudMusicApi。
 

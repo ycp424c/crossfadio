@@ -21,7 +21,7 @@ import {
   type PersonalDjContextStatusResponse,
   type PersonalDjContextToken
 } from '@renderer/api';
-import { TENCENT_TTS_VOICES } from '@shared/tts';
+import { QWEN3_TTS_VOICES, TENCENT_TTS_VOICES } from '@shared/tts';
 import { AUTO_FILL_BATCH_SIZE_OPTIONS, DEFAULT_AUTO_FILL_BATCH_SIZE, type AutoFillBatchSize } from '@shared/dj';
 
 type SaveStatus = { type: 'idle' } | { type: 'saving' } | { type: 'ok' } | { type: 'error'; message: string };
@@ -231,9 +231,14 @@ export function SettingsView(): JSX.Element {
   const disabled = voice === tts?.voice && autoFillBatchSize === savedAutoFillBatchSize;
   const activePersonalTokenCount = personalContextTokens.filter((token) => !token.revokedAt).length;
   const personalTokenLimitReached = activePersonalTokenCount >= 10;
-  const voiceOptions = voice && !(TENCENT_TTS_VOICES as readonly { id: string }[]).some((v) => v.id === voice)
-    ? [{ id: voice, label: voice }, ...TENCENT_TTS_VOICES]
-    : TENCENT_TTS_VOICES;
+  // 音色列表按当前 TTS provider 隔离：腾讯云展示 VoiceType 音色，其余沿用旧音色名列表。
+  const providerVoices: ReadonlyArray<{ id: string; label: string }> =
+    tts?.provider === 'tencent-cloud'
+      ? TENCENT_TTS_VOICES
+      : (QWEN3_TTS_VOICES as readonly string[]).map((name) => ({ id: name, label: name }));
+  const voiceOptions = voice && !providerVoices.some((v) => v.id === voice)
+    ? [{ id: voice, label: voice }, ...providerVoices]
+    : providerVoices;
 
   if (loading) {
     return (

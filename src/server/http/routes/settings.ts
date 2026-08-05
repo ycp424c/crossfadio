@@ -9,7 +9,8 @@ import { TtsClient } from '../../tts/client.js';
 import { resolveTtsConfig } from '../../tts/config.js';
 import { supportsThinkingControl } from '../../llm/client.js';
 import { buildSegueAudioUrl } from './segue.js';
-import { DEFAULT_TTS_MODEL, DEFAULT_TTS_VOICE, TTS_PREVIEW_TEXT } from '../../../shared/tts.js';
+import { DEFAULT_TTS_MODEL, DEFAULT_TTS_VOICE, TENCENT_TTS_VOICE_IDS, TTS_PREVIEW_TEXT, QWEN3_TTS_VOICES } from '../../../shared/tts.js';
+import type { TtsProvider } from '../../config.js';
 import {
   AUTO_FILL_BATCH_SIZE_MAX,
   AUTO_FILL_BATCH_SIZE_MIN,
@@ -28,6 +29,17 @@ function getDiscoveryMode(userId: string): DiscoveryMode {
 
 function getAutoFillBatchSize(userId: string): number {
   return parseAutoFillBatchSize(getPref<number>(userId, 'dj.autoFillBatchSize'));
+}
+
+// 音色值必须与当前 TTS provider 匹配，避免把腾讯 VoiceType 数字存给阿里云（反之亦然）。
+export function isVoiceValidForProvider(voice: string, provider: TtsProvider): boolean {
+  if (provider === 'tencent-cloud') {
+    return (TENCENT_TTS_VOICE_IDS as readonly string[]).includes(voice);
+  }
+  if (provider === 'aliyun-qwen') {
+    return (QWEN3_TTS_VOICES as readonly string[]).includes(voice);
+  }
+  return voice.length > 0;
 }
 
 // ── GET /api/settings ─────────────────────────────────────────────────────────
@@ -52,6 +64,7 @@ export function createGetSettingsHandler() {
         thinkingSupported: supportsThinkingControl(config.llm.model, config.llm.baseUrl)
       },
       tts: {
+        provider: config.tts.provider,
         baseUrl: config.tts.baseUrl ?? '',
         model: config.tts.provider === 'tencent-cloud' ? 'TextToVoice' : DEFAULT_TTS_MODEL,
         hasApiKey: config.tts.provider === 'tencent-cloud'
@@ -79,13 +92,19 @@ const settingsBodySchema = z.object({
 export function createSaveSettingsHandler() {
   return (req: Request, res: Response): void => {
     const { userId } = req as AuthedRequest;
+    const config = getConfig();
     const parsed = settingsBodySchema.safeParse(req.body);
     if (!parsed.success) {
       res.status(400).json({ ok: false, error: 'invalid body', details: parsed.error.issues });
       return;
     }
     if (parsed.data.tts?.voice) {
-      setPref(userId, 'tts.voice', parsed.data.tts.voice);
+      const voice = parsed.data.tts.voice.trim();
+      if (!isVoiceValidForProvider(voice, config.tts.provider)) {
+        res.status(400).json({ ok: false, error: `invalid voice for current TTS provider (${config.tts.provider})` });
+        return;
+      }
+      setPref(userId, 'tts.voice', voice);
     }
     if (parsed.data.llm?.thinkingEnabled !== undefined) {
       setPref(userId, 'llm.thinkingEnabled', parsed.data.llm.thinkingEnabled);

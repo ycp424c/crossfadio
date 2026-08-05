@@ -62,7 +62,11 @@ function resolveLyricsSelectionMode(value: string | undefined): LyricsSelectionM
 }
 
 function resolveTtsServerConfig(): ServerConfig['tts'] {
-  const provider = (process.env.CROSSFADIO_TTS_PROVIDER?.trim() || 'aliyun-qwen') as TtsProvider;
+  const rawProvider = process.env.CROSSFADIO_TTS_PROVIDER?.trim() || 'aliyun-qwen';
+  if (rawProvider !== 'aliyun-qwen' && rawProvider !== 'openai-compatible' && rawProvider !== 'tencent-cloud') {
+    throw new Error(`Invalid CROSSFADIO_TTS_PROVIDER: ${rawProvider} (expected aliyun-qwen | openai-compatible | tencent-cloud)`);
+  }
+  const provider = rawProvider as TtsProvider;
   const baseUrl = process.env.CROSSFADIO_TTS_BASE_URL?.trim() || null;
   const apiKey = process.env.CROSSFADIO_TTS_API_KEY?.trim() || null;
   const secretId = process.env.CROSSFADIO_TTS_SECRET_ID?.trim() || null;

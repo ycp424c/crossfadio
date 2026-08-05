@@ -90,6 +90,7 @@ src/
 | `CROSSFADIO_EMBEDDING_BASE_URL` | DashScope compatible URL | Optional embedding API base URL |
 | `CROSSFADIO_EMBEDDING_MODEL` | `text-embedding-v4` | Optional embedding model name |
 | `CROSSFADIO_EMBEDDING_DIMENSIONS` | `1024` | Optional embedding vector dimensions |
+| `CROSSFADIO_EMBEDDING_SEND_DIMENSIONS` | `1` | Set to `0` to omit the `dimensions` field (models like TokenHub `kinfra-text-embedding-4b` reject it; actual dimensions come from the response) |
 | `CROSSFADIO_HOST` | `127.0.0.1` | Server bind address |
 | `CROSSFADIO_ALLOWED_ORIGINS` | (none) | Comma-separated CORS origins beyond localhost |
 | `CROSSFADIO_DAILY_THEME_TIMEOUT_MS` | `15000` | Daily theme LLM generation timeout (ms) |

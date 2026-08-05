@@ -44,12 +44,16 @@ export function resolveTtsConfig(userId: string): TtsConfig {
     };
   }
 
+  // aliyun-qwen：pref 可能残留腾讯 VoiceType 数字 id，检测到数字格式时回退默认，避免把无效音色发给 Qwen。
+  const aliyunVoice = /^\d+$/.test(voice)
+    ? config.tts.voiceDefault || DEFAULT_TTS_VOICE
+    : voice;
   return {
     provider: 'aliyun-qwen',
     baseUrl: config.tts.baseUrl ?? undefined,
     apiKey: config.tts.apiKey ?? undefined,
     model: DEFAULT_TTS_MODEL,
-    voice,
+    voice: aliyunVoice,
     speed,
     format: 'mp3'
   };

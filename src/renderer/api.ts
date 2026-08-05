@@ -403,6 +403,7 @@ export type LlmSettings = {
 };
 
 export type TtsSettings = {
+  provider: 'aliyun-qwen' | 'openai-compatible' | 'tencent-cloud';
   baseUrl: string;
   model: string;
   hasApiKey: boolean;

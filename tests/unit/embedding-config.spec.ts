@@ -10,7 +10,8 @@ const originalEnv = {
   embeddingBaseUrl: process.env.CROSSFADIO_EMBEDDING_BASE_URL,
   embeddingApiKey: process.env.CROSSFADIO_EMBEDDING_API_KEY,
   embeddingModel: process.env.CROSSFADIO_EMBEDDING_MODEL,
-  embeddingDimensions: process.env.CROSSFADIO_EMBEDDING_DIMENSIONS
+  embeddingDimensions: process.env.CROSSFADIO_EMBEDDING_DIMENSIONS,
+  embeddingSendDimensions: process.env.CROSSFADIO_EMBEDDING_SEND_DIMENSIONS
 };
 
 beforeEach(async () => {
@@ -26,6 +27,7 @@ beforeEach(async () => {
   delete process.env.CROSSFADIO_EMBEDDING_API_KEY;
   delete process.env.CROSSFADIO_EMBEDDING_MODEL;
   delete process.env.CROSSFADIO_EMBEDDING_DIMENSIONS;
+  delete process.env.CROSSFADIO_EMBEDDING_SEND_DIMENSIONS;
 });
 
 afterEach(async () => {
@@ -39,6 +41,7 @@ afterEach(async () => {
   restoreEnv('CROSSFADIO_EMBEDDING_API_KEY', originalEnv.embeddingApiKey);
   restoreEnv('CROSSFADIO_EMBEDDING_MODEL', originalEnv.embeddingModel);
   restoreEnv('CROSSFADIO_EMBEDDING_DIMENSIONS', originalEnv.embeddingDimensions);
+  restoreEnv('CROSSFADIO_EMBEDDING_SEND_DIMENSIONS', originalEnv.embeddingSendDimensions);
   const { resetConfigForTest } = await import('../../src/server/config.js');
   resetConfigForTest();
 });
@@ -59,7 +62,8 @@ describe('embedding config', () => {
       baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
       apiKey: 'bailian-key',
       model: 'text-embedding-v4',
-      dimensions: 1024
+      dimensions: 1024,
+      sendDimensions: true
     });
   });
 
@@ -75,7 +79,26 @@ describe('embedding config', () => {
       baseUrl: 'https://embedding.example/v1',
       apiKey: 'embedding-key',
       model: 'custom-embedding',
-      dimensions: 768
+      dimensions: 768,
+      sendDimensions: true
+    });
+  });
+
+  it('omits the dimensions request field when sendDimensions is disabled', async () => {
+    process.env.CROSSFADIO_EMBEDDING_API_KEY = 'embedding-key';
+    process.env.CROSSFADIO_EMBEDDING_BASE_URL = 'https://embedding.example/v1';
+    process.env.CROSSFADIO_EMBEDDING_MODEL = 'kinfra-text-embedding-4b';
+    process.env.CROSSFADIO_EMBEDDING_DIMENSIONS = '2560';
+    process.env.CROSSFADIO_EMBEDDING_SEND_DIMENSIONS = '0';
+
+    const { loadConfig } = await import('../../src/server/config.js');
+
+    expect(loadConfig().embedding).toEqual({
+      baseUrl: 'https://embedding.example/v1',
+      apiKey: 'embedding-key',
+      model: 'kinfra-text-embedding-4b',
+      dimensions: 2560,
+      sendDimensions: false
     });
   });
 });
