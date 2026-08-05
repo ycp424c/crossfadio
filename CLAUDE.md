@@ -80,8 +80,11 @@ src/
 | `CROSSFADIO_LLM_BASE_URL` | **required** | LLM API base URL (multi-user) |
 | `CROSSFADIO_LLM_API_KEY` | **required** | LLM API key (multi-user) |
 | `CROSSFADIO_LLM_MODEL` | **required** | Server-wide LLM model name; review the provider-switch checklist in `docs/ops-runbook.md` before changing it |
-| `CROSSFADIO_TTS_BASE_URL` | **required** | TTS API base URL (multi-user) |
-| `CROSSFADIO_TTS_API_KEY` | **required** | TTS API key (multi-user) |
+| `CROSSFADIO_TTS_PROVIDER` | `aliyun-qwen` | TTS provider: `aliyun-qwen` \| `openai-compatible` \| `tencent-cloud` (腾讯云语音合成 1073) |
+| `CROSSFADIO_TTS_BASE_URL` | (provider-dependent) | TTS API base URL, required for `aliyun-qwen` / `openai-compatible` |
+| `CROSSFADIO_TTS_API_KEY` | (provider-dependent) | TTS API key, required for `aliyun-qwen` / `openai-compatible` |
+| `CROSSFADIO_TTS_SECRET_ID` | (provider-dependent) | 腾讯云 CAM SecretId，`tencent-cloud` 专用（TC3 签名） |
+| `CROSSFADIO_TTS_SECRET_KEY` | (provider-dependent) | 腾讯云 CAM SecretKey，`tencent-cloud` 专用（TC3 签名） |
 | `CROSSFADIO_TTS_VOICE_DEFAULT` | (none) | Default TTS voice, falls back to 'Cherry' |
 | `CROSSFADIO_EMBEDDING_API_KEY` | (disabled) | Optional semantic discovery embedding API key |
 | `CROSSFADIO_EMBEDDING_BASE_URL` | DashScope compatible URL | Optional embedding API base URL |
