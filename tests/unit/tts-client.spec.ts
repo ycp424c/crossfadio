@@ -263,6 +263,22 @@ describe('TtsClient.synthesize with tencent-cloud', () => {
     expect(bodies.map((b) => b.VoiceType)).toEqual([1004, 1001, 1004]);
   });
 
+  it('passes through premium/LLM/ultra voices from the extended voice table', async () => {
+    const bodies: Array<{ VoiceType?: number; ModelType?: number }> = [];
+    mockTencentResponse((init) => {
+      bodies.push(JSON.parse(init?.body as string) as { VoiceType?: number; ModelType?: number });
+    });
+
+    for (const voice of ['101001', '501004', '502003']) {
+      const client = new TtsClient({ ...tencentBaseConfig, voice });
+      await client.synthesize('x');
+    }
+
+    expect(bodies.map((b) => b.VoiceType)).toEqual([101001, 501004, 502003]);
+    // 类别由 VoiceType 决定，ModelType 保持 1-默认模型（官方当前文档语义）。
+    expect(bodies.map((b) => b.ModelType)).toEqual([1, 1, 1]);
+  });
+
   it('truncates CJK text to 150 chars before sending', async () => {
     let capturedBody: { Text?: string } | undefined;
     mockTencentResponse((init) => {

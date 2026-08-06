@@ -21,7 +21,11 @@ import {
   type PersonalDjContextStatusResponse,
   type PersonalDjContextToken
 } from '@renderer/api';
-import { QWEN3_TTS_VOICES, TENCENT_TTS_VOICES } from '@shared/tts';
+import {
+  QWEN3_TTS_VOICES,
+  TENCENT_TTS_VOICE_CATEGORY_PRICING,
+  TENCENT_TTS_VOICES
+} from '@shared/tts';
 import { AUTO_FILL_BATCH_SIZE_OPTIONS, DEFAULT_AUTO_FILL_BATCH_SIZE, type AutoFillBatchSize } from '@shared/dj';
 
 type SaveStatus = { type: 'idle' } | { type: 'saving' } | { type: 'ok' } | { type: 'error'; message: string };
@@ -236,15 +240,29 @@ export function SettingsView(): JSX.Element {
   const personalTokenLimitReached = activePersonalTokenCount >= 10;
   // 音色列表按当前 TTS provider 隔离：腾讯云展示 VoiceType 音色，阿里云 Qwen 展示 Qwen 音色表；
   // openai-compatible 为自由音色（任意兼容端点音色名），用文本输入而非下拉。
-  const providerVoices: ReadonlyArray<{ id: string; label: string }> =
+  const providerVoices: ReadonlyArray<{ id: string; label: string; category?: string }> =
     tts?.provider === 'tencent-cloud'
-      ? TENCENT_TTS_VOICES
+      ? TENCENT_TTS_VOICES.map((item) => ({
+          ...item,
+          label: `${item.label} · ${TENCENT_TTS_VOICE_CATEGORY_PRICING[item.category]}`
+        }))
       : tts?.provider === 'openai-compatible'
         ? []
         : (QWEN3_TTS_VOICES as readonly string[]).map((name) => ({ id: name, label: name }));
   const voiceOptions = voice && !providerVoices.some((v) => v.id === voice)
     ? [{ id: voice, label: voice }, ...providerVoices]
     : providerVoices;
+  // 腾讯云音色按档位（基础/精品/大模型/超自然）分组展示；无 category 的条目（如 pref 残留音色）平铺在最前。
+  const groupedVoiceOptions = (() => {
+    const byCategory = new Map<string, Array<{ id: string; label: string }>>();
+    for (const v of voiceOptions) {
+      const key = v.category ?? '';
+      const list = byCategory.get(key) ?? [];
+      list.push(v);
+      byCategory.set(key, list);
+    }
+    return [...byCategory.entries()].map(([category, items]) => ({ category, items }));
+  })();
 
   if (loading) {
     return (
@@ -341,9 +359,19 @@ export function SettingsView(): JSX.Element {
                     }}
                     className={inputClass}
                   >
-                    {voiceOptions.map((v) => (
-                      <option key={v.id} value={v.id}>{v.label}</option>
-                    ))}
+                    {groupedVoiceOptions.map((group) =>
+                      group.category ? (
+                        <optgroup key={group.category} label={group.category}>
+                          {group.items.map((v) => (
+                            <option key={v.id} value={v.id}>{v.label}</option>
+                          ))}
+                        </optgroup>
+                      ) : (
+                        group.items.map((v) => (
+                          <option key={v.id} value={v.id}>{v.label}</option>
+                        ))
+                      )
+                    )}
                   </select>
                 )}
                 <button

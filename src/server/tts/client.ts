@@ -182,6 +182,9 @@ export class TtsClient {
       Speed: mapAliyunSpeedToTencent(this.config.speed),
       Volume: 5,
       EnableSubtitle: false,
+      // 官方当前文档（2026-03-30 更新）ModelType 仅支持 1-默认模型，音色类别（基础/精品/
+      // 大模型/超自然）由 VoiceType 决定：基础 1001-1010、精品 101xxx、大模型 501xxx/601xxx、
+      // 超自然 502xxx/602xxx/603xxx，完整表见 shared/tts.ts TENCENT_TTS_VOICES。
       ModelType: 1
     };
     const body = JSON.stringify(payload);
@@ -278,9 +281,9 @@ export function resolvePreferredTtsAudioFormat(config: Pick<TtsConfig, 'provider
   return config.format;
 }
 
-// 把 per-user 的 TTS 音色解析为腾讯云 1073 基础音色 VoiceType。
-// 新格式直接存 VoiceType 字符串（TENCENT_TTS_VOICE_IDS，实测 1006/1011+ 无效）；
-// 旧格式（阿里云音色名）按性别映射：男声 -> 1004 智云，其余 -> 1001 智瑜。
+// 把 per-user 的 TTS 音色解析为腾讯云 1073 VoiceType（白名单见 TENCENT_TTS_VOICE_IDS，
+// 含基础/精品/大模型/超自然四档，实测 1006/1011+ 无效）。
+// 新格式直接存 VoiceType 字符串；旧格式（阿里云音色名）按性别映射：男声 -> 1004 智云，其余 -> 1001 智瑜。
 export function resolveTencentVoiceType(voice: string): number {
   const normalized = voice.trim();
   if (/^\d+$/.test(normalized)) {

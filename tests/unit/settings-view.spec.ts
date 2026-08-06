@@ -200,6 +200,40 @@ describe('settings view', () => {
     });
   });
 
+  it('shows Tencent voice pricing tiers and excludes English-only voices from the Chinese DJ options', async () => {
+    vi.mocked(getSettings).mockResolvedValue({
+      ok: true,
+      llm: {
+        baseUrl: 'https://llm.example/v1',
+        model: 'test-model',
+        hasApiKey: true,
+        thinkingEnabled: false,
+        thinkingSupported: true
+      },
+      tts: {
+        provider: 'tencent-cloud',
+        baseUrl: '',
+        model: 'TextToVoice',
+        hasApiKey: true,
+        voice: '1001',
+        voiceDefault: null
+      },
+      dailyThemeEnabled: true,
+      discoveryMode: 'explore',
+      autoFillBatchSize: 2
+    });
+
+    await renderSettingsView();
+
+    const optionTexts = Array.from(container.querySelectorAll('option'))
+      .map((option) => option.textContent?.trim());
+    expect(optionTexts).toContain('智瑜 · 情感女声 · 基础档（按次计费）');
+    expect(optionTexts).toContain('智瑜 · 情感女声（精品） · 精品档（后付费 0.3 元/万字符）');
+    expect(optionTexts).toContain('月华 · 聊天女声（大模型） · 大模型档（后付费首档 1.2 元/万字符）');
+    expect(optionTexts).toContain('智小柔 · 聊天女声（超自然） · 超自然档（后付费首档 6.5 元/万字符）');
+    expect(optionTexts.some((text) => text?.includes('101050') || text?.includes('WeJack'))).toBe(false);
+  });
+
   it('enables LLM thinking from the rendered settings view', async () => {
     await renderSettingsView();
 
