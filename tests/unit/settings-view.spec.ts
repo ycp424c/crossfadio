@@ -80,6 +80,7 @@ describe('settings view', () => {
         thinkingSupported: true
       },
       tts: {
+        provider: 'aliyun-qwen',
         baseUrl: 'https://tts.example/v1',
         model: 'qwen3-tts-flash',
         hasApiKey: true,
@@ -175,8 +176,27 @@ describe('settings view', () => {
     });
 
     expect(saveSettings).toHaveBeenCalledWith({
-      tts: { voice: 'Cherry' },
       autoFillBatchSize: 5
+    });
+  });
+
+  it('submits the voice only when the user changes it', async () => {
+    await renderSettingsView();
+
+    const voiceSelect = container.querySelector<HTMLSelectElement>('select');
+    expect(voiceSelect).not.toBeNull();
+    await act(async () => {
+      if (!voiceSelect) return;
+      voiceSelect.value = 'Ethan';
+      voiceSelect.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+
+    await act(async () => {
+      buttonByText('保存').click();
+    });
+
+    expect(saveSettings).toHaveBeenCalledWith({
+      tts: { voice: 'Ethan' }
     });
   });
 

@@ -10,6 +10,7 @@ import { appendDjEvent, getRecentTrackSelectedEvent, type DjEventRecord } from '
 import type { z } from 'zod';
 import { buildDjMemorySnapshot } from '../dj-memory/snapshot.js';
 import { projectDjMemoryForSegue } from '../dj-memory/projections.js';
+import { truncateTtsText, estimateTtsTextUnits } from '../tts/client.js';
 
 export type GenerateSegueInput = {
   userId: string;
@@ -21,6 +22,11 @@ export type GenerateSegueInput = {
   emitDelta?: (say: string) => void;
   now?: Date;
   djPickReasonFallback?: string | null;
+  /**
+   * 可选：口播文本长度上限（"估算字"），由调用方按 TTS provider 能力传入。
+   * 在保存 / 返回 / 估时之前统一截断，保证落库文案、前端展示、时长估算与实际合成音频一致。
+   */
+  maxSayUnits?: number;
 };
 
 export type GenerateSegueResult = {
@@ -78,12 +84,28 @@ export async function generateSegue(input: GenerateSegueInput): Promise<Generate
   const parsed = segueOutputSchema.safeParse(finalOutput);
   if (!parsed.success) return null;
   const segue = parsed.data;
+
+  // 在保存/返回/估时前按 provider 能力统一截断，避免保存完整文案但合成截断音频导致时长与展示不一致。
+  let say = segue.say;
+  if (input.maxSayUnits && input.maxSayUnits > 0) {
+    const truncated = truncateTtsText(say, input.maxSayUnits);
+    if (truncated !== say) {
+      logger.warn({
+        userId: input.userId,
+        originalUnits: estimateTtsTextUnits(say),
+        maxSayUnits: input.maxSayUnits,
+        toTrackId: input.to.id
+      }, 'Segue say truncated to TTS provider limit');
+    }
+    say = truncated;
+  }
+
   saveSegue(input.userId, {
     fromId: input.from.id,
     fromName: trackContext.fromTrack.name,
     toId: input.to.id,
     toName: trackContext.toTrack.name,
-    say: segue.say
+    say
   });
   appendDjEvent({
     userId: input.userId,
@@ -96,12 +118,12 @@ export async function generateSegue(input: GenerateSegueInput): Promise<Generate
       fromTrackId: input.from.id,
       toTrackId: input.to.id,
       ...(selectionEvent ? { selectionEventId: selectionEvent.id } : {}),
-      segueSummary: segue.say
+      segueSummary: say
     }
   });
 
   return {
-    segue,
+    segue: { ...segue, say },
     fromTrack: trackContext.fromTrack,
     toTrack: trackContext.toTrack,
     selectionEvent

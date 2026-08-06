@@ -10,7 +10,9 @@ import { resolveTtsConfig } from '../../tts/config.js';
 import { supportsThinkingControl } from '../../llm/client.js';
 import { buildSegueAudioUrl } from './segue.js';
 import { DEFAULT_TTS_MODEL, DEFAULT_TTS_VOICE, TENCENT_TTS_VOICE_IDS, TTS_PREVIEW_TEXT, QWEN3_TTS_VOICES } from '../../../shared/tts.js';
+import { resolveEffectiveVoiceForProvider } from '../../tts/config.js';
 import type { TtsProvider } from '../../config.js';
+import { getTtsVoicePreference, setTtsVoicePreference } from '../../tts/preferences.js';
 import {
   AUTO_FILL_BATCH_SIZE_MAX,
   AUTO_FILL_BATCH_SIZE_MIN,
@@ -48,7 +50,7 @@ export function createGetSettingsHandler() {
   return (req: Request, res: Response): void => {
     const { userId } = req as AuthedRequest;
     const config = getConfig();
-    const userVoice = getPref<string>(userId, 'tts.voice');
+    const userVoice = getTtsVoicePreference(userId, config.tts.provider);
     const dailyThemeEnabled = getPref<boolean>(userId, 'dailyTheme.enabled') !== false;
     const discoveryMode = getDiscoveryMode(userId);
     const autoFillBatchSize = getAutoFillBatchSize(userId);
@@ -66,11 +68,19 @@ export function createGetSettingsHandler() {
       tts: {
         provider: config.tts.provider,
         baseUrl: config.tts.baseUrl ?? '',
-        model: config.tts.provider === 'tencent-cloud' ? 'TextToVoice' : DEFAULT_TTS_MODEL,
+        model: config.tts.provider === 'tencent-cloud'
+          ? 'TextToVoice'
+          : (config.tts.model ?? DEFAULT_TTS_MODEL),
         hasApiKey: config.tts.provider === 'tencent-cloud'
           ? Boolean(config.tts.secretId && config.tts.secretKey)
           : Boolean(config.tts.apiKey),
-        voice: userVoice ?? config.tts.voiceDefault ?? DEFAULT_TTS_VOICE,
+        // 按 provider 归一化：tencent 模式下无效音色（如默认 'Cherry'）回落到合法 VoiceType id，
+        // 保证前端原样回传时能通过 PUT 校验。
+        voice: resolveEffectiveVoiceForProvider(
+          userVoice ?? config.tts.voiceDefault ?? DEFAULT_TTS_VOICE,
+          config.tts.provider,
+          config.tts.voiceDefault ?? DEFAULT_TTS_VOICE
+        ),
         voiceDefault: config.tts.voiceDefault
       },
       dailyThemeEnabled,
@@ -104,7 +114,7 @@ export function createSaveSettingsHandler() {
         res.status(400).json({ ok: false, error: `invalid voice for current TTS provider (${config.tts.provider})` });
         return;
       }
-      setPref(userId, 'tts.voice', voice);
+      setTtsVoicePreference(userId, config.tts.provider, voice);
     }
     if (parsed.data.llm?.thinkingEnabled !== undefined) {
       setPref(userId, 'llm.thinkingEnabled', parsed.data.llm.thinkingEnabled);

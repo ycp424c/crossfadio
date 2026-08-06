@@ -85,7 +85,8 @@ src/
 | `CROSSFADIO_TTS_API_KEY` | (provider-dependent) | TTS API key, required for `aliyun-qwen` / `openai-compatible` |
 | `CROSSFADIO_TTS_SECRET_ID` | (provider-dependent) | 腾讯云 CAM SecretId，`tencent-cloud` 专用（TC3 签名） |
 | `CROSSFADIO_TTS_SECRET_KEY` | (provider-dependent) | 腾讯云 CAM SecretKey，`tencent-cloud` 专用（TC3 签名） |
-| `CROSSFADIO_TTS_VOICE_DEFAULT` | (none) | Default TTS voice, falls back to 'Cherry' |
+| `CROSSFADIO_TTS_VOICE_DEFAULT` | provider-dependent | Default TTS voice; required for `openai-compatible`, otherwise falls back to `Cherry` |
+| `CROSSFADIO_TTS_MODEL` | provider-dependent | Required for `openai-compatible`; `aliyun-qwen` defaults to `qwen3-tts-flash` |
 | `CROSSFADIO_EMBEDDING_API_KEY` | (disabled) | Optional semantic discovery embedding API key |
 | `CROSSFADIO_EMBEDDING_BASE_URL` | DashScope compatible URL | Optional embedding API base URL |
 | `CROSSFADIO_EMBEDDING_MODEL` | `text-embedding-v4` | Optional embedding model name |

@@ -132,7 +132,10 @@ export function SettingsView(): JSX.Element {
   async function handleSave(): Promise<void> {
     setSaveStatus({ type: 'saving' });
     try {
-      await saveSettings({ tts: { voice }, autoFillBatchSize });
+      await saveSettings({
+        ...(voice !== tts?.voice ? { tts: { voice } } : {}),
+        ...(autoFillBatchSize !== savedAutoFillBatchSize ? { autoFillBatchSize } : {})
+      });
       setTts((current) => current ? { ...current, voice } : current);
       setSavedAutoFillBatchSize(autoFillBatchSize);
       setSaveStatus({ type: 'ok' });
@@ -231,11 +234,14 @@ export function SettingsView(): JSX.Element {
   const disabled = voice === tts?.voice && autoFillBatchSize === savedAutoFillBatchSize;
   const activePersonalTokenCount = personalContextTokens.filter((token) => !token.revokedAt).length;
   const personalTokenLimitReached = activePersonalTokenCount >= 10;
-  // 音色列表按当前 TTS provider 隔离：腾讯云展示 VoiceType 音色，其余沿用旧音色名列表。
+  // 音色列表按当前 TTS provider 隔离：腾讯云展示 VoiceType 音色，阿里云 Qwen 展示 Qwen 音色表；
+  // openai-compatible 为自由音色（任意兼容端点音色名），用文本输入而非下拉。
   const providerVoices: ReadonlyArray<{ id: string; label: string }> =
     tts?.provider === 'tencent-cloud'
       ? TENCENT_TTS_VOICES
-      : (QWEN3_TTS_VOICES as readonly string[]).map((name) => ({ id: name, label: name }));
+      : tts?.provider === 'openai-compatible'
+        ? []
+        : (QWEN3_TTS_VOICES as readonly string[]).map((name) => ({ id: name, label: name }));
   const voiceOptions = voice && !providerVoices.some((v) => v.id === voice)
     ? [{ id: voice, label: voice }, ...providerVoices]
     : providerVoices;
@@ -315,18 +321,31 @@ export function SettingsView(): JSX.Element {
             />
             <Field label="声音（Voice）">
               <div className="flex flex-col gap-2 sm:flex-row">
-                <select
-                  value={voice}
-                  onChange={(e) => {
-                    setVoice(e.target.value);
-                    setPreviewStatus({ type: 'idle' });
-                  }}
-                  className={inputClass}
-                >
-                  {voiceOptions.map((v) => (
-                    <option key={v.id} value={v.id}>{v.label}</option>
-                  ))}
-                </select>
+                {tts?.provider === 'openai-compatible' ? (
+                  <input
+                    type="text"
+                    value={voice}
+                    onChange={(e) => {
+                      setVoice(e.target.value);
+                      setPreviewStatus({ type: 'idle' });
+                    }}
+                    placeholder="输入兼容端点支持的音色名（如 alloy、echo）"
+                    className={inputClass}
+                  />
+                ) : (
+                  <select
+                    value={voice}
+                    onChange={(e) => {
+                      setVoice(e.target.value);
+                      setPreviewStatus({ type: 'idle' });
+                    }}
+                    className={inputClass}
+                  >
+                    {voiceOptions.map((v) => (
+                      <option key={v.id} value={v.id}>{v.label}</option>
+                    ))}
+                  </select>
+                )}
                 <button
                   type="button"
                   onClick={handlePreviewVoice}
@@ -345,6 +364,11 @@ export function SettingsView(): JSX.Element {
                       : '试听音色'}
                 </button>
               </div>
+              {tts?.provider === 'openai-compatible' && (
+                <p className="mt-1 text-xs text-zinc-500">
+                  该 provider 为自由音色，请填写兼容端点支持的音色名；模型由服务端环境变量配置。
+                </p>
+              )}
               {previewStatus.type === 'error' && (
                 <p className="mt-2 text-xs text-red-400">{previewStatus.message}</p>
               )}

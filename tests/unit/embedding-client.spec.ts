@@ -63,6 +63,32 @@ describe('EmbeddingClient', () => {
     });
   });
 
+  it('omits the dimensions field from the request body when sendDimensions is disabled', async () => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) =>
+      new Response(JSON.stringify({
+        model: 'kinfra-text-embedding-4b',
+        data: [{ embedding: [0.1, 0.2, 0.3] }]
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    const { EmbeddingClient } = await import('../../src/server/embedding/client.js');
+    const client = new EmbeddingClient({
+      baseUrl: 'https://tokenhub.example/v1',
+      apiKey: 'embedding-key',
+      model: 'kinfra-text-embedding-4b',
+      dimensions: 2560,
+      sendDimensions: false
+    });
+
+    const result = await client.embed('city pop relaxed afternoon');
+
+    const requestBody = JSON.parse(String(fetchMock.mock.calls[0][1]?.body)) as Record<string, unknown>;
+    expect(requestBody.model).toBe('kinfra-text-embedding-4b');
+    expect(requestBody.input).toBe('city pop relaxed afternoon');
+    expect(requestBody).not.toHaveProperty('dimensions');
+    expect(result.dimensions).toBe(3);
+  });
+
   it('health check fails softly instead of throwing', async () => {
     vi.stubGlobal('fetch', vi.fn(async () =>
       new Response('embedding unavailable', { status: 503, statusText: 'Unavailable' })

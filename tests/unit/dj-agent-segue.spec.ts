@@ -28,8 +28,10 @@ vi.mock('../../src/server/weather', () => ({
 }));
 
 import { generateSegue } from '../../src/server/dj-agent/segue';
+import { truncateTtsText } from '../../src/server/tts/client';
 import { initDb, _resetDbForTest } from '../../src/server/store/db';
 import { appendDjEvent, getRecentDjEvents } from '../../src/server/store/dj-events';
+import { getRecentSegues } from '../../src/server/store/segues';
 import { savePersonalDjContext } from '../../src/server/store/personal-dj-context';
 
 const originalDataDir = process.env.CROSSFADIO_DATA_DIR;
@@ -122,6 +124,35 @@ describe('DJAgent segue orchestration', () => {
       selectionEventId: selection.id,
       segueSummary: '刚才那首把注意力铺稳了，下一首继续保持这个低干扰的推进。'
     });
+  });
+
+  it('truncates say once before save, return, and event emission when maxSayUnits is set', async () => {
+    const original = '刚才那首把注意力铺稳了，下一首继续保持这个低干扰的推进。';
+    const truncated = truncateTtsText(original, 10);
+    expect(truncated).toBe('刚才那首把注意力铺稳');
+
+    const result = await generateSegue({
+      userId: 'segue-user',
+      from: { id: 'from-1', name: 'From Song', artist: 'From Artist' },
+      to: { id: 'to-1', name: 'Next Song', artist: 'Next Artist' },
+      ncmClient: {
+        getSongDetails: async () => [
+          { id: 'from-1', name: 'From Song', artists: ['From Artist'] },
+          { id: 'to-1', name: 'Next Song', artists: ['Next Artist'] }
+        ],
+        getLyric: async () => null,
+        getSongWikiSummary: async () => null
+      } as never,
+      llmConfig: { baseUrl: 'https://llm.example/v1', apiKey: 'sk-test', model: 'test-model' },
+      maxSayUnits: 10
+    });
+
+    // 返回、落库、SSE 事件三处必须使用同一个截断结果，保证前端展示/估时/合成文本一致。
+    expect(result?.segue.say).toBe(truncated);
+    expect(getRecentSegues('segue-user')[0].say).toBe(truncated);
+    const segueEvent = getRecentDjEvents('segue-user')
+      .find((event) => event.type === 'segue_generated');
+    expect(segueEvent?.payload?.segueSummary).toBe(truncated);
   });
 });
 

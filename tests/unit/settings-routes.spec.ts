@@ -14,7 +14,7 @@ import {
 } from '../../src/server/http/routes/settings';
 import { createAnalyzeTasteHandler, runTasteAnalysis } from '../../src/server/http/routes/taste-analysis';
 import { NCM_ERROR_CODE } from '../../src/shared/schema';
-import { DEFAULT_TTS_MODEL } from '../../src/shared/tts';
+import { DEFAULT_TTS_MODEL, DEFAULT_TTS_VOICE } from '../../src/shared/tts';
 
 const originalEnv = { ...process.env };
 let dataDir: string;
@@ -77,6 +77,90 @@ describe('settings routes', () => {
       dailyThemeEnabled: true,
       discoveryMode: 'explore',
       autoFillBatchSize: 2
+    });
+  });
+
+  it('GET reflects CROSSFADIO_TTS_MODEL for non-Tencent providers', () => {
+    process.env.CROSSFADIO_TTS_MODEL = 'gpt-4o-mini-tts';
+    resetConfigForTest();
+    const handler = createGetSettingsHandler();
+    const res = createJsonResponse();
+
+    handler({ userId: 'test-user' } as never, res as never);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toMatchObject({ tts: { model: 'gpt-4o-mini-tts' } });
+  });
+
+  it('GET normalizes a legacy male voice to the male VoiceType id for tencent-cloud', async () => {
+    process.env.CROSSFADIO_TTS_PROVIDER = 'tencent-cloud';
+    process.env.CROSSFADIO_TTS_SECRET_ID = 'AKID-test';
+    process.env.CROSSFADIO_TTS_SECRET_KEY = 'secret-key';
+    resetConfigForTest();
+    const { setPref } = await import('../../src/server/store/prefs');
+    setPref('test-user', 'tts.voice', 'Ethan');
+
+    const handler = createGetSettingsHandler();
+    const res = createJsonResponse();
+    handler({ userId: 'test-user' } as never, res as never);
+
+    // 展示值必须与合成映射一致（Ethan -> 1004 智云），避免保存时把男声偏好覆写成女声。
+    expect(res.body).toMatchObject({ tts: { voice: '1004', model: 'TextToVoice' } });
+  });
+
+  it('returns a voice that always passes PUT validation after a provider switch', async () => {
+    // 用户 pref 残留 OpenAI 旧音色，provider 已切回 aliyun-qwen：GET 必须归一化为合法 Qwen 音色，
+    // 前端原样回传时 PUT 不能 400（否则保存其他配置也会失败）。
+    const { setPref } = await import('../../src/server/store/prefs');
+    setPref('test-user', 'tts.voice', 'alloy');
+
+    const getHandler = createGetSettingsHandler();
+    const getRes = createJsonResponse();
+    getHandler({ userId: 'test-user' } as never, getRes as never);
+    const voice = (getRes.body as { tts: { voice: string } }).tts.voice;
+    expect(voice).toBe(DEFAULT_TTS_VOICE);
+
+    const saveHandler = createSaveSettingsHandler();
+    const saveRes = createJsonResponse();
+    saveHandler({ userId: 'test-user', body: { tts: { voice } } } as never, saveRes as never);
+    expect(saveRes.statusCode).toBe(200);
+  });
+
+  it('stores voice per provider without overwriting the legacy preference during a provider round trip', async () => {
+    const { getPref, setPref } = await import('../../src/server/store/prefs');
+    setPref('test-user', 'tts.voice', '1004');
+
+    const aliyunGetRes = createJsonResponse();
+    createGetSettingsHandler()({ userId: 'test-user' } as never, aliyunGetRes as never);
+    const aliyunVoice = (aliyunGetRes.body as { tts: { voice: string } }).tts.voice;
+    expect(aliyunVoice).toBe(DEFAULT_TTS_VOICE);
+
+    const aliyunSelectedVoice = 'Ethan';
+    const saveRes = createJsonResponse();
+    createSaveSettingsHandler()(
+      { userId: 'test-user', body: { tts: { voice: aliyunSelectedVoice }, autoFillBatchSize: 5 } } as never,
+      saveRes as never
+    );
+    expect(saveRes.statusCode).toBe(200);
+    expect(getPref('test-user', 'tts.voice')).toBe('1004');
+    expect(getPref('test-user', 'tts.voice.aliyun-qwen')).toBe(aliyunSelectedVoice);
+
+    process.env.CROSSFADIO_TTS_PROVIDER = 'tencent-cloud';
+    process.env.CROSSFADIO_TTS_SECRET_ID = 'AKID-test';
+    process.env.CROSSFADIO_TTS_SECRET_KEY = 'secret-key';
+    resetConfigForTest();
+
+    const tencentGetRes = createJsonResponse();
+    createGetSettingsHandler()({ userId: 'test-user' } as never, tencentGetRes as never);
+    expect(tencentGetRes.body).toMatchObject({ tts: { voice: '1004' }, autoFillBatchSize: 5 });
+
+    process.env.CROSSFADIO_TTS_PROVIDER = 'aliyun-qwen';
+    resetConfigForTest();
+    const aliyunReturnRes = createJsonResponse();
+    createGetSettingsHandler()({ userId: 'test-user' } as never, aliyunReturnRes as never);
+    expect(aliyunReturnRes.body).toMatchObject({
+      tts: { voice: aliyunSelectedVoice },
+      autoFillBatchSize: 5
     });
   });
 

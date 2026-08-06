@@ -200,6 +200,94 @@ describe('TtsClient.synthesize', () => {
   });
 });
 
+describe('TtsClient.synthesize with tencent-cloud', () => {
+  const tencentBaseConfig = {
+    provider: 'tencent-cloud' as const,
+    secretId: 'AKID-test',
+    secretKey: 'secret-key',
+    model: 'TextToVoice',
+    voice: '1004',
+    speed: 1,
+    format: 'mp3' as const
+  };
+
+  function mockTencentResponse(handler: (init?: RequestInit) => void): void {
+    mockFetch(async (_url, init) => {
+      handler(init);
+      return Response.json({ Response: { Audio: Buffer.from('tencent-mp3').toString('base64') } });
+    });
+  }
+
+  it('sends a TC3-signed TextToVoice request with the mapped VoiceType and saves mp3', async () => {
+    let capturedInit: RequestInit | undefined;
+    mockTencentResponse((init) => { capturedInit = init; });
+
+    const client = new TtsClient({ ...tencentBaseConfig, voice: 'Ethan' });
+    const result = await client.synthesize('你好，世界');
+
+    const headers = capturedInit?.headers as Record<string, string>;
+    expect(headers['X-TC-Action']).toBe('TextToVoice');
+    expect(headers['X-TC-Version']).toBe('2019-08-23');
+    expect(headers['X-TC-Region']).toBe('ap-guangzhou');
+    expect(headers['Content-Type']).toContain('application/json');
+    expect(headers['Authorization']).toMatch(/^TC3-HMAC-SHA256 Credential=AKID-test\//);
+    expect(headers['Authorization']).toContain('SignedHeaders=content-type;host');
+
+    const body = JSON.parse(capturedInit?.body as string) as Record<string, unknown>;
+    expect(body.Text).toBe('你好，世界');
+    expect(body.VoiceType).toBe(1004); // Ethan（旧男声）-> 智云 1004
+    expect(body.Codec).toBe('mp3');
+    expect(body.Speed).toBe(0); // 阿里云 speed 1.0 -> 腾讯 Speed 0
+    expect(body.Volume).toBe(5);
+    expect(body.EnableSubtitle).toBe(false);
+    expect(body.ModelType).toBe(1);
+    expect(typeof body.SessionId).toBe('string');
+
+    expect(path.extname(result.filePath)).toBe('.mp3');
+    expect(fs.readFileSync(result.filePath)).toEqual(Buffer.from('tencent-mp3'));
+  });
+
+  it('maps legacy male voices and invalid digit ids through the same voice table', async () => {
+    const bodies: Array<{ VoiceType?: number }> = [];
+    mockTencentResponse((init) => {
+      bodies.push(JSON.parse(init?.body as string) as { VoiceType?: number });
+    });
+
+    const male = new TtsClient({ ...tencentBaseConfig, voice: 'Ryan' });
+    await male.synthesize('x');
+    const invalid = new TtsClient({ ...tencentBaseConfig, voice: '1006' });
+    await invalid.synthesize('x');
+    const valid = new TtsClient({ ...tencentBaseConfig, voice: '1004' });
+    await valid.synthesize('x');
+
+    expect(bodies.map((b) => b.VoiceType)).toEqual([1004, 1001, 1004]);
+  });
+
+  it('truncates CJK text to 150 chars before sending', async () => {
+    let capturedBody: { Text?: string } | undefined;
+    mockTencentResponse((init) => {
+      capturedBody = JSON.parse(init?.body as string) as { Text?: string };
+    });
+
+    const client = new TtsClient(tencentBaseConfig);
+    await client.synthesize('中'.repeat(160));
+
+    expect(capturedBody?.Text).toBe('中'.repeat(150));
+  });
+
+  it('keeps up to 500 ASCII letters before sending', async () => {
+    let capturedBody: { Text?: string } | undefined;
+    mockTencentResponse((init) => {
+      capturedBody = JSON.parse(init?.body as string) as { Text?: string };
+    });
+
+    const client = new TtsClient(tencentBaseConfig);
+    await client.synthesize('a'.repeat(600));
+
+    expect(capturedBody?.Text).toBe('a'.repeat(500));
+  });
+});
+
 describe('TtsError', () => {
   it('has name TtsError and extends Error', () => {
     const err = new TtsError('fail');

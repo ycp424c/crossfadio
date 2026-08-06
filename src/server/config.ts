@@ -13,6 +13,7 @@ export type ServerConfig = {
     secretId: string | null;
     secretKey: string | null;
     voiceDefault: string | null;
+    model: string | null;
   };
   embedding: { baseUrl: string; apiKey: string; model: string; dimensions: number; sendDimensions: boolean } | null;
   host: string;
@@ -71,6 +72,8 @@ function resolveTtsServerConfig(): ServerConfig['tts'] {
   const apiKey = process.env.CROSSFADIO_TTS_API_KEY?.trim() || null;
   const secretId = process.env.CROSSFADIO_TTS_SECRET_ID?.trim() || null;
   const secretKey = process.env.CROSSFADIO_TTS_SECRET_KEY?.trim() || null;
+  const voiceDefault = process.env.CROSSFADIO_TTS_VOICE_DEFAULT?.trim() || null;
+  const model = process.env.CROSSFADIO_TTS_MODEL?.trim() || null;
 
   if (provider === 'tencent-cloud') {
     if (!secretId || !secretKey) {
@@ -80,6 +83,9 @@ function resolveTtsServerConfig(): ServerConfig['tts'] {
     if (!baseUrl || !apiKey) {
       throw new Error(`Missing required environment variable: CROSSFADIO_TTS_BASE_URL / CROSSFADIO_TTS_API_KEY (provider=${provider})`);
     }
+    if (provider === 'openai-compatible' && (!model || !voiceDefault)) {
+      throw new Error('Missing required environment variable: CROSSFADIO_TTS_MODEL / CROSSFADIO_TTS_VOICE_DEFAULT (provider=openai-compatible)');
+    }
   }
 
   return {
@@ -88,7 +94,10 @@ function resolveTtsServerConfig(): ServerConfig['tts'] {
     apiKey,
     secretId,
     secretKey,
-    voiceDefault: process.env.CROSSFADIO_TTS_VOICE_DEFAULT?.trim() || null
+    voiceDefault,
+    // 非腾讯 provider 的 TTS 模型名：openai-compatible 可指向任意兼容端点模型（如 gpt-4o-mini-tts），
+    // aliyun-qwen 需为 DashScope TTS 模型；缺省时由调用方回退到 DEFAULT_TTS_MODEL。
+    model
   };
 }
 

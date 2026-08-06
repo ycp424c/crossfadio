@@ -11,7 +11,10 @@ const REQUIRED_ENV = {
 
 const originalEnv = new Map<string, string | undefined>([
   ...Object.keys(REQUIRED_ENV),
-  'CROSSFADIO_LYRICS_SELECTION_MODE'
+  'CROSSFADIO_LYRICS_SELECTION_MODE',
+  'CROSSFADIO_TTS_PROVIDER',
+  'CROSSFADIO_TTS_MODEL',
+  'CROSSFADIO_TTS_VOICE_DEFAULT'
 ].map((name) => [name, process.env[name]]));
 
 beforeEach(async () => {
@@ -19,6 +22,9 @@ beforeEach(async () => {
   resetConfigForTest();
   Object.assign(process.env, REQUIRED_ENV);
   delete process.env.CROSSFADIO_LYRICS_SELECTION_MODE;
+  delete process.env.CROSSFADIO_TTS_PROVIDER;
+  delete process.env.CROSSFADIO_TTS_MODEL;
+  delete process.env.CROSSFADIO_TTS_VOICE_DEFAULT;
 });
 
 afterEach(async () => {
@@ -53,5 +59,29 @@ describe('lyrics selection mode config', () => {
 
     expect(() => loadConfig()).not.toThrow();
     expect(loadConfig().lyricsSelectionMode).toBe('off');
+  });
+});
+
+describe('TTS provider config', () => {
+  it('requires an explicit model and voice default for openai-compatible', async () => {
+    process.env.CROSSFADIO_TTS_PROVIDER = 'openai-compatible';
+    const { loadConfig } = await import('../../src/server/config.js');
+
+    expect(() => loadConfig()).toThrow(
+      'Missing required environment variable: CROSSFADIO_TTS_MODEL / CROSSFADIO_TTS_VOICE_DEFAULT (provider=openai-compatible)'
+    );
+  });
+
+  it('accepts an explicit model and voice default for openai-compatible', async () => {
+    process.env.CROSSFADIO_TTS_PROVIDER = 'openai-compatible';
+    process.env.CROSSFADIO_TTS_MODEL = 'gpt-4o-mini-tts';
+    process.env.CROSSFADIO_TTS_VOICE_DEFAULT = 'alloy';
+    const { loadConfig } = await import('../../src/server/config.js');
+
+    expect(loadConfig().tts).toMatchObject({
+      provider: 'openai-compatible',
+      model: 'gpt-4o-mini-tts',
+      voiceDefault: 'alloy'
+    });
   });
 });

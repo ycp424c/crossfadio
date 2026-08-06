@@ -56,7 +56,7 @@ export const QWEN3_TTS_VOICES = [
 // 腾讯云语音合成（1073）基础音色（ModelType=1，按次计费）。
 // 实测有效 VoiceType：1001-1005、1007-1010（1006 及 1011+ 不存在）。
 // 名称与性别依据腾讯云官方音色表（智瑜/智聆/智云/智华等，经 SDK 文档与实测 F0 双重核对）。
-// per-user `tts.voice` pref 存 id（字符串），如 '1001'。
+// per-user `tts.voice.tencent-cloud` pref 存 id（字符串），如 '1001'；旧 `tts.voice` 仅作懒迁移回退。
 export const TENCENT_TTS_VOICES = [
   { id: '1001', label: '智瑜 · 情感女声' },
   { id: '1002', label: '智聆 · 通用女声' },

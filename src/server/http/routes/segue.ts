@@ -6,7 +6,7 @@ import { trackSchema } from '../../agent/schema.js';
 import { resolveLlmConfig } from '../../llm/config.js';
 import { beginForegroundLlmWork } from '../../llm/foreground-activity.js';
 import type { NcmClient } from '../../ncm/client.js';
-import { TtsClient } from '../../tts/client.js';
+import { TENCENT_TTS_MAX_INPUT_UNITS, TtsClient } from '../../tts/client.js';
 import { resolveTtsConfig } from '../../tts/config.js';
 import { getTtsCacheDir } from '../../tts/cache.js';
 import { estimateTtsDurationSec } from '../../tts/duration.js';
@@ -143,6 +143,7 @@ async function runSegueJob(
     }
 
     const releaseForegroundLlm = beginForegroundLlmWork();
+    const ttsProvider = resolveTtsConfig(userId).provider;
     let segueResult: Awaited<ReturnType<typeof generateSegue>>;
     try {
       segueResult = await generateSegue({
@@ -153,7 +154,9 @@ async function runSegueJob(
         llmConfig,
         signal,
         djPickReasonFallback: getDjPickReason(userId, to.id),
-        emitDelta: (say) => emit({ type: 'segue.delta', say })
+        emitDelta: (say) => emit({ type: 'segue.delta', say }),
+        // 腾讯 TextToVoice 有文本长度上限：在保存/展示/估时之前统一截断，保证音频、文案与时序一致。
+        maxSayUnits: ttsProvider === 'tencent-cloud' ? TENCENT_TTS_MAX_INPUT_UNITS : undefined
       });
     } finally {
       releaseForegroundLlm();

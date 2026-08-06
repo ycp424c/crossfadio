@@ -7,7 +7,8 @@ import { TENCENT_TTS_VOICE_IDS } from '../../shared/tts.js';
 
 const ALIYUN_CACHE_HASH_FORMAT = 'aliyun-auto-v2';
 const ALIYUN_CACHE_LOOKUP_FORMATS = ['wav', 'mp3', 'opus', 'aac', 'flac'] as const;
-const TENCENT_CACHE_HASH_FORMAT = 'tencent-tts-v1';
+// v2：2026-08-05 音色映射修正（男声 1002→1004）后提升版本，避免命中旧音色缓存。
+const TENCENT_CACHE_HASH_FORMAT = 'tencent-tts-v2';
 const TENCENT_CACHE_LOOKUP_FORMATS = ['mp3'] as const;
 
 // Tencent Cloud TTS (产品 1073) 短文本合成接口
@@ -16,8 +17,13 @@ const TENCENT_TTS_SERVICE = 'tts';
 const TENCENT_TTS_VERSION = '2019-08-23';
 const TENCENT_TTS_ACTION = 'TextToVoice';
 const TENCENT_TTS_REGION = 'ap-guangzhou';
-// TextToVoice 中文最多 150 字（接口文档：cloud.tencent.com/document/api/1073/37995）
-const TENCENT_TTS_MAX_INPUT_CHARS = 150;
+
+// TextToVoice 文本长度上限：中文最多 150 字、英文最多 500 字母（接口文档：cloud.tencent.com/document/api/1073/37995）。
+// 用"估算字"统一度量：非 ASCII 字符 1 字，ASCII 按 150/500 = 0.3 字计
+// （150 估算字 ≈ 中文 150 字 或 英文 500 字母，均等于接口上限）。
+export const TENCENT_TTS_MAX_INPUT_CHARS = 150;
+export const TENCENT_TTS_MAX_INPUT_ASCII = 500;
+export const TENCENT_TTS_MAX_INPUT_UNITS = TENCENT_TTS_MAX_INPUT_CHARS;
 
 // 腾讯云 1073 基础音色（ModelType=1，按次计费、性价比高）。
 // 官方音色表：1001 智瑜(女)、1002 智聆(女)、1003 智美(女)、1004 智云(男)、1005 智莉(女)、
@@ -27,7 +33,8 @@ const TENCENT_BASIC_VOICE_MALE_DEFAULT = 1004;   // 智云 · 通用男声
 const TENCENT_MALE_VOICE_NAMES = new Set([
   'Ethan', 'Ryan', 'Aiden', 'Vincent', 'Neil', 'Elias', 'Arthur', 'Alek', 'Andre',
   'Dylan', 'Marcus', 'Roy', 'Peter', 'Eric', 'Rocky', 'Kai', 'Li', 'Sunny',
-  'Lenn', 'Emilien', 'Radio Gol', 'Leon', 'Xander', 'Oscar'
+  'Lenn', 'Emilien', 'Radio Gol', 'Leon', 'Xander', 'Oscar',
+  'Eldric Sage', 'Mochi', 'Nofish', 'Pip', 'Bodega', 'Dolce'
 ]);
 
 export const ttsConfigSchema = z.object({
@@ -287,15 +294,58 @@ export function resolveTencentVoiceType(voice: string): number {
   return TENCENT_BASIC_VOICE_FEMALE_DEFAULT;
 }
 
-// TextToVoice 中文最多 150 字；超长时按码点截断并告警（避免 151-220 字口播被接口拒绝）。
+// TextToVoice 有文本长度上限，超长时按"估算字"截断并告警（避免长口播被接口拒绝）。
 function truncateTencentTtsText(text: string): string {
-  if (Array.from(text).length <= TENCENT_TTS_MAX_INPUT_CHARS) return text;
-  const truncated = Array.from(text).slice(0, TENCENT_TTS_MAX_INPUT_CHARS).join('');
+  if (estimateTtsTextUnits(text) <= TENCENT_TTS_MAX_INPUT_UNITS) return text;
+  const truncated = truncateTtsText(text, TENCENT_TTS_MAX_INPUT_UNITS);
   getLogger().warn({
-    originalChars: Array.from(text).length,
-    truncatedChars: TENCENT_TTS_MAX_INPUT_CHARS
-  }, 'Tencent TTS input truncated to 150 chars');
+    originalUnits: estimateTtsTextUnits(text),
+    truncatedUnits: TENCENT_TTS_MAX_INPUT_UNITS
+  }, 'Tencent TTS input truncated to 150 units');
   return truncated;
+}
+
+// 估算腾讯 TextToVoice 的"字"数（150 估算字 = 中文 150 字 或 英文 500 字母）。
+// 用整数运算避免浮点误差（0.3 无法用二进制精确表示，累加 500 次会漂移）。
+export function estimateTtsTextUnits(text: string): number {
+  const { ascii, other } = countAsciiAndOther(text);
+  return Math.ceil(
+    (other * TENCENT_TTS_MAX_INPUT_ASCII + ascii * TENCENT_TTS_MAX_INPUT_CHARS) / TENCENT_TTS_MAX_INPUT_ASCII
+  );
+}
+
+// 按"估算字"上限截断，保证不切断代理对（按码点遍历）。
+// 判据（整数）：other*500 + ascii*150 <= maxUnits*500。
+export function truncateTtsText(text: string, maxUnits: number): string {
+  if (estimateTtsTextUnits(text) <= maxUnits) return text;
+  const max = maxUnits * TENCENT_TTS_MAX_INPUT_ASCII;
+  let ascii = 0;
+  let other = 0;
+  let out = '';
+  for (const ch of Array.from(text)) {
+    const isAscii = isAsciiChar(ch);
+    const nextAscii = ascii + (isAscii ? 1 : 0);
+    const nextOther = other + (isAscii ? 0 : 1);
+    if (nextOther * TENCENT_TTS_MAX_INPUT_ASCII + nextAscii * TENCENT_TTS_MAX_INPUT_CHARS > max) break;
+    ascii = nextAscii;
+    other = nextOther;
+    out += ch;
+  }
+  return out;
+}
+
+function countAsciiAndOther(text: string): { ascii: number; other: number } {
+  let ascii = 0;
+  let other = 0;
+  for (const ch of Array.from(text)) {
+    if (isAsciiChar(ch)) ascii += 1;
+    else other += 1;
+  }
+  return { ascii, other };
+}
+
+function isAsciiChar(ch: string): boolean {
+  return /[\u0000-\u007F]/.test(ch);
 }
 
 // 阿里云语义 speed（1.0 = 正常语速）映射到腾讯云 1073 的 Speed（0 = 正常语速，范围 -2..2）
