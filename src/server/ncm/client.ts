@@ -60,6 +60,21 @@ type GetSongUrlOptions = {
 
 const defaultSongUrlQualityCache: NcmSongUrlQualityCache = new Map();
 
+// Netease CDN domains all serve valid HTTPS; rewriting the scheme lets the web
+// app be served over HTTPS without mixed-content blocking. Non-Netease hosts
+// are left untouched.
+const NCM_HTTPS_UPGRADE_HOST = /(^|\.)(126\.net|netease\.com|163\.com)$/i;
+
+export function ensureNcmHttpsUrl(url: string | null | undefined): string | null {
+  if (!url || !url.startsWith('http://')) return url || null;
+  try {
+    if (!NCM_HTTPS_UPGRADE_HOST.test(new URL(url).hostname)) return url;
+  } catch {
+    return url;
+  }
+  return `https://${url.slice('http://'.length)}`;
+}
+
 type NcmSearchHotItem = {
   searchWord?: unknown;
   content?: unknown;
@@ -277,7 +292,7 @@ export class NcmClient {
         id: playlist.id,
         name: playlist.name.trim(),
         trackCount: typeof playlist.trackCount === 'number' ? playlist.trackCount : 0,
-        coverImgUrl: playlist.coverImgUrl ?? null
+        coverImgUrl: ensureNcmHttpsUrl(playlist.coverImgUrl)
       }))
       .filter((playlist) => playlist.name.length > 0);
   }
@@ -352,7 +367,7 @@ export class NcmClient {
 
     return {
       id: first.id,
-      url: first.url ?? null,
+      url: ensureNcmHttpsUrl(first.url),
       br: first.br ?? null,
       size: first.size ?? null,
       type: first.type ?? null,
@@ -443,7 +458,7 @@ export class NcmClient {
     return {
       id: playlist.id,
       name: playlist.name,
-      coverImgUrl: playlist.coverImgUrl ?? null,
+      coverImgUrl: ensureNcmHttpsUrl(playlist.coverImgUrl),
       trackCount: typeof playlist.trackCount === 'number' ? playlist.trackCount : tracks.length,
       tracks
     };
@@ -721,7 +736,7 @@ function mapNcmTrack(song: {
       .map((artist) => artist.name)
       .filter((name): name is string => typeof name === 'string' && name.length > 0),
     durationMs: typeof song.dt === 'number' ? song.dt : 0,
-    ...(song.al?.picUrl ? { coverImgUrl: song.al.picUrl } : {}),
+    ...(song.al?.picUrl ? { coverImgUrl: ensureNcmHttpsUrl(song.al.picUrl) } : {}),
     ...qualitySignalsProperty(buildTrackQualitySignals(song))
   };
 }

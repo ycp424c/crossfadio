@@ -13,6 +13,7 @@ import {
   NCM_SONG_URL_QUALITY_LEVELS,
   NcmApiError,
   NcmClient,
+  ensureNcmHttpsUrl,
   type NcmSongUrlQualityCache
 } from '../../src/server/ncm/client';
 import { NCM_ERROR_CODE } from '../../src/shared/schema';
@@ -871,5 +872,64 @@ describe('NcmClient DTO mapping', () => {
     await expect(client.searchSongs('x')).rejects.toMatchObject({
       code: NCM_ERROR_CODE.BAD_RESPONSE
     });
+  });
+});
+
+describe('ensureNcmHttpsUrl', () => {
+  it('rewrites http URLs on Netease CDN hosts to https', () => {
+    expect(ensureNcmHttpsUrl('http://m701.music.126.net/20260807/abc/42.m4a?sign=xyz'))
+      .toBe('https://m701.music.126.net/20260807/abc/42.m4a?sign=xyz');
+    expect(ensureNcmHttpsUrl('http://p1.music.126.net/cover.jpg')).toBe('https://p1.music.126.net/cover.jpg');
+    expect(ensureNcmHttpsUrl('http://nos.netease.com/cover.jpg')).toBe('https://nos.netease.com/cover.jpg');
+    expect(ensureNcmHttpsUrl('http://music.163.com/song/42')).toBe('https://music.163.com/song/42');
+  });
+
+  it('keeps https URLs and non-Netease http URLs unchanged', () => {
+    expect(ensureNcmHttpsUrl('https://m701.music.126.net/42.m4a')).toBe('https://m701.music.126.net/42.m4a');
+    expect(ensureNcmHttpsUrl('http://example.com/42.m4a')).toBe('http://example.com/42.m4a');
+    expect(ensureNcmHttpsUrl('http://not-126.net.evil.com/42.m4a')).toBe('http://not-126.net.evil.com/42.m4a');
+  });
+
+  it('passes through nullish and malformed values', () => {
+    expect(ensureNcmHttpsUrl(null)).toBeNull();
+    expect(ensureNcmHttpsUrl(undefined)).toBeNull();
+    expect(ensureNcmHttpsUrl('')).toBeNull();
+    expect(ensureNcmHttpsUrl('http://not a url')).toBe('http://not a url');
+  });
+
+  it('rewrites song URLs returned by /song/url/v1', async () => {
+    mockFetch(async () =>
+      new Response(
+        JSON.stringify({
+          data: [{ id: 42, url: 'http://m701.music.126.net/20260807/abc/42.m4a', br: 320000 }]
+        }),
+        { status: 200 }
+      )
+    );
+    const client = new NcmClient('http://127.0.0.1:3000');
+
+    const result = await client.getSongUrl('42');
+
+    expect(result?.url).toBe('https://m701.music.126.net/20260807/abc/42.m4a');
+  });
+
+  it('rewrites playlist cover URLs returned by /cloudsearch', async () => {
+    mockFetch(async () =>
+      new Response(
+        JSON.stringify({
+          result: {
+            playlists: [
+              { id: 701, name: 'City Pop Selection', trackCount: 42, coverImgUrl: 'http://p1.music.126.net/701.jpg' }
+            ]
+          }
+        }),
+        { status: 200 }
+      )
+    );
+    const client = new NcmClient('http://127.0.0.1:3000');
+
+    const playlists = await client.searchPlaylists('city pop', 4);
+
+    expect(playlists[0]?.coverImgUrl).toBe('https://p1.music.126.net/701.jpg');
   });
 });
