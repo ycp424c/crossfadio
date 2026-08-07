@@ -132,7 +132,7 @@ import { mergeQueueTracksById } from '@renderer/playerTemporaryBans';
 import { AUTO_FILL_LOW_WATER_MARK, type DiscoveryMode } from '@shared/dj';
 import type { NcmQrStatus, NextTrackResponse, NowPlayingResponse, QueueTrackDto } from '@shared/schema';
 import type { SelectionJourneySnapshot } from '@shared/selection';
-import appMark from '@renderer/assets/image2/crossfadio-mark.svg';
+import appLogo from '@renderer/assets/image2/crossfadio-logo.svg';
 
 
 type NcmSessionState = {
@@ -2302,10 +2302,7 @@ export function PlayerView({ onAuthTokenChange, onNavigate }: PlayerViewProps): 
 
         {/* Header */}
         <header className={`col-span-1 flex flex-col items-stretch justify-between gap-3 rounded-xl border px-4 py-3 md:col-span-12 md:flex-row md:items-center ${modeConfig.panel}`}>
-          <div className="flex items-center gap-2.5">
-            <img alt="Crossfadio 应用图标" className="h-7 w-7 rounded-lg" src={appMark} />
-            <span className="text-lg font-semibold tracking-tight text-zinc-50">Crossfadio</span>
-          </div>
+          <img alt="Crossfadio" className="h-9 w-auto shrink-0 self-start md:self-auto" src={appLogo} />
           {weatherContext ? (
             <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-3 gap-y-1 rounded-full border border-white/10 bg-black/25 px-4 py-2 text-xs text-zinc-300 md:max-w-[520px]">
               <span className="inline-flex min-w-0 items-center gap-1.5">

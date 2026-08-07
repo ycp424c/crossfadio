@@ -1,18 +1,20 @@
-<svg width="256" height="256" viewBox="0 0 256 256" fill="none" xmlns="http://www.w3.org/2000/svg">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="crossfadio-mark-title crossfadio-mark-desc">
+  <title id="crossfadio-mark-title">Crossfadio</title>
+  <desc id="crossfadio-mark-desc">Two colorful audio signals crossfade around a play button.</desc>
   <defs>
-    <linearGradient id="bg" x1="32" y1="24" x2="220" y2="236" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#7C3AED"/>
-      <stop offset="0.55" stop-color="#2563EB"/>
-      <stop offset="1" stop-color="#06B6D4"/>
+    <linearGradient id="crossfadio-cool" x1="12" y1="46" x2="52" y2="18" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#22D3EE"/>
+      <stop offset="1" stop-color="#6366F1"/>
     </linearGradient>
-    <linearGradient id="ring" x1="84" y1="76" x2="188" y2="184" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#FDE68A"/>
-      <stop offset="1" stop-color="#F97316"/>
+    <linearGradient id="crossfadio-warm" x1="12" y1="18" x2="52" y2="46" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FBBF24"/>
+      <stop offset="1" stop-color="#FB7185"/>
     </linearGradient>
   </defs>
-  <rect x="20" y="20" width="216" height="216" rx="56" fill="url(#bg)"/>
-  <circle cx="128" cy="128" r="62" fill="#0F172A"/>
-  <circle cx="128" cy="128" r="51" stroke="url(#ring)" stroke-width="14"/>
-  <circle cx="128" cy="128" r="11" fill="#E2E8F0"/>
-  <path d="M176 72C188.15 72 198 81.85 198 94V130C198 137.732 191.732 144 184 144V94C184 89.582 180.418 86 176 86H144C136.268 86 130 79.732 130 72H176Z" fill="#E0E7FF" fill-opacity="0.78"/>
+  <rect x="2" y="2" width="60" height="60" rx="17" fill="#09090B"/>
+  <rect x="2.5" y="2.5" width="59" height="59" rx="16.5" fill="none" stroke="#FFFFFF" stroke-opacity=".14"/>
+  <path d="M12 44C21 44 24 20 34 20C43 20 46 39 52 44" fill="none" stroke="url(#crossfadio-cool)" stroke-width="7" stroke-linecap="round"/>
+  <path d="M12 20C21 20 24 44 34 44C43 44 46 25 52 20" fill="none" stroke="url(#crossfadio-warm)" stroke-width="7" stroke-linecap="round"/>
+  <circle cx="32" cy="32" r="7.5" fill="#18181B" stroke="#FFFFFF" stroke-opacity=".2"/>
+  <path d="M30 27.8L37 32L30 36.2V27.8Z" fill="#FAFAFA"/>
 </svg>

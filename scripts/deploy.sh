@@ -169,7 +169,6 @@ do_build() {
 
   echo "打包构建产物..."
   LC_ALL=C tar czf "$TARBALL" -C "$REPO_ROOT" \
-    --exclude='*.png' \
     --exclude='*.map' \
     out/ dist/
 

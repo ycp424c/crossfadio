@@ -9,11 +9,14 @@
   - 用途: 后续多页面（Board）视觉参考
 
 - `crossfadio-mark.svg`
-  - 用途: 应用品牌图标（侧栏标题）
+  - 用途: 应用品牌图标、浏览器 favicon（为 16–64px 小尺寸优化）
+
+- `crossfadio-logo.svg`
+  - 用途: 页面顶栏横向组合标（品牌图标 + 字标）
 
 - `crossfadio-app-icon.png`
-  - 来源: Image2 生成
-  - 用途: 浏览器 favicon / 项目 App icon
+  - 来源: `crossfadio-mark.svg` 的 1024×1024 PNG 导出
+  - 用途: Apple Touch Icon / 需要 PNG 的 App icon 场景
 
 - `cover-placeholder.svg`
-  - 用途: 当前播放封面占位图
+  - 用途: 无专辑封面时展示的品牌占位图，使用新版 Crossfade Pulse 标志

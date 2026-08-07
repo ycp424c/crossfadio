@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 180 48" role="img" aria-labelledby="crossfadio-logo-title crossfadio-logo-desc">
+  <title id="crossfadio-logo-title">Crossfadio</title>
+  <desc id="crossfadio-logo-desc">Crossfadio wordmark with two colorful audio signals crossfading around a play button.</desc>
+  <defs>
+    <linearGradient id="logo-cool" x1="10" y1="35" x2="38" y2="15" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#22D3EE"/>
+      <stop offset="1" stop-color="#6366F1"/>
+    </linearGradient>
+    <linearGradient id="logo-warm" x1="10" y1="15" x2="38" y2="35" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FBBF24"/>
+      <stop offset="1" stop-color="#FB7185"/>
+    </linearGradient>
+    <linearGradient id="logo-word" x1="116" y1="12" x2="174" y2="37" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FBBF24"/>
+      <stop offset="1" stop-color="#FB7185"/>
+    </linearGradient>
+  </defs>
+  <rect x="1.5" y="1.5" width="45" height="45" rx="12.75" fill="#09090B"/>
+  <rect x="2" y="2" width="44" height="44" rx="12.25" fill="none" stroke="#FFFFFF" stroke-opacity=".14"/>
+  <path d="M9 33C15.75 33 18 15 25.5 15C32.25 15 34.5 29.25 39 33" fill="none" stroke="url(#logo-cool)" stroke-width="5.25" stroke-linecap="round"/>
+  <path d="M9 15C15.75 15 18 33 25.5 33C32.25 33 34.5 18.75 39 15" fill="none" stroke="url(#logo-warm)" stroke-width="5.25" stroke-linecap="round"/>
+  <circle cx="24" cy="24" r="5.6" fill="#18181B" stroke="#FFFFFF" stroke-opacity=".2"/>
+  <path d="M22.5 20.85L27.75 24L22.5 27.15V20.85Z" fill="#FAFAFA"/>
+  <text x="56" y="32" fill="#FAFAFA" font-family="Inter, SF Pro Display, ui-sans-serif, system-ui, sans-serif" font-size="24" font-weight="700" letter-spacing="-1.1"><tspan>cross</tspan><tspan fill="url(#logo-word)">fadio</tspan></text>
+</svg>
