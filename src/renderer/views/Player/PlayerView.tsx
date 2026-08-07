@@ -156,6 +156,10 @@ const TRACK_MEDIA_ERROR_MAX_RETRIES = 3;
 const TRACK_MEDIA_RETRY_STABLE_PLAYBACK_SEC = 10;
 const QR_LOGIN_POLL_INTERVAL_MS = 2000;
 const QUEUE_SAVE_RETRY_DELAY_MS = 2000;
+// 每日主题在服务端后台生成（热点搜索 + LLM，最长 ~15s），首帧 player-context 常拿到 null，
+// 前端按 5s 间隔最多重取 3 次覆盖生成窗口，避免一直停在「正在准备今日主题」
+const DAILY_THEME_RETRY_DELAY_MS = 5000;
+const DAILY_THEME_RETRY_MAX = 3;
 const SELECTION_JOURNEY_EXPANDED_KEY = 'crossfadio_selection_journey_expanded';
 
 type ModeVisualConfig = {
@@ -341,6 +345,8 @@ export function PlayerView({ onAuthTokenChange, onNavigate }: PlayerViewProps): 
   const nextTrackRequestSequenceRef = useRef(0);
   const geolocationRequestSequenceRef = useRef(0);
   const playerContextRequestSequenceRef = useRef(0);
+  const dailyThemeRetryTimerRef = useRef<number | null>(null);
+  const dailyThemeRetryCountRef = useRef(0);
   const trackMediaRetryAttemptsRef = useRef(0);
   const trackMediaRetryWindowStartedAtSecRef = useRef<number | null>(null);
   const trackMediaRetryRequestIdRef = useRef(0);
@@ -378,6 +384,11 @@ export function PlayerView({ onAuthTokenChange, onNavigate }: PlayerViewProps): 
     nextTrackRequestSequenceRef.current += 1;
     geolocationRequestSequenceRef.current += 1;
     playerContextRequestSequenceRef.current += 1;
+    if (dailyThemeRetryTimerRef.current !== null) {
+      window.clearTimeout(dailyThemeRetryTimerRef.current);
+      dailyThemeRetryTimerRef.current = null;
+    }
+    dailyThemeRetryCountRef.current = 0;
   }
 
   if (!playerInstanceIdRef.current) {
@@ -809,6 +820,10 @@ export function PlayerView({ onAuthTokenChange, onNavigate }: PlayerViewProps): 
           console.info('[Crossfadio] player context weather', { weather: ctx.weather });
           setUserTaste(ctx.taste);
           setDiscoveryMode(ctx.discoveryMode);
+          // 主题可能还在后台生成（搜索+LLM 超过接口等待窗口），安排有限次重取
+          if (settings.dailyThemeEnabled && !ctx.theme) {
+            scheduleDailyThemeRetry(accountCapture);
+          }
         }
         setDailyThemeEnabled(settings.dailyThemeEnabled);
         setDiscoveryMode(settings.discoveryMode);
@@ -1358,7 +1373,22 @@ export function PlayerView({ onAuthTokenChange, onNavigate }: PlayerViewProps): 
       console.info('[Crossfadio] player context weather', { weather: ctx.weather });
       setUserTaste(ctx.taste);
       setDiscoveryMode(ctx.discoveryMode);
+      if (ctx.theme) {
+        dailyThemeRetryCountRef.current = 0;
+      } else {
+        scheduleDailyThemeRetry(accountCapture);
+      }
     }
+  }
+
+  function scheduleDailyThemeRetry(accountCapture: PlayerAccountCapture): void {
+    if (dailyThemeRetryTimerRef.current !== null) return;
+    if (dailyThemeRetryCountRef.current >= DAILY_THEME_RETRY_MAX) return;
+    dailyThemeRetryCountRef.current += 1;
+    dailyThemeRetryTimerRef.current = window.setTimeout(() => {
+      dailyThemeRetryTimerRef.current = null;
+      void refreshPlayerContext(accountCapture).catch(() => {});
+    }, DAILY_THEME_RETRY_DELAY_MS);
   }
 
   async function refreshLikedTrackIds(

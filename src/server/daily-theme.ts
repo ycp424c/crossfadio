@@ -1,6 +1,8 @@
 import { resolveLlmConfig } from './llm/config.js';
 import { LlmClient, type LlmMessage } from './llm/client.js';
 import { getLogger } from './logger.js';
+import { searchHotTopics, type HotTopic } from './doubao-search.js';
+import { getDb } from './store/db.js';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -31,6 +33,12 @@ export function getDailyTheme(): DailyTheme | null {
   if (themeCache && themeCache.date === today) {
     return themeCache;
   }
+  // 内存缓存未命中时回源 SQLite：服务重启后同一天仍返回同一主题
+  const persisted = loadPersistedTheme(today);
+  if (persisted) {
+    themeCache = persisted;
+    return persisted;
+  }
   return null;
 }
 
@@ -42,9 +50,10 @@ export function getDailyTheme(): DailyTheme | null {
 export async function getOrGenerateDailyTheme(): Promise<DailyTheme | null> {
   const today = formatDate(new Date());
 
-  // Cache hit
-  if (themeCache && themeCache.date === today) {
-    return themeCache;
+  // Cache hit (memory or persisted)
+  const cached = getDailyTheme();
+  if (cached) {
+    return cached;
   }
 
   // Already generating — join the in-flight promise
@@ -73,14 +82,15 @@ async function generateTheme(today: string): Promise<DailyTheme | null> {
   if (!llmConfig) {
     logger.warn('Daily theme: LLM not configured, using static fallback');
     const fallback = buildStaticFallback(today);
-    themeCache = fallback;
+    cacheTheme(fallback);
     return fallback;
   }
 
   const date = new Date(today + 'T00:00:00+08:00');
   const staticInfo = getStaticDateInfo(date);
+  const hotTopics = await searchHotTopics(buildHotTopicsQuery(date));
 
-  const prompt = buildThemePrompt(date, staticInfo);
+  const prompt = buildThemePrompt(date, staticInfo, hotTopics);
 
   try {
     const client = new LlmClient(llmConfig);
@@ -97,8 +107,8 @@ async function generateTheme(today: string): Promise<DailyTheme | null> {
 
     const parsed = parseThemeResponse(result.content, today);
     if (parsed) {
-      themeCache = parsed;
-      logger.info({ date: today, theme: parsed.theme, keywordCount: parsed.keywords.length }, 'Daily theme generated');
+      cacheTheme(parsed);
+      logger.info({ date: today, theme: parsed.theme, keywordCount: parsed.keywords.length, hotTopics: hotTopics?.length ?? 0 }, 'Daily theme generated');
       return parsed;
     }
 
@@ -108,8 +118,57 @@ async function generateTheme(today: string): Promise<DailyTheme | null> {
   }
 
   const fallback = buildStaticFallback(today);
-  if (fallback) themeCache = fallback;
+  if (fallback) cacheTheme(fallback);
   return fallback;
+}
+
+function buildHotTopicsQuery(date: Date): string {
+  return `${date.getFullYear()}年${date.getMonth() + 1}月${date.getDate()}日 今日热点新闻 娱乐 音乐动态`;
+}
+
+// ── Theme persistence (meta 表，跨重启保持同一天主题一致) ─────────────────────
+
+const META_KEY_DAILY_THEME = 'daily_theme';
+
+function cacheTheme(theme: DailyTheme | null): void {
+  if (!theme) return;
+  themeCache = theme;
+  persistTheme(theme);
+}
+
+function loadPersistedTheme(today: string): DailyTheme | null {
+  try {
+    const row = getDb()
+      .prepare(`SELECT value FROM meta WHERE key = ?`)
+      .get(META_KEY_DAILY_THEME) as { value: string } | undefined;
+    if (!row) return null;
+
+    const parsed: unknown = JSON.parse(row.value);
+    if (!parsed || typeof parsed !== 'object') return null;
+    const obj = parsed as Record<string, unknown>;
+    if (obj.date !== today || typeof obj.theme !== 'string' || !obj.theme) return null;
+    if (!Array.isArray(obj.keywords) || obj.keywords.some((k) => typeof k !== 'string')) return null;
+
+    return {
+      date: obj.date,
+      theme: obj.theme,
+      keywords: obj.keywords as string[],
+      generatedAt: typeof obj.generatedAt === 'number' ? obj.generatedAt : 0
+    };
+  } catch {
+    // DB 未初始化（测试）或数据损坏时按无缓存处理
+    return null;
+  }
+}
+
+function persistTheme(theme: DailyTheme): void {
+  try {
+    getDb()
+      .prepare(`INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)`)
+      .run(META_KEY_DAILY_THEME, JSON.stringify(theme));
+  } catch (err) {
+    getLogger().warn({ err }, 'Daily theme: failed to persist theme');
+  }
 }
 
 function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
@@ -132,6 +191,7 @@ const THEME_SYSTEM_PROMPT = `你是一位电台节目策划人。根据日期信
 要求：
 - 主题简洁有氛围感，10-20字，适合作为当日电台的主题语
 - 主题是全天主题，不要包含早晨、上午、中午、下午、傍晚、晚上、夜晚、深夜、周五晚等具体时段；只有日期本身是平安夜、跨年夜等节日名时才可保留节日里的"夜"
+- 如果提供了实时热点，可以从中汲取灵感，但不要生硬关联；灾难、事故、社会负面事件一律不作为音乐主题
 - 输出3-6个音乐搜索关键词，中英文混合，覆盖主题相关的风格、情绪、场景
 - 关键词也不要包含具体时段词，避免后续选歌把当前时间误判为夜晚或其他时段
 - 关键词用于在网易云音乐搜索歌曲，因此应是实际可搜的风格/情绪词或艺人名
@@ -142,7 +202,7 @@ const THEME_SYSTEM_PROMPT = `你是一位电台节目策划人。根据日期信
   "keywords": ["关键词1", "关键词2", ...]
 }`;
 
-function buildThemePrompt(date: Date, info: StaticDateInfo): string {
+function buildThemePrompt(date: Date, info: StaticDateInfo, hotTopics: HotTopic[] | null): string {
   const month = date.getMonth() + 1;
   const day = date.getDate();
   const weekdays = ['日', '一', '二', '三', '四', '五', '六'];
@@ -162,8 +222,16 @@ function buildThemePrompt(date: Date, info: StaticDateInfo): string {
   if (info.seasonNote) {
     context += `\n季节提示：${info.seasonNote}`;
   }
+  if (hotTopics && hotTopics.length > 0) {
+    context += `\n\n今日实时热点（来自网络搜索，仅供参考）：`;
+    hotTopics.forEach((topic, index) => {
+      context += `\n${index + 1}. ${topic.title}${topic.summary ? ` — ${topic.summary}` : ''}`;
+    });
+  }
 
-  context += `\n\n请根据以上信息（以及你对今日重大新闻或社会氛围的了解），为电台确定一个今日主题和音乐搜索关键词。`;
+  context += hotTopics && hotTopics.length > 0
+    ? `\n\n请结合以上日期背景与实时热点所反映的今日氛围，为电台确定一个今日主题和音乐搜索关键词。`
+    : `\n\n请根据以上信息（以及你对今日重大新闻或社会氛围的了解），为电台确定一个今日主题和音乐搜索关键词。`;
 
   return context;
 }

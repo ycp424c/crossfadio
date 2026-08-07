@@ -16,6 +16,7 @@ export type ServerConfig = {
     model: string | null;
   };
   embedding: { baseUrl: string; apiKey: string; model: string; dimensions: number; sendDimensions: boolean } | null;
+  search: { apiKey: string } | null;
   host: string;
   allowedOrigins: string[];
   adminNcmId: string | null;
@@ -45,6 +46,7 @@ export function loadConfig(): ServerConfig {
     },
     tts: resolveTtsServerConfig(),
     embedding: resolveEmbeddingConfig(),
+    search: resolveSearchConfig(),
     host: process.env.CROSSFADIO_HOST?.trim() || '127.0.0.1',
     allowedOrigins: (process.env.CROSSFADIO_ALLOWED_ORIGINS ?? '')
       .split(',')
@@ -120,6 +122,12 @@ function resolveEmbeddingConfig(): ServerConfig['embedding'] {
     dimensions: resolvePositiveInt(process.env.CROSSFADIO_EMBEDDING_DIMENSIONS, DEFAULT_EMBEDDING_DIMENSIONS),
     sendDimensions: (process.env.CROSSFADIO_EMBEDDING_SEND_DIMENSIONS?.trim() ?? '1') !== '0'
   };
+}
+
+function resolveSearchConfig(): ServerConfig['search'] {
+  const apiKey = process.env.CROSSFADIO_SEARCH_API_KEY?.trim();
+  if (!apiKey) return null;
+  return { apiKey };
 }
 
 function resolvePositiveInt(value: string | undefined, fallback: number): number {

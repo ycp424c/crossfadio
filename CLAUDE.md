@@ -96,6 +96,8 @@ src/
 | `CROSSFADIO_HOST` | `127.0.0.1` | Server bind address |
 | `CROSSFADIO_ALLOWED_ORIGINS` | (none) | Comma-separated CORS origins beyond localhost |
 | `CROSSFADIO_DAILY_THEME_TIMEOUT_MS` | `15000` | Daily theme LLM generation timeout (ms) |
+| `CROSSFADIO_SEARCH_API_KEY` | (disabled) | Optional Doubao Search (豆包搜索 Custom 版) API key; enables real-time hot topics in daily theme generation |
+| `CROSSFADIO_SEARCH_TIMEOUT_MS` | `3000` | Doubao Search request timeout (ms); search failure degrades to static date info only |
 | `CROSSFADIO_ADMIN_NCM_ID` | (none) | NCM user ID with whitelist admin privileges |
 
 ## HTTP API Routes
@@ -202,6 +204,6 @@ Real deployment identifiers, paths, runtime configuration, log locations and ope
 - **NCM auth**: QR code login → JWT token (HS256 via `jose`). Cookie encrypted with AES-256-GCM in `users` table. `authMiddleware` + `userScopeMiddleware` on all protected routes. Whitelist management routes additionally require `adminMiddleware` (checks `CROSSFADIO_ADMIN_NCM_ID`).
 - **Whitelist**: `allowlist.json` in app data dir controls which NCM user IDs can log in. Admin can manage via Settings UI. Removal also deletes `users` record to immediately revoke existing sessions. `userScopeMiddleware` double-checks `isAllowed()` on every request.
 - **Per-user isolation**: All DB tables have `user_id` column. Queue/location are per-user `Map`s. User corpus files under `users/<ncmId>/`.
-- **Daily theme**: LLM-generated daily radio theme (holidays, solar terms, artist anniversaries). Per-user toggle in Settings (pref `dailyTheme.enabled`). When disabled, DJ pick-next and segue skip theme context. Timeout controlled by `CROSSFADIO_DAILY_THEME_TIMEOUT_MS` (default 15s).
+- **Daily theme**: LLM-generated daily radio theme (holidays, solar terms, artist anniversaries + optional Doubao Search hot topics when `CROSSFADIO_SEARCH_API_KEY` is set; search failure degrades to static date info only). Per-user toggle in Settings (pref `dailyTheme.enabled`). When disabled, DJ pick-next and segue skip theme context. Timeout controlled by `CROSSFADIO_DAILY_THEME_TIMEOUT_MS` (default 15s). Generated theme is persisted in the `meta` table so restarts keep the same theme within a day.
 - **LLM thinking**: Per-user and disabled by default. TokenHub `hy3` / `hy3-preview` requests set `max_tokens` to 128,000 when thinking is enabled because reasoning and the final answer share the output budget. Provider/model switches must re-check thinking support, parameter constraints, and output budgets as documented in `docs/ops-runbook.md`.
 - **Responsive layout**: `md` = 768px breakpoint, single-column mobile (grid-cols-1), desktop preserves 12-col grid. NCM auth uses full-screen sheet on mobile via `useMediaQuery`. Status panel collapsed to one-line summary on mobile. `viewport-fit=cover` for iPhone safe areas.
