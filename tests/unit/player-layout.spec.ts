@@ -131,9 +131,13 @@ describe('player layout', () => {
       'utf-8'
     );
 
-    expect(source.match(/min-h-11 min-w-11/g)?.length ?? 0).toBeGreaterThanOrEqual(3);
-    expect(source).toContain('<span className="hidden sm:inline">Prev</span>');
-    expect(source).toContain('<span className="hidden sm:inline">Skip</span>');
+    expect(source.match(/min-h-11 min-w-11/g)?.length ?? 0).toBeGreaterThanOrEqual(2);
+    expect(source).toContain('h-14 w-14');
+    expect(source).toContain('<span className="hidden sm:inline">上一首</span>');
+    expect(source).toContain('<span className="hidden sm:inline">下一首</span>');
+    // 未接线的假控件不允许出现：随机/循环按钮没有行为时必须移除
+    expect(source).not.toContain('Shuffle');
+    expect(source).not.toContain('Repeat2');
   });
 
   it('uses compact phone artwork and title sizing while restoring the desktop hero scale', () => {
@@ -951,19 +955,17 @@ describe('player layout', () => {
     expect(source).toContain('A→B');
   });
 
-  it('PlaybackTimeline distributes waveform bars across the full progress track', () => {
+  it('PlaybackTimeline renders an honest progress bar, not a fake waveform', () => {
     const source = fs.readFileSync(
       path.join(root, 'src/renderer/components/player/PlaybackTimeline.tsx'),
       'utf-8'
     );
 
-    const waveformStart = source.indexOf('{Array.from({ length:');
-    const waveformEnd = source.indexOf('<input', waveformStart);
-    const waveformSource = source.slice(waveformStart, waveformEnd);
-
-    expect(source).toContain('grid w-full');
-    expect(source).toContain('gridTemplateColumns');
-    expect(waveformSource).not.toContain('shrink-0');
+    // 禁止伪随机柱子拼成的假波形：进度条必须真实反映播放进度
+    expect(source).not.toContain('Array.from({ length:');
+    expect(source).not.toContain('gridTemplateColumns');
+    expect(source).toContain('progressPct');
+    expect(source).toContain('type="range"');
   });
 
   it('NowPlayingHero does not show DJ Deck A badge or NCM ID', () => {

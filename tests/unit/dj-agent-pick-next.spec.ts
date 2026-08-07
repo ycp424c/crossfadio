@@ -203,7 +203,7 @@ describe('DJAgent pick-next orchestration', () => {
       journeyVersion: 1,
       factsHash: expect.any(String)
     });
-    expect(getSelectionDebugTrace('dj-agent-user', result.runId)?.trace.decisions).toEqual(
+    expect(getSelectionDebugTrace('dj-agent-user', result.runId, { now: new Date('2026-07-17T12:00:01.000Z') })?.trace.decisions).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ stage: 'admission', reasonCode: 'admission_eligible' }),
         expect.objectContaining({ stage: 'recall', reasonCode: 'recall_included' }),
@@ -228,7 +228,7 @@ describe('DJAgent pick-next orchestration', () => {
       narrationStatus: 'pending',
       narrationDeadlineAt: '2026-07-18T12:00:00.000Z'
     });
-    expect(JSON.stringify(getSelectionDebugTrace('dj-agent-user', result.runId)?.trace)).not.toContain('baseScore');
+    expect(JSON.stringify(getSelectionDebugTrace('dj-agent-user', result.runId, { now: new Date('2026-07-17T12:00:01.000Z') })?.trace)).not.toContain('baseScore');
   });
 
   it('persists and emits revision 1 failed when MusicAgent returns no selection', async () => {
@@ -266,7 +266,7 @@ describe('DJAgent pick-next orchestration', () => {
     expect(getDb().prepare(
       'SELECT COUNT(*) AS count FROM selection_narration_outbox WHERE run_id = ?'
     ).get(result.runId)).toEqual({ count: 0 });
-    expect(getSelectionDebugTrace('dj-agent-user', result.runId)?.trace.decisions.at(-1)).toMatchObject({
+    expect(getSelectionDebugTrace('dj-agent-user', result.runId, { now: new Date('2026-07-17T12:00:01.000Z') })?.trace.decisions.at(-1)).toMatchObject({
       stage: 'final',
       action: 'skipped',
       reasonCode: 'selection_failed'

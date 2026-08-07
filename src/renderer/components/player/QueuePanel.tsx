@@ -1,4 +1,4 @@
-import { ListMusic, MoreVertical, X } from 'lucide-react';
+import { ListMusic, X } from 'lucide-react';
 import type { QueueTrackDto } from '@shared/schema';
 import type { DiscoveryMode } from '@shared/dj';
 
@@ -23,9 +23,9 @@ export function QueuePanel(props: QueuePanelProps): JSX.Element {
     : {
           border: 'border-orange-200/15',
           icon: 'text-orange-200',
-          currentBadge: 'border-rose-300/70 bg-rose-400/15 text-rose-200',
-          currentItem: 'border-rose-300/30 bg-rose-400/10 text-rose-50',
-          currentMeta: 'text-rose-200'
+          currentBadge: 'border-orange-300/70 bg-orange-400/15 text-orange-100',
+          currentItem: 'border-orange-300/30 bg-orange-400/10 text-orange-50',
+          currentMeta: 'text-orange-200'
         };
 
   return (
@@ -35,13 +35,17 @@ export function QueuePanel(props: QueuePanelProps): JSX.Element {
           <ListMusic className={`h-5 w-5 ${tone.icon}`} />
           播放队列
         </h3>
-        <div className="flex items-center gap-2">
-          <span className="rounded-full bg-white/10 px-2.5 py-0.5 text-xs text-zinc-300">
-            {props.queue.length} 首
-          </span>
-          <MoreVertical className="h-4 w-4 text-zinc-500" />
-        </div>
+        <span className="rounded-full bg-white/10 px-2.5 py-0.5 text-xs text-zinc-300">
+          {props.queue.length} 首
+        </span>
       </div>
+      {props.queue.length === 0 ? (
+        <div className="flex flex-col items-center gap-2 py-8 text-center">
+          <ListMusic className="h-8 w-8 text-zinc-600" />
+          <p className="text-sm text-zinc-400">队列还是空的</p>
+          <p className="text-xs text-zinc-400">去「聊天」页告诉 DJ 你的心情，让它帮你挑几首</p>
+        </div>
+      ) : (
       <ul className="max-h-[52vh] space-y-2 overflow-y-auto pr-1">
         {props.queue.map((track, index) => {
           const isCurrent = index === props.currentIndex;
@@ -84,18 +88,19 @@ export function QueuePanel(props: QueuePanelProps): JSX.Element {
               </button>
               {!isCurrent ? (
                 <button
-                  className="shrink-0 rounded-lg p-1.5 text-zinc-500 transition hover:bg-white/5 hover:text-red-300"
+                  aria-label={`从队列移除 ${track.name}`}
+                  className="flex min-h-11 min-w-11 shrink-0 items-center justify-center rounded-lg text-zinc-500 transition hover:bg-white/5 hover:text-red-300"
                   onClick={() => props.onDeleteIndex(index)}
-                  title="从队列移除"
                   type="button"
                 >
-                  <X className="h-3.5 w-3.5" />
+                  <X className="h-4 w-4" />
                 </button>
               ) : null}
             </li>
           );
         })}
       </ul>
+      )}
     </section>
   );
 }

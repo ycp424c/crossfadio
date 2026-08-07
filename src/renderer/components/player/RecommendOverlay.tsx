@@ -61,8 +61,8 @@ export function RecommendOverlay({ recommendEvent }: { recommendEvent: Recommend
         <div className="flex items-center gap-3">
           {/* Icon */}
           <div className="flex-shrink-0">
-            {job.phase === 'searching' && <Search className="h-4 w-4 text-indigo-400 animate-spin" />}
-            {job.phase === 'picking' && <ChevronDown className="h-4 w-4 text-cyan-400 animate-pulse" />}
+            {job.phase === 'searching' && <Search className="h-4 w-4 text-cyan-300 animate-spin" />}
+            {job.phase === 'picking' && <ChevronDown className="h-4 w-4 text-cyan-300 animate-pulse" />}
             {job.phase === 'done' && <Check className="h-4 w-4 text-emerald-400" />}
             {job.phase === 'error' && <X className="h-4 w-4 text-red-400" />}
             {job.phase === 'cancelled' && <X className="h-4 w-4 text-zinc-400" />}
@@ -71,11 +71,11 @@ export function RecommendOverlay({ recommendEvent }: { recommendEvent: Recommend
           {/* Text */}
           <div className="min-w-0 flex-1">
             <p className="text-xs text-zinc-100 leading-snug">
-              {job.phase === 'searching' && '正在搜索歌曲...'}
+              {job.phase === 'searching' && '正在搜索歌曲…'}
               {job.phase === 'picking' && job.candidateCount != null && (
-                <>正在从 <span className="text-cyan-400 font-medium">{job.candidateCount}</span> 首候选中挑选...</>
+                <>正在从 <span className="text-cyan-300 font-medium">{job.candidateCount}</span> 首候选中挑选…</>
               )}
-              {job.phase === 'picking' && job.candidateCount == null && '正在挑选歌曲...'}
+              {job.phase === 'picking' && job.candidateCount == null && '正在挑选歌曲…'}
               {job.phase === 'done' && job.tracks && job.tracks.length > 0 && (
                 <span>
                   已添加{' '}
@@ -91,7 +91,7 @@ export function RecommendOverlay({ recommendEvent }: { recommendEvent: Recommend
             </p>
             {job.tracks && job.tracks.length > 0 && (
               <p className="text-[10px] text-zinc-500 mt-0.5 truncate">
-                {job.tracks.map((t) => `${t.name} — ${t.artist}`).join('  ·  ')}
+                {job.tracks.map((t) => `${t.name}（${t.artist}）`).join('、')}
               </p>
             )}
           </div>

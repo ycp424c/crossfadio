@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Send, Loader2, MessageCircle } from 'lucide-react';
 import { addSseListener, streamChat } from '@renderer/sse/client';
 import { getRecentChatMessages } from '@renderer/api';
+import { getUserScrollBehavior } from '@renderer/lib-motion';
 
 type Message = {
   id: number;
@@ -76,7 +77,7 @@ export function ChatPanel({
   }, [authToken]);
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+    bottomRef.current?.scrollIntoView({ behavior: getUserScrollBehavior() });
   }, [messages]);
 
   async function handleSend(): Promise<void> {
@@ -162,10 +163,10 @@ export function ChatPanel({
   }
 
   return (
-    <div className="flex h-full flex-col bg-zinc-950 text-zinc-100">
+    <div className="flex h-full flex-col text-zinc-100">
       {/* Header */}
       <div className="flex items-center gap-2 border-b border-zinc-800 px-4 py-3">
-        <MessageCircle className="h-4 w-4 text-indigo-400" />
+        <MessageCircle className="h-4 w-4 text-cyan-300" />
         <span className="text-sm font-medium">和 DJ 聊天</span>
       </div>
 
@@ -184,7 +185,7 @@ export function ChatPanel({
             <div
               className={`max-w-[85%] md:max-w-[80%] rounded-2xl px-3 py-2 text-sm leading-relaxed ${
                 msg.role === 'user'
-                  ? 'bg-indigo-600 text-white'
+                  ? 'bg-cyan-700 text-white'
                   : 'bg-zinc-800 text-zinc-100'
               } ${msg.pending ? 'opacity-80' : ''}`}
             >
@@ -204,13 +205,15 @@ export function ChatPanel({
           onChange={(e) => setInput(e.target.value)}
           onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); } }}
           placeholder="告诉 DJ 你的心情…"
-          className="flex-1 rounded-lg bg-zinc-800 px-3 py-2 text-sm text-zinc-100 placeholder-zinc-500 outline-none focus:ring-1 focus:ring-indigo-500"
+          className="flex-1 rounded-lg bg-zinc-800 px-3 py-2 text-sm text-zinc-100 placeholder-zinc-500 outline-none focus:ring-1 focus:ring-cyan-400/60"
           disabled={sending || !authToken}
         />
         <button
+          aria-label="发送消息"
           onClick={handleSend}
           disabled={sending || !authToken || !input.trim()}
-          className="rounded-lg p-2 text-indigo-400 hover:bg-zinc-800 disabled:opacity-40 transition"
+          className="flex min-h-11 min-w-11 items-center justify-center rounded-lg text-cyan-300 hover:bg-zinc-800 disabled:opacity-40 transition"
+          type="button"
         >
           {sending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
         </button>

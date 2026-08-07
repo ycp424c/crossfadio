@@ -2,13 +2,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Activity,
   AlertTriangle,
+  ChevronDown,
+  ChevronUp,
   Clock,
   CloudSun,
   Compass,
   Home,
   LogOut,
   MapPin,
-  MoreVertical,
   Music2,
   Palette,
   QrCode,
@@ -166,6 +167,7 @@ type ModeVisualConfig = {
   active: string;
   inactive: string;
   wave: string;
+  chip: 'cyan' | 'orange';
   title: string;
   caption: string;
   taste: string;
@@ -735,7 +737,7 @@ export function PlayerView({ onAuthTokenChange, onNavigate }: PlayerViewProps): 
           if (activeSegueAudiosRef.current.size === 0) {
             restoreTrackVolume();
           }
-          setSegueStatusText('过渡语音已就绪，等待用户点击 Play 后继续');
+          setSegueStatusText('过渡语音已就绪，点击播放继续');
         }
       });
     })();
@@ -1188,7 +1190,7 @@ export function PlayerView({ onAuthTokenChange, onNavigate }: PlayerViewProps): 
     setSegueStatusText('');
     setSegueScriptText('');
     setSegueScriptExpanded(false);
-    setTrackStatusText(`正在加载曲目 ${currentTrackId} ...`);
+    setTrackStatusText(`正在加载「${queueRef.current[currentIndexRef.current]?.name ?? currentTrackId}」…`);
 
     void loadNowPlaying(currentTrackId);
     void refreshNextTrack(currentTrackId);
@@ -1472,7 +1474,7 @@ export function PlayerView({ onAuthTokenChange, onNavigate }: PlayerViewProps): 
         }
       }
 
-      setTrackStatusText(`已加载 ${trackId}`);
+      setTrackStatusText(`已加载「${queueRef.current[currentIndexRef.current]?.name ?? trackId}」`);
     } catch (err) {
       if (!accountCapture.isActive()
         || nowPlayingRequestSequenceRef.current !== requestSequence
@@ -1520,7 +1522,7 @@ export function PlayerView({ onAuthTokenChange, onNavigate }: PlayerViewProps): 
       };
       audio.src = payload.url;
       audio.load();
-      setTrackStatusText(`已刷新音频流，准备从 ${Math.round(resumeAtSec)} 秒继续`);
+      setTrackStatusText('播放流已刷新，即将继续');
     } catch (err) {
       if (!accountCapture.isActive()
         || currentTrackIdRef.current !== trackId
@@ -1539,7 +1541,7 @@ export function PlayerView({ onAuthTokenChange, onNavigate }: PlayerViewProps): 
     setIsPlaying(false);
     queueAutoplayTargetRef.current = null;
     playbackSessionRef.current?.setPlaying(false);
-    setTrackStatusText('下一首已就绪，点击 Play 继续播放');
+    setTrackStatusText('下一首已就绪，点击播放继续');
   }, []);
 
   function resetTrackMedia(): void {
@@ -1620,7 +1622,7 @@ export function PlayerView({ onAuthTokenChange, onNavigate }: PlayerViewProps): 
     segueClientRequestIdRef.current = clientRequestId;
     segueExpectedFromTrackIdRef.current = currentTrackId;
     segueLastAttemptAtRef.current = now;
-    setSegueStatusText(`生成中：${currentTrackId} → ${nextTrackId}`);
+    setSegueStatusText(`正在生成「${nextQueueTrack?.name ?? nextTrack?.track.name ?? nextTrackId}」的过渡语音…`);
     void (async () => {
       try {
         for await (const { type, data } of streamSegue({
@@ -1634,7 +1636,7 @@ export function PlayerView({ onAuthTokenChange, onNavigate }: PlayerViewProps): 
             if (!isActiveSegueMessage(data, segueClientRequestIdRef.current)) continue;
             const say = String(data.say ?? '').trim();
             if (say) {
-              setSegueStatusText('生成中…接收文案 token');
+              setSegueStatusText('正在生成过渡文案…');
             }
           } else if (type === 'segue.tts-ready') {
             if (!isActiveSegueMessage(data, segueClientRequestIdRef.current)) continue;
@@ -1686,7 +1688,8 @@ export function PlayerView({ onAuthTokenChange, onNavigate }: PlayerViewProps): 
             const reason =
               typeof data.reason === 'string' && data.reason.length > 0 ? data.reason : 'unknown';
             segueClientRequestIdRef.current = null;
-            setSegueStatusText(`过渡语音暂不可用（${reason}）`);
+            console.info('[Crossfadio] segue degraded', { reason });
+      setSegueStatusText('过渡语音暂时不可用');
           }
         }
       } catch (err) {
@@ -1724,7 +1727,7 @@ export function PlayerView({ onAuthTokenChange, onNavigate }: PlayerViewProps): 
       trackMediaRetryRequestIdRef.current += 1;
       pendingTrackMediaRetryRef.current = null;
       setError('');
-      setTrackStatusText(`正在刷新音频流，从 ${Math.round(manualResume.resumeAtSec)} 秒继续`);
+      setTrackStatusText('正在恢复播放…');
       void retryTrackPlaybackAfterError(
         manualResume.trackId,
         manualResume.resumeAtSec,
@@ -1951,7 +1954,7 @@ export function PlayerView({ onAuthTokenChange, onNavigate }: PlayerViewProps): 
 
     if (!prefetchTriggeredRef.current && decision.shouldPrefetchNext && currentTrackId) {
       prefetchTriggeredRef.current = true;
-      setTrackStatusText('预取触发');
+      setTrackStatusText('正在准备下一首');
       void refreshNextTrack(currentTrackId);
     }
 
@@ -2053,7 +2056,8 @@ export function PlayerView({ onAuthTokenChange, onNavigate }: PlayerViewProps): 
                   } else {
                     djPickNextBackoffUntilRef.current = 0;
                     djPickNextLastCallRef.current = 0;
-                    setDjStatusText(`补歌失败（${reason}）`);
+                    console.info('[Crossfadio] DJ refill failed', { reason });
+                    setDjStatusText('补歌失败，稍后自动重试');
                   }
                 }
               }
@@ -2100,7 +2104,7 @@ export function PlayerView({ onAuthTokenChange, onNavigate }: PlayerViewProps): 
       setPositionSec(audio.currentTime || 0);
     }
 
-    setTrackStatusText(`已重试音频流，从 ${Math.round(retryResume.resumeAtSec)} 秒继续`);
+    setTrackStatusText('播放已恢复');
     if (pendingRetry.shouldPlay) {
       void audio
         .play()
@@ -2196,7 +2200,7 @@ export function PlayerView({ onAuthTokenChange, onNavigate }: PlayerViewProps): 
       const requestId = trackMediaRetryRequestIdRef.current;
       const attempt = trackMediaRetryAttemptsRef.current;
       setError('');
-      setTrackStatusText(`播放流中断，正在重试 ${attempt}/${TRACK_MEDIA_ERROR_MAX_RETRIES}`);
+      setTrackStatusText(`播放中断，正在自动重试（${attempt}/${TRACK_MEDIA_ERROR_MAX_RETRIES}）`);
       void retryTrackPlaybackAfterError(
         trackId,
         mediaErrorAction.resumeAtSec,
@@ -2221,29 +2225,31 @@ export function PlayerView({ onAuthTokenChange, onNavigate }: PlayerViewProps): 
   );
   const canSkip = queue.length > 1;
   const isLiked = currentTrackId ? likedTrackIds.includes(currentTrackId) : false;
-  const modeConfig = discoveryMode === 'explore'
+  const modeConfig: ModeVisualConfig = discoveryMode === 'explore'
     ? {
         page: 'bg-[radial-gradient(circle_at_14%_0%,rgba(20,184,166,0.22)_0%,transparent_30%),radial-gradient(circle_at_84%_18%,rgba(14,165,233,0.16)_0%,transparent_28%),linear-gradient(135deg,#031111_0%,#061019_48%,#020405_100%)]',
-        shell: 'border-cyan-200/20 bg-black/45 shadow-[0_0_42px_rgba(34,211,238,0.10)]',
+        shell: 'border-cyan-200/20 bg-black/45',
         panel: 'border-cyan-200/15 bg-slate-950/48',
         soft: 'border-cyan-300/20 bg-cyan-400/10 text-cyan-100',
         accent: 'text-cyan-200',
         active: 'border-cyan-300/80 bg-cyan-400/18 text-cyan-50 shadow-[0_0_24px_rgba(45,212,191,0.28)]',
         inactive: 'border-white/10 bg-white/[0.04] text-zinc-300 hover:border-cyan-300/40 hover:text-cyan-100',
         wave: 'bg-cyan-300',
+        chip: 'cyan',
         title: '探索模式',
         caption: '一起探索更多未知的好歌',
         taste: '开放探索 · 风格扩展'
       }
     : {
           page: 'bg-[radial-gradient(circle_at_15%_0%,rgba(251,146,60,0.18)_0%,transparent_31%),radial-gradient(circle_at_78%_13%,rgba(244,63,94,0.13)_0%,transparent_29%),linear-gradient(135deg,#130d09_0%,#100f10_48%,#050505_100%)]',
-          shell: 'border-orange-200/20 bg-black/44 shadow-[0_0_42px_rgba(251,146,60,0.10)]',
+          shell: 'border-orange-200/20 bg-black/44',
           panel: 'border-orange-200/14 bg-zinc-950/52',
-          soft: 'border-rose-300/20 bg-rose-400/10 text-rose-100',
+          soft: 'border-orange-300/20 bg-orange-400/10 text-orange-100',
           accent: 'text-orange-200',
           active: 'border-orange-300/75 bg-orange-400/16 text-orange-50 shadow-[0_0_24px_rgba(251,146,60,0.24)]',
           inactive: 'border-white/10 bg-white/[0.04] text-zinc-300 hover:border-orange-300/40 hover:text-orange-100',
-          wave: 'bg-rose-300',
+          wave: 'bg-orange-300',
+          chip: 'orange',
           title: '舒适区模式',
           caption: '回到你喜欢的风格和熟悉的旋律',
           taste: '融合品味 · 高匹配'
@@ -2280,6 +2286,7 @@ export function PlayerView({ onAuthTokenChange, onNavigate }: PlayerViewProps): 
       historyPosition={selectionJourneyPosition}
       historyTotal={selectionJourneys.length}
       journey={selectionJourney}
+      mode={discoveryMode}
       onNewer={() => {
         const newer = selectionJourneys[selectionJourneyPosition - 1];
         if (newer) {
@@ -2297,7 +2304,7 @@ export function PlayerView({ onAuthTokenChange, onNavigate }: PlayerViewProps): 
   ) : null;
 
   return (
-    <main className={`${modeConfig.page} min-h-screen p-2 text-zinc-100 transition-colors duration-500 md:p-4`}>
+    <main className={`${modeConfig.page} min-h-full p-2 text-zinc-100 transition-colors duration-500 md:p-4`}>
       <div className={`mx-auto grid max-w-[1500px] grid-cols-1 gap-4 rounded-[18px] border p-3 backdrop-blur-xl md:grid-cols-12 md:p-5 ${modeConfig.shell}`}>
 
         {/* Header */}
@@ -2472,16 +2479,18 @@ export function PlayerView({ onAuthTokenChange, onNavigate }: PlayerViewProps): 
             coverImgUrl={currentTrack?.coverImgUrl ?? nowPlaying?.coverImgUrl ?? null}
             isLiked={isLiked}
             lyric={nowPlaying?.lyric ?? ''}
+            mode={discoveryMode}
             onToggleLike={handleToggleLike}
             positionSec={positionSec}
             subtitle={currentTrack?.artists.join(' / ') ?? ''}
-            title={currentTrack?.name ?? 'No Track'}
+            title={currentTrack?.name ?? '暂无播放'}
           />
 
           <PlaybackTimeline
             currentTrackId={currentTrackId}
             currentTrackName={currentTrack?.name}
             durationSec={durationSec}
+            mode={discoveryMode}
             nextTrackId={nextTrack?.track.id ?? null}
             nextTrackName={nextTrack?.track.name}
             onSeek={handleSeek}
@@ -2493,6 +2502,7 @@ export function PlayerView({ onAuthTokenChange, onNavigate }: PlayerViewProps): 
             canPrev={canPrev}
             canSkip={canSkip}
             isPlaying={isPlaying}
+            mode={discoveryMode}
             onPlayPause={handlePlayPause}
             onPrev={handlePrev}
             onSkip={handleSkip}
@@ -2703,7 +2713,7 @@ function TodayThemePanel({
         <button
           aria-checked={dailyThemeEnabled}
           aria-label="启用每日主题推荐"
-          className={`relative inline-flex h-5 w-9 shrink-0 rounded-full transition-colors ${
+          className={`relative inline-flex h-5 w-9 shrink-0 rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/60 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-950 ${
             dailyThemeEnabled
               ? discoveryMode === 'explore'
                 ? 'bg-cyan-300'
@@ -2765,6 +2775,7 @@ function TastePanel({
   return (
     <section className={`min-h-[178px] rounded-xl border p-5 ${modeConfig.panel}`}>
       <button
+        aria-expanded={expanded}
         className="flex w-full items-center justify-between gap-3 text-left"
         onClick={onToggle}
         type="button"
@@ -2773,9 +2784,11 @@ function TastePanel({
           <Palette className={`h-4 w-4 ${modeConfig.accent}`} />
           <span className={`text-sm font-semibold ${modeConfig.accent}`}>我的品味</span>
         </span>
-        <span className="flex items-center gap-3 text-xs text-zinc-500">
-          展开
-          <MoreVertical className="h-4 w-4" />
+        <span className="flex items-center gap-1 text-xs text-zinc-500">
+          {expanded ? '收起' : '展开'}
+          {expanded
+            ? <ChevronUp className="h-4 w-4" />
+            : <ChevronDown className="h-4 w-4" />}
         </span>
       </button>
       <p className="mt-3 text-xs text-zinc-500">偏好预览</p>
@@ -2831,8 +2844,8 @@ function DjStatusDock({
               <Activity className="h-4 w-4" />
               DJ 状态
             </span>
-            <StatusChip label="曲目" text={trackStatusText || '—'} />
-            <StatusChip color="cyan" label="DJ选歌" text={djStatusText || '空闲'} />
+            <StatusChip label="曲目" text={trackStatusText || '准备就绪'} />
+            <StatusChip color={modeConfig.chip} label="DJ选歌" text={djStatusText || '空闲'} />
             <StatusChip color="violet" label="过渡语音" text={segueStatusText || '空闲'} />
             {segueScriptText ? (
               <button
@@ -2877,7 +2890,7 @@ function DjStatusDock({
         >
           <Music2 className={`h-4 w-4 ${modeConfig.accent}`} />
           <span>DJ：</span>
-          <span className="text-cyan-300">{djStatusText || '空闲'}</span>
+          <span className={modeConfig.chip === 'cyan' ? 'text-cyan-300' : 'text-orange-300'}>{djStatusText || '空闲'}</span>
           <span className="text-zinc-600">/</span>
           <span>过渡：</span>
           <span className="text-violet-200">{segueStatusText || '空闲'}</span>
@@ -2895,14 +2908,16 @@ function StatusChip({
 }: {
   label: string;
   text: string;
-  color?: 'zinc' | 'cyan' | 'violet';
+  color?: 'zinc' | 'cyan' | 'orange' | 'violet';
 }): JSX.Element {
   const textColor =
     color === 'cyan'
       ? 'text-cyan-300'
-      : color === 'violet'
-        ? 'text-violet-200'
-        : 'text-zinc-200';
+      : color === 'orange'
+        ? 'text-orange-300'
+        : color === 'violet'
+          ? 'text-violet-200'
+          : 'text-zinc-200';
   return (
     <span className="flex items-center gap-1 text-xs">
       <span className="text-zinc-500">{label}：</span>

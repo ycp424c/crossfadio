@@ -1,5 +1,6 @@
 import { Heart } from 'lucide-react';
 import { SyncedLyrics } from './SyncedLyrics';
+import type { DiscoveryMode } from '@shared/dj';
 import coverPlaceholder from '@renderer/assets/image2/cover-placeholder.svg';
 
 type NowPlayingHeroProps = {
@@ -9,29 +10,23 @@ type NowPlayingHeroProps = {
   coverImgUrl?: string | null;
   positionSec: number;
   isLiked: boolean;
+  mode: DiscoveryMode;
   onToggleLike: () => void;
 };
 
 export function NowPlayingHero(props: NowPlayingHeroProps): JSX.Element {
   return (
     <section className="relative overflow-hidden rounded-xl border border-white/10 bg-black/30 p-4 shadow-[inset_0_1px_0_rgba(255,255,255,0.05)] md:p-5">
-      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_78%_25%,rgba(56,189,248,0.10),transparent_28%),radial-gradient(circle_at_15%_90%,rgba(20,184,166,0.08),transparent_30%)]" />
-      <div className="pointer-events-none absolute right-8 top-8 hidden h-56 w-80 opacity-50 md:block">
-        <svg className="h-full w-full" fill="none" viewBox="0 0 360 240">
-          <path d="M8 158 56 126 92 164 130 96 178 72 226 82 258 42 318 86 350 110" stroke="rgba(148, 210, 230, .42)" strokeDasharray="2 8" />
-          <path d="M78 204 112 176 98 134 152 104 198 112 232 74 292 28 340 76" stroke="rgba(148, 210, 230, .28)" strokeDasharray="2 8" />
-          {[
-            [56, 126],
-            [130, 96],
-            [226, 82],
-            [258, 42],
-            [112, 176],
-            [198, 112]
-          ].map(([cx, cy]) => (
-            <circle cx={cx} cy={cy} fill="rgba(165, 243, 252, .72)" key={`${cx}-${cy}`} r="2" />
-          ))}
-        </svg>
-      </div>
+      {/* 封面模糊放大做氛围底，替代纯装饰渐变 */}
+      {props.coverImgUrl ? (
+        <img
+          alt=""
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-0 h-full w-full scale-125 object-cover opacity-25 blur-3xl"
+          src={props.coverImgUrl}
+        />
+      ) : null}
+      <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-black/60 via-black/30 to-black/20" />
       <div className="relative">
         <div className="flex min-w-0 flex-col gap-5 md:flex-row md:items-start md:gap-8">
           <img
@@ -44,7 +39,7 @@ export function NowPlayingHero(props: NowPlayingHeroProps): JSX.Element {
             <h2 className="pr-12 text-2xl font-bold leading-tight tracking-normal text-zinc-50 md:pr-0 md:text-4xl">{props.title}</h2>
             <p className="mt-3 truncate text-base text-zinc-300">{props.subtitle}</p>
             <div className="mt-6">
-              <SyncedLyrics lyric={props.lyric} positionSec={props.positionSec} />
+              <SyncedLyrics lyric={props.lyric} mode={props.mode} positionSec={props.positionSec} />
             </div>
           </div>
         </div>

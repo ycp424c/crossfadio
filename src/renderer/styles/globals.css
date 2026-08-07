@@ -16,5 +16,18 @@ body,
 body {
   margin: 0;
   font-family: "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif;
-  background: radial-gradient(circle at 20% 10%, #1f2937 0%, #09090b 45%);
+  /* 全局共享的暗色氛围底，三个 tab 透出同一层渐变，避免切换时视觉割裂 */
+  background: radial-gradient(circle at 20% 10%, #18181b 0%, #09090b 45%);
+}
+
+/* 尊重系统减弱动态效果设置：所有过渡与动画收敛为瞬时 */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+  }
 }

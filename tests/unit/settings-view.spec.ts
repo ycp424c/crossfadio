@@ -252,7 +252,7 @@ describe('settings view', () => {
   it('manages Personal DJ Context Bridge Tokens from settings', async () => {
     await renderSettingsView();
 
-    expect(container.textContent).toContain('Personal Context / Integrations');
+    expect(container.textContent).toContain('个人上下文与集成');
     expect(container.textContent).toContain('适合稳定、低干扰的音乐。');
     expect(container.textContent).toContain('Existing Bridge');
     expect(container.textContent).not.toContain('cfdj_ctx_plaintext');

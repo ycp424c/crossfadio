@@ -28,7 +28,7 @@ export function App(): JSX.Element {
   }, [authToken]);
 
   return (
-    <div className="flex h-screen supports-[height:100dvh]:h-[100dvh] flex-col bg-zinc-950 pt-[env(safe-area-inset-top)] pr-[env(safe-area-inset-right)] pl-[env(safe-area-inset-left)] text-zinc-100">
+    <div className="flex h-screen supports-[height:100dvh]:h-[100dvh] flex-col pt-[env(safe-area-inset-top)] pr-[env(safe-area-inset-right)] pl-[env(safe-area-inset-left)] text-zinc-100">
       {/* Main content — all views stay mounted so audio and chat history persist */}
       <div className="min-h-0 flex-1 overflow-y-auto">
         <div style={{ display: tab === 'player' ? 'block' : 'none' }}>
@@ -73,7 +73,7 @@ function TabButton({
     <button
       onClick={onClick}
       className={`flex flex-1 flex-col items-center gap-0.5 py-2 text-xs transition ${
-        active ? 'text-indigo-400' : 'text-zinc-500 hover:text-zinc-300'
+        active ? 'text-cyan-300' : 'text-zinc-500 hover:text-zinc-300'
       }`}
     >
       {icon}

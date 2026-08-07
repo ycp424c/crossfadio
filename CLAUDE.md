@@ -43,8 +43,9 @@ src/
     App.tsx         # 3-tab layout: Player / Chat / Settings
     api.ts          # HTTP client for /api endpoints
     lib-hooks.ts    # useMediaQuery hook (md=768px breakpoint)
+    lib-motion.ts   # prefers-reduced-motion scroll behavior helper
     views/          # Player/, Settings/ (chat lives in components/player/ChatPanel)
-    components/     # player/ (8 components), ui-button
+    components/     # player/ (7 components)
     audio/          # engine, crossfade, prefetch, timeline, lyrics
     sse/client.ts   # SSE client: EventSource for broadcasts, fetch streams for one-shot jobs
   shared/

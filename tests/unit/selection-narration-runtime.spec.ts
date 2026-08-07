@@ -25,7 +25,8 @@ const trace: SelectionDecisionTrace = {
   schemaVersion: 2,
   runId: 'run-runtime',
   mode: 'autonomous',
-  createdAt: '2026-07-17T10:00:00.000Z',
+  // 动态时间戳：固定历史日期会随真实时钟越过 7 天保留期，导致运行时查询把 trace 当过期数据过滤
+  createdAt: new Date(Date.now() - 60_000).toISOString(),
   decisions: [{
     stage: 'final',
     action: 'selected',

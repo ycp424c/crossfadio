@@ -19,11 +19,8 @@
     "preview": "pnpm build && pnpm start"
   },
   "dependencies": {
-    "@radix-ui/react-slot": "^1.2.3",
     "NeteaseCloudMusicApi": "^4.31.0",
     "better-sqlite3": "^11.10.0",
-    "class-variance-authority": "^0.7.1",
-    "clsx": "^2.1.1",
     "cors": "^2.8.5",
     "express": "^4.21.2",
     "jose": "^6.2.3",
@@ -31,7 +28,6 @@
     "pino": "^9.9.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
-    "tailwind-merge": "^3.3.1",
     "ws": "^8.18.3",
     "zod": "^3.25.76",
     "zustand": "^5.0.8"

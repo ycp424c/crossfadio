@@ -207,7 +207,7 @@ export function SettingsView(): JSX.Element {
       const message = err instanceof Error ? err.message : '创建 Bridge Token 失败';
       setPersonalContextOpStatus({
         type: 'error',
-        message: message.includes('token limit') ? '已达到 10 个 active Bridge Token 上限，请先撤销旧 Token' : message
+        message: message.includes('token limit') ? '已达到 10 个生效中的 Bridge Token 上限，请先撤销旧 Token' : message
       });
     }
   }
@@ -229,7 +229,7 @@ export function SettingsView(): JSX.Element {
     try {
       await revokeCurrentPersonalDjContext();
       await refreshPersonalContext();
-      setPersonalContextOpStatus({ type: 'ok', message: '当前 Personal DJ Context 已撤销' });
+      setPersonalContextOpStatus({ type: 'ok', message: '当前个人 DJ 上下文已撤销' });
     } catch (err) {
       setPersonalContextOpStatus({ type: 'error', message: err instanceof Error ? err.message : '撤销当前上下文失败' });
     }
@@ -273,7 +273,7 @@ export function SettingsView(): JSX.Element {
   }
 
   return (
-    <div className="flex h-full flex-col overflow-hidden bg-zinc-950 text-zinc-100">
+    <div className="flex h-full flex-col overflow-hidden text-zinc-100">
       <div className="flex shrink-0 items-center gap-2 border-b border-zinc-800 px-4 md:px-6 py-4">
         <Settings2 className="h-5 w-5 text-zinc-400" />
         <h1 className="text-lg font-semibold">设置</h1>
@@ -282,12 +282,12 @@ export function SettingsView(): JSX.Element {
       <div className="min-h-0 flex-1 space-y-8 overflow-y-auto px-4 py-4 pb-8 md:px-6 md:py-6 md:pb-8">
         {/* LLM section */}
         <section>
-          <h2 className="mb-4 text-sm font-medium uppercase tracking-wider text-zinc-400">
+          <h2 className="mb-4 text-sm font-medium text-zinc-400">
             语言模型（LLM）
           </h2>
           <div className="space-y-3 rounded-xl border border-zinc-800 bg-zinc-900 p-4">
-            <ReadOnlyField label="API Base URL" value={llm?.baseUrl ?? '—'} />
-            <ReadOnlyField label="模型" value={llm?.model ?? '—'} />
+            <ReadOnlyField label="API Base URL" value={llm?.baseUrl ?? '未配置'} />
+            <ReadOnlyField label="模型" value={llm?.model ?? '未配置'} />
             <ReadOnlyField
               label="状态"
               value={llm?.hasApiKey ? '已配置 API Key' : '未配置 API Key'}
@@ -307,8 +307,8 @@ export function SettingsView(): JSX.Element {
                 type="button"
                 onClick={() => void handleThinkingToggle()}
                 disabled={!llm?.thinkingSupported || saveStatus.type === 'saving'}
-                className={`relative inline-flex h-6 w-11 shrink-0 rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none disabled:cursor-not-allowed disabled:opacity-50 ${
-                  llm?.thinkingEnabled ? 'bg-indigo-600' : 'bg-zinc-700'
+                className={`relative inline-flex h-6 w-11 shrink-0 rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400/70 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900 disabled:cursor-not-allowed disabled:opacity-50 ${
+                  llm?.thinkingEnabled ? 'bg-cyan-700' : 'bg-zinc-700'
                 }`}
                 role="switch"
                 aria-label="启用深度思考"
@@ -326,12 +326,12 @@ export function SettingsView(): JSX.Element {
 
         {/* TTS section — voice only */}
         <section>
-          <h2 className="mb-4 text-sm font-medium uppercase tracking-wider text-zinc-400">
+          <h2 className="mb-4 text-sm font-medium text-zinc-400">
             语音合成（TTS）
           </h2>
           <div className="space-y-3 rounded-xl border border-zinc-800 bg-zinc-900 p-4">
-            <ReadOnlyField label="API Base URL" value={tts?.baseUrl ?? '—'} />
-            <ReadOnlyField label="模型" value={tts?.model ?? '—'} />
+            <ReadOnlyField label="API Base URL" value={tts?.baseUrl ?? '未配置'} />
+            <ReadOnlyField label="模型" value={tts?.model ?? '未配置'} />
             <ReadOnlyField
               label="状态"
               value={tts?.hasApiKey ? '已配置 API Key' : '未配置 API Key'}
@@ -405,7 +405,7 @@ export function SettingsView(): JSX.Element {
         </section>
 
         <section>
-          <h2 className="mb-4 text-sm font-medium uppercase tracking-wider text-zinc-400">
+          <h2 className="mb-4 text-sm font-medium text-zinc-400">
             DJ 自动补歌
           </h2>
           <div className="space-y-3 rounded-xl border border-zinc-800 bg-zinc-900 p-4">
@@ -440,7 +440,7 @@ export function SettingsView(): JSX.Element {
 
         {/* Daily Theme */}
         <section>
-          <h2 className="mb-4 text-sm font-medium uppercase tracking-wider text-zinc-400">
+          <h2 className="mb-4 text-sm font-medium text-zinc-400">
             每日主题
           </h2>
           <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-4">
@@ -453,8 +453,8 @@ export function SettingsView(): JSX.Element {
               </div>
               <button
                 onClick={handleDailyThemeToggle}
-                className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none ${
-                  dailyThemeEnabled ? 'bg-indigo-600' : 'bg-zinc-700'
+                className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400/70 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900 ${
+                  dailyThemeEnabled ? 'bg-cyan-700' : 'bg-zinc-700'
                 }`}
                 role="switch"
                 aria-checked={dailyThemeEnabled}
@@ -470,15 +470,15 @@ export function SettingsView(): JSX.Element {
         </section>
 
         <section>
-          <h2 className="mb-4 text-sm font-medium uppercase tracking-wider text-zinc-400">
-            Personal Context / Integrations
+          <h2 className="mb-4 text-sm font-medium text-zinc-400">
+            个人上下文与集成
           </h2>
           <PersonalContextStatusIndicator status={personalContextOpStatus} />
           <div className="space-y-5 rounded-xl border border-zinc-800 bg-zinc-900 p-4">
             <div className="grid gap-3 md:grid-cols-2">
               <ReadOnlyField
                 label="上下文状态"
-                value={personalContextStatus?.currentActive ? 'Active' : personalContextStatus?.latest?.revokedAt ? 'Revoked' : '未上传'}
+                value={personalContextStatus?.currentActive ? '生效中' : personalContextStatus?.latest?.revokedAt ? '已撤销' : '未上传'}
                 valueClass={personalContextStatus?.currentActive ? 'text-emerald-400' : personalContextStatus?.latest ? 'text-amber-400' : 'text-zinc-500'}
               />
               <ReadOnlyField
@@ -487,7 +487,7 @@ export function SettingsView(): JSX.Element {
               />
               <ReadOnlyField
                 label="来源"
-                value={personalContextStatus?.latest?.sourceKind ?? '—'}
+                value={formatSourceKind(personalContextStatus?.latest?.sourceKind)}
               />
               <ReadOnlyField
                 label="保留记录"
@@ -496,7 +496,7 @@ export function SettingsView(): JSX.Element {
             </div>
             {personalContextStatus?.latest?.summary && (
               <div className="rounded-lg border border-zinc-800 bg-zinc-950 p-3">
-                <p className="mb-1 text-xs font-medium uppercase tracking-wider text-zinc-500">当前摘要</p>
+                <p className="mb-1 text-xs font-medium text-zinc-500">当前摘要</p>
                 <p className="text-sm leading-relaxed text-zinc-300">{personalContextStatus.latest.summary}</p>
               </div>
             )}
@@ -512,7 +512,7 @@ export function SettingsView(): JSX.Element {
                 type="button"
                 onClick={handleCreatePersonalContextToken}
                 disabled={personalTokenLimitReached || personalContextOpStatus.type === 'loading'}
-                className="inline-flex shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-50"
+                className="inline-flex shrink-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-lg bg-cyan-800 px-4 py-2 text-sm font-medium text-white transition hover:bg-cyan-700 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {personalContextOpStatus.type === 'loading' ? <Loader2 className="h-4 w-4 animate-spin" /> : <Shield className="h-4 w-4" />}
                 创建 Bridge Token
@@ -528,16 +528,16 @@ export function SettingsView(): JSX.Element {
               </button>
             </div>
             {personalTokenLimitReached && (
-              <p className="text-xs text-amber-400">已达到 10 个 active Bridge Token 上限，请先撤销旧 Token。</p>
+              <p className="text-xs text-amber-400">已达到 10 个生效中的 Bridge Token 上限，请先撤销旧 Token。</p>
             )}
             {createdPersonalToken && (
               <div className="rounded-lg border border-amber-800 bg-amber-950/40 p-3">
-                <p className="mb-2 text-xs font-medium uppercase tracking-wider text-amber-300">Bridge Token 明文只显示这一次</p>
+                <p className="mb-2 text-xs font-medium text-amber-300">Bridge Token 明文只显示这一次</p>
                 <code className="block break-all rounded bg-zinc-950 px-3 py-2 text-xs text-amber-100">{createdPersonalToken}</code>
               </div>
             )}
             <div>
-              <h3 className="mb-2 text-xs font-medium uppercase tracking-wider text-zinc-500">
+              <h3 className="mb-2 text-xs font-medium text-zinc-500">
                 Bridge Tokens
                 {personalContextTokens.length > 0 && (
                   <span className="ml-1.5 text-zinc-600">({personalContextTokens.length})</span>
@@ -553,11 +553,11 @@ export function SettingsView(): JSX.Element {
                         <div className="flex items-center gap-2">
                           <span className="truncate text-sm font-medium text-zinc-200">{token.name}</span>
                           <span className={`rounded px-1.5 py-0.5 text-[11px] ${token.revokedAt ? 'bg-zinc-800 text-zinc-500' : 'bg-emerald-500/10 text-emerald-400'}`}>
-                            {token.revokedAt ? 'revoked' : 'active'}
+                            {token.revokedAt ? '已撤销' : '生效中'}
                           </span>
                         </div>
                         <p className="mt-0.5 truncate text-xs text-zinc-500">
-                          created {formatDateTime(token.createdAt)} · last used {formatDateTime(token.lastUsedAt)}
+                          创建于 {formatDateTime(token.createdAt)}{token.lastUsedAt ? `，最近使用 ${formatDateTime(token.lastUsedAt)}` : '，从未使用'}
                         </p>
                       </div>
                       <button
@@ -579,7 +579,7 @@ export function SettingsView(): JSX.Element {
 
         {/* Taste Analysis */}
         <section>
-          <h2 className="mb-4 text-sm font-medium uppercase tracking-wider text-zinc-400">
+          <h2 className="mb-4 text-sm font-medium text-zinc-400">
             音乐品味分析
           </h2>
           <div className="space-y-3 rounded-xl border border-zinc-800 bg-zinc-900 p-4">
@@ -589,7 +589,7 @@ export function SettingsView(): JSX.Element {
             <button
               onClick={handleAnalyzeTaste}
               disabled={tasteStatus.type === 'analyzing'}
-              className="flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-indigo-500 disabled:opacity-50"
+              className="flex items-center gap-2 rounded-lg bg-cyan-800 px-4 py-2 text-sm font-medium text-white transition hover:bg-cyan-700 disabled:opacity-50"
             >
               {tasteStatus.type === 'analyzing' ? (
                 <Loader2 className="h-4 w-4 animate-spin" />
@@ -619,7 +619,7 @@ export function SettingsView(): JSX.Element {
         {/* Whitelist management */}
         {isAdmin ? (
         <section>
-          <h2 className="mb-4 text-sm font-medium uppercase tracking-wider text-zinc-400">
+          <h2 className="mb-4 text-sm font-medium text-zinc-400">
             白名单管理
           </h2>
           <WhitelistStatusIndicator status={whitelistStatus} />
@@ -649,7 +649,7 @@ export function SettingsView(): JSX.Element {
                   statusTimerRef.current = setTimeout(() => setWhitelistStatus({ type: 'idle' }), 3000);
                 }}
                 disabled={!newNcmId.trim() || whitelistStatus.type === 'saving'}
-                className="flex items-center gap-1.5 rounded-lg bg-indigo-600 px-4 py-1.5 text-sm font-medium text-white transition hover:bg-indigo-500 disabled:opacity-50 shrink-0"
+                className="flex items-center gap-1.5 rounded-lg bg-cyan-800 px-4 py-1.5 text-sm font-medium text-white transition hover:bg-cyan-700 disabled:opacity-50 shrink-0"
               >
                 <UserPlus className="h-4 w-4" />
                 添加
@@ -658,7 +658,7 @@ export function SettingsView(): JSX.Element {
 
             {/* Current whitelist */}
             <div>
-              <h3 className="mb-2 text-xs font-medium uppercase tracking-wider text-zinc-500">
+              <h3 className="mb-2 text-xs font-medium text-zinc-500">
                 当前白名单
                 {whitelist.length > 0 && (
                   <span className="ml-1.5 text-zinc-600">({whitelist.length})</span>
@@ -701,7 +701,7 @@ export function SettingsView(): JSX.Element {
 
             {/* Blocked attempts */}
             <div>
-              <h3 className="mb-2 text-xs font-medium uppercase tracking-wider text-zinc-500">
+              <h3 className="mb-2 text-xs font-medium text-zinc-500">
                 被阻止的登录
                 {blocked.length > 0 && (
                   <span className="ml-1.5 text-zinc-600">({blocked.length})</span>
@@ -755,7 +755,7 @@ export function SettingsView(): JSX.Element {
         </section>
         ) : (
         <section>
-          <h2 className="mb-4 text-sm font-medium uppercase tracking-wider text-zinc-400">
+          <h2 className="mb-4 text-sm font-medium text-zinc-400">
             白名单管理
           </h2>
           <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-4">
@@ -766,14 +766,14 @@ export function SettingsView(): JSX.Element {
       </div>
 
       {/* Footer save bar */}
-      <div className="flex shrink-0 items-center justify-between gap-3 border-t border-zinc-800 bg-zinc-950 px-4 md:px-6 py-4">
+      <div className="flex shrink-0 items-center justify-between gap-3 border-t border-zinc-800 bg-zinc-950/80 px-4 md:px-6 py-4 backdrop-blur">
         <div className="min-w-0 flex-1">
           <StatusIndicator status={saveStatus} />
         </div>
         <button
           onClick={handleSave}
           disabled={disabled || saveStatus.type === 'saving'}
-          className="flex shrink-0 items-center gap-2 rounded-lg bg-indigo-600 px-5 py-2 text-sm font-medium text-white transition hover:bg-indigo-500 disabled:opacity-50"
+          className="flex shrink-0 items-center gap-2 rounded-lg bg-cyan-800 px-5 py-2 text-sm font-medium text-white transition hover:bg-cyan-700 disabled:opacity-50"
         >
           {saveStatus.type === 'saving' && <Loader2 className="h-4 w-4 animate-spin" />}
           保存
@@ -831,7 +831,7 @@ function WhitelistStatusIndicator({ status }: { status: WhitelistOpStatus }): JS
   if (status.type === 'saving') {
     return (
       <span className="flex items-center gap-1.5 text-sm text-zinc-400">
-        <Loader2 className="h-4 w-4 animate-spin" /> 处理中...
+        <Loader2 className="h-4 w-4 animate-spin" /> 处理中…
       </span>
     );
   }
@@ -856,7 +856,7 @@ function PersonalContextStatusIndicator({ status }: { status: PersonalContextOpS
   if (status.type === 'loading') {
     return (
       <span className="mb-2 flex items-center gap-1.5 text-sm text-zinc-400">
-        <Loader2 className="h-4 w-4 animate-spin" /> 处理中...
+        <Loader2 className="h-4 w-4 animate-spin" /> 处理中…
       </span>
     );
   }
@@ -877,12 +877,25 @@ function PersonalContextStatusIndicator({ status }: { status: PersonalContextOpS
   return <span />;
 }
 
+const SOURCE_KIND_LABELS: Record<string, string> = {
+  lifemesh_bundle: 'LifeMesh 生活摘要',
+  liked_library: '红心歌单分析',
+  user_corpus: '个人语料',
+  legacy_taste_md: '早期品味档案',
+  legacy_user_config: '早期用户配置'
+};
+
+function formatSourceKind(sourceKind: string | null | undefined): string {
+  if (!sourceKind) return '未配置';
+  return SOURCE_KIND_LABELS[sourceKind] ?? sourceKind;
+}
+
 function formatDateTime(value: string | null | undefined): string {
-  if (!value) return '—';
+  if (!value) return '暂无';
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
   return date.toLocaleString();
 }
 
 const inputClass =
-  'w-full rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-sm text-zinc-100 outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500';
+  'w-full rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-sm text-zinc-100 outline-none focus:border-cyan-400/60 focus:ring-1 focus:ring-cyan-400/60';
