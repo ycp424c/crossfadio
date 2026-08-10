@@ -159,7 +159,12 @@ describe('NcmAuthService.checkQr', () => {
     expect(client.withCookie).toHaveBeenCalledWith('MUSIC_U=abc;');
   });
 
-  it('returns forbidden when ncmId not in allowlist', async () => {
+  it('returns authorized with a JWT for an ordinary user not in the allowlist', async () => {
+    // Allowlist only contains another user; 99999 is an ordinary standard user.
+    fs.writeFileSync(path.join(dataDir, 'allowlist.json'), '["12345"]');
+    const { loadAllowlist } = await import('../../src/server/allowlist');
+    loadAllowlist();
+
     const client = makeClient({
       checkLoginQr: vi.fn().mockResolvedValue({
         code: 803,
@@ -172,11 +177,44 @@ describe('NcmAuthService.checkQr', () => {
     });
     const service = await createService(client);
 
-    const result = await service.checkQr('key-803-blocked');
+    const result = await service.checkQr('key-803-ordinary');
+
+    expect(result.code).toBe(NCM_QR_CODE.AUTHORIZED);
+    expect(result.hint).toBe('authorized');
+    expect(result.hasCookie).toBe(true);
+    expect(typeof result.token).toBe('string');
+    expect(result.token!.length).toBeGreaterThan(10);
+    expect(client.withCookie).toHaveBeenCalledWith('MUSIC_U=abc;');
+  });
+
+  it('rejects a suspended user at login and records a blocked attempt', async () => {
+    // Suspension is independent of priority membership: a priority user can be suspended.
+    fs.writeFileSync(path.join(dataDir, 'allowlist.json'), '["12345"]');
+    const { loadAllowlist } = await import('../../src/server/allowlist');
+    loadAllowlist();
+    const { setUserAccessStatus } = await import('../../src/server/store/user-access-controls');
+    setUserAccessStatus('12345', 'suspended');
+
+    const client = makeClient({
+      checkLoginQr: vi.fn().mockResolvedValue({
+        code: 803,
+        message: 'authorized',
+        cookie: 'MUSIC_U=abc;'
+      }),
+      getLoginStatus: vi.fn().mockResolvedValue({
+        data: { profile: { userId: 12345, nickname: 'suspended-user' } }
+      })
+    });
+    const service = await createService(client);
+
+    const result = await service.checkQr('key-803-suspended');
 
     expect(result.code).toBe(NCM_QR_CODE.AUTHORIZED);
     expect(result.hint).toBe('forbidden');
     expect(result.hasCookie).toBe(false);
     expect(result.token).toBeUndefined();
+    const { getBlockedAttempts } = await import('../../src/server/store/users');
+    const attempts = getBlockedAttempts();
+    expect(attempts.some((attempt) => attempt.ncm_id === '12345')).toBe(true);
   });
 });

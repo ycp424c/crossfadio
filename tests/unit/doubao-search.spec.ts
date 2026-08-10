@@ -30,6 +30,7 @@ afterEach(() => {
 
 describe('doubao search client', () => {
   it('posts to the web_search endpoint with bearer auth and parses WebResults', async () => {
+    const recentPublishTime = new Date(Date.now() - 60 * 60 * 1000).toISOString();
     const fetchMock = vi.fn(async () =>
       jsonResponse({
         ResponseMetadata: {},
@@ -39,7 +40,7 @@ describe('doubao search client', () => {
               Title: '某歌手发布新专辑',
               Url: 'https://example.com/a',
               SiteName: '娱乐周刊',
-              PublishTime: '2026-08-07T09:00:00+08:00',
+              PublishTime: recentPublishTime,
               Content: '正文内容'.repeat(200)
             },
             { Title: '另一条新闻', Summary: '只有摘要' },
@@ -64,7 +65,7 @@ describe('doubao search client', () => {
     expect(topics?.[0]).toMatchObject({
       title: '某歌手发布新专辑',
       siteName: '娱乐周刊',
-      publishTime: '2026-08-07T09:00:00+08:00'
+      publishTime: recentPublishTime
     });
     expect(topics?.[0].summary.length).toBeLessThanOrEqual(200);
     expect(topics?.[1].summary).toBe('只有摘要');

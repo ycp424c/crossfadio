@@ -1,3 +1,4 @@
+import { isIP } from 'node:net';
 import { lyricsSelectionModeSchema, type LyricsSelectionMode } from './music-agent/track-understanding.js';
 
 export type TtsProvider = 'aliyun-qwen' | 'openai-compatible' | 'tencent-cloud';
@@ -20,6 +21,15 @@ export type ServerConfig = {
   host: string;
   allowedOrigins: string[];
   adminNcmId: string | null;
+  /**
+   * Explicit trusted reverse-proxy IP/CIDR allowlist used for `trust proxy`.
+   * Empty (default) keeps trust proxy off: forwarded headers are ignored and
+   * `req.ip` is the socket address. X-Forwarded-For is only accepted from a
+   * socket whose remote address matches one of these entries — hop counts are
+   * NOT enough because a misconfigured count lets clients forge headers and
+   * bypass IP rate limits. Invalid entries fail configuration load (closed).
+   */
+  trustedProxyCidrs: string[];
   lyricsSelectionMode: LyricsSelectionMode;
 };
 
@@ -53,10 +63,41 @@ export function loadConfig(): ServerConfig {
       .map((s) => s.trim())
       .filter(Boolean),
     adminNcmId: process.env.CROSSFADIO_ADMIN_NCM_ID?.trim() || null,
+    trustedProxyCidrs: resolveTrustedProxyCidrs(process.env.CROSSFADIO_TRUSTED_PROXY_CIDRS),
     lyricsSelectionMode: resolveLyricsSelectionMode(process.env.CROSSFADIO_LYRICS_SELECTION_MODE)
   };
 
   return _config;
+}
+
+/**
+ * CROSSFADIO_TRUSTED_PROXY_CIDRS: comma-separated allowlist of trusted proxy
+ * IPs/CIDRs (e.g. `127.0.0.1/32,::1/128,10.0.0.0/8`). Absent or empty keeps
+ * trust proxy OFF so an unconfigured deployment never trusts forwarded
+ * headers. Any malformed entry FAILS CLOSED: configuration load throws instead
+ * of silently trusting a wrong value — a hop count alone is never enough.
+ */
+function resolveTrustedProxyCidrs(value: string | undefined): string[] {
+  if (value === undefined || value.trim() === '') return [];
+  const entries = value
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+  for (const entry of entries) {
+    const [ipPart, prefixPart] = entry.split('/');
+    const family = isIP(ipPart);
+    if (family === 0) {
+      throw new Error(`Invalid CROSSFADIO_TRUSTED_PROXY_CIDRS entry "${entry}": not an IP address`);
+    }
+    if (prefixPart !== undefined) {
+      const prefix = Number(prefixPart);
+      const maxPrefix = family === 4 ? 32 : 128;
+      if (!Number.isInteger(prefix) || prefix < 0 || prefix > maxPrefix) {
+        throw new Error(`Invalid CROSSFADIO_TRUSTED_PROXY_CIDRS entry "${entry}": invalid prefix`);
+      }
+    }
+  }
+  return entries;
 }
 
 function resolveLyricsSelectionMode(value: string | undefined): LyricsSelectionMode {

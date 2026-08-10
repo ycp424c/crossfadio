@@ -15,6 +15,15 @@ import {
 import { createAnalyzeTasteHandler, runTasteAnalysis } from '../../src/server/http/routes/taste-analysis';
 import { NCM_ERROR_CODE } from '../../src/shared/schema';
 import { DEFAULT_TTS_MODEL, DEFAULT_TTS_VOICE } from '../../src/shared/tts';
+import {
+  acquireResourcePermit,
+  _resetResourceGovernorForTest,
+  ResourceLimitError
+} from '../../src/server/resource-governor';
+import { _resetResourcePolicyForTest } from '../../src/server/resource-policy';
+import { getDailyCreditsUsage } from '../../src/server/store/resource-usage';
+import { formatShanghaiDate } from '../../src/server/timezone';
+import { loadAllowlist } from '../../src/server/allowlist';
 
 const originalEnv = { ...process.env };
 let dataDir: string;
@@ -34,6 +43,9 @@ beforeEach(() => {
   resetConfigForTest();
   resetDailyThemeForTest();
   initDb();
+  // 'test-user' is a priority user (allowlist member); 'standard-user' is not.
+  fs.writeFileSync(path.join(dataDir, 'allowlist.json'), '["test-user"]');
+  loadAllowlist();
 });
 
 afterEach(() => {
@@ -43,6 +55,8 @@ afterEach(() => {
   resetConfigForTest();
   resetDailyThemeForTest();
   _resetDbForTest();
+  _resetResourceGovernorForTest();
+  _resetResourcePolicyForTest();
 });
 
 function createJsonResponse() {
@@ -53,6 +67,7 @@ function createJsonResponse() {
       res.statusCode = code;
       return res;
     }),
+    set: vi.fn(() => res),
     json: vi.fn((body: unknown) => {
       res.body = body;
       return res;
@@ -222,6 +237,85 @@ describe('settings routes', () => {
 
     expect(saveRes.statusCode).toBe(400);
     expect(saveRes.body).toMatchObject({ ok: false, error: 'invalid body' });
+  });
+
+  it('GET reports standard tier with clamped capabilities for an ordinary user', async () => {
+    const { setPref } = await import('../../src/server/store/prefs');
+    setPref('standard-user', 'llm.thinkingEnabled', true);
+    setPref('standard-user', 'dj.autoFillBatchSize', 5);
+
+    const handler = createGetSettingsHandler();
+    const res = createJsonResponse();
+    handler({ userId: 'standard-user' } as never, res as never);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toMatchObject({
+      resourceTier: 'standard',
+      resourceCapabilities: { thinking: false, configurableAutoFillBatchSize: false },
+      llm: { thinkingEnabled: false },
+      autoFillBatchSize: 2
+    });
+  });
+
+  it('GET reports priority tier with stored preferences for a priority user', async () => {
+    const { setPref } = await import('../../src/server/store/prefs');
+    setPref('test-user', 'llm.thinkingEnabled', true);
+    setPref('test-user', 'dj.autoFillBatchSize', 5);
+
+    const handler = createGetSettingsHandler();
+    const res = createJsonResponse();
+    handler({ userId: 'test-user' } as never, res as never);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toMatchObject({
+      resourceTier: 'priority',
+      resourceCapabilities: { thinking: true, configurableAutoFillBatchSize: true },
+      llm: { thinkingEnabled: true },
+      autoFillBatchSize: 5
+    });
+  });
+
+  it('PUT rejects a standard user enabling LLM thinking with 403 and does not persist it', async () => {
+    const saveHandler = createSaveSettingsHandler();
+    const saveRes = createJsonResponse();
+    saveHandler(
+      { userId: 'standard-user', body: { llm: { thinkingEnabled: true } } } as never,
+      saveRes as never
+    );
+
+    expect(saveRes.statusCode).toBe(403);
+    expect(saveRes.body).toMatchObject({ ok: false, error: 'resource_tier_restricted' });
+    const { getPref } = await import('../../src/server/store/prefs');
+    expect(getPref<boolean>('standard-user', 'llm.thinkingEnabled')).not.toBe(true);
+  });
+
+  it('PUT rejects a standard user raising the auto-fill batch size with 403 and does not persist it', async () => {
+    const saveHandler = createSaveSettingsHandler();
+    const saveRes = createJsonResponse();
+    saveHandler(
+      { userId: 'standard-user', body: { autoFillBatchSize: 3 } } as never,
+      saveRes as never
+    );
+
+    expect(saveRes.statusCode).toBe(403);
+    expect(saveRes.body).toMatchObject({ ok: false, error: 'resource_tier_restricted' });
+    const { getPref } = await import('../../src/server/store/prefs');
+    expect(getPref<number>('standard-user', 'dj.autoFillBatchSize')).not.toBe(3);
+  });
+
+  it('PUT still accepts voice, daily theme, and discovery mode from standard users', () => {
+    const saveHandler = createSaveSettingsHandler();
+    const saveRes = createJsonResponse();
+    saveHandler(
+      {
+        userId: 'standard-user',
+        body: { dailyThemeEnabled: false, discoveryMode: 'comfort' }
+      } as never,
+      saveRes as never
+    );
+
+    expect(saveRes.statusCode).toBe(200);
+    expect(saveRes.body).toEqual({ ok: true });
   });
 
   it('POST tts-preview synthesizes a short preview with the requested voice', async () => {
@@ -493,6 +587,264 @@ describe('settings taste analysis route', () => {
     expect(res.body).toEqual({
       ok: false,
       message: '品味分析超时，请稍后重试'
+    });
+  });
+});
+
+describe('settings resource permit lifetime', () => {
+  function expectUserConcurrencyError(userId: string, operation: string): void {
+    let error: unknown;
+    try {
+      acquireResourcePermit(userId, operation as never);
+    } catch (err) {
+      error = err;
+    }
+    expect(error).toBeInstanceOf(ResourceLimitError);
+    expect((error as ResourceLimitError).code).toBe('user_concurrency_exceeded');
+  }
+
+  describe('TTS preview', () => {
+    function controllableGenerationFetch() {
+      const controls: {
+        finishFetch?: (response: Response) => void;
+        rejectFetch?: (err: Error) => void;
+      } = {};
+      let firstCall = true;
+      const fetchMock = vi.fn((input: RequestInfo | URL) => {
+        if (firstCall) {
+          firstCall = false;
+          return new Promise<Response>((resolve, reject) => {
+            controls.finishFetch = resolve;
+            controls.rejectFetch = reject;
+          });
+        }
+        return new Response(Buffer.from('preview-audio'), {
+          status: 200,
+          headers: { 'Content-Type': 'audio/wav' }
+        });
+      });
+      vi.stubGlobal('fetch', fetchMock);
+      return controls;
+    }
+
+    it('holds its permit during synthesis and releases on success', async () => {
+      const controls = controllableGenerationFetch();
+      const handler = createPreviewTtsHandler();
+      const res = createJsonResponse();
+
+      const pending = handler({ userId: 'tts-preview-success-user', body: {} } as never, res as never);
+
+      // The permit is acquired synchronously before the TTS provider is called.
+      expectUserConcurrencyError('tts-preview-success-user', 'tts_preview');
+
+      await vi.waitFor(() => expect(fetch).toHaveBeenCalled());
+      expectUserConcurrencyError('tts-preview-success-user', 'tts_preview');
+
+      controls.finishFetch!(Response.json({ output: { audio: { url: 'https://audio.example/preview.wav' } } }));
+      await pending;
+
+      expect(res.statusCode).toBe(200);
+      expect(() => acquireResourcePermit('tts-preview-success-user', 'tts_preview')).not.toThrow();
+    });
+
+    it('holds its permit during synthesis and releases on failure', async () => {
+      const controls = controllableGenerationFetch();
+      const handler = createPreviewTtsHandler();
+      const res = createJsonResponse();
+
+      const pending = handler({ userId: 'tts-preview-fail-user', body: {} } as never, res as never);
+
+      expectUserConcurrencyError('tts-preview-fail-user', 'tts_preview');
+
+      await vi.waitFor(() => expect(fetch).toHaveBeenCalled());
+      controls.rejectFetch!(new Error('synthesis failed'));
+      await pending;
+
+      expect(res.statusCode).toBe(502);
+      expect(() => acquireResourcePermit('tts-preview-fail-user', 'tts_preview')).not.toThrow();
+    });
+
+    it('rejects with JSON 429 before synthesis starts', async () => {
+      const fetchMock = vi.fn(async () => new Response('audio', { status: 200 }));
+      vi.stubGlobal('fetch', fetchMock);
+      const holding = acquireResourcePermit('tts-preview-429-user', 'tts_preview');
+
+      const handler = createPreviewTtsHandler();
+      const res = createJsonResponse();
+      await handler({ userId: 'tts-preview-429-user', body: {} } as never, res as never);
+
+      expect(res.statusCode).toBe(429);
+      expect(res.body).toMatchObject({
+        ok: false,
+        error: 'resource_limited',
+        reason: 'user_concurrency_exceeded',
+        operation: 'tts_preview'
+      });
+      expect(fetchMock).not.toHaveBeenCalled();
+      holding.release();
+    });
+  });
+
+  describe('taste analysis', () => {
+    const nowKey = formatShanghaiDate(new Date());
+
+    function successNcmClient() {
+      return {
+        getLikedSongIds: vi.fn().mockResolvedValue(['101']),
+        getSongDetails: vi.fn().mockResolvedValue([
+          { id: 101, name: 'Song A', artists: ['Artist A'], durationMs: 180_000 }
+        ])
+      };
+    }
+
+    function stubLlmSuccess() {
+      vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+        if (String(input).includes('llm.example')) {
+          return new Response(JSON.stringify({
+            choices: [{ message: { content: '# 我的音乐口味\n- 一次分析。' } }],
+            model: 'test-model'
+          }), { status: 200 });
+        }
+        return Promise.reject(new Error(`unexpected fetch: ${String(input)}`));
+      }));
+    }
+
+    it('holds its permit during analysis and releases on success with exactly one charge', async () => {
+      stubLlmSuccess();
+      const ncmClient = {
+        getLikedSongIds: vi.fn(async () => {
+          await Promise.resolve();
+          return ['101'];
+        }),
+        getSongDetails: vi.fn().mockResolvedValue([
+          { id: 101, name: 'Song A', artists: ['Artist A'], durationMs: 180_000 }
+        ])
+      };
+
+      const pending = runTasteAnalysis('taste-one-charge-user', ncmClient as never);
+
+      // The permit is acquired synchronously before any NCM provider work.
+      expectUserConcurrencyError('taste-one-charge-user', 'taste_analysis');
+
+      const taste = await pending;
+
+      expect(taste).toContain('一次分析');
+      expect(getDailyCreditsUsage('taste-one-charge-user', nowKey)).toBe(40);
+      expect(() => acquireResourcePermit('taste-one-charge-user', 'taste_analysis')).not.toThrow();
+    });
+
+    it('holds its permit while fetching liked songs and releases on a null result', async () => {
+      let rejectIds!: (err: Error) => void;
+      const ncmClient = {
+        getLikedSongIds: vi.fn(() => new Promise<string[]>((_resolve, reject) => {
+          rejectIds = reject;
+        }))
+      };
+
+      const pending = runTasteAnalysis('taste-null-user', ncmClient as never);
+
+      expectUserConcurrencyError('taste-null-user', 'taste_analysis');
+
+      rejectIds(new Error('ncm unavailable'));
+      const taste = await pending;
+
+      expect(taste).toBeNull();
+      expect(() => acquireResourcePermit('taste-null-user', 'taste_analysis')).not.toThrow();
+    });
+
+    it('holds its permit during the LLM call and releases on timeout', async () => {
+      vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+        if (String(input).includes('llm.example')) {
+          return new Promise<Response>((_resolve, reject) => {
+            init?.signal?.addEventListener('abort', () => {
+              reject(init.signal?.reason ?? new DOMException('aborted', 'AbortError'));
+            });
+          });
+        }
+        return Promise.reject(new Error(`unexpected fetch: ${String(input)}`));
+      }));
+
+      const handler = createAnalyzeTasteHandler();
+      const res = createJsonResponse();
+      const pending = handler({ userId: 'taste-timeout-user', ncmClient: successNcmClient() } as never, res as never);
+
+      expectUserConcurrencyError('taste-timeout-user', 'taste_analysis');
+
+      await vi.advanceTimersByTimeAsync(25);
+      await pending;
+
+      expect(res.statusCode).toBe(504);
+      expect(() => acquireResourcePermit('taste-timeout-user', 'taste_analysis')).not.toThrow();
+    });
+
+    it('holds its permit and releases when the handler rethrows an exception', async () => {
+      // runTasteAnalysis rethrows abort-family errors (TimeoutError) instead of
+      // swallowing them; the permit must still be released on that path.
+      let resolveIds!: () => void;
+      const idsGate = new Promise<void>((resolve) => {
+        resolveIds = resolve;
+      });
+      const ncmClient = {
+        getLikedSongIds: vi.fn(async () => {
+          await idsGate;
+          return ['101'];
+        }),
+        getSongDetails: vi.fn().mockResolvedValue([
+          { id: 101, name: 'Song A', artists: ['Artist A'], durationMs: 180_000 }
+        ])
+      };
+      vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+        if (String(input).includes('llm.example')) {
+          throw Object.assign(new Error('LLM timed out'), { name: 'TimeoutError' });
+        }
+        return Promise.reject(new Error(`unexpected fetch: ${String(input)}`));
+      }));
+
+      const handler = createAnalyzeTasteHandler();
+      const res = createJsonResponse();
+      const pending = handler({ userId: 'taste-exception-user', ncmClient } as never, res as never);
+
+      expectUserConcurrencyError('taste-exception-user', 'taste_analysis');
+
+      resolveIds();
+      await pending;
+
+      expect(res.statusCode).toBe(504);
+      expect(() => acquireResourcePermit('taste-exception-user', 'taste_analysis')).not.toThrow();
+    });
+
+    it('rejects with JSON 429 before fetching liked songs', async () => {
+      const ncmClient = {
+        getLikedSongIds: vi.fn().mockResolvedValue(['101'])
+      };
+      const holding = acquireResourcePermit('taste-429-user', 'taste_analysis');
+
+      const handler = createAnalyzeTasteHandler();
+      const res = createJsonResponse();
+      await handler({ userId: 'taste-429-user', ncmClient } as never, res as never);
+
+      expect(res.statusCode).toBe(429);
+      expect(res.body).toMatchObject({
+        ok: false,
+        error: 'resource_limited',
+        reason: 'user_concurrency_exceeded',
+        operation: 'taste_analysis'
+      });
+      expect(ncmClient.getLikedSongIds).not.toHaveBeenCalled();
+      holding.release();
+    });
+
+    it('does not double charge a manual analysis that succeeds', async () => {
+      stubLlmSuccess();
+      const ncmClient = successNcmClient();
+
+      const handler = createAnalyzeTasteHandler();
+      const res = createJsonResponse();
+      await handler({ userId: 'taste-manual-single-charge', ncmClient } as never, res as never);
+
+      expect(res.statusCode).toBe(200);
+      expect(getDailyCreditsUsage('taste-manual-single-charge', nowKey)).toBe(40);
+      expect(() => acquireResourcePermit('taste-manual-single-charge', 'taste_analysis')).not.toThrow();
     });
   });
 });

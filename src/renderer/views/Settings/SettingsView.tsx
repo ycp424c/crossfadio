@@ -4,10 +4,10 @@ import {
   getSettings,
   saveSettings,
   previewTtsVoice,
-  getWhitelist,
+  getPriorityUsers,
   getBlockedAttempts,
-  addToWhitelist,
-  removeFromWhitelist,
+  addPriorityUser,
+  removePriorityUser,
   unblockUser,
   analyzeTaste,
   getPersonalDjContextStatus,
@@ -15,9 +15,15 @@ import {
   createPersonalDjContextToken,
   revokePersonalDjContextToken,
   revokeCurrentPersonalDjContext,
+  getSuspendedUsers,
+  suspendUser,
+  reactivateUser,
   type LlmSettings,
   type TtsSettings,
   type BlockedAttempt,
+  type SuspendedUser,
+  type ResourceTier,
+  type ResourceCapabilities,
   type PersonalDjContextStatusResponse,
   type PersonalDjContextToken
 } from '@renderer/api';
@@ -44,10 +50,18 @@ export function SettingsView(): JSX.Element {
   const [saveStatus, setSaveStatus] = useState<SaveStatus>({ type: 'idle' });
   const [previewStatus, setPreviewStatus] = useState<PreviewStatus>({ type: 'idle' });
   const [loading, setLoading] = useState(true);
-  const [whitelist, setWhitelist] = useState<string[]>([]);
+  const [resourceTier, setResourceTier] = useState<ResourceTier>('standard');
+  const [resourceCapabilities, setResourceCapabilities] = useState<ResourceCapabilities>({
+    thinking: false,
+    configurableAutoFillBatchSize: false
+  });
+  const [priorityUsers, setPriorityUsers] = useState<string[]>([]);
   const [blocked, setBlocked] = useState<BlockedAttempt[]>([]);
   const [newNcmId, setNewNcmId] = useState('');
   const [whitelistStatus, setWhitelistStatus] = useState<WhitelistOpStatus>({ type: 'idle' });
+  const [pendingDemotionId, setPendingDemotionId] = useState<string | null>(null);
+  const [suspended, setSuspended] = useState<SuspendedUser[]>([]);
+  const [newSuspendNcmId, setNewSuspendNcmId] = useState('');
   const [isAdmin, setIsAdmin] = useState(true);
   const [personalContextStatus, setPersonalContextStatus] = useState<PersonalDjContextStatusResponse | null>(null);
   const [personalContextTokens, setPersonalContextTokens] = useState<PersonalDjContextToken[]>([]);
@@ -96,12 +110,21 @@ export function SettingsView(): JSX.Element {
           setAutoFillBatchSize(s.autoFillBatchSize);
           setSavedAutoFillBatchSize(s.autoFillBatchSize);
           setDailyThemeEnabled(s.dailyThemeEnabled);
+          // Old servers / fixtures may omit the new tier fields: degrade safely
+          // to standard tier with no priority capabilities instead of crashing.
+          setResourceTier(s.resourceTier ?? 'standard');
+          setResourceCapabilities(
+            s.resourceCapabilities ?? { thinking: false, configurableAutoFillBatchSize: false }
+          );
         }),
-      getWhitelist()
-        .then((w) => setWhitelist(w.entries))
+      getPriorityUsers()
+        .then((w) => setPriorityUsers(w.entries))
         .catch(() => setIsAdmin(false)),
       getBlockedAttempts()
         .then((b) => setBlocked(b.blocked))
+        .catch(() => {}),
+      getSuspendedUsers()
+        .then((r) => setSuspended(r.suspended))
         .catch(() => {}),
       refreshPersonalContext()
         .catch((err) => {
@@ -117,9 +140,9 @@ export function SettingsView(): JSX.Element {
       previewAudioRef.current = null;
     };
   }, []);
-  const refreshWhitelist = useCallback(async () => {
-    const [w, b] = await Promise.all([getWhitelist(), getBlockedAttempts()]);
-    setWhitelist(w.entries);
+  const refreshPriorityUsers = useCallback(async () => {
+    const [w, b] = await Promise.all([getPriorityUsers(), getBlockedAttempts()]);
+    setPriorityUsers(w.entries);
     setBlocked(b.blocked);
   }, []);
 
@@ -181,7 +204,7 @@ export function SettingsView(): JSX.Element {
   }
 
   async function handleThinkingToggle(): Promise<void> {
-    if (!llm?.thinkingSupported) return;
+    if (!llm?.thinkingSupported || !resourceCapabilities.thinking) return;
     const next = !llm.thinkingEnabled;
     setLlm({ ...llm, thinkingEnabled: next });
     setSaveStatus({ type: 'saving' });
@@ -194,6 +217,37 @@ export function SettingsView(): JSX.Element {
       setLlm((current) => current ? { ...current, thinkingEnabled: !next } : current);
       setSaveStatus({ type: 'error', message: err instanceof Error ? err.message : '深度思考设置保存失败' });
     }
+  }
+
+  async function handleSuspendUser(): Promise<void> {
+    const ncmId = newSuspendNcmId.trim();
+    if (!ncmId) return;
+    setWhitelistStatus({ type: 'saving' });
+    try {
+      await suspendUser(ncmId);
+      setWhitelistStatus({ type: 'ok' });
+      setNewSuspendNcmId('');
+      const result = await getSuspendedUsers();
+      setSuspended(result.suspended);
+    } catch (err) {
+      setWhitelistStatus({ type: 'error', message: err instanceof Error ? err.message : '暂停失败' });
+    }
+    clearTimeout(statusTimerRef.current);
+    statusTimerRef.current = setTimeout(() => setWhitelistStatus({ type: 'idle' }), 3000);
+  }
+
+  async function handleReactivateUser(userId: string): Promise<void> {
+    setWhitelistStatus({ type: 'saving' });
+    try {
+      await reactivateUser(userId);
+      setWhitelistStatus({ type: 'ok' });
+      const result = await getSuspendedUsers();
+      setSuspended(result.suspended);
+    } catch (err) {
+      setWhitelistStatus({ type: 'error', message: err instanceof Error ? err.message : '恢复失败' });
+    }
+    clearTimeout(statusTimerRef.current);
+    statusTimerRef.current = setTimeout(() => setWhitelistStatus({ type: 'idle' }), 3000);
   }
 
   async function handleCreatePersonalContextToken(): Promise<void> {
@@ -280,6 +334,24 @@ export function SettingsView(): JSX.Element {
       </div>
 
       <div className="min-h-0 flex-1 space-y-8 overflow-y-auto px-4 py-4 pb-8 md:px-6 md:py-6 md:pb-8">
+        {/* Resource tier */}
+        <section>
+          <h2 className="mb-4 text-sm font-medium text-zinc-400">
+            资源档位
+          </h2>
+          <div className="space-y-2 rounded-xl border border-zinc-800 bg-zinc-900 p-4">
+            <p className="text-sm text-zinc-100">
+              当前资源档位：
+              <span className={resourceTier === 'priority' ? 'text-emerald-400' : 'text-zinc-300'}>
+                {resourceTier === 'priority' ? '优先资源用户' : '标准用户'}
+              </span>
+            </p>
+            <p className="text-xs leading-relaxed text-zinc-500">
+              优先资源用户享有更高的并发与每日 AI 额度；标准用户仍可正常使用播放、队列、设置等全部基础功能。
+            </p>
+          </div>
+        </section>
+
         {/* LLM section */}
         <section>
           <h2 className="mb-4 text-sm font-medium text-zinc-400">
@@ -302,11 +374,14 @@ export function SettingsView(): JSX.Element {
                 {llm && !llm.thinkingSupported && (
                   <p className="mt-1 text-xs text-amber-400">当前模型或服务不支持切换思考模式。</p>
                 )}
+                {llm && !resourceCapabilities.thinking && (
+                  <p className="mt-1 text-xs text-amber-400">当前为标准资源档位，无法启用深度思考。</p>
+                )}
               </div>
               <button
                 type="button"
                 onClick={() => void handleThinkingToggle()}
-                disabled={!llm?.thinkingSupported || saveStatus.type === 'saving'}
+                disabled={!llm?.thinkingSupported || !resourceCapabilities.thinking || saveStatus.type === 'saving'}
                 className={`relative inline-flex h-6 w-11 shrink-0 rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400/70 focus-visible:ring-offset-2 focus-visible:ring-offset-zinc-900 disabled:cursor-not-allowed disabled:opacity-50 ${
                   llm?.thinkingEnabled ? 'bg-cyan-700' : 'bg-zinc-700'
                 }`}
@@ -414,17 +489,22 @@ export function SettingsView(): JSX.Element {
               <p className="mt-0.5 text-xs text-zinc-500">
                 自动 DJ 每次最多追加的歌曲数。较大的数量会增加候选分析和等待时间。
               </p>
+              {!resourceCapabilities.configurableAutoFillBatchSize && (
+                <p className="mt-1 text-xs text-amber-400">标准资源档位每次最多自动补歌 2 首。</p>
+              )}
             </div>
             <div className="grid grid-cols-4 gap-2">
               {AUTO_FILL_BATCH_SIZE_OPTIONS.map((size) => {
                 const active = autoFillBatchSize === size;
+                const locked = !resourceCapabilities.configurableAutoFillBatchSize && size > DEFAULT_AUTO_FILL_BATCH_SIZE;
                 return (
                   <button
                     key={size}
                     type="button"
                     aria-pressed={active}
                     onClick={() => setAutoFillBatchSize(size)}
-                    className={`rounded-lg border px-3 py-2 text-sm font-medium transition ${
+                    disabled={locked}
+                    className={`rounded-lg border px-3 py-2 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-40 ${
                       active
                         ? 'border-cyan-500 bg-cyan-500/15 text-cyan-200'
                         : 'border-zinc-700 bg-zinc-950 text-zinc-300 hover:border-zinc-500 hover:bg-zinc-800'
@@ -616,14 +696,18 @@ export function SettingsView(): JSX.Element {
           </div>
         </section>
 
-        {/* Whitelist management */}
+        {/* Priority resource membership */}
         {isAdmin ? (
+        <>
         <section>
           <h2 className="mb-4 text-sm font-medium text-zinc-400">
-            白名单管理
+            资源保障名单
           </h2>
           <WhitelistStatusIndicator status={whitelistStatus} />
           <div className="space-y-4 rounded-xl border border-zinc-800 bg-zinc-900 p-4">
+            <p className="text-xs leading-relaxed text-zinc-500">
+              名单内的用户为优先资源用户，享有更高的并发与每日 AI 额度。名单外用户仍可正常登录，播放、队列、设置等基础功能不受影响。
+            </p>
             {/* Manual add */}
             <div className="flex items-center gap-2">
               <input
@@ -638,10 +722,10 @@ export function SettingsView(): JSX.Element {
                   if (!newNcmId.trim()) return;
                   setWhitelistStatus({ type: 'saving' });
                   try {
-                    await addToWhitelist(newNcmId.trim());
+                    await addPriorityUser(newNcmId.trim());
                     setWhitelistStatus({ type: 'ok' });
                     setNewNcmId('');
-                    await refreshWhitelist();
+                    await refreshPriorityUsers();
                   } catch (err) {
                     setWhitelistStatus({ type: 'error', message: err instanceof Error ? err.message : '添加失败' });
                   }
@@ -656,43 +740,70 @@ export function SettingsView(): JSX.Element {
               </button>
             </div>
 
-            {/* Current whitelist */}
+            {/* Current priority users */}
             <div>
               <h3 className="mb-2 text-xs font-medium text-zinc-500">
-                当前白名单
-                {whitelist.length > 0 && (
-                  <span className="ml-1.5 text-zinc-600">({whitelist.length})</span>
+                当前优先资源用户
+                {priorityUsers.length > 0 && (
+                  <span className="ml-1.5 text-zinc-600">({priorityUsers.length})</span>
                 )}
               </h3>
-              {whitelist.length === 0 ? (
+              {priorityUsers.length === 0 ? (
                 <p className="text-sm text-zinc-600">暂无用户</p>
               ) : (
                 <ul className="space-y-0.5">
-                  {whitelist.map((id) => (
+                  {priorityUsers.map((id) => (
                     <li
                       key={id}
-                      className="flex items-center justify-between rounded-lg px-2 py-1.5 hover:bg-zinc-800/50"
+                      className="rounded-lg px-2 py-1.5 hover:bg-zinc-800/50"
                     >
-                      <span className="text-sm text-zinc-300 font-mono">{id}</span>
-                      <button
-                        onClick={async () => {
-                          setWhitelistStatus({ type: 'saving' });
-                          try {
-                            await removeFromWhitelist(id);
-                            setWhitelistStatus({ type: 'ok' });
-                            await refreshWhitelist();
-                          } catch (err) {
-                            setWhitelistStatus({ type: 'error', message: err instanceof Error ? err.message : '移除失败' });
-                          }
-                          clearTimeout(statusTimerRef.current);
-                          statusTimerRef.current = setTimeout(() => setWhitelistStatus({ type: 'idle' }), 3000);
-                        }}
-                        disabled={whitelistStatus.type === 'saving'}
-                        className="rounded p-1 text-zinc-600 transition hover:bg-zinc-700 hover:text-red-400"
-                        title="移除"
-                      >
-                        <Trash2 className="h-3.5 w-3.5" />
-                      </button>
+                      <div className="flex items-center justify-between">
+                        <span className="text-sm text-zinc-300 font-mono">{id}</span>
+                        <button
+                          onClick={() => setPendingDemotionId(id)}
+                          disabled={whitelistStatus.type === 'saving'}
+                          className="rounded p-1 text-zinc-600 transition hover:bg-zinc-700 hover:text-red-400"
+                          title="移除"
+                          aria-label={`移除 ${id}`}
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                      {pendingDemotionId === id && (
+                        <div className="mt-2 w-full rounded-lg border border-amber-800 bg-amber-950/40 p-3">
+                          <p className="text-xs leading-relaxed text-amber-200">
+                            移除后该用户仍可正常登录，账号与数据完整保留，但资源额度将降为标准档。确认移除？
+                          </p>
+                          <div className="mt-2 flex gap-2">
+                            <button
+                              onClick={async () => {
+                                setWhitelistStatus({ type: 'saving' });
+                                try {
+                                  await removePriorityUser(id);
+                                  setWhitelistStatus({ type: 'ok' });
+                                  setPendingDemotionId(null);
+                                  await refreshPriorityUsers();
+                                } catch (err) {
+                                  setWhitelistStatus({ type: 'error', message: err instanceof Error ? err.message : '移除失败' });
+                                }
+                                clearTimeout(statusTimerRef.current);
+                                statusTimerRef.current = setTimeout(() => setWhitelistStatus({ type: 'idle' }), 3000);
+                              }}
+                              disabled={whitelistStatus.type === 'saving'}
+                              className="rounded-lg bg-amber-700 px-3 py-1 text-xs font-medium text-white transition hover:bg-amber-600 disabled:opacity-50"
+                            >
+                              确认移除
+                            </button>
+                            <button
+                              onClick={() => setPendingDemotionId(null)}
+                              disabled={whitelistStatus.type === 'saving'}
+                              className="rounded-lg border border-zinc-700 px-3 py-1 text-xs font-medium text-zinc-300 transition hover:bg-zinc-800 disabled:opacity-50"
+                            >
+                              取消
+                            </button>
+                          </div>
+                        </div>
+                      )}
                     </li>
                   ))}
                 </ul>
@@ -731,7 +842,7 @@ export function SettingsView(): JSX.Element {
                             try {
                               await unblockUser(b.id);
                               setWhitelistStatus({ type: 'ok' });
-                              await refreshWhitelist();
+                              await refreshPriorityUsers();
                             } catch (err) {
                               setWhitelistStatus({ type: 'error', message: err instanceof Error ? err.message : '放行失败' });
                             }
@@ -740,7 +851,7 @@ export function SettingsView(): JSX.Element {
                           }}
                           disabled={whitelistStatus.type === 'saving'}
                           className="flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-emerald-500 transition hover:bg-emerald-500/10 shrink-0"
-                          title="加入白名单"
+                          title="放行"
                         >
                           <Shield className="h-3.5 w-3.5" />
                           放行
@@ -753,13 +864,80 @@ export function SettingsView(): JSX.Element {
             </div>
           </div>
         </section>
+
+        {/* Safety suspension — independent of priority membership */}
+        <section>
+          <h2 className="mb-4 text-sm font-medium text-zinc-400">
+            账号暂停（安全控制）
+          </h2>
+          <WhitelistStatusIndicator status={whitelistStatus} />
+          <div className="space-y-4 rounded-xl border border-zinc-800 bg-zinc-900 p-4">
+            <p className="text-xs leading-relaxed text-zinc-500">
+              暂停是临时安全措施，与资源档位无关：暂停期间用户无法登录，账号与数据保留；恢复后按原资源档位，不会自动成为优先资源用户。
+            </p>
+            <div className="flex items-center gap-2">
+              <input
+                type="text"
+                value={newSuspendNcmId}
+                onChange={(e) => setNewSuspendNcmId(e.target.value)}
+                placeholder="输入要暂停的网易云用户 ID"
+                className={inputClass}
+              />
+              <button
+                onClick={() => void handleSuspendUser()}
+                disabled={!newSuspendNcmId.trim() || whitelistStatus.type === 'saving'}
+                className="flex items-center gap-1.5 rounded-lg bg-red-900 px-4 py-1.5 text-sm font-medium text-white transition hover:bg-red-800 disabled:opacity-50 shrink-0"
+              >
+                <Shield className="h-4 w-4" />
+                暂停用户
+              </button>
+            </div>
+            <div>
+              <h3 className="mb-2 text-xs font-medium text-zinc-500">
+                已暂停用户
+                {suspended.length > 0 && (
+                  <span className="ml-1.5 text-zinc-600">({suspended.length})</span>
+                )}
+              </h3>
+              {suspended.length === 0 ? (
+                <p className="text-sm text-zinc-600">暂无已暂停的用户</p>
+              ) : (
+                <ul className="space-y-1">
+                  {suspended.map((user) => (
+                    <li
+                      key={user.userId}
+                      className="flex items-center justify-between rounded-lg px-2 py-1.5 hover:bg-zinc-800/50"
+                    >
+                      <div className="min-w-0 flex-1">
+                        <span className="text-sm text-zinc-300 font-mono">{user.userId}</span>
+                        <div className="text-xs text-zinc-500">
+                          {new Date(user.updatedAt).toLocaleString()}
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => void handleReactivateUser(user.userId)}
+                        disabled={whitelistStatus.type === 'saving'}
+                        className="flex items-center gap-1 rounded-lg px-2 py-1 text-xs text-emerald-500 transition hover:bg-emerald-500/10 shrink-0"
+                        title="恢复"
+                      >
+                        <Shield className="h-3.5 w-3.5" />
+                        恢复
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </div>
+        </section>
+        </>
         ) : (
         <section>
           <h2 className="mb-4 text-sm font-medium text-zinc-400">
-            白名单管理
+            资源保障名单
           </h2>
           <div className="rounded-xl border border-zinc-800 bg-zinc-900 p-4">
-            <p className="text-sm text-zinc-500">需要管理员权限才能管理白名单。当前账号不是管理员。</p>
+            <p className="text-sm text-zinc-500">需要管理员权限才能管理资源保障名单。当前账号不是管理员。</p>
           </div>
         </section>
         )}

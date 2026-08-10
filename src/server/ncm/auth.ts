@@ -4,7 +4,7 @@ import { NCM_QR_CODE, NCM_QR_HINT, type NcmQrCode, type NcmQrHint } from '../../
 import { getConfig } from '../config.js';
 import { deriveKey, encrypt } from '../crypto.js';
 import { upsertUser, recordBlockedAttempt } from '../store/users.js';
-import { isAllowed } from '../allowlist.js';
+import { getUserAccessStatus } from '../store/user-access-controls.js';
 import { ensureUserCorpus } from '../user-corpus/bootstrap.js';
 
 const QR_MESSAGE: Record<NcmQrCode, string> = {
@@ -57,19 +57,20 @@ export class NcmAuthService {
       };
     }
 
-    // Whitelist check
-    if (!isAllowed(ncmId)) {
+    // Safety suspension is independent of priority membership and blocks login.
+    if (getUserAccessStatus(ncmId) === 'suspended') {
       const profileJson = profile ? JSON.stringify(profile) : null;
       recordBlockedAttempt({ ncmId, profileJson });
       return {
         code: NCM_QR_CODE.AUTHORIZED,
         hint: 'forbidden',
-        message: '您没有访问权限，请联系管理员',
+        message: '账号已被暂停使用，请联系管理员',
         hasCookie: false
       };
     }
 
-    // Persist encrypted cookie
+    // Persist encrypted cookie. Every valid NCM account may authenticate;
+    // allowlist membership only grants the priority resource tier.
     const config = getConfig();
     const keyDerived = deriveKey(config.jwtSecret);
     const encryptedCookie = encrypt(result.cookie, keyDerived);

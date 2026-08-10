@@ -39,6 +39,11 @@ import {
   createRemoveFromWhitelistHandler,
   createUnblockHandler
 } from './routes/whitelist.js';
+import {
+  createGetSuspendedHandler,
+  createSuspendUserHandler,
+  createReactivateUserHandler
+} from './routes/access-controls.js';
 import { createRuntimeHandler } from './routes/runtime.js';
 import {
   createCreatePersonalDjContextTokenHandler,
@@ -59,6 +64,7 @@ import { userScopeMiddleware } from './middleware/userScope.js';
 import { adminMiddleware } from './middleware/admin.js';
 import { personalDjContextBridgeAuth } from './middleware/personalDjContextBridgeAuth.js';
 import { createSseEventsHandler, createSseChatHandler, createSseCancelRecommendHandler } from './routes/sse-events.js';
+import { qrCreateLimiter, qrStatusLimiter } from './middleware/ip-rate-limit.js';
 import { safeOperationalError } from '../errors/safe-operational-error.js';
 import { getLogger } from '../logger.js';
 import { handleAsync } from './async-handler.js';
@@ -81,6 +87,15 @@ type StartLocalServerOptions = {
 export async function startLocalServer(options: StartLocalServerOptions): Promise<LocalServer> {
   const config = getConfig();
   const app = express();
+
+  // Trust forwarded headers ONLY for sockets whose remote address matches the
+  // explicit trusted-proxy IP/CIDR allowlist (Express `trust proxy` with
+  // CIDRs). The default empty allowlist keeps req.ip as the socket address so
+  // QR rate-limit buckets can never be forged through X-Forwarded-For; an
+  // operator must name their exact proxy addresses, never just a hop count.
+  if (config.trustedProxyCidrs.length > 0) {
+    app.set('trust proxy', config.trustedProxyCidrs);
+  }
 
   // Store NCM base URL for middleware
   app.locals.ncmBaseUrl = options.ncmBaseUrl;
@@ -119,9 +134,9 @@ export async function startLocalServer(options: StartLocalServerOptions): Promis
   routes.get('/api/runtime', createRuntimeHandler());
   routes.get('/api/health', getHealthHandler);
   routes.get('/api/ncm/status', createNcmStatusHandler(options.ncm));
-  routes.get('/api/ncm/login/qr', createNcmQrHandler(options.ncmAuth));
-  routes.post('/api/ncm/login/qr', createNcmQrHandler(options.ncmAuth));
-  routes.get('/api/ncm/login/status', createNcmQrStatusHandler(options.ncmAuth));
+  routes.get('/api/ncm/login/qr', qrCreateLimiter, createNcmQrHandler(options.ncmAuth));
+  routes.post('/api/ncm/login/qr', qrCreateLimiter, createNcmQrHandler(options.ncmAuth));
+  routes.get('/api/ncm/login/status', qrStatusLimiter, createNcmQrStatusHandler(options.ncmAuth));
   routes.get('/api/segue/audio/*', createSegueAudioHandler());
 
   // ── Bridge-token routes ─────────────────────────────────────────────────────
@@ -162,6 +177,9 @@ export async function startLocalServer(options: StartLocalServerOptions): Promis
   routes.post('/api/whitelist', ...adminProtect, createAddToWhitelistHandler());
   routes.delete('/api/whitelist/:ncmId', ...adminProtect, createRemoveFromWhitelistHandler());
   routes.post('/api/whitelist/unblock/:id', ...adminProtect, createUnblockHandler());
+  routes.get('/api/access/suspended', ...adminProtect, createGetSuspendedHandler());
+  routes.post('/api/access/suspended', ...adminProtect, createSuspendUserHandler());
+  routes.delete('/api/access/suspended/:ncmId', ...adminProtect, createReactivateUserHandler());
 
   // ── SSE routes ───────────────────────────────────────────────────────────
   routes.get('/api/sse/events', ...protect, createSseEventsHandler());

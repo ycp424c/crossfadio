@@ -265,6 +265,8 @@ async function handleApiRoute(
   if (pathname === '/api/settings') {
     return json(route, {
       ok: true,
+      resourceTier: 'standard',
+      resourceCapabilities: { thinking: false, configurableAutoFillBatchSize: false },
       llm: { baseUrl: '', model: 'fixture', hasApiKey: true, thinkingEnabled: false, thinkingSupported: false },
       tts: { baseUrl: '', model: 'fixture', hasApiKey: true, voice: 'fixture', voiceDefault: null },
       dailyThemeEnabled: false,

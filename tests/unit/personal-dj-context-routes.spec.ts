@@ -7,6 +7,7 @@ import { resetConfigForTest } from '../../src/server/config';
 import { initDb, _resetDbForTest } from '../../src/server/store/db';
 import { loadAllowlist } from '../../src/server/allowlist';
 import { upsertUser } from '../../src/server/store/users';
+import { setUserAccessStatus } from '../../src/server/store/user-access-controls';
 import {
   createPersonalDjContextToken,
   listPersonalDjContextTokens,
@@ -215,6 +216,41 @@ describe('personal DJ context upload route', () => {
 
     expect(next).not.toHaveBeenCalled();
     expect(res.statusCode).toBe(401);
+  });
+
+  it('accepts a valid Bridge Token from an ordinary user not in the allowlist', () => {
+    // user-2 is not in the allowlist, but the Bridge token alone must authorize.
+    upsertUser({ ncmId: 'user-2', encryptedCookie: 'encrypted-cookie', profileJson: null });
+    const token = createPersonalDjContextToken('user-2');
+    const req = {
+      headers: { authorization: `Bearer ${token.token}` },
+      body: createPayload('bundle-2')
+    } as unknown as Request;
+    const res = createJsonResponse();
+    const next = vi.fn();
+
+    personalDjContextBridgeAuth(req, res as unknown as Response, next as unknown as NextFunction);
+
+    expect(next).toHaveBeenCalledOnce();
+    expect(res.statusCode).toBe(200);
+  });
+
+  it('rejects a suspended user at the Bridge-token boundary even with a valid token', () => {
+    upsertUser({ ncmId: 'user-3', encryptedCookie: 'encrypted-cookie', profileJson: null });
+    setUserAccessStatus('user-3', 'suspended');
+    const token = createPersonalDjContextToken('user-3');
+    const req = {
+      headers: { authorization: `Bearer ${token.token}` },
+      body: createPayload('bundle-3')
+    } as unknown as Request;
+    const res = createJsonResponse();
+    const next = vi.fn();
+
+    personalDjContextBridgeAuth(req, res as unknown as Response, next as unknown as NextFunction);
+
+    expect(next).not.toHaveBeenCalled();
+    expect(res.statusCode).toBe(403);
+    expect(res.body).toMatchObject({ ok: false, error: 'forbidden' });
   });
 });
 

@@ -20,6 +20,7 @@ import {
   type DjPickNextFallbackPath
 } from './musicAgentPickNextResult.js';
 import { parseAutoFillBatchSize, parseDiscoveryMode, type DiscoveryMode } from '../../shared/dj.js';
+import { resolveUserTier } from '../resource-policy.js';
 import { safeOperationalError } from '../errors/safe-operational-error.js';
 import { createPickReasonCache } from './pick-reason-cache.js';
 
@@ -58,7 +59,10 @@ export function getDjPickReason(userId: string, trackId: string): string | null 
 }
 
 export function getAutoFillBatchSize(userId: string): number {
-  return parseAutoFillBatchSize(getPref<number>(userId, 'dj.autoFillBatchSize'));
+  const stored = parseAutoFillBatchSize(getPref<number>(userId, 'dj.autoFillBatchSize'));
+  // Standard-tier users cannot raise DJ auto-fill above the default two tracks,
+  // even if a stored preference says otherwise (e.g. after a demotion).
+  return resolveUserTier(userId) === 'priority' ? stored : Math.min(stored, 2);
 }
 
 export function getJobTimeoutMs(targetPickCount: number): number {

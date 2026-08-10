@@ -16,12 +16,20 @@ import { getTtsVoicePreference, setTtsVoicePreference } from '../../tts/preferen
 import {
   AUTO_FILL_BATCH_SIZE_MAX,
   AUTO_FILL_BATCH_SIZE_MIN,
+  DEFAULT_AUTO_FILL_BATCH_SIZE,
   DISCOVERY_MODE_VALUES,
   parseDiscoveryMode,
   parseAutoFillBatchSize
 } from '../../../shared/dj.js';
 import type { DiscoveryMode } from '../../../shared/dj.js';
 import { getCurrentTasteProfile } from '../../store/taste-profiles.js';
+import { resolveUserTier, type UserTier } from '../../resource-policy.js';
+import {
+  acquireResourcePermit,
+  ResourceLimitError,
+  type ResourcePermit
+} from '../../resource-governor.js';
+import { sendResourceLimitResponse } from '../resource-limit-response.js';
 
 type AuthedRequest = Request & { userId: string; ncmClient: NcmClient };
 
@@ -50,19 +58,29 @@ export function createGetSettingsHandler() {
   return (req: Request, res: Response): void => {
     const { userId } = req as AuthedRequest;
     const config = getConfig();
+    const tier = resolveUserTier(userId);
+    const thinkingCapable = tier === 'priority';
+    const batchCapable = tier === 'priority';
     const userVoice = getTtsVoicePreference(userId, config.tts.provider);
     const dailyThemeEnabled = getPref<boolean>(userId, 'dailyTheme.enabled') !== false;
     const discoveryMode = getDiscoveryMode(userId);
-    const autoFillBatchSize = getAutoFillBatchSize(userId);
-    const thinkingEnabled = getPref<boolean>(userId, 'llm.thinkingEnabled') === true;
+    const storedBatchSize = getAutoFillBatchSize(userId);
+    const storedThinking = getPref<boolean>(userId, 'llm.thinkingEnabled') === true;
 
     res.json({
       ok: true,
+      resourceTier: tier,
+      resourceCapabilities: {
+        thinking: thinkingCapable,
+        configurableAutoFillBatchSize: batchCapable
+      },
       llm: {
         baseUrl: config.llm.baseUrl,
         model: config.llm.model,
         hasApiKey: Boolean(config.llm.apiKey),
-        thinkingEnabled,
+        // Standard users are always reported with thinking disabled, and the
+        // effective auto-fill batch is clamped to 2 regardless of stored prefs.
+        thinkingEnabled: thinkingCapable && storedThinking,
         thinkingSupported: supportsThinkingControl(config.llm.model, config.llm.baseUrl)
       },
       tts: {
@@ -85,7 +103,7 @@ export function createGetSettingsHandler() {
       },
       dailyThemeEnabled,
       discoveryMode,
-      autoFillBatchSize
+      autoFillBatchSize: batchCapable ? storedBatchSize : DEFAULT_AUTO_FILL_BATCH_SIZE
     });
   };
 }
@@ -107,6 +125,28 @@ export function createSaveSettingsHandler() {
     if (!parsed.success) {
       res.status(400).json({ ok: false, error: 'invalid body', details: parsed.error.issues });
       return;
+    }
+    // Standard-tier capability caps: reject disallowed writes explicitly with
+    // 403 resource_tier_restricted instead of silently ignoring them.
+    const tier = resolveUserTier(userId);
+    if (tier === 'standard') {
+      if (parsed.data.llm?.thinkingEnabled === true) {
+        res.status(403).json({
+          ok: false,
+          error: 'resource_tier_restricted',
+          message: '标准资源档位无法启用深度思考'
+        });
+        return;
+      }
+      if (parsed.data.autoFillBatchSize !== undefined
+        && parsed.data.autoFillBatchSize > DEFAULT_AUTO_FILL_BATCH_SIZE) {
+        res.status(403).json({
+          ok: false,
+          error: 'resource_tier_restricted',
+          message: '标准资源档位最多每次自动补歌 2 首'
+        });
+        return;
+      }
     }
     if (parsed.data.tts?.voice) {
       const voice = parsed.data.tts.voice.trim();
@@ -147,12 +187,23 @@ export function createPreviewTtsHandler() {
       return;
     }
 
-    const config = resolveTtsConfig(userId);
-    const voice = parsed.data.voice ?? config.voice;
-    const previewConfig = { ...config, voice };
-    const client = new TtsClient(previewConfig);
+    let permit: ResourcePermit;
+    try {
+      permit = acquireResourcePermit(userId, 'tts_preview');
+    } catch (err) {
+      if (err instanceof ResourceLimitError) {
+        sendResourceLimitResponse(res, err);
+        return;
+      }
+      throw err;
+    }
 
     try {
+      const config = resolveTtsConfig(userId);
+      const voice = parsed.data.voice ?? config.voice;
+      const previewConfig = { ...config, voice };
+      const client = new TtsClient(previewConfig);
+
       const result = await client.synthesize(TTS_PREVIEW_TEXT);
       res.json({
         ok: true,
@@ -164,6 +215,8 @@ export function createPreviewTtsHandler() {
     } catch (err) {
       const message = err instanceof Error ? err.message : 'TTS preview failed';
       res.status(502).json({ ok: false, error: message });
+    } finally {
+      permit.release();
     }
   };
 }

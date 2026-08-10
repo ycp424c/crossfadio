@@ -24,6 +24,13 @@ import {
   getSelectionRotationSnapshot,
   recordSelectionRotationRound
 } from '../../src/server/store/selection-rotation';
+import { createSseChatHandler } from '../../src/server/http/routes/sse-events';
+import {
+  acquireResourcePermit,
+  _resetResourceGovernorForTest,
+  ResourceLimitError
+} from '../../src/server/resource-governor';
+import { _resetResourcePolicyForTest } from '../../src/server/resource-policy';
 
 const mocks = vi.hoisted(() => ({
   computeStream: vi.fn(),
@@ -98,6 +105,8 @@ beforeEach(() => {
 
 afterEach(() => {
   _resetDbForTest();
+  _resetResourceGovernorForTest();
+  _resetResourcePolicyForTest();
   process.env = { ...originalEnv };
   resetConfigForTest();
 });
@@ -734,6 +743,149 @@ describe('chat DJ event integration', () => {
     });
   });
 });
+
+describe('chat text limits', () => {
+  it('rejects whitespace-only chat text with 400 before any provider work', async () => {
+    const handler = createSseChatHandler();
+    const res = createSseResponse();
+    const req = createSseRequest('chat-limit-user');
+    req.body = { text: '   \n\t  ' };
+
+    await handler(req as never, res as never);
+
+    expect(res.statusCode).toBe(400);
+    expect(res.body).toMatchObject({ ok: false, error: 'invalid body' });
+    expect(res.writeHead).not.toHaveBeenCalled();
+    expect(mocks.computeStream).not.toHaveBeenCalled();
+  });
+
+  it('accepts chat text up to 2000 characters after trimming', async () => {
+    const handler = createSseChatHandler();
+    const res = createSseResponse();
+    const req = createSseRequest('chat-limit-user-ok');
+    req.body = { text: `  ${'歌'.repeat(2000)}  ` };
+
+    await handler(req as never, res as never);
+
+    expect(res.statusCode).toBe(200);
+    expect(res.writeHead).toHaveBeenCalled();
+    const stored = getRecentMessages('chat-limit-user-ok', 5).find((message) => message.role === 'user');
+    expect(stored?.content).toBe('歌'.repeat(2000));
+  });
+
+  it('rejects chat text longer than 2000 characters with 400', async () => {
+    const handler = createSseChatHandler();
+    const res = createSseResponse();
+    const req = createSseRequest('chat-limit-user-long');
+    req.body = { text: '歌'.repeat(2001) };
+
+    await handler(req as never, res as never);
+
+    expect(res.statusCode).toBe(400);
+    expect(res.body).toMatchObject({ ok: false, error: 'invalid body' });
+    expect(res.writeHead).not.toHaveBeenCalled();
+    expect(mocks.computeStream).not.toHaveBeenCalled();
+  });
+});
+
+describe('chat resource permit lifetime', () => {
+  it('rejects a chat request with JSON 429 before SSE headers or provider work', async () => {
+    const holding = acquireResourcePermit('chat-429-user', 'chat');
+    const handler = createSseChatHandler();
+    const res = createSseResponse();
+    const req = createSseRequest('chat-429-user');
+
+    await handler(req as never, res as never);
+
+    expect(res.statusCode).toBe(429);
+    expect(res.body).toMatchObject({
+      ok: false,
+      error: 'resource_limited',
+      reason: 'user_concurrency_exceeded',
+      operation: 'chat'
+    });
+    expect(res.writeHead).not.toHaveBeenCalled();
+    expect(mocks.computeStream).not.toHaveBeenCalled();
+    holding.release();
+  });
+
+  it('holds a chat permit until handleChatMessage resolves', async () => {
+    let releaseStream!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      releaseStream = resolve;
+    });
+    mocks.computeStream.mockImplementation(async function* () {
+      await gate;
+      yield {
+        type: 'done',
+        output: { mode: 'chat', say: '收到', intent: 'chitchat', actions: [] }
+      };
+    });
+
+    const handler = createSseChatHandler();
+    const res = createSseResponse();
+    const req = createSseRequest('chat-permit-user');
+
+    const pending = handler(req as never, res as never);
+    await vi.waitFor(() => expect(res.writeHead).toHaveBeenCalled());
+
+    // While handleChatMessage is still streaming, the permit must be held.
+    let error: unknown;
+    try {
+      acquireResourcePermit('chat-permit-user', 'chat');
+    } catch (err) {
+      error = err;
+    }
+    expect(error).toBeInstanceOf(ResourceLimitError);
+    expect((error as ResourceLimitError).code).toBe('user_concurrency_exceeded');
+
+    releaseStream();
+    await pending;
+
+    expect(() => acquireResourcePermit('chat-permit-user', 'chat')).not.toThrow();
+  });
+});
+
+function createSseRequest(userId: string) {
+  return {
+    body: { text: '你好' },
+    userId,
+    ncmClient: mockNcmClient(),
+    on: vi.fn()
+  };
+}
+
+function createSseResponse() {
+  const res = {
+    statusCode: 200,
+    body: undefined as unknown,
+    headers: {} as Record<string, string>,
+    written: [] as string[],
+    writableEnded: false,
+    writeHead: vi.fn((code: number, headers: Record<string, string>) => {
+      res.statusCode = code;
+      Object.assign(res.headers, headers);
+      return res;
+    }),
+    write: vi.fn((chunk: string) => {
+      res.written.push(chunk);
+      return true;
+    }),
+    end: vi.fn(() => {
+      res.writableEnded = true;
+    }),
+    set: vi.fn((_name: string, _value: string) => res),
+    status: vi.fn((code: number) => {
+      res.statusCode = code;
+      return res;
+    }),
+    json: vi.fn((body: unknown) => {
+      res.body = body;
+      return res;
+    })
+  };
+  return res;
+}
 
 function mockNcmClient(): NcmClient {
   return {

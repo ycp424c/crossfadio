@@ -1,7 +1,7 @@
 import type { Request, Response, NextFunction } from 'express';
-import { isAllowed } from '../../allowlist.js';
 import { getLogger } from '../../logger.js';
 import { getUserById } from '../../store/users.js';
+import { getUserAccessStatus } from '../../store/user-access-controls.js';
 import {
   markPersonalDjContextTokenUsed,
   resolvePersonalDjContextToken
@@ -30,9 +30,14 @@ export function personalDjContextBridgeAuth(
     return;
   }
 
-  if (!isAllowed(record.userId)) {
-    getLogger().warn({ userId: record.userId, bridgeTokenId: record.id }, 'Bridge Token user not in allowlist');
-    res.status(403).json({ ok: false, error: 'forbidden', message: '没有访问权限' });
+  // Persistent safety suspension blocks the Bridge boundary too; the token is
+  // NOT revoked by suspension so reactivation restores access immediately.
+  if (getUserAccessStatus(record.userId) === 'suspended') {
+    getLogger().warn(
+      { userId: record.userId, bridgeTokenId: record.id },
+      'Suspended user blocked at Bridge-token boundary'
+    );
+    res.status(403).json({ ok: false, error: 'forbidden', message: '账号已被暂停使用，请联系管理员' });
     return;
   }
 

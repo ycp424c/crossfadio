@@ -29,7 +29,7 @@ pnpm dev        # 同时启动后端 + 前端
 | `CROSSFADIO_LLM_BASE_URL` / `CROSSFADIO_LLM_API_KEY` / `CROSSFADIO_LLM_MODEL` | DJ 大脑 |
 | `CROSSFADIO_TTS_PROVIDER` | TTS 供应商：`aliyun-qwen`（默认，需 `CROSSFADIO_TTS_BASE_URL` / `CROSSFADIO_TTS_API_KEY`）\| `openai-compatible`（另需显式配置 `CROSSFADIO_TTS_MODEL` / `CROSSFADIO_TTS_VOICE_DEFAULT`）\| `tencent-cloud`（腾讯云语音合成 1073，需 `CROSSFADIO_TTS_SECRET_ID` / `CROSSFADIO_TTS_SECRET_KEY`） |
 
-可选：`CROSSFADIO_TTS_VOICE_DEFAULT` / `CROSSFADIO_TTS_MODEL`（`openai-compatible` 下必填，其他 provider 可选）、`CROSSFADIO_EMBEDDING_*`（语义发现，`CROSSFADIO_EMBEDDING_SEND_DIMENSIONS=0` 可适配不接受 dimensions 参数的模型）、`CROSSFADIO_ADMIN_NCM_ID`（白名单管理员）。
+可选：`CROSSFADIO_TTS_VOICE_DEFAULT` / `CROSSFADIO_TTS_MODEL`（`openai-compatible` 下必填，其他 provider 可选）、`CROSSFADIO_EMBEDDING_*`（语义发现，`CROSSFADIO_EMBEDDING_SEND_DIMENSIONS=0` 可适配不接受 dimensions 参数的模型）、`CROSSFADIO_ADMIN_NCM_ID`（资源保障名单管理员）、`CROSSFADIO_RESOURCE_*`（资源治理参数，见下文「资源分级治理」）。
 
 登录方式：网易云音乐**扫码登录**，曲库来自 NeteaseCloudMusicApi。
 
@@ -37,16 +37,27 @@ pnpm dev        # 同时启动后端 + 前端
 
 - **播放** — 封面主卡 + 同步歌词 + 波形时间线 + 播放队列，右栏展示今日主题与上下文（天气 / 时间 / DJ 偏好）
 - **聊天** — 与 DJ 对话，实时流式回复，支持取消
-- **设置** — 网易云登录、TTS 音色、每日主题开关、探索模式、白名单管理（管理员）
+- **设置** — 网易云登录、TTS 音色、每日主题开关、探索模式、资源保障名单与账号暂停（管理员）
 - **移动端** — 768px 断点自适应单列布局，iPhone 安全区适配
 
 ## 多用户与部署
 
-支持多人同时使用：JWT 认证、按用户隔离的 SQLite 数据、白名单准入（`allowlist.json` 或管理员 Web UI）。生产参数和完整运维手册仅保存在被 Git 忽略的本地文件中；公开边界见 [`docs/ops-runbook.md`](docs/ops-runbook.md)。本地配置齐全后可运行：
+支持多人同时使用：JWT 认证、按用户隔离的 SQLite 数据、开放扫码登录（所有有效网易云账号均可登录）。`allowlist.json`（或管理员 Web UI 的「资源保障名单」）只决定**优先资源档位**，不再是登录准入条件；被管理员暂停的账号在任何边界都无法登录。生产参数和完整运维手册仅保存在被 Git 忽略的本地文件中；公开边界见 [`docs/ops-runbook.md`](docs/ops-runbook.md)。本地配置齐全后可运行：
 
 ```bash
 ./scripts/deploy.sh
 ```
+
+## 资源分级治理
+
+- **档位**：`allowlist.json` 中的用户为优先资源用户，其余为标准用户；移除名单只降级档位，不删除账号、登录态或数据。
+- **每日额度**：标准用户每日 200 积分、优先用户 5000（上海时区自然日），按操作扣减：chat 4、DJ 选歌 8、转场 2、TTS 试听 2、品味分析 40。额度持久化在 SQLite（`resource_usage_buckets`），重启不丢失。
+- **并发**：全局 4、标准用户合计 2、标准用户单人 1、优先用户单人 2；并发计数仅限单个 Node 进程，不跨实例。
+- **拒绝语义**：所有资源拒绝统一返回 JSON 429 `resource_limited`（含 reason、operation 与 `Retry-After`）。
+- **标准用户限制**：不能启用 LLM 深度思考、DJ 自动补歌上限 2 首、不自动触发品味分析与实体索引。
+- **入口防护**：公开二维码接口按 IP 限流（创建 5 次/10 分钟、轮询 40 次/60 秒），chat 文本 1–2000 字，实时事件连接按档位限流（标准 1 路、优先 3 路）。默认不信任 `X-Forwarded-For`：`CROSSFADIO_TRUSTED_PROXY_CIDRS` 默认空（关闭），只有把**反向代理的真实 IP/CIDR**（而非跳数）加入逗号分隔的可信列表后，才接受来自这些 socket 的转发头；非法条目会让配置加载直接失败（fail closed），避免客户端伪造转发头绕过 IP 限流。
+- **参数覆盖**：`CROSSFADIO_RESOURCE_TOTAL_CONCURRENCY` / `CROSSFADIO_RESOURCE_STANDARD_GLOBAL_CONCURRENCY` / `CROSSFADIO_RESOURCE_STANDARD_USER_CONCURRENCY` / `CROSSFADIO_RESOURCE_PRIORITY_USER_CONCURRENCY` / `CROSSFADIO_RESOURCE_STANDARD_DAILY_CREDITS` / `CROSSFADIO_RESOURCE_PRIORITY_DAILY_CREDITS`；非法值回落安全默认。
+- **边界说明**：当前治理是进程内软准入层；严格的按档位上游容量保证需要未来阶段为各档位配置独立的 provider 凭据。
 
 ## 技术栈
 

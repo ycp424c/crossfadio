@@ -3,10 +3,14 @@ import {
   getNextTrack,
   getNowPlaying,
   getPlayerContext,
+  getSettings,
+  getSuspendedUsers,
   patchListeningEpisode,
   patchListeningEpisodeKeepalive,
   putListeningEpisode,
+  reactivateUser,
   saveQueueState,
+  suspendUser,
   updateLocation
 } from '../../src/renderer/api';
 
@@ -180,5 +184,69 @@ describe('renderer player account-bound API', () => {
         headers: expect.objectContaining({ Authorization: 'Bearer captured-account-token' })
       });
     }
+  });
+});
+
+describe('renderer resource governance API', () => {
+  it('passes through resource tier and capability fields in the settings response', async () => {
+    vi.stubGlobal('window', { location: { origin: 'http://localhost:5173' } });
+    vi.stubGlobal('localStorage', { getItem: vi.fn(() => 'new-account-token') });
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      ok: true,
+      resourceTier: 'priority',
+      resourceCapabilities: { thinking: true, configurableAutoFillBatchSize: true },
+      llm: { thinkingEnabled: true },
+      tts: { voice: 'Cherry' },
+      dailyThemeEnabled: true,
+      discoveryMode: 'explore',
+      autoFillBatchSize: 5
+    }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' }
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const settings = await getSettings();
+
+    expect(String(fetchMock.mock.calls[0]?.[0])).toBe('http://localhost:5173/api/settings');
+    expect(settings.resourceTier).toBe('priority');
+    expect(settings.resourceCapabilities).toEqual({
+      thinking: true,
+      configurableAutoFillBatchSize: true
+    });
+  });
+
+  it('loads, suspends, and reactivates users through the access-control wire paths', async () => {
+    vi.stubGlobal('window', { location: { origin: 'http://localhost:5173' } });
+    vi.stubGlobal('localStorage', { getItem: vi.fn(() => 'new-account-token') });
+    const responses = [
+      { ok: true, suspended: [{ userId: '1001', updatedAt: '2026-08-10T00:00:00.000Z' }] },
+      { ok: true },
+      { ok: true }
+    ];
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      responses.shift();
+      return new Response(JSON.stringify({
+        ok: true,
+        suspended: [{ userId: '1001', updatedAt: '2026-08-10T00:00:00.000Z' }]
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' }
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const suspended = await getSuspendedUsers();
+    expect(suspended.suspended).toEqual([{ userId: '1001', updatedAt: '2026-08-10T00:00:00.000Z' }]);
+
+    await suspendUser('1001');
+    await reactivateUser('1001');
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(String(fetchMock.mock.calls[0]?.[0])).toBe('http://localhost:5173/api/access/suspended');
+    expect(fetchMock.mock.calls[1]?.[1]).toMatchObject({ method: 'POST' });
+    expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body))).toEqual({ ncmId: '1001' });
+    expect(fetchMock.mock.calls[2]?.[1]).toMatchObject({ method: 'DELETE' });
+    expect(String(fetchMock.mock.calls[2]?.[0])).toBe('http://localhost:5173/api/access/suspended/1001');
   });
 });

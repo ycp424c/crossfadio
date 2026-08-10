@@ -7,10 +7,9 @@ import {
 } from '../../allowlist.js';
 import {
   getBlockedAttempts,
-  deleteBlockedAttempt,
-  deleteBlockedAttemptsByNcmId,
-  deleteUser
+  deleteBlockedAttempt
 } from '../../store/users.js';
+import { setUserAccessStatus } from '../../store/user-access-controls.js';
 
 // ── GET /api/whitelist ──────────────────────────────────────────────────────────
 
@@ -44,8 +43,10 @@ export function createAddToWhitelistHandler() {
       return;
     }
     const { ncmId } = parsed.data;
+    // Priority membership is orthogonal to safety suspension: granting it must
+    // NOT clear blocked login attempts — only the unblock action deletes the
+    // selected attempt (reactivating the suspended user without promoting).
     addToAllowlist(ncmId);
-    deleteBlockedAttemptsByNcmId(ncmId);
     res.json({ ok: true });
   };
 }
@@ -55,16 +56,12 @@ export function createAddToWhitelistHandler() {
 export function createRemoveFromWhitelistHandler() {
   return (req: Request, res: Response): void => {
     const { ncmId } = req.params;
-    if (!ncmId) {
-      res.status(400).json({ ok: false, error: 'ncmId is required' });
+    if (!ncmId || !/^\d+$/.test(ncmId)) {
+      res.status(400).json({ ok: false, error: 'invalid ncmId' });
       return;
     }
-    // Revoke active session first: delete user record so userScopeMiddleware
-    // rejects this ncmId on the next request even if the user holds a valid JWT.
-    // If deletion succeeds but allowlist removal later fails, the user can still
-    // re-authenticate (they're in the allowlist) and the admin can retry — safer
-    // than the reverse where the session stays alive after removal appears to succeed.
-    deleteUser(ncmId);
+    // Priority membership only: the user keeps their account, JWT, cookie and
+    // all historical data — only their resource tier drops back to standard.
     removeFromAllowlist(ncmId);
     res.json({ ok: true });
   };
@@ -85,7 +82,10 @@ export function createUnblockHandler() {
       res.status(404).json({ ok: false, error: 'blocked attempt not found' });
       return;
     }
-    addToAllowlist(found.ncm_id);
+    // Reactivate a suspended user and drop the attempt. This must NOT promote
+    // the user to the priority list — priority membership is managed only via
+    // the whitelist add/remove endpoints.
+    setUserAccessStatus(found.ncm_id, 'active');
     deleteBlockedAttempt(id);
     res.json({ ok: true, ncmId: found.ncm_id });
   };

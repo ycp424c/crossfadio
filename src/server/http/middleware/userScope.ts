@@ -2,12 +2,13 @@ import type { Request, Response, NextFunction } from 'express';
 import type { NcmClient as NcmClientType } from '../../ncm/client.js';
 import { NcmClient } from '../../ncm/client.js';
 import { getUserById } from '../../store/users.js';
+import { getUserAccessStatus } from '../../store/user-access-controls.js';
 import { deriveKey, decrypt } from '../../crypto.js';
 import { getConfig } from '../../config.js';
-import { isAllowed } from '../../allowlist.js';
 import { getLogger } from '../../logger.js';
 import { scheduleTasteAnalysisIfDue } from '../routes/taste-analysis.js';
 import { scheduleMusicEntityIndexIfDue } from '../../music-agent/entity-indexer.js';
+import { resolveUserTier } from '../../resource-policy.js';
 
 export async function userScopeMiddleware(
   req: Request,
@@ -20,11 +21,11 @@ export async function userScopeMiddleware(
     return;
   }
 
-  // Re-check allowlist membership — a user removed from the allowlist must lose
-  // access immediately, not only when their JWT expires.
-  if (!isAllowed(userId)) {
-    getLogger().warn({ userId }, 'User not in allowlist');
-    res.status(403).json({ ok: false, error: 'forbidden', message: '没有访问权限' });
+  // Persistent safety suspension blocks every JWT request, independent of
+  // priority membership. Takes effect on the next request after suspension.
+  if (getUserAccessStatus(userId) === 'suspended') {
+    getLogger().warn({ userId }, 'Suspended user blocked at JWT boundary');
+    res.status(403).json({ ok: false, error: 'forbidden', message: '账号已被暂停使用，请联系管理员' });
     return;
   }
 
@@ -42,9 +43,12 @@ export async function userScopeMiddleware(
     const ncmBaseUrl = req.app.locals.ncmBaseUrl as string;
     const ncmClient = new NcmClient(ncmBaseUrl, { getCookie: () => cookie });
     (req as Request & { userId: string; ncmClient: NcmClientType }).ncmClient = ncmClient;
-    // Fire-and-forget background taste analysis if due (won't block request)
-    scheduleTasteAnalysisIfDue(userId, ncmClient);
-    scheduleMusicEntityIndexIfDue(userId, ncmClient);
+    // Fire-and-forget background taste analysis and entity indexing only for
+    // priority users; standard users never schedule these from ordinary requests.
+    if (resolveUserTier(userId) === 'priority') {
+      scheduleTasteAnalysisIfDue(userId, ncmClient);
+      scheduleMusicEntityIndexIfDue(userId, ncmClient);
+    }
     next();
   } catch (err) {
     getLogger().error({ err, userId }, 'Failed to decrypt user cookie');

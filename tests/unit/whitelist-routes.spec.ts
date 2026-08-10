@@ -86,7 +86,7 @@ describe('createRemoveFromWhitelistHandler revokes access', () => {
     const { initDb } = await import('../../src/server/store/db');
     initDb();
     const { loadAllowlist } = await import('../../src/server/allowlist');
-    fs.writeFileSync(path.join(dataDir, 'allowlist.json'), '["testuser1"]');
+    fs.writeFileSync(path.join(dataDir, 'allowlist.json'), '["123456"]');
     loadAllowlist();
   });
 
@@ -97,14 +97,16 @@ describe('createRemoveFromWhitelistHandler revokes access', () => {
     else process.env.CROSSFADIO_JWT_SECRET = originalJwtSecret;
   });
 
-  it('removes user from allowlist AND deletes user DB record', async () => {
+  it('demotes a priority user without deleting the user record or user data', async () => {
     const { upsertUser, getUserById } = await import('../../src/server/store/users');
     const { getAllowlist } = await import('../../src/server/allowlist');
+    const { resolveUserTier } = await import('../../src/server/resource-policy');
 
     // Add a user to the DB (simulating they logged in)
-    upsertUser({ ncmId: 'testuser1', encryptedCookie: 'encrypted', profileJson: null });
-    expect(getUserById('testuser1')).not.toBeNull();
-    expect(getAllowlist()).toContain('testuser1');
+    upsertUser({ ncmId: '123456', encryptedCookie: 'encrypted', profileJson: null });
+    expect(getUserById('123456')).not.toBeNull();
+    expect(getAllowlist()).toContain('123456');
+    expect(resolveUserTier('123456')).toBe('priority');
 
     const { createRemoveFromWhitelistHandler } = await import(
       '../../src/server/http/routes/whitelist'
@@ -116,12 +118,82 @@ describe('createRemoveFromWhitelistHandler revokes access', () => {
       json: vi.fn()
     } as unknown as Response;
 
-    handler({ params: { ncmId: 'testuser1' } } as unknown as Request, res);
+    handler({ params: { ncmId: '123456' } } as unknown as Request, res);
 
     expect(res.json).toHaveBeenCalledWith({ ok: true });
-    // Allowlist entry should be removed
-    expect(getAllowlist()).not.toContain('testuser1');
-    // User DB record should be deleted (session revoked)
-    expect(getUserById('testuser1')).toBeNull();
+    // Allowlist entry should be removed → tier drops to standard
+    expect(getAllowlist()).not.toContain('123456');
+    expect(resolveUserTier('123456')).toBe('standard');
+    // User DB record must survive: access and data remain, only the tier changes
+    expect(getUserById('123456')).not.toBeNull();
+  });
+
+  it('keeps suspended blocked-login attempts when granting priority membership', async () => {
+    const { upsertUser, recordBlockedAttempt, getBlockedAttempts } = await import('../../src/server/store/users');
+    const { setUserAccessStatus } = await import('../../src/server/store/user-access-controls');
+
+    upsertUser({ ncmId: '2002', encryptedCookie: 'encrypted', profileJson: null });
+    recordBlockedAttempt({ ncmId: '2002', profileJson: null });
+    setUserAccessStatus('2002', 'suspended');
+    expect(getBlockedAttempts().some((entry) => entry.ncm_id === '2002')).toBe(true);
+
+    const { createAddToWhitelistHandler } = await import('../../src/server/http/routes/whitelist');
+    const handler = createAddToWhitelistHandler();
+    const res = {
+      status: vi.fn().mockReturnThis(),
+      json: vi.fn()
+    } as unknown as Response;
+
+    handler({ body: { ncmId: '2002' } } as unknown as Request, res);
+
+    expect(res.json).toHaveBeenCalledWith({ ok: true });
+    // Granting priority membership is orthogonal to safety suspension: the
+    // blocked attempt must survive so only the unblock action can delete it.
+    expect(getBlockedAttempts().some((entry) => entry.ncm_id === '2002')).toBe(true);
+  });
+
+  it('rejects a non-numeric ncmId on the demote path with 400', async () => {
+    const { createRemoveFromWhitelistHandler } = await import(
+      '../../src/server/http/routes/whitelist'
+    );
+    const handler = createRemoveFromWhitelistHandler();
+    const res = {
+      status: vi.fn().mockReturnThis(),
+      json: vi.fn()
+    } as unknown as Response;
+
+    handler({ params: { ncmId: 'not-a-number' } } as unknown as Request, res);
+
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(res.json).toHaveBeenCalledWith({ ok: false, error: 'invalid ncmId' });
+  });
+
+  it('unblocks a suspended user by reactivating them without adding priority membership', async () => {
+    const { upsertUser, recordBlockedAttempt, getBlockedAttempts } = await import('../../src/server/store/users');
+    const { setUserAccessStatus, getUserAccessStatus } = await import('../../src/server/store/user-access-controls');
+    const { getAllowlist } = await import('../../src/server/allowlist');
+    const { resolveUserTier } = await import('../../src/server/resource-policy');
+
+    upsertUser({ ncmId: 'suspended1', encryptedCookie: 'encrypted', profileJson: null });
+    recordBlockedAttempt({ ncmId: 'suspended1', profileJson: null });
+    setUserAccessStatus('suspended1', 'suspended');
+    const attempt = getBlockedAttempts().find((entry) => entry.ncm_id === 'suspended1');
+    expect(attempt).toBeDefined();
+
+    const { createUnblockHandler } = await import('../../src/server/http/routes/whitelist');
+    const handler = createUnblockHandler();
+    const res = {
+      status: vi.fn().mockReturnThis(),
+      json: vi.fn()
+    } as unknown as Response;
+
+    handler({ params: { id: String(attempt!.id) } } as unknown as Request, res);
+
+    expect(res.json).toHaveBeenCalledWith({ ok: true, ncmId: 'suspended1' });
+    expect(getBlockedAttempts().some((entry) => entry.id === attempt!.id)).toBe(false);
+    expect(getUserAccessStatus('suspended1')).toBe('active');
+    // Unblocking must NOT promote the user to the priority list
+    expect(getAllowlist()).not.toContain('suspended1');
+    expect(resolveUserTier('suspended1')).toBe('standard');
   });
 });

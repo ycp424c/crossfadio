@@ -14,7 +14,8 @@ const originalEnv = new Map<string, string | undefined>([
   'CROSSFADIO_LYRICS_SELECTION_MODE',
   'CROSSFADIO_TTS_PROVIDER',
   'CROSSFADIO_TTS_MODEL',
-  'CROSSFADIO_TTS_VOICE_DEFAULT'
+  'CROSSFADIO_TTS_VOICE_DEFAULT',
+  'CROSSFADIO_TRUSTED_PROXY_CIDRS'
 ].map((name) => [name, process.env[name]]));
 
 beforeEach(async () => {
@@ -25,6 +26,7 @@ beforeEach(async () => {
   delete process.env.CROSSFADIO_TTS_PROVIDER;
   delete process.env.CROSSFADIO_TTS_MODEL;
   delete process.env.CROSSFADIO_TTS_VOICE_DEFAULT;
+  delete process.env.CROSSFADIO_TRUSTED_PROXY_CIDRS;
 });
 
 afterEach(async () => {
@@ -83,5 +85,29 @@ describe('TTS provider config', () => {
       model: 'gpt-4o-mini-tts',
       voiceDefault: 'alloy'
     });
+  });
+});
+
+describe('trusted proxy CIDRs config', () => {
+  it('defaults to an empty allowlist (trust proxy disabled) when the env var is absent', async () => {
+    const { loadConfig } = await import('../../src/server/config.js');
+
+    expect(loadConfig().trustedProxyCidrs).toEqual([]);
+  });
+
+  it('parses a comma-separated allowlist of IP/CIDR entries', async () => {
+    process.env.CROSSFADIO_TRUSTED_PROXY_CIDRS = '127.0.0.1/32, ::1/128, 10.0.0.5';
+    const { loadConfig } = await import('../../src/server/config.js');
+
+    expect(loadConfig().trustedProxyCidrs).toEqual(['127.0.0.1/32', '::1/128', '10.0.0.5']);
+  });
+
+  it('fails closed on any invalid entry: config load throws instead of trusting blindly', async () => {
+    const { loadConfig } = await import('../../src/server/config.js');
+
+    for (const value of ['not-an-ip', '127.0.0.1/33', '::1/129', '127.0.0.1/abc', '999.1.1.1', '127.0.0.1/32,oops']) {
+      process.env.CROSSFADIO_TRUSTED_PROXY_CIDRS = value;
+      expect(() => loadConfig(), `expected ${value} to fail closed`).toThrow(/CROSSFADIO_TRUSTED_PROXY_CIDRS/);
+    }
   });
 });

@@ -442,8 +442,12 @@ describe('player layout', () => {
     const sseHandlerBody = source.slice(sseHandlerStart, scopedClientStart);
 
     expect(sseHandlerBody).toContain('writeSseEvent(res, type, payload)');
-    expect(sseHandlerBody).toContain('djPickNextRunner.run({ userId, ncmClient, emit, signal: controller.signal })');
-    expect(sseHandlerBody).toContain("result.status === 'timeout'");
+    expect(sseHandlerBody).toContain('djPickNextRunner.run({');
+    expect(sseHandlerBody).toContain('signal: controller.signal');
+    // Timeout completion is delivered through the runner's onTimeout callback
+    // so the SSE response ends promptly while the permit stays held until the
+    // underlying job settles.
+    expect(sseHandlerBody).toContain('onTimeout: () =>');
     expect(sseHandlerBody).toContain("endSse(res, 'dj.pick-next.done', { added: false, reason: 'timeout' })");
   });
 

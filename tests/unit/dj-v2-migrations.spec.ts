@@ -82,6 +82,35 @@ describe('DJ v2 additive migrations', () => {
     ]));
   });
 
+  it('adds the resource tier governance tables', () => {
+    runMigrations(db);
+
+    const rows = db.prepare(
+      `SELECT name FROM sqlite_master WHERE type = 'table'`
+    ).all() as Array<{ name: string }>;
+    const names = new Set(rows.map((row) => row.name));
+
+    expect(names).toContain('user_access_controls');
+    expect(names).toContain('resource_usage_buckets');
+
+    const accessColumns = db.prepare('PRAGMA table_info(user_access_controls)')
+      .all() as Array<{ name: string }>;
+    expect(accessColumns.map((column) => column.name)).toEqual(expect.arrayContaining([
+      'user_id',
+      'status',
+      'updated_at'
+    ]));
+
+    const bucketColumns = db.prepare('PRAGMA table_info(resource_usage_buckets)')
+      .all() as Array<{ name: string }>;
+    expect(bucketColumns.map((column) => column.name)).toEqual(expect.arrayContaining([
+      'user_id',
+      'period_key',
+      'credits_used',
+      'updated_at'
+    ]));
+  });
+
   it('defines widened v2 states and aliases in the additive table creation', () => {
     runMigrations(db);
 

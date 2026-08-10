@@ -99,6 +99,13 @@ src/
 | `CROSSFADIO_SEARCH_API_KEY` | (disabled) | Optional Doubao Search (豆包搜索 Custom 版) API key; enables real-time hot topics in daily theme generation |
 | `CROSSFADIO_SEARCH_TIMEOUT_MS` | `3000` | Doubao Search request timeout (ms); search failure degrades to static date info only |
 | `CROSSFADIO_ADMIN_NCM_ID` | (none) | NCM user ID with whitelist admin privileges |
+| `CROSSFADIO_RESOURCE_TOTAL_CONCURRENCY` | `4` | Global expensive-job concurrency cap |
+| `CROSSFADIO_RESOURCE_STANDARD_GLOBAL_CONCURRENCY` | `2` | Combined concurrency cap for all standard users (clamped to total) |
+| `CROSSFADIO_RESOURCE_STANDARD_USER_CONCURRENCY` | `1` | Per-standard-user concurrency |
+| `CROSSFADIO_RESOURCE_PRIORITY_USER_CONCURRENCY` | `2` | Per-priority-user concurrency |
+| `CROSSFADIO_RESOURCE_STANDARD_DAILY_CREDITS` | `200` | Standard-user daily AI credits (Shanghai calendar day) |
+| `CROSSFADIO_RESOURCE_PRIORITY_DAILY_CREDITS` | `5000` | Priority-user daily AI credits (Shanghai calendar day) |
+| `CROSSFADIO_TRUSTED_PROXY_CIDRS` | (empty, off) | Comma-separated trusted reverse-proxy IP/CIDR allowlist for `X-Forwarded-For` (Express `trust proxy`); default off — forwarded headers are only accepted from sockets whose remote address matches the list, and an invalid entry fails config load instead of trusting blindly |
 
 ## HTTP API Routes
 
@@ -143,14 +150,21 @@ src/
 | GET | `/api/messages/recent` | Recent chat messages |
 
 
-### Whitelist (admin only)
+### Priority Membership (admin only, wire path `/api/whitelist`)
 | Method | Path | Auth | Purpose |
 |--------|------|------|---------|
-| GET | `/api/whitelist` | JWT+admin | List allowlist entries |
+| GET | `/api/whitelist` | JWT+admin | List priority resource users |
 | GET | `/api/whitelist/blocked` | JWT+admin | List blocked login attempts |
-| POST | `/api/whitelist` | JWT+admin | Add user to allowlist |
-| DELETE | `/api/whitelist/:ncmId` | JWT+admin | Remove user from allowlist (also deletes user session) |
-| POST | `/api/whitelist/unblock/:id` | JWT+admin | Unblock a login attempt (adds to allowlist) |
+| POST | `/api/whitelist` | JWT+admin | Grant priority resource membership |
+| DELETE | `/api/whitelist/:ncmId` | JWT+admin | Demote a priority user (access and data remain; tier becomes standard) |
+| POST | `/api/whitelist/unblock/:id` | JWT+admin | Unblock a login attempt (reactivates a suspended user without promoting) |
+
+### Access Control (admin only)
+| Method | Path | Auth | Purpose |
+|--------|------|------|---------|
+| GET | `/api/access/suspended` | JWT+admin | List suspended users |
+| POST | `/api/access/suspended` | JWT+admin | Temporarily suspend a user (blocks login/JWT/Bridge) |
+| DELETE | `/api/access/suspended/:ncmId` | JWT+admin | Reactivate a user (never promotes to priority) |
 
 ### SSE
 | Method | Path | Auth | Purpose |
@@ -201,8 +215,9 @@ Real deployment identifiers, paths, runtime configuration, log locations and ope
 - **Segue timing**: d-12s trigger → d-10s prefetch → d-8s crossfade start → d-7s TTS ducking
 - **Agent**: Single-agent, 2 modes (segue/chat), 6-fragment prompt assembly, zod output validation with retry
 - **Real-time push**: SSE replaces WebSocket. `GET /api/sse/events` (EventSource) for persistent queue events. `POST /api/sse/{chat,segue,pick-next}` (fetch+ReadableStream) for one-shot streaming tasks with AbortController on client disconnect. The player guards `pick-next` with a local in-flight ref so long-running selection opens only one SSE stream at a time. Renderer retries `/api/sse/segue` up to three attempts on transient `502/503/504`.
-- **NCM auth**: QR code login → JWT token (HS256 via `jose`). Cookie encrypted with AES-256-GCM in `users` table. `authMiddleware` + `userScopeMiddleware` on all protected routes. Whitelist management routes additionally require `adminMiddleware` (checks `CROSSFADIO_ADMIN_NCM_ID`).
-- **Whitelist**: `allowlist.json` in app data dir controls which NCM user IDs can log in. Admin can manage via Settings UI. Removal also deletes `users` record to immediately revoke existing sessions. `userScopeMiddleware` double-checks `isAllowed()` on every request.
+- **NCM auth**: QR code login → JWT token (HS256 via `jose`). Every valid NCM account can authenticate — `allowlist.json` is NOT an authorization source. Cookie encrypted with AES-256-GCM in `users` table. `authMiddleware` + `userScopeMiddleware` on all protected routes; `personalDjContextBridgeAuth` for Bridge tokens. Persistently suspended users are blocked at login (recorded as blocked attempts), at the JWT boundary, and at the Bridge-token boundary — suspension is independent of priority membership. Priority/admin routes additionally require `adminMiddleware` (checks `CROSSFADIO_ADMIN_NCM_ID`).
+- **Priority membership & resource governance**: `allowlist.json` in the app data dir now means *priority resource membership* (优先资源用户), not admission. Tier is resolved per request via `resolveUserTier(userId)`. Daily credits persist in SQLite (`resource_usage_buckets`, Shanghai-calendar-day via `formatShanghaiDate`) and survive restarts; concurrency counters are in-process only and do NOT span multiple Node processes. Defaults: totalConcurrency 4, standardGlobalConcurrency 2, standardUserConcurrency 1, priorityUserConcurrency 2, standardDailyCredits 200, priorityDailyCredits 5000; costs chat 4 / dj_pick_next 8 / segue 2 / tts_preview 2 / taste_analysis 40 — all overridable via `CROSSFADIO_RESOURCE_*` env vars (invalid overrides fall back to safe defaults). Every resource rejection is an explicit JSON 429 `resource_limited` (reason + operation + `Retry-After`); permits are held for the full expensive job lifetime (SSE, fire-and-forget, TTS preview, taste analysis).
+- **Standard-tier caps**: standard users cannot enable LLM thinking (stored preference ignored in `resolveLlmConfig`), cannot raise DJ auto-fill above 2 tracks (settings PUT rejects with 403 `resource_tier_restricted`; `getAutoFillBatchSize` clamps at runtime), and never trigger automatic taste analysis or music-entity indexing from ordinary requests (priority users still do). Public QR endpoints are IP-rate-limited (QR create 5/10 min, QR status 40/60 s, fixed window keyed on `req.ip` only); forwarded headers are never parsed and `trust proxy` stays off by default (`CROSSFADIO_TRUSTED_PROXY_CIDRS` defaults to empty) — only sockets whose remote address matches the explicit trusted-proxy IP/CIDR allowlist may supply `X-Forwarded-For`, and an invalid entry fails config load (closed) instead of trusting blindly, otherwise clients can forge `X-Forwarded-For` and bypass the IP buckets; chat text is trimmed 1–2000 chars; persistent event SSE has tier-aware per-user connection caps (standard 1, priority 3) enforced before SSE init. Removing a priority user demotes the tier only — account, JWT, Bridge token, and data all remain. Strict upstream guarantees (separate rate-limit budgets per tier) require separate provider credentials in a future phase; the current single-process governor is a soft admission layer.
 - **Per-user isolation**: All DB tables have `user_id` column. Queue/location are per-user `Map`s. User corpus files under `users/<ncmId>/`.
 - **Daily theme**: LLM-generated daily radio theme (holidays, solar terms, artist anniversaries + optional Doubao Search hot topics when `CROSSFADIO_SEARCH_API_KEY` is set; search failure degrades to static date info only). Per-user toggle in Settings (pref `dailyTheme.enabled`). When disabled, DJ pick-next and segue skip theme context. Timeout controlled by `CROSSFADIO_DAILY_THEME_TIMEOUT_MS` (default 15s). Generated theme is persisted in the `meta` table so restarts keep the same theme within a day.
 - **LLM thinking**: Per-user and disabled by default. TokenHub `hy3` / `hy3-preview` requests set `max_tokens` to 128,000 when thinking is enabled because reasoning and the final answer share the output budget. Provider/model switches must re-check thinking support, parameter constraints, and output budgets as documented in `docs/ops-runbook.md`.

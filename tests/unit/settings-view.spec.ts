@@ -6,30 +6,37 @@ import { SettingsView } from '../../src/renderer/views/Settings/SettingsView';
 import {
   getBlockedAttempts,
   getSettings,
-  getWhitelist,
+  getPriorityUsers,
+  removePriorityUser,
   saveSettings,
   getPersonalDjContextStatus,
   listPersonalDjContextTokens,
   createPersonalDjContextToken,
   revokePersonalDjContextToken,
-  revokeCurrentPersonalDjContext
+  revokeCurrentPersonalDjContext,
+  getSuspendedUsers,
+  suspendUser,
+  reactivateUser
 } from '@renderer/api';
 
 vi.mock('@renderer/api', () => ({
   getSettings: vi.fn(),
   saveSettings: vi.fn(),
   previewTtsVoice: vi.fn(),
-  getWhitelist: vi.fn(),
+  getPriorityUsers: vi.fn(),
   getBlockedAttempts: vi.fn(),
-  addToWhitelist: vi.fn(),
-  removeFromWhitelist: vi.fn(),
+  addPriorityUser: vi.fn(),
+  removePriorityUser: vi.fn(),
   unblockUser: vi.fn(),
   analyzeTaste: vi.fn(),
   getPersonalDjContextStatus: vi.fn(),
   listPersonalDjContextTokens: vi.fn(),
   createPersonalDjContextToken: vi.fn(),
   revokePersonalDjContextToken: vi.fn(),
-  revokeCurrentPersonalDjContext: vi.fn()
+  revokeCurrentPersonalDjContext: vi.fn(),
+  getSuspendedUsers: vi.fn(),
+  suspendUser: vi.fn(),
+  reactivateUser: vi.fn()
 }));
 
 let root: Root | null = null;
@@ -72,6 +79,8 @@ describe('settings view', () => {
     document.body.appendChild(container);
     vi.mocked(getSettings).mockResolvedValue({
       ok: true,
+      resourceTier: 'priority',
+      resourceCapabilities: { thinking: true, configurableAutoFillBatchSize: true },
       llm: {
         baseUrl: 'https://llm.example/v1',
         model: 'test-model',
@@ -91,8 +100,9 @@ describe('settings view', () => {
       discoveryMode: 'explore',
       autoFillBatchSize: 2
     });
-    vi.mocked(getWhitelist).mockResolvedValue({ ok: true, entries: [] });
+    vi.mocked(getPriorityUsers).mockResolvedValue({ ok: true, entries: [] });
     vi.mocked(getBlockedAttempts).mockResolvedValue({ ok: true, blocked: [] });
+    vi.mocked(getSuspendedUsers).mockResolvedValue({ ok: true, suspended: [] });
     vi.mocked(saveSettings).mockResolvedValue();
     vi.mocked(getPersonalDjContextStatus).mockResolvedValue({
       ok: true,
@@ -203,6 +213,8 @@ describe('settings view', () => {
   it('shows Tencent voice pricing tiers and excludes English-only voices from the Chinese DJ options', async () => {
     vi.mocked(getSettings).mockResolvedValue({
       ok: true,
+      resourceTier: 'priority',
+      resourceCapabilities: { thinking: true, configurableAutoFillBatchSize: true },
       llm: {
         baseUrl: 'https://llm.example/v1',
         model: 'test-model',
@@ -280,5 +292,167 @@ describe('settings view', () => {
       await Promise.resolve();
     });
     expect(revokePersonalDjContextToken).toHaveBeenCalledWith('token-1');
+  });
+
+  it('shows the priority resource tier and keeps priority capabilities enabled', async () => {
+    await renderSettingsView();
+
+    expect(container.textContent).toContain('优先资源用户');
+    const thinkingSwitch = container.querySelector<HTMLButtonElement>('[role="switch"][aria-label="启用深度思考"]');
+    expect(thinkingSwitch?.disabled).toBe(false);
+    const batchButtons = Array.from(container.querySelectorAll('button[aria-pressed]')) as HTMLButtonElement[];
+    expect(batchButtons.some((button) => button.textContent?.trim() === '5首' && !button.disabled)).toBe(true);
+  });
+
+  it('disables thinking and larger auto-fill batches for standard users', async () => {
+    vi.mocked(getSettings).mockResolvedValue({
+      ok: true,
+      resourceTier: 'standard',
+      resourceCapabilities: { thinking: false, configurableAutoFillBatchSize: false },
+      llm: {
+        baseUrl: 'https://llm.example/v1',
+        model: 'test-model',
+        hasApiKey: true,
+        thinkingEnabled: false,
+        thinkingSupported: true
+      },
+      tts: {
+        provider: 'aliyun-qwen',
+        baseUrl: 'https://tts.example/v1',
+        model: 'qwen3-tts-flash',
+        hasApiKey: true,
+        voice: 'Cherry',
+        voiceDefault: 'Cherry'
+      },
+      dailyThemeEnabled: true,
+      discoveryMode: 'explore',
+      autoFillBatchSize: 2
+    });
+
+    await renderSettingsView();
+
+    expect(container.textContent).toContain('标准用户');
+    expect(container.textContent).toContain('无法启用深度思考');
+    const thinkingSwitch = container.querySelector<HTMLButtonElement>('[role="switch"][aria-label="启用深度思考"]');
+    expect(thinkingSwitch?.disabled).toBe(true);
+    const batchButtons = Array.from(container.querySelectorAll('button[aria-pressed]')) as HTMLButtonElement[];
+    const two = batchButtons.find((button) => button.textContent?.trim() === '2首');
+    const five = batchButtons.find((button) => button.textContent?.trim() === '5首');
+    expect(two?.disabled).toBe(false);
+    expect(five?.disabled).toBe(true);
+  });
+
+  it('confirms demotion with wording that access and data remain but limits become standard', async () => {
+    vi.mocked(getPriorityUsers).mockResolvedValue({ ok: true, entries: ['1001'] });
+
+    await renderSettingsView();
+
+    expect(container.textContent).toContain('资源保障名单');
+    const removeButton = container.querySelector<HTMLButtonElement>('button[title="移除"]');
+    expect(removeButton).not.toBeNull();
+
+    await act(async () => {
+      removeButton?.click();
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).toContain('仍可正常登录');
+    expect(container.textContent).toContain('数据保留');
+    expect(container.textContent).toContain('标准');
+
+    await act(async () => {
+      buttonByText('确认移除').click();
+      await Promise.resolve();
+    });
+
+    expect(vi.mocked(removePriorityUser)).toHaveBeenCalledWith('1001');
+  });
+
+  it('falls back to standard/no-capabilities when the settings response lacks resourceTier/resourceCapabilities', async () => {
+    // A rolling upgrade (or an old e2e fixture) may serve a response without
+    // the new fields; the view must not crash and must degrade safely.
+    vi.mocked(getSettings).mockResolvedValue({
+      ok: true,
+      llm: {
+        baseUrl: 'https://llm.example/v1',
+        model: 'test-model',
+        hasApiKey: true,
+        thinkingEnabled: false,
+        thinkingSupported: true
+      },
+      tts: {
+        provider: 'aliyun-qwen',
+        baseUrl: 'https://tts.example/v1',
+        model: 'qwen3-tts-flash',
+        hasApiKey: true,
+        voice: 'Cherry',
+        voiceDefault: 'Cherry'
+      },
+      dailyThemeEnabled: true,
+      discoveryMode: 'explore',
+      autoFillBatchSize: 2
+    } as never);
+
+    await renderSettingsView();
+
+    expect(container.textContent).toContain('标准用户');
+    expect(container.textContent).toContain('无法启用深度思考');
+    const thinkingSwitch = container.querySelector<HTMLButtonElement>('[role="switch"][aria-label="启用深度思考"]');
+    expect(thinkingSwitch?.disabled).toBe(true);
+    const batchButtons = Array.from(container.querySelectorAll('button[aria-pressed]')) as HTMLButtonElement[];
+    const five = batchButtons.find((button) => button.textContent?.trim() === '5首');
+    expect(five?.disabled).toBe(true);
+  });
+
+  it('renders demotion confirmation as a stacked block, not a third squeezed item of the flex row', async () => {
+    vi.mocked(getPriorityUsers).mockResolvedValue({ ok: true, entries: ['1001'] });
+
+    await renderSettingsView();
+
+    const removeButton = container.querySelector<HTMLButtonElement>('button[title="移除"]');
+    expect(removeButton).not.toBeNull();
+    await act(async () => {
+      removeButton?.click();
+      await Promise.resolve();
+    });
+
+    const li = removeButton?.closest('li');
+    expect(li).not.toBeNull();
+    // The flex row itself only holds the id and the remove button.
+    const row = li?.firstElementChild;
+    expect(row?.children.length).toBe(2);
+    // The confirmation block is a stacked sibling below the row.
+    const confirmBlock = li?.lastElementChild;
+    expect(confirmBlock).not.toBe(row);
+    expect(confirmBlock?.textContent).toContain('确认移除');
+  });
+
+  it('manages temporary safety suspension separately from priority demotion', async () => {
+    vi.mocked(getSuspendedUsers).mockResolvedValue({
+      ok: true,
+      suspended: [{ userId: '2002', updatedAt: '2026-08-10T00:00:00.000Z' }]
+    });
+
+    await renderSettingsView();
+
+    expect(container.textContent).toContain('账号暂停');
+    expect(container.textContent).toContain('不会自动成为优先');
+    expect(container.textContent).toContain('2002');
+
+    await act(async () => {
+      setInputValue(inputByPlaceholder('输入要暂停的网易云用户 ID'), '2003');
+    });
+    await act(async () => {
+      buttonByText('暂停用户').click();
+      await Promise.resolve();
+    });
+    expect(vi.mocked(suspendUser)).toHaveBeenCalledWith('2003');
+
+    const restoreButton = Array.from(container.querySelectorAll('button[title="恢复"]')) as HTMLButtonElement[];
+    await act(async () => {
+      restoreButton[0]?.click();
+      await Promise.resolve();
+    });
+    expect(vi.mocked(reactivateUser)).toHaveBeenCalledWith('2002');
   });
 });

@@ -33,10 +33,38 @@ describe('resolveLlmConfig', () => {
     expect(resolveLlmConfig().thinking).toEqual({ type: 'disabled' });
   });
 
-  it('enables thinking only for the user who opted in', () => {
+  it('enables thinking only for the priority user who opted in', async () => {
+    const { loadAllowlist } = await import('../../src/server/allowlist');
+    const allowlistPath = path.join(process.env.CROSSFADIO_DATA_DIR!, 'allowlist.json');
+    fs.writeFileSync(allowlistPath, '["user-a"]');
+    loadAllowlist();
     setPref('user-a', 'llm.thinkingEnabled', true);
 
     expect(resolveLlmConfig('user-a').thinking).toEqual({ type: 'enabled' });
+    expect(resolveLlmConfig('user-b').thinking).toEqual({ type: 'disabled' });
+  });
+
+  it('keeps thinking disabled for standard users even with a stored true preference', async () => {
+    // user-a is NOT on the allowlist → standard tier. A stored preference must
+    // not leak into the LLM config: standard users cannot enable thinking.
+    const { loadAllowlist } = await import('../../src/server/allowlist');
+    const allowlistPath = path.join(process.env.CROSSFADIO_DATA_DIR!, 'allowlist.json');
+    fs.writeFileSync(allowlistPath, '[]');
+    loadAllowlist();
+    setPref('user-a', 'llm.thinkingEnabled', true);
+
+    expect(resolveLlmConfig('user-a').thinking).toEqual({ type: 'disabled' });
+  });
+
+  it('enables thinking for priority users who opted in, regardless of a standard user preference', async () => {
+    const { loadAllowlist } = await import('../../src/server/allowlist');
+    const allowlistPath = path.join(process.env.CROSSFADIO_DATA_DIR!, 'allowlist.json');
+    fs.writeFileSync(allowlistPath, '["priority-a"]');
+    loadAllowlist();
+    setPref('priority-a', 'llm.thinkingEnabled', true);
+    setPref('user-b', 'llm.thinkingEnabled', true);
+
+    expect(resolveLlmConfig('priority-a').thinking).toEqual({ type: 'enabled' });
     expect(resolveLlmConfig('user-b').thinking).toEqual({ type: 'disabled' });
   });
 });

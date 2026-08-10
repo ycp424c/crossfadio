@@ -7,6 +7,12 @@ import { getLogger } from '../../logger.js';
 import { getPref, setPref } from '../../store/prefs.js';
 import { NCM_ERROR_CODE } from '../../../shared/schema.js';
 import { saveTasteProfile } from '../../store/taste-profiles.js';
+import {
+  acquireResourcePermit,
+  ResourceLimitError,
+  type ResourcePermit
+} from '../../resource-governor.js';
+import { sendResourceLimitResponse } from '../resource-limit-response.js';
 
 type AuthedRequest = Request & { userId: string; ncmClient: NcmClient };
 
@@ -51,78 +57,97 @@ const CHUNK_SYSTEM_PROMPT = `你是一个音乐品味分析师。你会收到用
 
 /**
  * Core taste analysis logic. Reusable by both the HTTP handler and background scheduler.
+ *
+ * Exactly one taste-analysis permit boundary lives here so manual and scheduled
+ * runs share the same admission and are charged exactly once. The permit is
+ * released on success, null results, timeouts and any thrown exception.
  * @returns The taste text on success, null on failure (errors are logged internally).
  */
 export async function runTasteAnalysis(userId: string, ncmClient: NcmClient): Promise<string | null> {
   const logger = getLogger();
 
-  // 1. Fetch liked song IDs
-  let ids: string[];
+  let permit: ResourcePermit | null = null;
   try {
-    ids = await ncmClient.getLikedSongIds();
+    permit = acquireResourcePermit(userId, 'taste_analysis');
   } catch (err) {
-    logger.error({ err, userId }, 'Failed to fetch liked song IDs for taste analysis');
-    return null;
+    if (err instanceof ResourceLimitError) {
+      logger.warn({ code: err.code, userId }, 'Taste analysis skipped by resource governor');
+      throw err;
+    }
+    throw err;
   }
-
-  if (ids.length === 0) {
-    logger.info({ userId }, 'Taste analysis skipped: no liked songs');
-    return null;
-  }
-
-  // 2. Fetch all liked song details in batches.
-  let songs: Array<{ name: string; artists: string[] }>;
-  try {
-    songs = await fetchAllLikedSongDetails(ncmClient, ids);
-  } catch (err) {
-    logger.error({ err, userId }, 'Failed to fetch song details for taste analysis');
-    return null;
-  }
-
-  if (songs.length === 0) {
-    logger.warn({ userId }, 'Taste analysis: no song details available');
-    return null;
-  }
-
-  // 3. Call LLM. Large libraries are summarized chunk-by-chunk first so every
-  // liked song can participate without building an oversized prompt.
-  const llmConfig = resolveLlmConfig(userId);
-  if (!llmConfig) {
-    logger.warn({ userId }, 'Taste analysis skipped: LLM not configured');
-    return null;
-  }
-
-  const client = new LlmClient(llmConfig);
 
   try {
-    const result = songs.length <= TASTE_ANALYSIS_CHUNK_SIZE
-      ? await client.complete(buildFinalTasteMessages(ids.length, songs), buildTasteCompleteOptions())
-      : await analyzeLargeTasteLibrary(client, ids.length, songs);
-    const taste = result.content.trim();
+    // 1. Fetch liked song IDs
+    let ids: string[];
+    try {
+      ids = await ncmClient.getLikedSongIds();
+    } catch (err) {
+      logger.error({ err, userId }, 'Failed to fetch liked song IDs for taste analysis');
+      return null;
+    }
 
-    saveTasteProfile({
-      userId,
-      profile: {
-        summary: taste,
-        likedCount: ids.length,
-        analyzedCount: songs.length
-      },
-      sourceKind: 'liked_library',
-      sourceLibraryHash: createHash('sha256')
-        .update([...ids].sort().join('\n'))
-        .digest('hex')
-    });
+    if (ids.length === 0) {
+      logger.info({ userId }, 'Taste analysis skipped: no liked songs');
+      return null;
+    }
 
-    logger.info(
-      { userId, likedCount: ids.length, analyzedCount: songs.length, batchSize: LIKED_DETAIL_BATCH_SIZE },
-      'Taste analysis completed and saved as Taste Profile'
-    );
-    return taste;
-  } catch (err) {
-    // Throw abort/timeout errors so callers can distinguish (504 vs 502)
-    if (isAbortError(err)) throw err;
-    logger.error({ err, userId }, 'Taste analysis failed');
-    return null;
+    // 2. Fetch all liked song details in batches.
+    let songs: Array<{ name: string; artists: string[] }>;
+    try {
+      songs = await fetchAllLikedSongDetails(ncmClient, ids);
+    } catch (err) {
+      logger.error({ err, userId }, 'Failed to fetch song details for taste analysis');
+      return null;
+    }
+
+    if (songs.length === 0) {
+      logger.warn({ userId }, 'Taste analysis: no song details available');
+      return null;
+    }
+
+    // 3. Call LLM. Large libraries are summarized chunk-by-chunk first so every
+    // liked song can participate without building an oversized prompt.
+    const llmConfig = resolveLlmConfig(userId);
+    if (!llmConfig) {
+      logger.warn({ userId }, 'Taste analysis skipped: LLM not configured');
+      return null;
+    }
+
+    const client = new LlmClient(llmConfig);
+
+    try {
+      const result = songs.length <= TASTE_ANALYSIS_CHUNK_SIZE
+        ? await client.complete(buildFinalTasteMessages(ids.length, songs), buildTasteCompleteOptions())
+        : await analyzeLargeTasteLibrary(client, ids.length, songs);
+      const taste = result.content.trim();
+
+      saveTasteProfile({
+        userId,
+        profile: {
+          summary: taste,
+          likedCount: ids.length,
+          analyzedCount: songs.length
+        },
+        sourceKind: 'liked_library',
+        sourceLibraryHash: createHash('sha256')
+          .update([...ids].sort().join('\n'))
+          .digest('hex')
+      });
+
+      logger.info(
+        { userId, likedCount: ids.length, analyzedCount: songs.length, batchSize: LIKED_DETAIL_BATCH_SIZE },
+        'Taste analysis completed and saved as Taste Profile'
+      );
+      return taste;
+    } catch (err) {
+      // Throw abort/timeout errors so callers can distinguish (504 vs 502)
+      if (isAbortError(err)) throw err;
+      logger.error({ err, userId }, 'Taste analysis failed');
+      return null;
+    }
+  } finally {
+    permit.release();
   }
 }
 
@@ -293,6 +318,10 @@ export function createAnalyzeTasteHandler() {
 
       res.json({ ok: true, taste });
     } catch (err) {
+      if (err instanceof ResourceLimitError) {
+        sendResourceLimitResponse(res, err);
+        return;
+      }
       if (isAbortError(err)) {
         getLogger().warn({ err, userId }, 'Taste analysis timed out');
         res.status(504).json({ ok: false, message: '品味分析超时，请稍后重试' });
@@ -342,6 +371,11 @@ export function scheduleTasteAnalysisIfDue(userId: string, ncmClient: NcmClient)
       }
     })
     .catch((err) => {
+      // Resource-limit rejections are an expected skip, not a crash.
+      if (err instanceof ResourceLimitError) {
+        getLogger().warn({ code: err.code, userId }, 'Background taste analysis skipped by resource governor');
+        return;
+      }
       getLogger().error({ err, userId }, 'Background taste analysis crashed');
     })
     .finally(() => {

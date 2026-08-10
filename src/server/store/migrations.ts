@@ -779,6 +779,21 @@ CREATE INDEX idx_selection_rotation_picks_user_round
 
 CREATE INDEX idx_selection_rotation_picks_user_track
   ON selection_rotation_picks (user_id, track_key, round_number DESC);
+  `,
+  `
+CREATE TABLE IF NOT EXISTS user_access_controls (
+  user_id    TEXT PRIMARY KEY,
+  status     TEXT NOT NULL CHECK (status IN ('active', 'suspended')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS resource_usage_buckets (
+  user_id      TEXT NOT NULL,
+  period_key   TEXT NOT NULL,
+  credits_used INTEGER NOT NULL DEFAULT 0 CHECK (credits_used >= 0),
+  updated_at   TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (user_id, period_key)
+);
   `
 ];
 

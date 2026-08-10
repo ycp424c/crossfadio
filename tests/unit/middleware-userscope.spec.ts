@@ -65,23 +65,43 @@ describe('userScopeMiddleware allowlist check', () => {
     return { req, res, next };
   }
 
-  it('returns 403 when userId is not in allowlist', async () => {
+  it('passes an ordinary user not in the allowlist through to next()', async () => {
     const { userScopeMiddleware } = await import(
       '../../src/server/http/middleware/userScope'
     );
-    // User exists in DB but is NOT in allowlist
+    // User exists in DB but is NOT in the allowlist (ordinary standard user)
+    const { deriveKey, encrypt } = await import('../../src/server/crypto');
+    const { getConfig } = await import('../../src/server/config');
     const { upsertUser } = await import('../../src/server/store/users');
-    upsertUser({ ncmId: 'disallowedUser', encryptedCookie: 'enc', profileJson: null });
+    const encryptedCookie = encrypt('MUSIC_U=unit-test;', deriveKey(getConfig().jwtSecret));
+    upsertUser({ ncmId: 'disallowedUser', encryptedCookie, profileJson: null });
 
     const { req, res, next } = makeReqRes('disallowedUser');
 
     await userScopeMiddleware(req, res, next);
 
-    expect(res.status).toHaveBeenCalledWith(403);
-    const jsonCall = (res.json as ReturnType<typeof vi.fn>).mock.calls[0][0];
-    expect(jsonCall.ok).toBe(false);
-    expect(jsonCall.error).toBe('forbidden');
-    expect(next).not.toHaveBeenCalled();
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(res.status).not.toHaveBeenCalled();
+    expect((req as Request & { ncmClient?: unknown }).ncmClient).toBeTruthy();
+  });
+
+  it('does not schedule automatic taste analysis or entity indexing for standard users', async () => {
+    const { deriveKey, encrypt } = await import('../../src/server/crypto');
+    const { getConfig } = await import('../../src/server/config');
+    const { upsertUser } = await import('../../src/server/store/users');
+    const { userScopeMiddleware } = await import(
+      '../../src/server/http/middleware/userScope'
+    );
+    const encryptedCookie = encrypt('MUSIC_U=unit-test;', deriveKey(getConfig().jwtSecret));
+    upsertUser({ ncmId: 'disallowedUser', encryptedCookie, profileJson: null });
+
+    const { req, res, next } = makeReqRes('disallowedUser');
+
+    await userScopeMiddleware(req, res, next);
+
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(scheduleTasteAnalysisIfDueMock).not.toHaveBeenCalled();
+    expect(scheduleMusicEntityIndexIfDueMock).not.toHaveBeenCalled();
   });
 
   it('returns 401 when userId is missing', async () => {
@@ -110,7 +130,30 @@ describe('userScopeMiddleware allowlist check', () => {
     expect(next).not.toHaveBeenCalled();
   });
 
-  it('attaches NCM client and schedules taste analysis plus music entity indexing for allowed users', async () => {
+  it('rejects a persistently suspended user with 403 even when they hold a valid JWT', async () => {
+    const { deriveKey, encrypt } = await import('../../src/server/crypto');
+    const { getConfig } = await import('../../src/server/config');
+    const { upsertUser } = await import('../../src/server/store/users');
+    const { setUserAccessStatus } = await import('../../src/server/store/user-access-controls');
+    const { userScopeMiddleware } = await import(
+      '../../src/server/http/middleware/userScope'
+    );
+    const encryptedCookie = encrypt('MUSIC_U=unit-test;', deriveKey(getConfig().jwtSecret));
+    upsertUser({ ncmId: 'suspendedUser', encryptedCookie, profileJson: null });
+    setUserAccessStatus('suspendedUser', 'suspended');
+
+    const { req, res, next } = makeReqRes('suspendedUser');
+
+    await userScopeMiddleware(req, res, next);
+
+    expect(res.status).toHaveBeenCalledWith(403);
+    const jsonCall = (res.json as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(jsonCall.ok).toBe(false);
+    expect(jsonCall.error).toBe('forbidden');
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it('schedules automatic taste analysis and entity indexing only for priority users', async () => {
     const { deriveKey, encrypt } = await import('../../src/server/crypto');
     const { getConfig } = await import('../../src/server/config');
     const { upsertUser } = await import('../../src/server/store/users');

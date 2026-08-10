@@ -19,6 +19,12 @@ import {
   MAX_QUEUE_TRACK_NAME_LENGTH,
   MAX_QUEUE_TRACKS
 } from '../../../shared/queue.js';
+import {
+  acquireResourcePermit,
+  ResourceLimitError,
+  type ResourcePermit
+} from '../../resource-governor.js';
+import { sendResourceLimitResponse } from '../resource-limit-response.js';
 
 export {
   buildTrackDedupeKey,
@@ -83,6 +89,16 @@ export function createDjPickNextHandler(opts: DjNextOptions): RequestHandler {
       res.status(409).json(queueConflictPayload(queueUpdate.snapshot));
       return;
     }
+    let permit: ResourcePermit;
+    try {
+      permit = acquireResourcePermit(userId, 'dj_pick_next');
+    } catch (err) {
+      if (err instanceof ResourceLimitError) {
+        sendResourceLimitResponse(res, err);
+        return;
+      }
+      throw err;
+    }
     res.json({ ok: true, running: false });
     void djPickNextRunner.run({
       userId,
@@ -91,7 +107,7 @@ export function createDjPickNextHandler(opts: DjNextOptions): RequestHandler {
         getLogger().warn('DJ pick-next job timed out after %dms', jobTimeoutMs);
         broadcastToUser(userId, { type: 'dj.pick-next.done', added: false, reason: 'timeout' });
       }
-    });
+    }).finally(() => permit.release());
   };
 }
 
@@ -125,22 +141,44 @@ export function createSseDjPickNextHandler(opts: DjNextOptions) {
   return (req: Request, res: Response): void => {
     const userId = (req as AuthedRequest).userId;
     const ncmClient = getScopedNcmClient(req, opts.ncmClient);
-    initSseRes(res);
     if (djPickNextRunner.isRunning(userId)) {
+      initSseRes(res);
       endSse(res, 'dj.pick-next.done', { added: false, running: true, reason: 'already-running' });
       return;
     }
+    // Body validation and queue CAS complete BEFORE any permit is acquired or
+    // SSE headers are committed: malformed/stale requests stay ordinary JSON
+    // 400/409, never charge credits, and never start provider work.
     const queueUpdate = applyClientQueueSnapshot(req, userId);
     if (queueUpdate.status === 'invalid') {
-      endSse(res, 'dj.pick-next.done', { added: false, reason: 'invalid-body' });
+      res.status(400).json({ ok: false, error: 'invalid body' });
       return;
     }
     if (!queueUpdate.applied) {
-      const payload = queueConflictPayload(queueUpdate.snapshot);
-      broadcastToUser(userId, payload);
-      endSse(res, 'queue-updated', payload);
+      // Preserve the client's auto-correction: the stale-queue rejection stays
+      // an ordinary JSON 409 (no SSE headers, no credits, no provider work),
+      // but the authoritative queue-updated payload is broadcast over the
+      // persistent SSE stream first so the player can re-sync before retrying.
+      broadcastToUser(userId, {
+        type: 'queue-updated',
+        queue: queueUpdate.snapshot.queue,
+        currentIndex: queueUpdate.snapshot.currentIndex,
+        revision: queueUpdate.snapshot.revision
+      });
+      res.status(409).json(queueConflictPayload(queueUpdate.snapshot));
       return;
     }
+    let permit: ResourcePermit;
+    try {
+      permit = acquireResourcePermit(userId, 'dj_pick_next');
+    } catch (err) {
+      if (err instanceof ResourceLimitError) {
+        sendResourceLimitResponse(res, err);
+        return;
+      }
+      throw err;
+    }
+    initSseRes(res);
     const emit = (payload: Record<string, unknown>): void => {
       const type = typeof payload.type === 'string' ? payload.type : 'message';
       broadcastToUser(userId, payload);
@@ -148,19 +186,28 @@ export function createSseDjPickNextHandler(opts: DjNextOptions) {
     };
     const controller = new AbortController();
     req.on('close', () => controller.abort(new Error('client-disconnected')));
-    void djPickNextRunner.run({ userId, ncmClient, emit, signal: controller.signal }).then((result) => {
+    void djPickNextRunner.run({
+      userId,
+      ncmClient,
+      emit,
+      signal: controller.signal,
+      onTimeout: () => {
+        // End the SSE response immediately on timeout so the client is
+        // notified right away; the permit stays held until the runner's
+        // underlying job truly settles.
+        if (!res.writableEnded) {
+          endSse(res, 'dj.pick-next.done', { added: false, reason: 'timeout' });
+        }
+      }
+    }).then((result) => {
       if (result.status === 'already-running' && !res.writableEnded) {
         endSse(res, 'dj.pick-next.done', { added: false, running: true, reason: 'already-running' });
-        return;
-      }
-      if (result.status === 'timeout' && !res.writableEnded) {
-        endSse(res, 'dj.pick-next.done', { added: false, reason: 'timeout' });
         return;
       }
       if (!res.writableEnded) res.end();
     }).catch((_err: Error) => {
       if (!res.writableEnded) endSse(res, 'dj.pick-next.done', { added: false, reason: 'error' });
-    });
+    }).finally(() => permit.release());
     req.on('close', () => { if (!res.writableEnded) res.end(); });
   };
 }

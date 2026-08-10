@@ -77,14 +77,30 @@ export function createDjPickNextRunner(input: CreateDjPickNextRunnerInput): DjPi
           }, jobTimeoutMs);
         });
 
+        const jobPromise = input.runPickNext({ userId, ncmClient, emit, signal: controller.signal });
+
         const result = await Promise.race([
-          input.runPickNext({ userId, ncmClient, emit, signal: controller.signal }).then(() => 'done' as const),
+          jobPromise.then(() => 'done' as const),
           jobTimer
         ]);
 
         if (result === 'timeout') {
           const timeoutEvent = { userId, targetPickCount, jobTimeoutMs };
-          (runInput.onTimeout ?? input.onTimeout)?.(timeoutEvent);
+          // Notify the client immediately so the UI can react. The notification
+          // is strictly best-effort: a throwing callback must never skip the
+          // wait for the underlying job to settle (which would release the
+          // running lock and any permit held by callers early) and must never
+          // turn into an unhandled rejection.
+          try {
+            (runInput.onTimeout ?? input.onTimeout)?.(timeoutEvent);
+          } catch {
+            // Notification failures are isolated — the timeout result below is
+            // still delivered once the underlying job truly settles.
+          }
+          // The running lock (and any permit released by callers on this
+          // promise) must stay held until the underlying runPickNext truly
+          // settles. If the job ignores the abort, no new task may start.
+          await jobPromise.catch(() => undefined);
           return { status: 'timeout' };
         }
         return { status: 'done' };

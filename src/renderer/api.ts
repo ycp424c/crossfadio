@@ -411,8 +411,17 @@ export type TtsSettings = {
   voiceDefault: string | null;
 };
 
+export type ResourceTier = 'standard' | 'priority';
+
+export type ResourceCapabilities = {
+  thinking: boolean;
+  configurableAutoFillBatchSize: boolean;
+};
+
 export type SettingsResponse = {
   ok: boolean;
+  resourceTier: ResourceTier;
+  resourceCapabilities: ResourceCapabilities;
   llm: LlmSettings;
   tts: TtsSettings;
   dailyThemeEnabled: boolean;
@@ -541,7 +550,7 @@ export async function revokePersonalDjContextToken(id: string): Promise<{ ok: bo
 }
 
 
-// ── Whitelist ───────────────────────────────────────────────────────────────────
+// ── Priority resource membership (wire paths stay /api/whitelist) ──────────────
 
 export type BlockedAttempt = {
   id: number;
@@ -550,7 +559,7 @@ export type BlockedAttempt = {
   attempted_at: string;
 };
 
-export async function getWhitelist(): Promise<{ ok: boolean; entries: string[] }> {
+export async function getPriorityUsers(): Promise<{ ok: boolean; entries: string[] }> {
   return requestJson<{ ok: boolean; entries: string[] }>('/api/whitelist');
 }
 
@@ -558,21 +567,21 @@ export async function getBlockedAttempts(): Promise<{ ok: boolean; blocked: Bloc
   return requestJson<{ ok: boolean; blocked: BlockedAttempt[] }>('/api/whitelist/blocked');
 }
 
-export async function addToWhitelist(ncmId: string): Promise<void> {
+export async function addPriorityUser(ncmId: string): Promise<void> {
   const result = await requestJson<{ ok: boolean }>('/api/whitelist', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ ncmId })
   });
-  if (!result.ok) throw new Error('Failed to add to whitelist');
+  if (!result.ok) throw new Error('Failed to add priority user');
 }
 
-export async function removeFromWhitelist(ncmId: string): Promise<void> {
+export async function removePriorityUser(ncmId: string): Promise<void> {
   const result = await requestJson<{ ok: boolean }>(
     `/api/whitelist/${encodeURIComponent(ncmId)}`,
     { method: 'DELETE' }
   );
-  if (!result.ok) throw new Error('Failed to remove from whitelist');
+  if (!result.ok) throw new Error('Failed to remove priority user');
 }
 
 export async function unblockUser(id: number): Promise<{ ok: boolean; ncmId: string }> {
@@ -580,6 +589,34 @@ export async function unblockUser(id: number): Promise<{ ok: boolean; ncmId: str
     `/api/whitelist/unblock/${encodeURIComponent(String(id))}`,
     { method: 'POST' }
   );
+}
+
+// ── Safety suspension (independent of priority membership) ────────────────────
+
+export type SuspendedUser = {
+  userId: string;
+  updatedAt: string;
+};
+
+export async function getSuspendedUsers(): Promise<{ ok: boolean; suspended: SuspendedUser[] }> {
+  return requestJson<{ ok: boolean; suspended: SuspendedUser[] }>('/api/access/suspended');
+}
+
+export async function suspendUser(ncmId: string): Promise<void> {
+  const result = await requestJson<{ ok: boolean }>('/api/access/suspended', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ncmId })
+  });
+  if (!result.ok) throw new Error('Failed to suspend user');
+}
+
+export async function reactivateUser(ncmId: string): Promise<void> {
+  const result = await requestJson<{ ok: boolean }>(
+    `/api/access/suspended/${encodeURIComponent(ncmId)}`,
+    { method: 'DELETE' }
+  );
+  if (!result.ok) throw new Error('Failed to reactivate user');
 }
 
 function resolveRuntimeConfig(): RuntimeConfig {
