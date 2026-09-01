@@ -12,6 +12,11 @@ import { getSelectionDebugTrace } from '../../src/server/store/selection-debug-t
 import { getSelectionJourney } from '../../src/server/store/selection-journeys';
 import { getSelectionRotationSnapshot } from '../../src/server/store/selection-rotation';
 import { createExplicitExclusion } from '../../src/server/store/explicit-exclusions';
+import {
+  buildSourceReservoirIdentity,
+  listSourceReservoir,
+  recordSourceReservoirFetch
+} from '../../src/server/store/source-reservoir';
 import type { MusicAgentRunOutput } from '../../src/server/music-agent/schema';
 import type { PickNextInput } from '../../src/server/music-agent';
 
@@ -54,6 +59,10 @@ describe('DJAgent pick-next orchestration', () => {
       now: new Date('2026-07-17T05:00:00.000Z'),
       payload: createPayload('current-bundle', '2026-07-17T04:00:00.000Z')
     });
+    seedReservoir([
+      { id: '201', name: 'First Song', artists: ['First Artist'] },
+      { id: 'reservoir-left', name: 'Reservoir Left', artists: ['Other Artist'] }
+    ]);
     const output = makeOutput([
       { id: '201', name: 'First Song', artist: 'First Artist', reason: 'fits current focus', source: 'search' },
       { id: '202', name: 'Second Song', artist: 'Second Artist', reason: 'keeps stable flow', source: 'liked' }
@@ -137,6 +146,10 @@ describe('DJAgent pick-next orchestration', () => {
       { ncmId: '201', name: 'First Song', artists: ['First Artist'] },
       { ncmId: '202', name: 'Second Song', artists: ['Second Artist'] }
     ]);
+    expect(listSourceReservoir({
+      userId: 'dj-agent-user', now: new Date('2026-07-17T12:01:00.000Z')
+    }).flatMap((source) => source.tracks.map((track) => String(track.id))))
+      .toEqual(['reservoir-left']);
     expect(broadcastAppended).toHaveBeenCalledTimes(1);
 
     const events = getRecentDjEvents('dj-agent-user', 10);
@@ -323,6 +336,10 @@ describe('DJAgent pick-next orchestration', () => {
     const originalQueue = [
       { ncmId: 'already-queued', name: 'Already Queued', artists: ['Existing Artist'] }
     ];
+    seedReservoir([
+      { id: 'atomic-1', name: 'Atomic Song', artists: ['Atomic Artist'] },
+      { id: 'atomic-left', name: 'Atomic Left', artists: ['Other Artist'] }
+    ]);
     setQueueState('dj-agent-user', originalQueue, 0);
     const persistedQueueBefore = getPref('dj-agent-user', 'queue.state.v2');
     const agent = new DJAgent({
@@ -365,6 +382,10 @@ describe('DJAgent pick-next orchestration', () => {
     })).rejects.toThrow('injected final replay failure');
 
     expect(getQueue('dj-agent-user')).toEqual(originalQueue);
+    expect(listSourceReservoir({
+      userId: 'dj-agent-user', now: new Date('2026-07-17T12:01:00.000Z')
+    }).flatMap((source) => source.tracks.map((track) => String(track.id))).sort())
+      .toEqual(['atomic-1', 'atomic-left']);
     expect(getPref('dj-agent-user', 'queue.state.v2')).toEqual(persistedQueueBefore);
     expect(broadcastAppended).not.toHaveBeenCalled();
     expect(emit.mock.calls
@@ -587,6 +608,19 @@ function makeOutput(picks: MusicAgentRunOutput['picks']): MusicAgentRunOutput {
       traceDecision('final', 'selected', 'final_eligible', pick.id)
     ])
   };
+}
+
+function seedReservoir(tracks: Array<{ id: string; name: string; artists: string[] }>): void {
+  recordSourceReservoirFetch({
+    userId: 'dj-agent-user',
+    runId: 'reservoir-seed-run',
+    identity: buildSourceReservoirIdentity({ sourceKind: 'search', sourceRef: 'reservoir seed' }),
+    displayName: 'reservoir seed',
+    candidateSource: 'search',
+    provenanceKind: 'exact_recall',
+    tracks,
+    fetchedAt: new Date('2026-07-17T11:00:00.000Z')
+  });
 }
 
 function traceDecision(

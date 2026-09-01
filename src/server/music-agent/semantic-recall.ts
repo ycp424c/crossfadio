@@ -2,6 +2,7 @@ import type { CandidatePool } from './candidates.js';
 import { entityFromStoredRecord } from './entity-hypotheses.js';
 import {
   recallFromEntity,
+  type EntityRecallOptions,
   type EntityRecallNcmClient
 } from './entity-recall.js';
 import {
@@ -33,6 +34,7 @@ export type SemanticEntityRecallOptions = {
   embeddingModel?: string | null;
   consumeNcmSearch: () => boolean;
   consumePlaylistFetch: () => boolean;
+  sourceReservoir?: EntityRecallOptions['sourceReservoir'];
   signal?: AbortSignal;
   limit: number;
 };
@@ -42,6 +44,7 @@ export type SemanticEntityRecallResult = {
   added: number;
   matchCount: number;
   problems: string[];
+  fetchedSourceCount?: number;
 };
 
 export async function recallFromSemanticEntities(
@@ -96,6 +99,7 @@ export async function recallFromSemanticEntities(
 
     const problems: string[] = [];
     let added = 0;
+    let fetchedSourceCount = 0;
 
     for (const match of matches) {
       if (options.signal?.aborted) {
@@ -116,14 +120,22 @@ export async function recallFromSemanticEntities(
         consumeNcmSearch: options.consumeNcmSearch,
         consumePlaylistFetch: options.consumePlaylistFetch,
         provenanceKind: 'semantic_discovery',
+        sourceReservoir: options.sourceReservoir,
         signal: options.signal
       });
       added += result.added;
+      fetchedSourceCount += result.fetchedSourceCount ?? 0;
       problems.push(...result.problems);
       if (added >= options.limit) break;
     }
 
-    return { attempted: true, added, matchCount: matches.length, problems };
+    return {
+      attempted: true,
+      added,
+      matchCount: matches.length,
+      problems,
+      ...(options.sourceReservoir ? { fetchedSourceCount } : {})
+    };
   } catch (error) {
     return {
       attempted: true,

@@ -794,6 +794,48 @@ CREATE TABLE IF NOT EXISTS resource_usage_buckets (
   updated_at   TEXT NOT NULL DEFAULT (datetime('now')),
   PRIMARY KEY (user_id, period_key)
 );
+  `,
+  `
+CREATE TABLE source_reservoir_sources (
+  user_id          TEXT NOT NULL,
+  source_key       TEXT NOT NULL,
+  source_kind      TEXT NOT NULL,
+  provider         TEXT NOT NULL,
+  source_ref       TEXT NOT NULL,
+  display_name     TEXT NOT NULL,
+  candidate_source TEXT NOT NULL,
+  provenance_kind  TEXT NOT NULL,
+  run_id            TEXT NOT NULL,
+  fetched_at        TEXT NOT NULL,
+  reuse_after       TEXT NOT NULL,
+  expires_at        TEXT NOT NULL,
+  PRIMARY KEY (user_id, source_key),
+  CHECK (source_kind IN ('search', 'playlist', 'artist', 'album', 'trend', 'style_expansion', 'web_hint')),
+  CHECK (candidate_source IN ('playlist', 'search', 'style_expansion', 'trend'))
+);
+
+CREATE TABLE source_reservoir_tracks (
+  user_id          TEXT NOT NULL,
+  source_key       TEXT NOT NULL,
+  track_id         TEXT NOT NULL,
+  track_json       TEXT NOT NULL,
+  position         INTEGER NOT NULL,
+  consumed_at      TEXT,
+  consumed_run_id  TEXT,
+  PRIMARY KEY (user_id, source_key, track_id),
+  FOREIGN KEY (user_id, source_key)
+    REFERENCES source_reservoir_sources(user_id, source_key)
+    ON DELETE CASCADE,
+  CHECK (position >= 0),
+  CHECK ((consumed_at IS NULL AND consumed_run_id IS NULL)
+    OR (consumed_at IS NOT NULL AND consumed_run_id IS NOT NULL))
+);
+
+CREATE INDEX idx_source_reservoir_sources_user_expiry
+  ON source_reservoir_sources (user_id, expires_at, fetched_at DESC);
+
+CREATE INDEX idx_source_reservoir_tracks_user_consumed
+  ON source_reservoir_tracks (user_id, consumed_at, position);
   `
 ];
 

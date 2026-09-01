@@ -10,6 +10,7 @@ import { cleanupSelectionDebugTraces } from '../store/selection-debug-traces.js'
 import { cleanupExpiredInferredPreferenceEvidence } from '../store/preference-evidence.js';
 import { cleanupSelectionNarrationOutbox } from '../store/selection-narration-outbox.js';
 import { cleanupSelectionReplay } from '../store/selection-replay.js';
+import { deleteExpiredSourceReservoir } from '../store/source-reservoir.js';
 
 const DEFAULT_RETENTION_INTERVAL_MS = 60 * 60_000;
 
@@ -20,6 +21,7 @@ export type RetentionMaintenanceResult = {
   djEvents: number;
   selectionJourneys: number;
   retrievalAttempts: number;
+  sourceReservoir: number;
   debugTraces: number;
   inferredPreferenceEvidence: number;
   narrationOutbox: number;
@@ -37,6 +39,7 @@ export function runRetentionMaintenance(now: Date = new Date()): RetentionMainte
     djEvents: cleanupDjEvents(now),
     selectionJourneys: cleanupSelectionJourneys(now.toISOString()),
     retrievalAttempts: deleteExpiredRetrievalAttempts(now),
+    sourceReservoir: deleteExpiredSourceReservoir(now),
     debugTraces: cleanupSelectionDebugTraces(now),
     inferredPreferenceEvidence: cleanupExpiredInferredPreferenceEvidence(now),
     narrationOutbox: cleanupSelectionNarrationOutbox(now),

@@ -15,6 +15,7 @@ export const djMemorySourceKindSchema = z.enum([
   'personal_dj_context',
   'taste_profile',
   'retrieval_history',
+  'source_reservoir',
   'dj_configuration',
   'dj_session_log',
   'current_moment',

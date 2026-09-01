@@ -298,6 +298,18 @@ async function runMusicAgentLoopInternal(input: RunMusicAgentLoopInput): Promise
     step += 1;
 
     if (output.type === 'final') {
+      if (shouldForceFreshRecallForReservoir(input, trace, toolCalls)) {
+        toolCalls = await supplementAutoFillRecallMix(
+          input,
+          observations,
+          trace,
+          startedAt,
+          step,
+          toolCalls
+        );
+        if (input.signal?.aborted) return abortedOutput(resolveMode(input), trace);
+        continue;
+      }
       if (isLyricsAwareEnabled(input)) {
         return askExtraFinalPick(
           input,
@@ -516,6 +528,18 @@ async function runMusicAgentLoopInternal(input: RunMusicAgentLoopInput): Promise
     }
 
   }
+}
+
+function shouldForceFreshRecallForReservoir(
+  input: RunMusicAgentLoopInput,
+  trace: AgentTraceStep[],
+  toolCalls: number
+): boolean {
+  return modeFromContext(input.context) === 'pick_next'
+    && input.tools.hasReservoirCandidates?.() === true
+    && !hasExecutedExternalRecall(trace)
+    && toolCalls < input.budget.maxToolCalls
+    && Boolean(input.tools[AUTO_FILL_AGGREGATE_TOOL_NAME]);
 }
 
 async function askExtraFinalPick(

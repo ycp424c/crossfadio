@@ -2,6 +2,7 @@ import type { CandidatePool } from './candidates.js';
 import { parseEntityRecallInput } from './entity-hypotheses.js';
 import {
   recallFromEntity,
+  type EntityRecallOptions,
   type EntityRecallNcmClient
 } from './entity-recall.js';
 import {
@@ -24,6 +25,7 @@ export type WebHintRecallOptions = {
   queryPlan: QueryPlan | null;
   consumeNcmSearch: () => boolean;
   consumePlaylistFetch: () => boolean;
+  sourceReservoir?: EntityRecallOptions['sourceReservoir'];
   signal?: AbortSignal;
   limit: number;
 };
@@ -31,6 +33,7 @@ export type WebHintRecallOptions = {
 export type WebHintRecallResult = {
   summary: string;
   problems: string[];
+  fetchedSourceCount?: number;
   aborted?: boolean;
 };
 
@@ -40,6 +43,7 @@ export async function recallFromWebDiscoveryHints(options: WebHintRecallOptions)
   const entities = parsedInput.entities.slice(0, MAX_ENTITY_RECALL_COUNT);
   const problems = [...filteredHints.problems, ...parsedInput.problems];
   let added = 0;
+  let fetchedSourceCount = 0;
 
   for (const entity of entities) {
     if (options.signal?.aborted) return { summary: 'web hint entity recall aborted.', problems: ['aborted'], aborted: true };
@@ -53,15 +57,18 @@ export async function recallFromWebDiscoveryHints(options: WebHintRecallOptions)
       consumeNcmSearch: options.consumeNcmSearch,
       consumePlaylistFetch: options.consumePlaylistFetch,
       provenanceKind: 'web_hint_recall',
+      sourceReservoir: options.sourceReservoir,
       signal: options.signal
     });
     added += result.added;
+    fetchedSourceCount += result.fetchedSourceCount ?? 0;
     problems.push(...result.problems);
   }
 
   return {
     summary: `web hint entity recall added ${added} candidates from ${entities.length} entities.`,
-    problems
+    problems,
+    ...(options.sourceReservoir ? { fetchedSourceCount } : {})
   };
 }
 

@@ -21,6 +21,7 @@ export const candidateProvenanceKindSchema = z.enum([
   'semantic_discovery',
   'web_hint_recall',
   'verified_entity',
+  'source_reservoir',
   'trend_recall',
   'style_expansion'
 ]);

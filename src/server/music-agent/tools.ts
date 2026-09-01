@@ -74,6 +74,7 @@ import type {
   SelectionPressureContribution
 } from './selection-policy/types.js';
 import type { SelectionDecisionRecorder } from './selection-policy/decision-trace.js';
+import type { SourceReservoirSource } from '../store/source-reservoir.js';
 
 export type ToolObservation = {
   summary: string;
@@ -91,6 +92,7 @@ export type MusicAgentToolRegistry = Partial<Record<MusicAgentToolName, MusicAge
   prepare_for_ranking?: MusicAgentTool;
   getQueryPlan?: () => QueryPlan | null;
   getQueryFunnel?: () => QueryFunnelEntry[];
+  hasReservoirCandidates?: () => boolean;
   recordQueryFunnel?: () => void;
   recordFinalPicks?: (picks: FinalPick[]) => void;
 };
@@ -118,6 +120,9 @@ export type CreateMusicAgentToolsInput = {
   selectionPressureForCandidate?: (candidate: MusicCandidate) => SelectionPressureContribution[];
   selectionPolicyContext?: SelectionPolicyContext;
   selectionDecisionRecorder?: SelectionDecisionRecorder;
+  sourceReservoir?: SourceReservoirSource[];
+  runId?: string;
+  now?: Date;
 };
 
 type ToolState = {
@@ -129,10 +134,12 @@ type ToolState = {
   queryFunnel: Map<string, QueryFunnelAccumulator>;
   searchedQueryLimits: Map<string, number>;
   webDiscoveryCalled: boolean;
+  reservoirHydratedCandidates: number;
+  freshSourceFetches: number;
 };
 
 type AutoFillMixStage = {
-  stage: 'search' | 'entity_recall' | 'style_expansion' | 'trend' | 'web_discovery' | 'web_hint_recall';
+  stage: 'source_reservoir' | 'search' | 'entity_recall' | 'style_expansion' | 'trend' | 'web_discovery' | 'web_hint_recall';
   summary: string;
   candidateCount: number;
   problems: string[];
@@ -167,6 +174,9 @@ const QUALITY_DETAIL_BATCH_LIMIT = 80;
 const AUTO_FILL_MIN_RECALL_NON_LIKED_TARGET = 8;
 const WEB_DISCOVERY_ENTITY_RECALL_LIMIT = 1;
 export function createMusicAgentTools(input: CreateMusicAgentToolsInput): MusicAgentToolRegistry {
+  const reservoirHydratedCandidates = input.context.request === 'auto-fill'
+    ? hydrateSourceReservoir(input)
+    : 0;
   const state: ToolState = {
     queryPlan: null,
     trendContext: null,
@@ -175,7 +185,9 @@ export function createMusicAgentTools(input: CreateMusicAgentToolsInput): MusicA
     qualityPreparedIds: new Set(),
     queryFunnel: new Map(),
     searchedQueryLimits: new Map(),
-    webDiscoveryCalled: false
+    webDiscoveryCalled: false,
+    reservoirHydratedCandidates,
+    freshSourceFetches: 0
   };
   const limits = {
     maxNcmSearches: input.maxNcmSearches ?? input.budget.maxNcmSearches,
@@ -305,10 +317,12 @@ export function createMusicAgentTools(input: CreateMusicAgentToolsInput): MusicA
             consumeNcmSearch: () => consumeNcmSearch(state, limits.maxNcmSearches),
             consumePlaylistFetch: () => consumePlaylistFetch(state, limits.maxPlaylistFetches),
             provenanceKind: 'verified_entity',
+            sourceReservoir: sourceReservoirContext(input),
             signal
           });
           attemptedQueryCount += 1;
           added += result.added;
+          state.freshSourceFetches += result.fetchedSourceCount ?? 0;
           problems.push(...result.problems);
           if (isNcmSearchBudgetExhausted(result)) {
             stoppedReason = 'ncm_search_budget_exhausted';
@@ -334,23 +348,23 @@ export function createMusicAgentTools(input: CreateMusicAgentToolsInput): MusicA
       const problems: string[] = [];
       for (const playlistId of playlistIds) {
         if (signal?.aborted) return abortedObservation(input.candidatePool);
-        if (!consumePlaylistFetch(state, limits.maxPlaylistFetches)) {
-          problems.push('playlist fetch budget exhausted');
-          break;
-        }
-        try {
-          const detail = await input.ncmClient.getPlaylistDetail(playlistId);
-          if (!detail) {
-            problems.push(`playlist ${playlistId} not found`);
-            continue;
-          }
-          added += upsertTracks(input.candidatePool, detail.tracks, 'playlist', {
-            evidence: `歌单 ${detail.name}`,
-            scores: sourceScores('playlist', input.context)
-          }).added;
-        } catch (error) {
-          problems.push(`playlist ${playlistId}: ${formatError(error)}`);
-        }
+        const result = await recallFromEntity({
+          entity: { type: 'playlist', id: playlistId },
+          ncmClient: input.ncmClient,
+          candidatePool: input.candidatePool,
+          context: input.context,
+          limit: boundedPositiveInt(toolInput.limit, DEFAULT_ENTITY_RECALL_LIMIT, MAX_ENTITY_RECALL_LIMIT),
+          searchLimit: DEFAULT_ENTITY_SEARCH_LIMIT,
+          consumeNcmSearch: () => consumeNcmSearch(state, limits.maxNcmSearches),
+          consumePlaylistFetch: () => consumePlaylistFetch(state, limits.maxPlaylistFetches),
+          provenanceKind: 'playlist',
+          sourceReservoir: sourceReservoirContext(input),
+          signal
+        });
+        added += result.added;
+        state.freshSourceFetches += result.fetchedSourceCount ?? 0;
+        problems.push(...result.problems);
+        if (isPlaylistFetchBudgetExhausted(result)) break;
       }
 
       return observation(input.candidatePool, `playlist recall added ${added} candidates.`, problems);
@@ -425,10 +439,12 @@ export function createMusicAgentTools(input: CreateMusicAgentToolsInput): MusicA
           consumeNcmSearch: () => consumeNcmSearch(state, limits.maxNcmSearches),
           consumePlaylistFetch: () => consumePlaylistFetch(state, limits.maxPlaylistFetches),
           provenanceKind: 'verified_entity',
+          sourceReservoir: sourceReservoirContext(input),
           signal
         });
         attemptedEntityCount += 1;
         added += result.added;
+        state.freshSourceFetches += result.fetchedSourceCount ?? 0;
         problems.push(...result.problems);
         if (result.added > 0) {
           productiveEntityCount += 1;
@@ -497,6 +513,13 @@ export function createMusicAgentTools(input: CreateMusicAgentToolsInput): MusicA
       };
       const finish = () => autoFillMixObservation(input, summaries, problems, stages);
 
+      addStage('source_reservoir', observation(
+        input.candidatePool,
+        state.reservoirHydratedCandidates > 0
+          ? `source reservoir hydrated ${state.reservoirHydratedCandidates} candidates from the previous retrieval window.`
+          : 'source reservoir had no reusable candidates.'
+      ));
+
       const searchQueries = autoFillSearchQueries(input.context, state.queryPlan);
       const search = await recallFromQueries({
         queries: searchQueries,
@@ -510,7 +533,8 @@ export function createMusicAgentTools(input: CreateMusicAgentToolsInput): MusicA
         limit: DEFAULT_SEARCH_LIMIT
       });
       addStage('search', search);
-      if (hasEnoughAutoFillNonLikedCandidates(input.candidatePool, input.targetPickCount)) {
+      if (hasEnoughAutoFillNonLikedCandidates(input.candidatePool, input.targetPickCount)
+        && state.freshSourceFetches > 0) {
         return finish();
       }
 
@@ -522,7 +546,8 @@ export function createMusicAgentTools(input: CreateMusicAgentToolsInput): MusicA
         signal
       });
       addStage('entity_recall', entities);
-      if (hasEnoughAutoFillNonLikedCandidates(input.candidatePool, input.targetPickCount)) {
+      if (hasEnoughAutoFillNonLikedCandidates(input.candidatePool, input.targetPickCount)
+        && state.freshSourceFetches > 0) {
         return finish();
       }
 
@@ -535,7 +560,8 @@ export function createMusicAgentTools(input: CreateMusicAgentToolsInput): MusicA
         limit: 5
       });
       addStage('trend', trend);
-      if (hasEnoughAutoFillNonLikedCandidates(input.candidatePool, input.targetPickCount)) {
+      if (hasEnoughAutoFillNonLikedCandidates(input.candidatePool, input.targetPickCount)
+        && state.freshSourceFetches > 0) {
         return finish();
       }
 
@@ -617,6 +643,7 @@ export function createMusicAgentTools(input: CreateMusicAgentToolsInput): MusicA
   return {
     ...registry,
     getQueryFunnel: () => queryFunnelSnapshot(state),
+    hasReservoirCandidates: () => state.reservoirHydratedCandidates > 0,
     recordQueryFunnel: () => recordQueryFunnelSnapshot(input.userId, state, recordRetrievalQueryFunnel),
     recordFinalPicks: (picks) => recordFinalQueryFunnel(input.userId, state, picks, recordRetrievalQueryFunnel)
   };
@@ -727,9 +754,11 @@ async function recallAutoFillEntities(options: {
       consumeNcmSearch: () => consumeNcmSearch(options.state, options.maxSearches),
       consumePlaylistFetch: () => consumePlaylistFetch(options.state, options.maxPlaylistFetches),
       provenanceKind: 'verified_entity',
+      sourceReservoir: sourceReservoirContext(options.input),
       signal: options.signal
     });
     added += result.added;
+    options.state.freshSourceFetches += result.fetchedSourceCount ?? 0;
     expanded.push(`${item.entity.type}:${entityDisplayName(item.entity)}=${result.added}`);
     problems.push(...result.problems);
   }
@@ -848,9 +877,11 @@ async function recallTrendArtistEntities(options: {
       consumePlaylistFetch: () => consumePlaylistFetch(options.state, options.input.budget.maxPlaylistFetches),
       source: 'trend',
       provenanceKind: 'trend_recall',
+      sourceReservoir: sourceReservoirContext(options.input),
       signal: options.signal
     });
     added += result.added;
+    options.state.freshSourceFetches += result.fetchedSourceCount ?? 0;
     expanded.push(`${entity.name}=${result.added}`);
     problems.push(...result.problems);
   }
@@ -871,7 +902,7 @@ async function recallFromWebDiscoveryHints(options: {
   signal?: AbortSignal;
   limit: number;
 }): Promise<{ summary: string; problems: string[] }> {
-  return runRecallFromWebDiscoveryHints({
+  const result = await runRecallFromWebDiscoveryHints({
     hints: options.hints,
     ncmClient: options.input.ncmClient,
     candidatePool: options.input.candidatePool,
@@ -879,9 +910,12 @@ async function recallFromWebDiscoveryHints(options: {
     queryPlan: options.state.queryPlan,
     consumeNcmSearch: () => consumeNcmSearch(options.state, options.maxSearches),
     consumePlaylistFetch: () => consumePlaylistFetch(options.state, options.maxPlaylistFetches),
+    sourceReservoir: sourceReservoirContext(options.input),
     signal: options.signal,
     limit: options.limit
   });
+  options.state.freshSourceFetches += result.fetchedSourceCount ?? 0;
+  return result;
 }
 
 function trendRecallQueries(state: ToolState, toolInput: Record<string, unknown>): string[] {
@@ -1020,11 +1054,49 @@ async function recallFromQueries(options: {
     consumeNcmSearch: () => consumeNcmSearch(options.state, options.maxSearches),
     consumePlaylistFetch: () => consumePlaylistFetch(options.state, options.input.budget.maxPlaylistFetches),
     requestKind: options.input.selectionPolicyContext?.mode ?? 'autonomous',
+    runId: options.input.runId,
+    now: options.input.now,
+    sourceReservoirEnabled: options.input.sourceReservoir !== undefined,
     signal: options.signal,
     limit: options.limit
   });
   if (result.aborted) return abortedObservation(options.input.candidatePool);
+  options.state.freshSourceFetches += result.fetchedSourceCount;
   return observation(options.input.candidatePool, result.summary, result.problems);
+}
+
+function hydrateSourceReservoir(input: CreateMusicAgentToolsInput): number {
+  let added = 0;
+  for (const source of input.sourceReservoir ?? []) {
+    const result = upsertTracks(input.candidatePool, source.tracks, source.candidateSource, {
+      evidence: `来源池: ${source.displayName}`,
+      scores: sourceScores(source.candidateSource, input.context),
+      provenance: [
+        {
+          kind: source.provenanceKind,
+          source: source.candidateSource,
+          detail: `${source.sourceKind}:${source.displayName}`
+        },
+        {
+          kind: 'source_reservoir',
+          source: source.candidateSource,
+          detail: `${source.sourceKind}:${source.sourceRef}; fetchedAt=${source.fetchedAt}`
+        }
+      ]
+    });
+    added += result.added;
+  }
+  return added;
+}
+
+function sourceReservoirContext(input: CreateMusicAgentToolsInput) {
+  if (input.sourceReservoir === undefined) return undefined;
+  return {
+    userId: input.userId,
+    runId: input.runId ?? 'music-agent-run',
+    requestKind: input.selectionPolicyContext?.mode ?? 'autonomous',
+    ...(input.now ? { now: input.now } : {})
+  } as const;
 }
 
 function observation(

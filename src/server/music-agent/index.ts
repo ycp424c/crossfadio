@@ -187,7 +187,10 @@ export class MusicAgent {
       targetPickCount,
       selectionPressureForCandidate: selectionAdapter.pressureForCandidate,
       selectionPolicyContext,
-      selectionDecisionRecorder
+      selectionDecisionRecorder,
+      sourceReservoir: selectionAdapter.sourceReservoir,
+      runId: input.replayRunId ?? selectionAdapter.snapshotId,
+      now: input.now
     });
     const finalShortlistEnricher = this.resolveFinalShortlistEnricher(input.ncmClient);
     const persistTrackAssessments = this.lyricsSelectionMode === 'off'

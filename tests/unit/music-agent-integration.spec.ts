@@ -2838,6 +2838,90 @@ describe('createMusicAgentTools', () => {
     ]);
   });
 
+  it('hydrates remaining cross-run candidates and rotates search and playlist sources inside 120 minutes', async () => {
+    const now = new Date('2026-09-01T02:00:00.000Z');
+    const ncmClient = {
+      getLikedSongIds: vi.fn(async () => []),
+      getSongDetails: vi.fn(async () => []),
+      searchSongs: vi.fn(async (query: string) => [
+        { id: 'fresh-search-track', name: `Fresh ${query}`, artists: ['Fresh Search Artist'] }
+      ]),
+      searchPlaylists: vi.fn(async () => [
+        { id: 'old-playlist', name: '华语旧歌单', trackCount: 10 },
+        { id: 'fresh-playlist', name: '华语新歌单', trackCount: 10 }
+      ]),
+      getPlaylistDetail: vi.fn(async (id: string) => id === 'fresh-playlist' ? {
+        id,
+        name: '华语新歌单',
+        tracks: [
+          { id: 'fresh-playlist-track', name: 'Fresh Playlist Song', artists: ['Fresh Playlist Artist'] },
+          ...Array.from({ length: 5 }, (_, index) => ({
+            id: `playlist-left-${index + 1}`,
+            name: `Playlist Left ${index + 1}`,
+            artists: [`Playlist Artist ${index + 1}`]
+          }))
+        ]
+      } : null)
+    };
+    const reservoir = await import('../../src/server/store/source-reservoir.js');
+    reservoir.recordSourceReservoirFetch({
+      userId: 'reservoir-rotation-user', runId: 'previous-run',
+      identity: reservoir.buildSourceReservoirIdentity({ sourceKind: 'search', sourceRef: 'Old Song Old Artist' }),
+      displayName: 'Old Song Old Artist', candidateSource: 'search', provenanceKind: 'exact_recall',
+      tracks: [{ id: 'cached-search-track', name: 'Cached Search Song', artists: ['Cached Search Artist'] }],
+      fetchedAt: new Date('2026-09-01T01:00:00.000Z')
+    });
+    reservoir.recordSourceReservoirFetch({
+      userId: 'reservoir-rotation-user', runId: 'previous-run',
+      identity: reservoir.buildSourceReservoirIdentity({ sourceKind: 'playlist', sourceRef: 'old-playlist' }),
+      displayName: '华语旧歌单', candidateSource: 'playlist', provenanceKind: 'verified_entity',
+      tracks: [{ id: 'cached-playlist-track', name: 'Cached Playlist Song', artists: ['Cached Playlist Artist'] }],
+      fetchedAt: new Date('2026-09-01T01:00:00.000Z')
+    });
+
+    const { CandidatePool } = await import('../../src/server/music-agent/candidates.js');
+    const { createMusicAgentTools } = await import('../../src/server/music-agent/tools.js');
+    const candidatePool = new CandidatePool();
+    const tools = createMusicAgentTools({
+      userId: 'reservoir-rotation-user',
+      runId: 'current-run',
+      now,
+      sourceReservoir: reservoir.listSourceReservoir({ userId: 'reservoir-rotation-user', now }),
+      ncmClient: ncmClient as any,
+      context: {
+        request: 'auto-fill', discoveryMode: 'explore', currentUserText: '',
+        currentMoment: { localTime: '周二 10:00', daypart: '上午', weather: null },
+        activeDirective: '', tasteSummary: '', recentPreferenceSummary: '',
+        recentPlaySignals: '', queueStateSummary: '', bannedSummary: ''
+      },
+      selectionPolicyContext: { mode: 'autonomous', explicitlyRequested: false },
+      candidatePool,
+      budget: {
+        maxMs: 10_000, maxSteps: 5, maxLlmCalls: 2, maxToolCalls: 5,
+        maxNcmSearches: 5, maxPlaylistFetches: 2, maxTrendFetchMs: 0, maxCandidates: 20
+      }
+    });
+
+    const search = await tools.recall_from_ncm_search?.({
+      queries: ['Old Song Old Artist', 'New Song New Artist'], limit: 8
+    });
+    await tools.recall_from_playlists?.({ queries: ['华语'], limit: 4 });
+
+    expect(ncmClient.searchSongs).toHaveBeenCalledTimes(1);
+    expect(ncmClient.searchSongs).toHaveBeenCalledWith('New Song New Artist', 8);
+    expect(search?.problems).toContain('skipped 1 source still inside the 120-minute reservoir window');
+    expect(ncmClient.getPlaylistDetail).toHaveBeenCalledTimes(1);
+    expect(ncmClient.getPlaylistDetail).toHaveBeenCalledWith('fresh-playlist');
+    expect(candidatePool.list().map((candidate) => candidate.id)).toEqual(expect.arrayContaining([
+      'cached-playlist-track', 'cached-search-track', 'fresh-playlist-track', 'fresh-search-track'
+    ]));
+    expect(reservoir.listSourceReservoir({ userId: 'reservoir-rotation-user', now })
+      .find((source) => source.sourceRef === 'fresh-playlist')?.tracks).toHaveLength(6);
+    expect(candidatePool.get('cached-search-track')?.provenance).toContainEqual(
+      expect.objectContaining({ kind: 'source_reservoir' })
+    );
+  });
+
   it('skips repeated search queries across recall sources when an earlier search covered the requested limit', async () => {
     const ncmClient = {
       getLikedSongIds: vi.fn(async () => []),

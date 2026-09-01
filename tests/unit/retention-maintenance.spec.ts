@@ -6,6 +6,10 @@ import { _resetDbForTest, getDb, initDb } from '../../src/server/store/db';
 import { createListeningEpisode } from '../../src/server/store/listening-episodes';
 import { appendDjEvent } from '../../src/server/store/dj-events';
 import { appendRetrievalAttempts } from '../../src/server/store/retrieval-attempts';
+import {
+  buildSourceReservoirIdentity,
+  recordSourceReservoirFetch
+} from '../../src/server/store/source-reservoir';
 import { savePreferenceEvidence } from '../../src/server/store/preference-evidence';
 import { saveSelectionJourney } from '../../src/server/store/selection-journeys';
 import {
@@ -70,6 +74,13 @@ describe('unified retention maintenance', () => {
         searchedCount: 1, resultCount: 1, addedCount: 0, selectedCount: 0
       }]
     });
+    recordSourceReservoirFetch({
+      userId: 'user-1', runId: 'reservoir-old',
+      identity: buildSourceReservoirIdentity({ sourceKind: 'search', sourceRef: 'old query' }),
+      displayName: 'old query', candidateSource: 'search', provenanceKind: 'exact_recall',
+      tracks: [{ id: 'old-track', name: 'Old Track', artists: ['Old Artist'] }],
+      fetchedAt: new Date(now.getTime() - 3 * hour)
+    });
     getDb().prepare(`
       INSERT INTO selection_debug_traces (
         id, user_id, run_id, schema_version, trace_json, created_at, expires_at
@@ -99,6 +110,7 @@ describe('unified retention maintenance', () => {
       djEvents: 1,
       selectionJourneys: 1,
       retrievalAttempts: 1,
+      sourceReservoir: 1,
       debugTraces: 1,
       inferredPreferenceEvidence: 1
     }));
@@ -108,6 +120,8 @@ describe('unified retention maintenance', () => {
     expect(count('dj_events')).toBe(0);
     expect(count('selection_journeys')).toBe(0);
     expect(count('retrieval_attempts')).toBe(0);
+    expect(count('source_reservoir_sources')).toBe(0);
+    expect(count('source_reservoir_tracks')).toBe(0);
     expect(count('selection_debug_traces')).toBe(0);
     expect(getDb().prepare(`SELECT evidence_kind FROM preference_evidence`).all()).toEqual([
       { evidence_kind: 'expressed' }

@@ -30,6 +30,7 @@ import type { DjMemorySnapshot } from './schema.js';
 
 export type MusicAgentSelectionAdapter = {
   snapshotId: string;
+  sourceReservoir: DjMemorySnapshot['sourceReservoir'];
   runtimeContext: MusicAgentRuntimeContext;
   policyContext: SelectionPolicyContext;
   pressureForCandidate: (candidate: MusicCandidate) => SelectionPressureContribution[];
@@ -97,6 +98,7 @@ export function createMusicAgentSelectionAdapter(input: {
 
   return {
     snapshotId: input.snapshot.metadata.snapshotId,
+    sourceReservoir: input.snapshot.sourceReservoir,
     runtimeContext,
     policyContext,
     selectionModeForCandidate(candidate) {

@@ -156,6 +156,10 @@ _Avoid_: Expressed Preference Evidence, Explicit Exclusion, permanent dislike
 Operational evidence about how prior recall queries performed, used only to deduplicate, order, budget, or temporarily cool down autonomous retrieval work. Attempts are retained for 30 days and policy decisions consume only the prior 14 days. It does not express user taste, does not influence candidate preference ranking, and must not restrict an Explicit Music Request.
 _Avoid_: Preference Evidence, negative feedback, query preference
 
+**Source Reservoir**:
+A per-user durable working set of verified Music Entity sources and their recalled track memberships, used across DJ Pick-next Runs to reuse unconsumed tracks while autonomous retrieval rotates to fresh sources. A source is fetched at most once within its bounded reuse window; cached memberships are re-evaluated through the current Admission, Recall, Ranking, Batch, and Final policies on every run. Tracks are consumed only when queue publication commits successfully, while failed, timed-out, or superseded runs do not consume them. It is operational retrieval state rather than Durable Music Knowledge, Preference Evidence, Retrieval History, or a replacement for the per-run CandidatePool.
+_Avoid_: CandidatePool cache, recommendation queue, Retrieval History, listening history
+
 **Explicit Music Request**:
 A current listener request that names a desired track, artist, album, playlist, or other Music Entity. It takes precedence over Active Directives and Selection Pressure, but not over an unrevoked Explicit Exclusion or an objective playback constraint.
 _Avoid_: search query, style hint, inferred preference

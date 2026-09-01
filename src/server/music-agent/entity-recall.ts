@@ -27,6 +27,12 @@ import type {
 } from './schema.js';
 import type { NcmTrackLike } from './liked-recall.js';
 import type { NcmPlaylistSearchResult } from '../../shared/schema.js';
+import type { RetrievalRequestKind } from '../store/retrieval-attempts.js';
+import {
+  buildSourceReservoirIdentity,
+  isSourceReservoirFetchAvailable,
+  recordSourceReservoirFetch
+} from '../store/source-reservoir.js';
 
 export type EntityRecallNcmClient = Pick<
   NcmClient,
@@ -52,12 +58,19 @@ export type EntityRecallOptions = {
   consumePlaylistFetch: () => boolean;
   source?: CandidateSource;
   provenanceKind?: CandidateProvenanceKind;
+  sourceReservoir?: {
+    userId: string;
+    runId: string;
+    requestKind: RetrievalRequestKind;
+    now?: Date;
+  };
   signal?: AbortSignal;
 };
 
 export type EntityRecallResult = {
   added: number;
   problems: string[];
+  fetchedSourceCount?: number;
 };
 
 const EXPANDED_TRACK_VARIANT_PATTERN = /翻唱|cover|tribute|karaoke|instrumental|伴奏|ktv|铃声|原唱|男声版|女声版|sped\s*up|slow\s*&\s*reverb|slowed|acapella|a cappella/i;
@@ -84,13 +97,37 @@ export async function recallFromEntity(options: EntityRecallOptions): Promise<En
 async function recallTrackEntity(options: EntityRecallOptions): Promise<EntityRecallResult> {
   const explicitId = entityId(options.entity);
   if (explicitId) {
+    const reservoirIdentity = buildSourceReservoirIdentity({
+      sourceKind: 'search',
+      sourceRef: `track:${explicitId}`
+    });
+    if (sourceInsideReservoirWindow(options, reservoirIdentity)) {
+      return {
+        added: 0,
+        problems: [`track source ${explicitId} is still inside the 120-minute reservoir window`]
+      };
+    }
     const tracks = await options.ncmClient.getSongDetails([explicitId]);
     if (options.signal?.aborted) return { added: 0, problems: ['aborted'] };
     const verifiedTracks = tracks.filter((track) => trackMatchesKnownEntityFields(options.entity, track));
-    if (verifiedTracks.length === 0) {
-      return { added: 0, problems: [`track entity rejected: ${entityLabel(options.entity)}`] };
-    }
     const source = entityRecallSource(options, 'search');
+    const reservoirProblem = recordEntitySource(
+      options,
+      reservoirIdentity,
+      entityLabel(options.entity),
+      source,
+      verifiedTracks
+    );
+    if (verifiedTracks.length === 0) {
+      return {
+        added: 0,
+        problems: [
+          `track entity rejected: ${entityLabel(options.entity)}`,
+          ...(reservoirProblem ? [reservoirProblem] : [])
+        ],
+        ...fetchedSourceCountProperty(options, reservoirProblem)
+      };
+    }
     const result = upsertTracks(options.candidatePool, verifiedTracks.slice(0, options.limit), source, {
       evidence: `实体曲目: ${entityLabel(options.entity)}`,
       scores: sourceScores(source, options.context),
@@ -98,7 +135,8 @@ async function recallTrackEntity(options: EntityRecallOptions): Promise<EntityRe
     });
     return {
       added: result.added,
-      problems: entityRecallProblems(result)
+      problems: [...entityRecallProblems(result), ...(reservoirProblem ? [reservoirProblem] : [])],
+      ...fetchedSourceCountProperty(options, reservoirProblem)
     };
   }
 
@@ -106,20 +144,40 @@ async function recallTrackEntity(options: EntityRecallOptions): Promise<EntityRe
   if (!title) {
     return { added: 0, problems: ['track entity skipped: missing title'] };
   }
+  const query = uniqueStrings([title, options.entity.artist ?? '']).join(' ');
+  const reservoirIdentity = buildSourceReservoirIdentity({ sourceKind: 'search', sourceRef: query });
+  if (sourceInsideReservoirWindow(options, reservoirIdentity)) {
+    return {
+      added: 0,
+      problems: [`search source ${query} is still inside the 120-minute reservoir window`]
+    };
+  }
   if (!options.consumeNcmSearch()) {
     return { added: 0, problems: ['NCM search budget exhausted'] };
   }
-
-  const query = uniqueStrings([title, options.entity.artist ?? '']).join(' ');
   const tracks = await options.ncmClient.searchSongs(query, options.limit);
   if (options.signal?.aborted) return { added: 0, problems: ['aborted'] };
 
   const verifiedTracks = tracks.filter((track) => isVerifiedTrackEntity(options.entity, track));
+  const source = entityRecallSource(options, 'search');
+  const reservoirProblem = recordEntitySource(
+    options,
+    reservoirIdentity,
+    entityLabel(options.entity),
+    source,
+    verifiedTracks
+  );
   if (verifiedTracks.length === 0) {
-    return { added: 0, problems: [`track entity rejected: ${entityLabel(options.entity)}`] };
+    return {
+      added: 0,
+      problems: [
+        `track entity rejected: ${entityLabel(options.entity)}`,
+        ...(reservoirProblem ? [reservoirProblem] : [])
+      ],
+      ...fetchedSourceCountProperty(options, reservoirProblem)
+    };
   }
 
-  const source = entityRecallSource(options, 'search');
   const result = upsertTracks(options.candidatePool, verifiedTracks, source, {
     evidence: `实体曲目: ${entityLabel(options.entity)}`,
     scores: sourceScores(source, options.context),
@@ -127,7 +185,8 @@ async function recallTrackEntity(options: EntityRecallOptions): Promise<EntityRe
   });
   return {
     added: result.added,
-    problems: entityRecallProblems(result)
+    problems: [...entityRecallProblems(result), ...(reservoirProblem ? [reservoirProblem] : [])],
+    ...fetchedSourceCountProperty(options, reservoirProblem)
   };
 }
 
@@ -143,6 +202,13 @@ async function recallArtistEntity(options: EntityRecallOptions): Promise<EntityR
   const artistId = await resolveArtistEntity(options);
   if (!artistId) {
     return { added: 0, problems: [`artist entity rejected: ${artistName}`] };
+  }
+  const reservoirIdentity = buildSourceReservoirIdentity({ sourceKind: 'artist', sourceRef: artistId });
+  if (sourceInsideReservoirWindow(options, reservoirIdentity)) {
+    return {
+      added: 0,
+      problems: [`artist source ${artistId} is still inside the 120-minute reservoir window`]
+    };
   }
   if (!options.consumeNcmSearch()) {
     return { added: 0, problems: ['NCM search budget exhausted'] };
@@ -160,12 +226,21 @@ async function recallArtistEntity(options: EntityRecallOptions): Promise<EntityR
     scores: sourceScores(source, options.context),
     provenanceKind: options.provenanceKind
   });
+  const reservoirProblem = recordEntitySource(
+    options,
+    reservoirIdentity,
+    artistName || artistId,
+    source,
+    eligibleTracks
+  );
   return {
     added: result.added,
     problems: [
       ...(eligibleTracks.length === 0 ? [`artist entity rejected: ${artistName}`] : []),
-      ...entityRecallProblems(result)
-    ]
+      ...entityRecallProblems(result),
+      ...(reservoirProblem ? [reservoirProblem] : [])
+    ],
+    ...fetchedSourceCountProperty(options, reservoirProblem)
   };
 }
 
@@ -192,13 +267,38 @@ async function recallAlbumEntity(options: EntityRecallOptions): Promise<EntityRe
     if (!options.ncmClient.getAlbumDetail) {
       return { added: 0, problems: ['album entity skipped: NCM album expansion unavailable'] };
     }
+    const reservoirIdentity = buildSourceReservoirIdentity({ sourceKind: 'album', sourceRef: explicitId });
+    if (sourceInsideReservoirWindow(options, reservoirIdentity)) {
+      return {
+        added: 0,
+        problems: [`album source ${explicitId} is still inside the 120-minute reservoir window`]
+      };
+    }
     const detail = await options.ncmClient.getAlbumDetail(explicitId);
     if (options.signal?.aborted) return { added: 0, problems: ['aborted'] };
-    if (!detail || !albumMatchesKnownEntityFields(options.entity, detail)) {
-      return { added: 0, problems: [`album entity rejected: ${entityLabel(options.entity)}`] };
-    }
-    const tracks = detail.tracks.filter(isUsableExpandedTrack).slice(0, options.limit);
     const source = entityRecallSource(options, 'search');
+    const detailAccepted = Boolean(detail && albumMatchesKnownEntityFields(options.entity, detail));
+    const expandedTracks = detailAccepted
+      ? detail!.tracks.filter(isUsableExpandedTrack)
+      : [];
+    const reservoirProblem = recordEntitySource(
+      options,
+      reservoirIdentity,
+      detail?.name ?? entityLabel(options.entity),
+      source,
+      expandedTracks
+    );
+    if (!detailAccepted || !detail) {
+      return {
+        added: 0,
+        problems: [
+          `album entity rejected: ${entityLabel(options.entity)}`,
+          ...(reservoirProblem ? [reservoirProblem] : [])
+        ],
+        ...fetchedSourceCountProperty(options, reservoirProblem)
+      };
+    }
+    const tracks = expandedTracks.slice(0, options.limit);
     const result = upsertTracks(options.candidatePool, tracks, source, {
       evidence: `实体专辑: ${detail.name}`,
       scores: sourceScores(source, options.context),
@@ -206,7 +306,8 @@ async function recallAlbumEntity(options: EntityRecallOptions): Promise<EntityRe
     });
     return {
       added: result.added,
-      problems: entityRecallProblems(result)
+      problems: [...entityRecallProblems(result), ...(reservoirProblem ? [reservoirProblem] : [])],
+      ...fetchedSourceCountProperty(options, reservoirProblem)
     };
   }
 
@@ -231,18 +332,46 @@ async function recallAlbumEntity(options: EntityRecallOptions): Promise<EntityRe
   if (!album) {
     return { added: 0, problems: [`album entity rejected: ${entityLabel(options.entity)}`] };
   }
+  const reservoirIdentity = buildSourceReservoirIdentity({
+    sourceKind: 'album',
+    sourceRef: String(album.id)
+  });
+  if (sourceInsideReservoirWindow(options, reservoirIdentity)) {
+    return {
+      added: 0,
+      problems: [`album source ${String(album.id)} is still inside the 120-minute reservoir window`]
+    };
+  }
   if (!options.consumeNcmSearch()) {
     return { added: 0, problems: ['NCM search budget exhausted'] };
   }
 
   const detail = await options.ncmClient.getAlbumDetail(String(album.id));
   if (options.signal?.aborted) return { added: 0, problems: ['aborted'] };
-  if (!detail || !albumMatchesEntity(options.entity, detail)) {
-    return { added: 0, problems: [`album entity rejected: ${entityLabel(options.entity)}`] };
+  const source = entityRecallSource(options, 'search');
+  const detailAccepted = Boolean(detail && albumMatchesEntity(options.entity, detail));
+  const expandedTracks = detailAccepted
+    ? detail!.tracks.filter(isUsableExpandedTrack)
+    : [];
+  const reservoirProblem = recordEntitySource(
+    options,
+    reservoirIdentity,
+    detail?.name ?? entityLabel(options.entity),
+    source,
+    expandedTracks
+  );
+  if (!detailAccepted || !detail) {
+    return {
+      added: 0,
+      problems: [
+        `album entity rejected: ${entityLabel(options.entity)}`,
+        ...(reservoirProblem ? [reservoirProblem] : [])
+      ],
+      ...fetchedSourceCountProperty(options, reservoirProblem)
+    };
   }
 
-  const tracks = detail.tracks.filter(isUsableExpandedTrack).slice(0, options.limit);
-  const source = entityRecallSource(options, 'search');
+  const tracks = expandedTracks.slice(0, options.limit);
   const result = upsertTracks(options.candidatePool, tracks, source, {
     evidence: `实体专辑: ${detail.name}`,
     scores: sourceScores(source, options.context),
@@ -250,7 +379,8 @@ async function recallAlbumEntity(options: EntityRecallOptions): Promise<EntityRe
   });
   return {
     added: result.added,
-    problems: entityRecallProblems(result)
+    problems: [...entityRecallProblems(result), ...(reservoirProblem ? [reservoirProblem] : [])],
+    ...fetchedSourceCountProperty(options, reservoirProblem)
   };
 }
 
@@ -274,11 +404,37 @@ async function recallPlaylistEntity(options: EntityRecallOptions): Promise<Entit
     }
     const playlists = await options.ncmClient.searchPlaylists?.(name, options.searchLimit);
     if (options.signal?.aborted) return { added: 0, problems: ['aborted'] };
-    const playlist = findVerifiedPlaylist(name, playlists ?? []);
+    const playlist = findVerifiedPlaylist(name, playlists ?? [], (candidate) => {
+      if (!options.sourceReservoir) return true;
+      return isSourceReservoirFetchAvailable({
+        userId: options.sourceReservoir.userId,
+        identity: buildSourceReservoirIdentity({
+          sourceKind: 'playlist',
+          sourceRef: String(candidate.id)
+        }),
+        requestKind: options.sourceReservoir.requestKind,
+        now: options.sourceReservoir.now
+      });
+    });
     playlistId = String(playlist?.id ?? '');
   }
   if (!playlistId) {
     return { added: 0, problems: [`playlist entity rejected: ${name}`] };
+  }
+  const reservoirIdentity = buildSourceReservoirIdentity({
+    sourceKind: 'playlist',
+    sourceRef: playlistId
+  });
+  if (options.sourceReservoir && !isSourceReservoirFetchAvailable({
+    userId: options.sourceReservoir.userId,
+    identity: reservoirIdentity,
+    requestKind: options.sourceReservoir.requestKind,
+    now: options.sourceReservoir.now
+  })) {
+    return {
+      added: 0,
+      problems: [`playlist source ${playlistId} is still inside the 120-minute reservoir window`]
+    };
   }
   if (!options.consumePlaylistFetch()) {
     return { added: 0, problems: ['playlist fetch budget exhausted'] };
@@ -286,25 +442,108 @@ async function recallPlaylistEntity(options: EntityRecallOptions): Promise<Entit
 
   const detail = await options.ncmClient.getPlaylistDetail(playlistId);
   if (options.signal?.aborted) return { added: 0, problems: ['aborted'] };
+  const source = entityRecallSource(options, 'playlist');
   if (!detail) {
-    return { added: 0, problems: [`playlist entity rejected: ${name}`] };
+    const reservoirProblem = recordEntitySource(
+      options,
+      reservoirIdentity,
+      name || playlistId,
+      source,
+      []
+    );
+    return {
+      added: 0,
+      problems: [
+        `playlist entity rejected: ${name}`,
+        ...(reservoirProblem ? [reservoirProblem] : [])
+      ],
+      ...fetchedSourceCountProperty(options, reservoirProblem)
+    };
   }
 
   if (name && !playlistTitleMatchesQuery(name, detail.name)) {
-    return { added: 0, problems: [`playlist entity rejected: ${name}`] };
+    const reservoirProblem = recordEntitySource(
+      options,
+      reservoirIdentity,
+      detail.name,
+      source,
+      []
+    );
+    return {
+      added: 0,
+      problems: [
+        `playlist entity rejected: ${name}`,
+        ...(reservoirProblem ? [reservoirProblem] : [])
+      ],
+      ...fetchedSourceCountProperty(options, reservoirProblem)
+    };
   }
 
-  const tracks = detail.tracks.filter(isUsableExpandedTrack).slice(0, options.limit);
-  const source = entityRecallSource(options, 'playlist');
+  const expandedTracks = detail.tracks.filter(isUsableExpandedTrack);
+  const tracks = expandedTracks.slice(0, options.limit);
   const result = upsertTracks(options.candidatePool, tracks, source, {
     evidence: `实体歌单: ${detail.name}`,
     scores: sourceScores(source, options.context),
     provenanceKind: options.provenanceKind
   });
+  const reservoirProblem = recordEntitySource(
+    options,
+    reservoirIdentity,
+    detail.name,
+    source,
+    expandedTracks
+  );
   return {
     added: result.added,
-    problems: entityRecallProblems(result)
+    problems: [...entityRecallProblems(result), ...(reservoirProblem ? [reservoirProblem] : [])],
+    ...fetchedSourceCountProperty(options, reservoirProblem)
   };
+}
+
+function sourceInsideReservoirWindow(
+  options: EntityRecallOptions,
+  identity: ReturnType<typeof buildSourceReservoirIdentity>
+): boolean {
+  return Boolean(options.sourceReservoir && !isSourceReservoirFetchAvailable({
+    userId: options.sourceReservoir.userId,
+    identity,
+    requestKind: options.sourceReservoir.requestKind,
+    now: options.sourceReservoir.now
+  }));
+}
+
+function recordEntitySource(
+  options: EntityRecallOptions,
+  identity: ReturnType<typeof buildSourceReservoirIdentity>,
+  displayName: string,
+  candidateSource: CandidateSource,
+  tracks: NcmTrackLike[]
+): string | null {
+  if (!options.sourceReservoir) return null;
+  try {
+    recordSourceReservoirFetch({
+      userId: options.sourceReservoir.userId,
+      runId: options.sourceReservoir.runId,
+      identity,
+      displayName,
+      candidateSource,
+      provenanceKind: options.provenanceKind ?? 'verified_entity',
+      tracks,
+      fetchedAt: options.sourceReservoir.now
+    });
+    return null;
+  } catch (error) {
+    return `source reservoir write failed: ${formatError(error)}`;
+  }
+}
+
+function fetchedSourceCountProperty(
+  options: EntityRecallOptions,
+  reservoirProblem: string | null
+): { fetchedSourceCount?: number } {
+  return options.sourceReservoir
+    ? { fetchedSourceCount: reservoirProblem ? 0 : 1 }
+    : {};
 }
 
 function entityRecallProblems(result: UpsertTracksResult): string[] {
@@ -313,12 +552,14 @@ function entityRecallProblems(result: UpsertTracksResult): string[] {
 
 function findVerifiedPlaylist(
   query: string,
-  playlists: NcmPlaylistSearchResult[]
+  playlists: NcmPlaylistSearchResult[],
+  accept: (playlist: NcmPlaylistSearchResult) => boolean = () => true
 ): NcmPlaylistSearchResult | null {
   return playlists.find((playlist) => (
     playlist.trackCount > 0 &&
     isUsableCollectionTitle(playlist.name) &&
-    playlistTitleMatchesQuery(query, playlist.name)
+    playlistTitleMatchesQuery(query, playlist.name) &&
+    accept(playlist)
   )) ?? null;
 }
 

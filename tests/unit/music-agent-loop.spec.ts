@@ -251,6 +251,53 @@ describe('runMusicAgentLoop', () => {
     });
   });
 
+  it('forces one fresh recall attempt before accepting a reservoir-only auto-fill final', async () => {
+    const final = JSON.stringify({
+      type: 'final',
+      say: '缓存候选与新来源已经一起比较。',
+      picks: [{ id: 'reservoir-1', reason: '仍然最贴合当前队列', source: 'search' }],
+      rejected: []
+    });
+    const llmClient = new LoopFakeLlmClient([final, final]);
+    const pool = new CandidatePool();
+    pool.upsert(candidate({
+      id: 'reservoir-1',
+      name: 'Reservoir Song',
+      artist: 'Reservoir Artist',
+      sources: ['search']
+    }));
+    const recall = vi.fn(async () => {
+      pool.upsert(candidate({
+        id: 'fresh-1',
+        name: 'Fresh Song',
+        artist: 'Fresh Artist',
+        sources: ['search']
+      }));
+      return { summary: 'fresh source added 1 candidate', candidateCount: pool.count() };
+    });
+
+    const result = await runMusicAgentLoop({
+      llmClient,
+      context: context({ request: 'auto-fill', discoveryMode: 'explore' }),
+      candidatePool: pool,
+      tools: {
+        hasReservoirCandidates: () => true,
+        recall_auto_fill_mix: recall
+      },
+      budget: budget(),
+      mode: 'pick_next',
+      targetPickCount: 1
+    });
+
+    expect(recall).toHaveBeenCalledTimes(1);
+    expect(llmClient.calls).toHaveLength(2);
+    expect(result.status).toBe('ok');
+    expect(result.trace).toContainEqual(expect.objectContaining({
+      tool: 'recall_auto_fill_mix',
+      thoughtSummary: 'auto-fill recall mix tool executed'
+    }));
+  });
+
   it('converges after explore auto-fill has target-sized external candidates instead of continuing search', async () => {
     const llmClient = new LoopFakeLlmClient([
       JSON.stringify({ type: 'tool_call', tool: 'recall_auto_fill_mix', input: {} }),

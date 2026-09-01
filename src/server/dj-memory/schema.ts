@@ -6,6 +6,12 @@ import {
 } from '../../shared/dj-memory.js';
 import { LISTENING_EPISODE_DAILY_LIMIT } from '../../shared/listening.js';
 import { SELECTION_PRESSURE_WINDOW_DAYS } from '../music-agent/selection-pressure.js';
+import {
+  candidateProvenanceKindSchema,
+  candidateSourceSchema,
+  musicCandidateQualitySignalsSchema
+} from '../music-agent/schema.js';
+import { sourceReservoirSourceKindSchema } from '../store/source-reservoir.js';
 
 export const DJ_MEMORY_UPCOMING_TRACK_LIMIT = 50;
 export const DJ_MEMORY_LISTENING_EPISODE_LIMIT = 200;
@@ -158,6 +164,25 @@ export const djMemorySnapshotSchema = z.object({
     selectedCount: z.number().int().nonnegative(),
     attemptedAt: z.string().datetime({ offset: true })
   }).strict()).max(200),
+  sourceReservoir: z.array(z.object({
+    sourceKey: z.string().min(1).max(100),
+    sourceKind: sourceReservoirSourceKindSchema,
+    provider: z.string().min(1).max(40),
+    sourceRef: z.string().min(1).max(500),
+    displayName: z.string().min(1).max(500),
+    candidateSource: candidateSourceSchema,
+    provenanceKind: candidateProvenanceKindSchema,
+    runId: z.string().min(1).max(200),
+    fetchedAt: z.string().datetime({ offset: true }),
+    reuseAfter: z.string().datetime({ offset: true }),
+    expiresAt: z.string().datetime({ offset: true }),
+    tracks: z.array(z.object({
+      id: z.union([z.string(), z.number()]),
+      name: z.string().min(1).max(300),
+      artists: z.array(z.string().min(1).max(300)).min(1).max(20),
+      qualitySignals: musicCandidateQualitySignalsSchema.nullable().optional()
+    }).strict()).max(30)
+  }).strict()).max(200).default([]),
   configuration: z.array(z.object({
     id: z.string().min(1),
     kind: z.string().min(1).max(80),

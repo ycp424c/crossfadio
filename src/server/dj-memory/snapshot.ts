@@ -11,6 +11,7 @@ import { listRecentRetrievalAttempts } from '../store/retrieval-attempts.js';
 import { listDjConfigurationEntries } from '../store/dj-configuration.js';
 import { getRecentDjEvents } from '../store/dj-events.js';
 import { getSelectionRotationSnapshot } from '../store/selection-rotation.js';
+import { listSourceReservoir } from '../store/source-reservoir.js';
 import { fetchWeather } from '../weather.js';
 import { getDailyTheme } from '../daily-theme.js';
 import { getDaypart, getShanghaiTimeParts } from '../timezone.js';
@@ -45,6 +46,7 @@ type SnapshotDeps = {
   }>;
   loadPersonalContext: (userId: string, now: Date) => Promise<DjMemorySnapshot['personalContext']>;
   loadRetrievalHistory: (userId: string, now: Date) => Promise<DjMemorySnapshot['retrievalHistory']>;
+  loadSourceReservoir: (userId: string, now: Date) => Promise<DjMemorySnapshot['sourceReservoir']>;
   loadConfiguration: (userId: string) => Promise<DjMemorySnapshot['configuration']>;
   loadSelectionContext: (userId: string) => Promise<DjMemorySnapshot['selectionContext']>;
   loadSessionEvents: (userId: string) => Promise<DjSessionEventInput[]>;
@@ -73,6 +75,7 @@ export async function buildDjMemorySnapshot(input: {
     exclusions,
     personalContext,
     retrievalHistory,
+    sourceReservoir,
     configuration,
     loadedSelectionContext,
     events,
@@ -87,6 +90,7 @@ export async function buildDjMemorySnapshot(input: {
     deps.loadExclusions(input.userId, now),
     deps.loadPersonalContext(input.userId, now),
     deps.loadRetrievalHistory(input.userId, now),
+    deps.loadSourceReservoir(input.userId, now),
     deps.loadConfiguration(input.userId),
     deps.loadSelectionContext(input.userId),
     deps.loadSessionEvents(input.userId),
@@ -141,6 +145,13 @@ export async function buildDjMemorySnapshot(input: {
         source('personal_dj_context', 'advisory', count(personalContext), loadedAt, personalContext?.expiresAt),
         source('taste_profile', 'derived', count(tasteProfile), loadedAt),
         source('retrieval_history', 'operational', retrievalHistory.length, loadedAt),
+        source(
+          'source_reservoir',
+          'operational',
+          sourceReservoir.reduce((count, item) => count + item.tracks.length, 0),
+          loadedAt,
+          sourceReservoir.map((item) => item.expiresAt).sort()[0]
+        ),
         source('dj_configuration', 'authoritative', configuration.length + 1, loadedAt),
         source('dj_session_log', 'continuity', sessionLog.length, loadedAt),
         source('current_moment', 'authoritative', 1, loadedAt),
@@ -159,6 +170,7 @@ export async function buildDjMemorySnapshot(input: {
     temporaryExclusions,
     personalContext,
     retrievalHistory,
+    sourceReservoir,
     configuration,
     selectionContext,
     sessionLog,
@@ -239,6 +251,7 @@ const defaultDeps: SnapshotDeps = {
     selectedCount: item.selectedCount,
     attemptedAt: item.attemptedAt
   })),
+  loadSourceReservoir: async (userId, now) => listSourceReservoir({ userId, now }),
   loadConfiguration: async (userId) => listDjConfigurationEntries(userId).map((item) => ({
     id: item.id,
     kind: item.kind,

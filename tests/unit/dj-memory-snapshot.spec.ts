@@ -54,7 +54,7 @@ describe('DJ Memory Snapshot', () => {
     const barrier = new Promise<void>((resolve) => { release = resolve; });
     const load = <T>(name: string, value: T) => vi.fn(async () => {
       started.push(name);
-      if (started.length === 12) release?.();
+      if (started.length === 13) release?.();
       await barrier;
       return value;
     });
@@ -79,6 +79,7 @@ describe('DJ Memory Snapshot', () => {
         loadExclusions: load('exclusions', { explicit: [], temporary: [] }),
         loadPersonalContext: load('pdc', null),
         loadRetrievalHistory: load('retrieval', []),
+        loadSourceReservoir: load('source-reservoir', []),
         loadConfiguration: load('configuration', []),
         loadSelectionContext: load('selection-context', {
           discoveryMode: 'comfort' as const,
@@ -88,7 +89,7 @@ describe('DJ Memory Snapshot', () => {
         loadWeather: vi.fn(async () => ({ location: 'Shanghai', tempC: 30, desc: '晴' }))
       }
     });
-    await vi.waitFor(() => expect(started).toHaveLength(12));
+    await vi.waitFor(() => expect(started).toHaveLength(13));
     const snapshot = await snapshotPromise;
 
     expect(snapshot.queue.currentTrack?.id).toBe('current');
@@ -361,6 +362,7 @@ function emptyDeps(overrides: Record<string, unknown> = {}) {
     loadExclusions: async () => ({ explicit: [], temporary: [] }),
     loadPersonalContext: async () => null,
     loadRetrievalHistory: async () => [],
+    loadSourceReservoir: async () => [],
     loadConfiguration: async () => [],
     loadSelectionContext: async () => ({ discoveryMode: 'explore', dailyTheme: null }),
     loadSessionEvents: async () => [],

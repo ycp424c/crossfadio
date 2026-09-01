@@ -22,6 +22,7 @@ import {
   recordSelectionReplayRun
 } from '../store/selection-replay.js';
 import { recordSelectionRotationRound } from '../store/selection-rotation.js';
+import { consumeSourceReservoirTracks } from '../store/source-reservoir.js';
 import { getDb } from '../store/db.js';
 import type {
   SelectionDecisionTrace,
@@ -135,6 +136,7 @@ export class DJAgent {
         excludeTrackIds: input.excludeState.ids,
         excludeTrackDedupeKeys: input.excludeState.dedupeKeys,
         targetPickCount: input.targetPickCount,
+        now: input.now,
         selectionAdapter,
         onReplayObservation: (observation) => {
           replayObservation.candidateCount = Math.max(
@@ -315,6 +317,12 @@ export class DJAgent {
           decisions: handled.finalQueueDecisions
         });
         if (preparedQueue) {
+          consumeSourceReservoirTracks({
+            userId: input.userId,
+            runId,
+            trackIds: handled.appendedTrackIds,
+            consumedAt: completedAt
+          });
           appendMusicAgentSelectionEvents({
             userId: input.userId,
             runId,

@@ -44,6 +44,12 @@ import type {
 } from './schema.js';
 import type { NcmTrackLike } from './liked-recall.js';
 import { artistKeys } from './artists.js';
+import {
+  buildSourceReservoirIdentity,
+  isSourceReservoirFetchAvailable,
+  recordSourceReservoirFetch,
+  type SourceReservoirSourceKind
+} from '../store/source-reservoir.js';
 
 const DEFAULT_SEARCH_LIMIT = 8;
 const DEFAULT_ENTITY_RECALL_LIMIT = 5;
@@ -80,11 +86,13 @@ export type QueryRecallRunOptions = {
   runId?: string;
   requestKind?: RetrievalRequestKind;
   now?: Date;
+  sourceReservoirEnabled?: boolean;
 };
 
 export type QueryRecallRunResult = {
   summary: string;
   problems: string[];
+  fetchedSourceCount: number;
   aborted?: boolean;
 };
 
@@ -132,6 +140,12 @@ export async function runRecallFromQueries(options: QueryRecallRunOptions): Prom
         embeddingModel: options.embeddingModel,
         consumeNcmSearch: options.consumeNcmSearch,
         consumePlaylistFetch: options.consumePlaylistFetch,
+        ...(options.sourceReservoirEnabled ? { sourceReservoir: {
+          userId: options.userId,
+          runId,
+          requestKind,
+          ...(options.now ? { now: options.now } : {})
+        } } : {}),
         signal: options.signal,
         limit: options.limit ?? DEFAULT_ENTITY_RECALL_LIMIT
       });
@@ -141,7 +155,8 @@ export async function runRecallFromQueries(options: QueryRecallRunOptions): Prom
           problems: [
             SEMANTIC_ONLY_QUERY_PROBLEM,
             ...semanticRecall.problems
-          ]
+          ],
+          fetchedSourceCount: semanticRecall.fetchedSourceCount ?? 0
         };
       }
     }
@@ -152,12 +167,15 @@ export async function runRecallFromQueries(options: QueryRecallRunOptions): Prom
           ? 'alternative_query_required'
           : 'no search queries available',
         ...(skippedSemanticQueries > 0 ? [SEMANTIC_ONLY_QUERY_PROBLEM] : [])
-      ]
+      ],
+      fetchedSourceCount: 0
     };
   }
 
   let added = 0;
   let skippedRepeatedQueries = 0;
+  let skippedReservoirSources = 0;
+  let fetchedSourceCount = 0;
   const searched: string[] = [];
   const artistFallbacks: string[] = [];
   let artistFallbackAdded = 0;
@@ -167,13 +185,28 @@ export async function runRecallFromQueries(options: QueryRecallRunOptions): Prom
   let attemptedArtistFallbackCount = 0;
 
   for (const query of queries) {
-    if (options.signal?.aborted) return { summary: 'aborted', problems: ['aborted'], aborted: true };
+    if (options.signal?.aborted) {
+      return { summary: 'aborted', problems: ['aborted'], fetchedSourceCount, aborted: true };
+    }
     try {
       const limit = options.limit ?? DEFAULT_SEARCH_LIMIT;
       const runSearchKey = searchRunKey(options.source, query, limit);
       const coveredLimit = options.queryState.searchedQueryLimits.get(runSearchKey) ?? 0;
       if (coveredLimit >= limit) {
         skippedRepeatedQueries += 1;
+        continue;
+      }
+      const reservoirIdentity = buildSourceReservoirIdentity({
+        sourceKind: reservoirSourceKind(options.source),
+        sourceRef: normalizeSearchQuery(query)
+      });
+      if (options.sourceReservoirEnabled && !isSourceReservoirFetchAvailable({
+        userId: options.userId,
+        identity: reservoirIdentity,
+        requestKind,
+        now: options.now
+      })) {
+        skippedReservoirSources += 1;
         continue;
       }
       const cacheKey = recallSearchCacheKey(query, limit);
@@ -194,6 +227,22 @@ export async function runRecallFromQueries(options: QueryRecallRunOptions): Prom
         scores: options.scores,
         provenanceKind: recallQueryProvenanceKind(options.source)
       });
+      if (options.sourceReservoirEnabled) try {
+        recordSourceReservoirFetch({
+          userId: options.userId,
+          runId,
+          identity: reservoirIdentity,
+          displayName: query,
+          candidateSource: options.source,
+          provenanceKind: recallQueryProvenanceKind(options.source),
+          tracks: tracks.filter((track) => options.candidatePool.has(String(track.id ?? ''))),
+          fetchedAt: options.now
+        });
+        fetchedSourceCount += 1;
+      } catch (error) {
+        problems.push(`${query}: source reservoir write failed: ${formatError(error)}`);
+      }
+      if (!options.sourceReservoirEnabled) fetchedSourceCount += 1;
       recordQueryFunnelSearch(options.queryState, {
         seed: funnelSeeds.get(normalizeSearchQuery(query)),
         query,
@@ -230,6 +279,12 @@ export async function runRecallFromQueries(options: QueryRecallRunOptions): Prom
             consumeNcmSearch: options.consumeNcmSearch,
             consumePlaylistFetch: options.consumePlaylistFetch,
             provenanceKind: recallQueryProvenanceKind(options.source),
+            ...(options.sourceReservoirEnabled ? { sourceReservoir: {
+              userId: options.userId,
+              runId,
+              requestKind,
+              ...(options.now ? { now: options.now } : {})
+            } } : {}),
             signal: options.signal
           });
           added += fallback.added;
@@ -248,6 +303,11 @@ export async function runRecallFromQueries(options: QueryRecallRunOptions): Prom
       ? 'skipped 1 repeated search query in this run'
       : `skipped ${skippedRepeatedQueries} repeated search queries in this run`);
   }
+  if (skippedReservoirSources > 0) {
+    problems.push(skippedReservoirSources === 1
+      ? 'skipped 1 source still inside the 120-minute reservoir window'
+      : `skipped ${skippedReservoirSources} sources still inside the 120-minute reservoir window`);
+  }
   const admissionSummary = summarizeCandidateAdmission(admissionTotals);
   if (admissionSummary) problems.push(admissionSummary);
   if (preparedQueries.funnelEntries.some((entry) => entry.scoreMultiplier !== 1 || entry.repeatPenalty > 0)) {
@@ -257,8 +317,16 @@ export async function runRecallFromQueries(options: QueryRecallRunOptions): Prom
   return {
     summary: `${options.evidencePrefix} recall searched ${searched.length} queries and added ${added} candidates: ${searched.join('、') || 'none'}.` +
       (artistFallbacks.length > 0 ? ` artist fallback added ${artistFallbackAdded} candidates from ${artistFallbacks.join('、')}.` : ''),
-    problems
+    problems,
+    fetchedSourceCount
   };
+}
+
+function reservoirSourceKind(source: CandidateSource): SourceReservoirSourceKind {
+  if (source === 'trend') return 'trend';
+  if (source === 'style_expansion') return 'style_expansion';
+  if (source === 'playlist') return 'playlist';
+  return 'search';
 }
 
 function recallQueryProvenanceKind(source: CandidateSource): CandidateProvenanceKind {
