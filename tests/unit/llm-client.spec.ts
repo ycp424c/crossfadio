@@ -101,6 +101,38 @@ describe('LlmClient.complete', () => {
     });
   });
 
+  it('downgrades json_schema to json_object for DeepSeek Chat Completions', async () => {
+    let capturedBody: Record<string, unknown> | undefined;
+    mockFetch(async (_url, init) => {
+      capturedBody = JSON.parse(init?.body as string) as Record<string, unknown>;
+      return new Response(JSON.stringify({
+        choices: [{ message: { content: '{"type":"final"}' } }], model: 'deepseek-v4-flash'
+      }), { status: 200 });
+    });
+
+    const client = new LlmClient({
+      ...config,
+      baseUrl: 'https://api.deepseek.com',
+      model: 'deepseek-v4-flash'
+    });
+    await client.complete([{ role: 'user', content: 'json' }], {
+      responseFormat: {
+        type: 'json_schema',
+        json_schema: {
+          name: 'music_agent_final_pick',
+          strict: true,
+          schema: {
+            type: 'object',
+            required: ['type'],
+            properties: { type: { const: 'final' } }
+          }
+        }
+      }
+    });
+
+    expect(capturedBody?.response_format).toEqual({ type: 'json_object' });
+  });
+
   it('passes thinking control for DeepSeek and TokenHub Hy3 but omits it for unsupported models', async () => {
     const capturedBodies: Array<Record<string, unknown>> = [];
     mockFetch(async (_url, init) => {

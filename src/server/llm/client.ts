@@ -162,15 +162,26 @@ function buildRequestBody(
   }
 ) {
   const maxTokens = resolveMaxTokensForThinking(model, opts.baseUrl, opts.thinking, opts.maxTokens);
+  const responseFormat = resolveChatCompletionsResponseFormat(opts.baseUrl, opts.responseFormat);
   return {
     model,
     messages,
     ...(opts.stream !== undefined && { stream: opts.stream }),
     ...(opts.temperature !== undefined && { temperature: opts.temperature }),
     ...(maxTokens !== undefined && { max_tokens: maxTokens }),
-    ...(opts.responseFormat !== undefined && { response_format: opts.responseFormat }),
+    ...(responseFormat !== undefined && { response_format: responseFormat }),
     ...(opts.thinking !== undefined && supportsThinkingControl(model, opts.baseUrl) && { thinking: opts.thinking })
   };
+}
+
+function resolveChatCompletionsResponseFormat(
+  baseUrl: string,
+  requested: LlmResponseFormat | undefined
+): LlmResponseFormat | undefined {
+  if (requested?.type !== 'json_schema') return requested;
+
+  const hostname = new URL(baseUrl).hostname.toLowerCase();
+  return hostname === 'api.deepseek.com' ? { type: 'json_object' } : requested;
 }
 
 function resolveMaxTokensForThinking(
