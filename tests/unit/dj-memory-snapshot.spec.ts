@@ -2,8 +2,51 @@ import { describe, expect, it, vi } from 'vitest';
 import { createMusicAgentSelectionAdapter } from '../../src/server/dj-memory/music-agent-adapter';
 import { buildDjMemorySnapshot } from '../../src/server/dj-memory/snapshot';
 import { DJ_MEMORY_SELECTION_PRESSURE_LIMIT } from '../../src/server/dj-memory/schema';
+import { matchesExclusion, toSelectionPolicyCandidate } from '../../src/server/music-agent/selection-policy/types';
+import { projectDjMemoryForSegue, projectDjMemoryForChat } from '../../src/server/dj-memory/projections';
 
 describe('DJ Memory Snapshot', () => {
+  it.each([21, 40])('preserves all %i credited artists through reservoir and queue without bypassing exclusions', async (artistCount) => {
+    const artists = Array.from({ length: artistCount }, (_, index) => `Artist ${index}`);
+    const now = new Date('2026-09-15T06:00:00.000Z');
+    const snapshot = await buildDjMemorySnapshot({
+      userId: 'ensemble-user', now,
+      deps: emptyDeps({
+        loadQueue: async () => ({
+          queue: [
+            { ncmId: 'ensemble', name: 'Ensemble', artists },
+            { ncmId: 'next', name: 'Next Ensemble', artists }
+          ], currentIndex: 0
+        }),
+        loadExclusions: async () => ({
+          explicit: [{
+            id: 'blocked-artist', entityType: 'artist',
+            entityKey: artists[artistCount - 1].toLowerCase(), displayName: artists[artistCount - 1]
+          }], temporary: []
+        }),
+        loadSourceReservoir: async () => [{
+          sourceKey: 'ensemble-source', sourceKind: 'search', provider: 'ncm',
+          sourceRef: 'ensemble', displayName: 'Ensemble', candidateSource: 'search',
+          provenanceKind: 'exact_recall', runId: 'run-1',
+          fetchedAt: now.toISOString(), reuseAfter: '2026-09-15T08:00:00.000Z',
+          expiresAt: '2026-09-15T08:00:00.000Z',
+          tracks: [{ id: 'ensemble', name: 'Ensemble', artists }]
+        }]
+      })
+    });
+
+    expect(snapshot.queue.currentTrack?.artists).toEqual(artists);
+    expect(snapshot.queue.upcoming[0].artists).toEqual(artists);
+    const adapter = createMusicAgentSelectionAdapter({ snapshot, request: 'auto-fill' });
+    expect(adapter.sourceReservoir[0].tracks[0].artists).toEqual(artists);
+    expect(matchesExclusion(toSelectionPolicyCandidate({
+      id: 'ensemble', name: 'Ensemble',
+      artist: adapter.sourceReservoir[0].tracks[0].artists.join(' / ')
+    }), adapter.policyContext.explicitExclusions)).toBe('artist');
+    expect(projectDjMemoryForSegue(snapshot).purpose).toBe('segue');
+    expect(projectDjMemoryForChat(snapshot).purpose).toBe('chat');
+  });
+
   it('loads durable rotation history without aging it by wall-clock time', async () => {
     const snapshot = await buildDjMemorySnapshot({
       userId: 'user-rotation',

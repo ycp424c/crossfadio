@@ -33,6 +33,7 @@ import { initDb, _resetDbForTest } from '../../src/server/store/db';
 import { appendDjEvent, getRecentDjEvents } from '../../src/server/store/dj-events';
 import { getRecentSegues } from '../../src/server/store/segues';
 import { savePersonalDjContext } from '../../src/server/store/personal-dj-context';
+import { buildSourceReservoirIdentity, recordSourceReservoirFetch, listSourceReservoir } from '../../src/server/store/source-reservoir';
 
 const originalDataDir = process.env.CROSSFADIO_DATA_DIR;
 let dataDir: string;
@@ -52,6 +53,33 @@ afterEach(() => {
 });
 
 describe('DJAgent segue orchestration', () => {
+  it('generates a segue with an existing reservoir track crediting more than 20 artists', async () => {
+    const now = new Date();
+    const artists = Array.from({ length: 40 }, (_, index) => `Artist ${index}`);
+    recordSourceReservoirFetch({
+      userId: 'segue-user', runId: 'ensemble-run',
+      identity: buildSourceReservoirIdentity({ sourceKind: 'search', sourceRef: 'ensemble' }),
+      displayName: 'Ensemble', candidateSource: 'search', provenanceKind: 'exact_recall',
+      tracks: [{ id: 'ensemble', name: 'Ensemble', artists }], fetchedAt: now
+    });
+    const result = await generateSegue({
+      userId: 'segue-user',
+      from: { id: 'from-1', name: 'From Song', artist: 'From Artist' },
+      to: { id: 'to-1', name: 'Next Song', artist: 'Next Artist' },
+      ncmClient: {
+        getSongDetails: async () => [],
+        getLyric: async () => null,
+        getSongWikiSummary: async () => null
+      } as never,
+      llmConfig: { baseUrl: 'https://llm.example/v1', apiKey: 'sk-test', model: 'test-model' },
+      now
+    });
+
+    expect(result?.segue.say).toContain('低干扰');
+    expect(capturedFragments?.djMemory.purpose).toBe('segue');
+    expect(listSourceReservoir({ userId: 'segue-user', now })[0].tracks[0].artists).toEqual(artists);
+  });
+
   it('uses selection rationale and safe Personal DJ Context guidance, then records segue_generated', async () => {
     const now = new Date(Date.now() + 1_000);
     savePersonalDjContext({

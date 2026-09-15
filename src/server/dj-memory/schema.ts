@@ -18,10 +18,14 @@ export const DJ_MEMORY_LISTENING_EPISODE_LIMIT = 200;
 export const DJ_MEMORY_SELECTION_PRESSURE_LIMIT = LISTENING_EPISODE_DAILY_LIMIT
   * (SELECTION_PRESSURE_WINDOW_DAYS + 1);
 
+// Provider tracks can credit more than 20 artists. Keep all identities in the
+// internal snapshot for selection/exclusions; projections own display budgets.
+const trackArtistsSchema = z.array(z.string().trim().min(1).max(300));
+
 export const djMemoryTrackSchema = z.object({
   id: z.string().trim().min(1).max(200),
   name: z.string().trim().max(300).default(''),
-  artists: z.array(z.string().trim().min(1).max(300)).max(20).default([]),
+  artists: trackArtistsSchema.default([]),
   durationMs: z.number().int().nonnegative().optional(),
   coverImgUrl: z.string().nullable().optional()
 }).strict();
@@ -179,7 +183,7 @@ export const djMemorySnapshotSchema = z.object({
     tracks: z.array(z.object({
       id: z.union([z.string(), z.number()]),
       name: z.string().min(1).max(300),
-      artists: z.array(z.string().min(1).max(300)).min(1).max(20),
+      artists: trackArtistsSchema.min(1),
       qualitySignals: musicCandidateQualitySignalsSchema.nullable().optional()
     }).strict()).max(30)
   }).strict()).max(200).default([]),
